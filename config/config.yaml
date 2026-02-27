@@ -1,0 +1,196 @@
+# AegisGraph Sentinel 2.0 Configuration
+
+# System Settings
+system:
+  name: "AegisGraph Sentinel 2.0"
+  version: "2.0.0"
+  environment: "development"  # development, staging, production
+
+# API Settings
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  reload: true
+  log_level: "info"
+
+# Model Settings
+model:
+  type: "HTGNN"
+  checkpoint_path: "models/htgnn_best.pt"
+  device: "cuda"  # cuda, cpu, mps
+  inference_batch_size: 32
+  
+  # HTGAT Architecture
+  htgat:
+    hidden_dim: 128
+    output_dim: 64
+    num_layers: 2
+    num_heads: 4
+    dropout: 0.3
+    activation: "relu"
+  
+  # Temporal Settings
+  temporal:
+    time_encoding_dim: 16
+    decay_lambda: 0.01
+    max_temporal_window: 86400  # 24 hours in seconds
+
+# Graph Settings
+graph:
+  k_hop_neighbors: 3
+  max_subgraph_nodes: 1000
+  max_subgraph_edges: 5000
+  node_types:
+    - "Account"
+    - "Device"
+    - "ATM"
+    - "Merchant"
+    - "IP"
+  edge_types:
+    - "Transfer"
+    - "Login"
+    - "Withdrawal"
+    - "Association"
+
+# Feature Settings
+features:
+  # Behavioral Biometrics
+  behavioral:
+    enabled: true
+    min_keystroke_samples: 10
+    stress_threshold: 0.70
+    
+  # Velocity Features
+  velocity:
+    enabled: true
+    time_window: 3600  # 1 hour
+    
+  # Entropy Features
+  entropy:
+    enabled: true
+    neighborhood_size: 2
+
+# Risk Scoring
+risk_scoring:
+  weights:
+    graph: 0.50
+    velocity: 0.20
+    behavior: 0.20
+    entropy: 0.10
+  
+  thresholds:
+    block: 0.90
+    review: 0.70
+    allow: 0.50
+  
+  calibration:
+    enabled: true
+    method: "platt_scaling"
+
+# Training Settings
+training:
+  # Data
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+  
+  # Hyperparameters
+  learning_rate: 0.001
+  batch_size: 32
+  num_epochs: 100
+  early_stopping_patience: 10
+  
+  # Optimization
+  optimizer: "adam"
+  weight_decay: 0.0001
+  scheduler: "cosine"
+  
+  # Loss Function
+  loss:
+    type: "focal"
+    alpha: 0.25
+    gamma: 2.0
+  
+  # Data Augmentation
+  augmentation:
+    enabled: true
+    graph_perturbation_prob: 0.1
+    feature_noise_std: 0.05
+
+# Data Generation (Synthetic)
+data_generation:
+  num_accounts: 10000
+  num_transactions: 100000
+  fraud_rate: 0.01
+  temporal_span_days: 180
+  
+  # Fraud Patterns
+  fraud_patterns:
+    chain_length_range: [3, 7]
+    star_branches_range: [3, 8]
+    mesh_complexity_range: [2, 5]
+    
+  output_dir: "data/synthetic"
+
+# Database Settings
+database:
+  # Neo4j (if using)
+  neo4j:
+    enabled: false
+    uri: "bolt://localhost:7687"
+    user: "neo4j"
+    password: "password"
+  
+  # Redis Cache
+  redis:
+    enabled: false
+    host: "localhost"
+    port: 6379
+    db: 0
+    ttl: 3600
+
+# Security & Privacy
+security:
+  encryption:
+    enabled: true
+    algorithm: "AES-256"
+  
+  privacy:
+    data_minimization: true
+    anonymization: true
+    federated_learning_ready: true
+
+# Monitoring & Logging
+monitoring:
+  prometheus:
+    enabled: false
+    port: 9090
+  
+  logging:
+    level: "INFO"
+    format: "json"
+    output_dir: "logs"
+
+# Deployment
+deployment:
+  mode: "single"  # single, distributed
+  scaling:
+    min_replicas: 1
+    max_replicas: 10
+    target_cpu_utilization: 70
+
+# Advanced Features
+advanced_features:
+  hesitation_monitor:
+    enabled: true
+    stress_detection_threshold: 0.75
+  
+  honeypot_escrow:
+    enabled: true
+    escrow_duration_seconds: 900  # 15 minutes
+  
+  aegis_oracle:
+    enabled: true
+    explanation_detail_level: "high"  # low, medium, high
+    llm_backend: "local"  # local, api

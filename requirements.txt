@@ -1,0 +1,74 @@
+# Core ML/DL Frameworks
+torch>=2.0.0
+torch-geometric>=2.3.0
+torch-scatter>=2.1.0
+torch-sparse>=0.6.16
+torch-cluster>=1.6.0
+
+# Graph Processing
+networkx>=3.0
+scipy>=1.10.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# API and Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# Data Processing
+scikit-learn>=1.3.0
+lightgbm>=4.0.0
+xgboost>=2.0.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.17.0
+
+# Database & Caching
+redis>=5.0.0
+pymongo>=4.5.0
+
+# Utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+tqdm>=4.66.0
+
+# Configuration Management
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+
+# Model Optimization
+onnx>=1.14.0
+onnxruntime>=1.16.0
+
+# Monitoring & Logging
+prometheus-client>=0.18.0
+psutil>=5.9.0
+
+# API Documentation
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0
+
+# Code Quality
+black>=23.10.0
+flake8>=6.1.0
+isort>=5.12.0
+mypy>=1.6.0
+
+# Jupyter Notebooks
+jupyter>=1.0.0
+ipykernel>=6.25.0
+ipywidgets>=8.1.0
+
+# Data Generation
+faker>=19.12.0
