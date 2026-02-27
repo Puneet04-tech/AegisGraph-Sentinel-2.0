@@ -28,6 +28,19 @@ from .schemas import (
     StatsResponse,
     ErrorResponse,
     RiskBreakdown,
+    # Innovation schemas
+    VoiceAnalysisRequest,
+    VoiceAnalysisResponse,
+    AccountOpeningRequest,
+    AccountOpeningResponse,
+    HoneypotStatus,
+    HoneypotListResponse,
+    HoneypotStatsResponse,
+    BlockchainSealRequest,
+    BlockchainEvidenceResponse,
+    BlockchainVerificationResponse,
+    LegalExportRequest,
+    LegalExportResponse,
 )
 
 # Try to import model components, fall back to demo mode if unavailable
@@ -39,6 +52,17 @@ except ImportError as e:
     print(f"⚠️  Warning: Model dependencies not available ({e})")
     print("⚠️  Running in DEMO MODE with simulated risk scores")
     MODEL_AVAILABLE = False
+
+# Import innovation modules
+try:
+    from ..features.voice_stress_analysis import VoiceStressAnalyzer
+    from ..features.predictive_mule_identification import PredictiveMuleScorer
+    from ..features.honeypot_escrow import HoneypotEscrowManager
+    from ..features.blockchain_evidence import BlockchainEvidenceManager
+    INNOVATIONS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Warning: Innovation modules not available ({e})")
+    INNOVATIONS_AVAILABLE = False
     
     # Demo mode functions
     def compute_risk_score(transaction: dict, biometrics: dict = None, **kwargs) -> dict:
@@ -349,6 +373,11 @@ class AppState:
         self.mule_accounts = set()
         self.account_profiles = {}
         self.graph_loaded = False
+        # Innovation managers
+        self.voice_analyzer = None
+        self.mule_scorer = None
+        self.honeypot_manager = None
+        self.blockchain_manager = None
         
 state = AppState()
 
@@ -416,10 +445,39 @@ async def startup_event():
         state.model_loaded = False
         print("⚠ Running in DEMO MODE (install torch-geometric for full functionality)")
     
+    # Initialize innovation managers
+    if INNOVATIONS_AVAILABLE:
+        try:
+            state.voice_analyzer = VoiceStressAnalyzer()
+            print("✓ Voice Stress Analyzer initialized")
+        except Exception as e:
+            print(f"⚠ Voice analyzer initialization failed: {e}")
+        
+        try:
+            state.mule_scorer = PredictiveMuleScorer()
+            print("✓ Predictive Mule Scorer initialized")
+        except Exception as e:
+            print(f"⚠ Mule scorer initialization failed: {e}")
+        
+        try:
+            state.honeypot_manager = HoneypotEscrowManager()
+            print("✓ Honeypot Escrow Manager initialized")
+        except Exception as e:
+            print(f"⚠ Honeypot manager initialization failed: {e}")
+        
+        try:
+            state.blockchain_manager = BlockchainEvidenceManager()
+            print("✓ Blockchain Evidence Manager initialized")
+        except Exception as e:
+            print(f"⚠ Blockchain manager initialization failed: {e}")
+    else:
+        print("⚠ Innovation modules not available")
+    
     print("=" * 80)
     print("🚀 AegisGraph Sentinel 2.0 is ready")
     print(f"📊 Mode: {'PRODUCTION' if MODEL_AVAILABLE else 'DEMO'}")
     print(f"🔗 Graph-based Detection: {'ENABLED' if state.graph_loaded else 'DISABLED'}")
+    print(f"🎯 Innovations: {'ENABLED' if INNOVATIONS_AVAILABLE else 'DISABLED'}")
     print("📖 API Documentation: http://localhost:8000/docs")
     print("=" * 80)
 
@@ -620,6 +678,319 @@ async def get_model_info():
         "trained_on": "Synthetic fraud dataset (100K transactions)",
         "fraud_types": ["Chain", "Star", "Mesh"],
     }
+
+
+# ============================================================================
+# INNOVATION ENDPOINTS
+# ============================================================================
+
+@app.post(
+    "/api/v1/voice/analyze",
+    response_model=VoiceAnalysisResponse,
+    tags=["Innovation - Voice Stress"],
+    summary="Analyze voice stress during transaction",
+    description="Innovation 5: Detects phone coercion through acoustic stress analysis"
+)
+async def analyze_voice(request: VoiceAnalysisRequest):
+    """
+    Analyze voice recording for stress and coercion indicators
+    
+    Uses acoustic features (F0, jitter, shimmer, speech rate, prosody) to classify
+    stress levels: NORMAL, MILD_STRESS, or SEVERE_COERCION
+    """
+    if not INNOVATIONS_AVAILABLE or state.voice_analyzer is None:
+        raise HTTPException(status_code=503, detail="Voice analysis not available")
+    
+    start_time = time.time()
+    
+    try:
+        import base64
+        import tempfile
+        import wave
+        
+        # Decode base64 audio
+        audio_bytes = base64.b64decode(request.audio_base64)
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.wav', delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        
+        # Analyze voice stress
+        result = state.voice_analyzer.analyze_voice(
+            audio_file=tmp_path,
+            sample_rate=request.sample_rate
+        )
+        
+        # Clean up temp file
+        Path(tmp_path).unlink()
+        
+        processing_time_ms = (time.time() - start_time) * 1000
+        
+        return VoiceAnalysisResponse(
+            transaction_id=request.transaction_id,
+            stress_score=result['stress_score'],
+            classification=result['classification'],
+            confidence=result['confidence'],
+            features=result['features'],
+            recommended_action=result['recommended_action'],
+            processing_time_ms=processing_time_ms,
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice analysis failed: {str(e)}")
+
+
+@app.post(
+    "/api/v1/accounts/score-opening",
+    response_model=AccountOpeningResponse,
+    tags=["Innovation - Predictive Mule"],
+    summary="Score account opening for mule risk",
+    description="Innovation 4: Predicts mule accounts before first transaction using 12 features"
+)
+async def score_account_opening(request: AccountOpeningRequest):
+    """
+    Score a new account opening for mule recruitment risk
+    
+    Analyzes 12 features including temporal clustering, device novelty,
+    geographic mismatch, and more to identify potential mule accounts
+    """
+    if not INNOVATIONS_AVAILABLE or state.mule_scorer is None:
+        raise HTTPException(status_code=503, detail="Predictive mule scoring not available")
+    
+    start_time = time.time()
+    
+    try:
+        # Score the account opening
+        result = state.mule_scorer.score_account_opening(
+            account_id=request.account_id,
+            name=request.name,
+            age=request.age,
+            profession=request.profession,
+            email=request.email,
+            phone=request.phone,
+            device_id=request.device_id,
+            ip_address=request.ip_address,
+            stated_address=request.stated_address,
+            facial_match=request.facial_match,
+            document_type=request.document_type,
+            initial_deposit=request.initial_deposit,
+            referrer=request.referrer,
+            form_completion_time_seconds=request.form_completion_time_seconds,
+        )
+        
+        processing_time_ms = (time.time() - start_time) * 1000
+        
+        return AccountOpeningResponse(
+            account_id=request.account_id,
+            risk_score=result['risk_score'],
+            risk_level=result['risk_level'],
+            confidence=result['confidence'],
+            features=result['features'],
+            red_flags=result['red_flags'],
+            recommended_action=result['recommended_action'],
+            processing_time_ms=processing_time_ms,
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Account scoring failed: {str(e)}")
+
+
+@app.get(
+    "/api/v1/honeypot/active",
+    response_model=HoneypotListResponse,
+    tags=["Innovation - Honeypot Escrow"],
+    summary="List active honeypot traps",
+    description="Innovation 2: View all active deceptive containment operations"
+)
+async def list_active_honeypots():
+    """
+    Get list of all active honeypot traps
+    
+    Shows honeypots that are currently monitoring for withdrawal attempts
+    and tracking fraud networks
+    """
+    if not INNOVATIONS_AVAILABLE or state.honeypot_manager is None:
+        raise HTTPException(status_code=503, detail="Honeypot system not available")
+    
+    try:
+        active = state.honeypot_manager.get_active_honeypots()
+        stats = state.honeypot_manager.get_statistics()
+        
+        honeypot_statuses = []
+        for hp in active:
+            honeypot_statuses.append(HoneypotStatus(
+                honeypot_id=hp['honeypot_id'],
+                transaction_id=hp['transaction_id'],
+                source_account=hp['source_account'],
+                target_account=hp['target_account'],
+                amount=hp['amount'],
+                currency=hp['currency'],
+                activated_at=hp['activated_at'],
+                time_remaining_seconds=hp['time_remaining_seconds'],
+                withdrawal_attempts=hp['withdrawal_attempts'],
+                last_attempt_location=hp['last_attempt_location'],
+                police_alerted=hp['police_alerted'],
+                status=hp['status'],
+            ))
+        
+        return HoneypotListResponse(
+            active_honeypots=honeypot_statuses,
+            total_active=len(honeypot_statuses),
+            total_arrests_today=stats.get('arrests_today', 0),
+            total_recovered_today=stats.get('recovered_today', 0.0),
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get honeypot list: {str(e)}")
+
+
+@app.get(
+    "/api/v1/honeypot/stats",
+    response_model=HoneypotStatsResponse,
+    tags=["Innovation - Honeypot Escrow"],
+    summary="Get honeypot system statistics",
+    description="Innovation 2: View performance metrics including arrest rate and recovery amount"
+)
+async def get_honeypot_stats():
+    """
+    Get honeypot system performance statistics
+    
+    Returns all-time metrics including arrests, recovery amounts, and false positive rates
+    """
+    if not INNOVATIONS_AVAILABLE or state.honeypot_manager is None:
+        raise HTTPException(status_code=503, detail="Honeypot system not available")
+    
+    try:
+        stats = state.honeypot_manager.get_statistics()
+        
+        return HoneypotStatsResponse(
+            total_activated=stats['total_activated'],
+            total_arrests=stats['total_arrests'],
+            arrest_rate=stats['arrest_rate'],
+            networks_dismantled=stats['networks_dismantled'],
+            total_recovered=stats['total_recovered'],
+            false_positives=stats['false_positives'],
+            false_positive_rate=stats['false_positive_rate'],
+            avg_time_to_arrest_minutes=stats['avg_time_to_arrest_minutes'],
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+
+
+@app.post(
+    "/api/v1/blockchain/seal",
+    response_model=BlockchainEvidenceResponse,
+    tags=["Innovation - Blockchain Evidence"],
+    summary="Seal evidence in blockchain",
+    description="Innovation 6: Create immutable evidence record for legal admissibility"
+)
+async def seal_evidence(request: BlockchainSealRequest):
+    """
+    Seal fraud detection evidence in blockchain
+    
+    Creates cryptographically-signed, immutable evidence record across
+    18 validator nodes for legal proceedings
+    """
+    if not INNOVATIONS_AVAILABLE or state.blockchain_manager is None:
+        raise HTTPException(status_code=503, detail="Blockchain system not available")
+    
+    try:
+        result = state.blockchain_manager.seal_evidence(
+            transaction_id=request.transaction_id,
+            source_account=request.source_account,
+            target_account=request.target_account,
+            amount=request.amount,
+            risk_result=request.risk_result,
+            explanation=request.explanation,
+        )
+        
+        return BlockchainEvidenceResponse(
+            evidence_id=result['evidence_id'],
+            transaction_hash=result['transaction_hash'],
+            block_number=result['block_number'],
+            block_hash=result['block_hash'],
+            timestamp=result['timestamp'],
+            finality_time_ms=result['finality_time_ms'],
+            validators=result['validators'],
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Evidence sealing failed: {str(e)}")
+
+
+@app.get(
+    "/api/v1/blockchain/verify/{evidence_id}",
+    response_model=BlockchainVerificationResponse,
+    tags=["Innovation - Blockchain Evidence"],
+    summary="Verify blockchain evidence",
+    description="Innovation 6: Verify integrity and authenticity of sealed evidence"
+)
+async def verify_evidence(evidence_id: str):
+    """
+    Verify blockchain evidence integrity
+    
+    Checks evidence across multiple validator nodes to ensure
+    chain integrity and authenticity
+    """
+    if not INNOVATIONS_AVAILABLE or state.blockchain_manager is None:
+        raise HTTPException(status_code=503, detail="Blockchain system not available")
+    
+    try:
+        result = state.blockchain_manager.verify_evidence(evidence_id)
+        
+        return BlockchainVerificationResponse(
+            evidence_id=evidence_id,
+            verified=result['verified'],
+            block_exists=result['block_exists'],
+            chain_integrity=result['chain_integrity'],
+            consensus_nodes=result['consensus_nodes'],
+            original_timestamp=result['original_timestamp'],
+            verification_details=result['details'],
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
+@app.post(
+    "/api/v1/blockchain/export",
+    response_model=LegalExportResponse,
+    tags=["Innovation - Blockchain Evidence"],
+    summary="Export evidence for legal proceedings",
+    description="Innovation 6: Generate court-admissible evidence package"
+)
+async def export_legal_evidence(request: LegalExportRequest):
+    """
+    Export blockchain evidence for legal proceedings
+    
+    Generates complete evidence package with chain of custody,
+    validator attestations, and court-formatted documentation
+    """
+    if not INNOVATIONS_AVAILABLE or state.blockchain_manager is None:
+        raise HTTPException(status_code=503, detail="Blockchain system not available")
+    
+    try:
+        result = state.blockchain_manager.export_for_legal(
+            evidence_id=request.evidence_id,
+            case_number=request.case_number,
+            requesting_authority=request.requesting_authority,
+            authorization_token=request.authorization_token,
+        )
+        
+        return LegalExportResponse(
+            evidence_id=request.evidence_id,
+            case_number=request.case_number,
+            evidence_package=result['package'],
+            chain_of_custody=result['chain_of_custody'],
+            attestations=result['attestations'],
+            export_timestamp=result['export_timestamp'],
+            authorized_by=result['authorized_by'],
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Evidence export failed: {str(e)}")
 
 
 @app.exception_handler(HTTPException)
