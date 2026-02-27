@@ -29,6 +29,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from enum import Enum
 import uuid
+import networkx as nx
 
 
 class HoneypotStatus(Enum):
