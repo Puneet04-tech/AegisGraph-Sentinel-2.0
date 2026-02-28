@@ -75,6 +75,12 @@ class TransactionCheckResponse(BaseModel):
     processing_time_ms: float = Field(description="Processing time in milliseconds")
     timestamp: str = Field(description="Response timestamp")
     
+    # Innovation fields (real-time integration)
+    honeypot_activated: bool = Field(default=False, description="Honeypot escrow activated (Innovation 2)")
+    honeypot_id: Optional[str] = Field(default=None, description="Honeypot trap ID if activated")
+    blockchain_evidence_id: Optional[str] = Field(default=None, description="Blockchain evidence ID (Innovation 6)")
+    behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
+    
     class Config:
         json_schema_extra = {
             "example": {
@@ -91,7 +97,11 @@ class TransactionCheckResponse(BaseModel):
                 "explanation": "High-risk mule chain pattern detected...",
                 "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
                 "processing_time_ms": 142.5,
-                "timestamp": "2026-02-26T14:30:00.142Z"
+                "timestamp": "2026-02-26T14:30:00.142Z",
+                "honeypot_activated": True,
+                "honeypot_id": "HP_ABC123",
+                "blockchain_evidence_id": "EVID_XYZ789",
+                "behavioral_stress_detected": True
             }
         }
 
@@ -335,7 +345,7 @@ class BlockchainVerificationResponse(BaseModel):
     block_exists: bool = Field(description="Block exists in chain")
     chain_integrity: bool = Field(description="Chain integrity intact")
     consensus_nodes: int = Field(description="Nodes that confirmed")
-    original_timestamp: str = Field(description="Original seal timestamp")
+    original_timestamp: Optional[str] = Field(default=None, description="Original seal timestamp")
     verification_details: Dict = Field(description="Detailed verification info")
 
 

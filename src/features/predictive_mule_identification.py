@@ -98,17 +98,43 @@ class PredictiveMuleScorer:
     
     def score_account_opening(
         self,
-        account_data: AccountOpeningData,
+        account_data: Optional[AccountOpeningData] = None,
+        **kwargs
     ) -> Dict[str, float]:
         """
         Score account opening for mule risk
         
         Args:
-            account_data: Account opening data
+            account_data: Account opening data (optional if kwargs provided)
+            **kwargs: fields for AccountOpeningData
         
         Returns:
             Dictionary with risk scores and indicators
         """
+        if account_data is None:
+            account_data = AccountOpeningData(
+                opening_timestamp=kwargs.get('opening_timestamp', datetime.now()),
+                form_start_time=kwargs.get('form_start_time', datetime.now()),
+                form_submit_time=kwargs.get('form_submit_time', datetime.now()),
+                name=kwargs.get('name',''),
+                age=kwargs.get('age',0),
+                profession=kwargs.get('profession',''),
+                stated_address=kwargs.get('stated_address',''),
+                email=kwargs.get('email',''),
+                phone_number=kwargs.get('phone',''),
+                kyc_document_type=kwargs.get('document_type',''),
+                facial_match_score=kwargs.get('facial_match',0.0),
+                document_quality_score=kwargs.get('document_quality_score',0.0),
+                ip_address=kwargs.get('ip_address',''),
+                device_id=kwargs.get('device_id',''),
+                device_age_days=kwargs.get('device_age_days',0),
+                browser_fingerprint=kwargs.get('browser_fingerprint',''),
+                referrer_url=kwargs.get('referrer',''),
+                initial_deposit=kwargs.get('initial_deposit',0.0),
+                account_type=kwargs.get('account_type',''),
+                referral_code=kwargs.get('referral',''),
+                existing_customer_connections=kwargs.get('existing_customer_connections',0),
+            )
         # Update temporal cache
         self._update_cache(account_data)
         

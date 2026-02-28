@@ -433,6 +433,7 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with verification results
         """
+        # basic flags we derive during checks
         verification = {
             'evidence_found': False,
             'block_exists': False,
@@ -441,23 +442,39 @@ class BlockchainEvidenceManager:
             'timestamp_verified': False,
         }
         
-        # Check block exists
+        # find block and optionally evidence
+        block = None
         block = self.nodes[0].get_block(block_number)
         if block:
             verification['block_exists'] = True
-            
-            # Check evidence in block
+
+            # scan transactions for the evidence
             for tx in block['transactions']:
                 if tx.get('evidence_id') == evidence_id:
                     verification['evidence_found'] = True
                     verification['timestamp_verified'] = True
                     break
-        
-        # Verify chain integrity across nodes
+
+        # verify chain integrity across a quorum of nodes
         integrity_count = sum(1 for node in self.nodes[:6] if node.verify_chain_integrity())
-        verification['chain_integrity'] = integrity_count >= 4  # Quorum
+        verification['chain_integrity'] = integrity_count >= 4  # quorum of 6
         verification['consensus_verified'] = integrity_count >= 4
-        
+
+        # compose higher-level fields for API compatibility
+        verification['consensus_nodes'] = integrity_count
+        verification['original_timestamp'] = block['timestamp'] if block else None
+        verification['verified'] = verification['evidence_found'] and verification['consensus_verified']
+
+        # include everything as a details dict
+        verification['details'] = {
+            'evidence_found': verification['evidence_found'],
+            'block_exists': verification['block_exists'],
+            'chain_integrity': verification['chain_integrity'],
+            'consensus_verified': verification['consensus_verified'],
+            'timestamp_verified': verification['timestamp_verified'],
+            'consensus_nodes': verification['consensus_nodes'],
+        }
+
         return verification
     
     def export_for_legal_proceedings(

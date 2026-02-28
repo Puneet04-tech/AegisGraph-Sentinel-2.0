@@ -75,6 +75,8 @@ with st.sidebar:
             "🍯 Honeypot Escrow",
             "📞 Voice Stress Analysis",
             "🎯 Predictive Mule Scoring",
+            "⌨️ Keystroke Stress Detection",
+            "🔮 Aegis-Oracle Explainer",
             "⛓️ Blockchain Evidence"
         ])
     else:
@@ -1059,6 +1061,83 @@ elif page == "🎯 Innovations":
                 except Exception as e:
                     st.error(f"Error scoring account: {e}")
                     st.info("💡 Ensure API is running with predictive mule module")
+
+        # after predictive mule, insert two new innovation pages
+        
+    # Sub-page: Keystroke Stress Detection
+    elif innovation_page == "⌨️ Keystroke Stress Detection":
+        st.header("⌨️ Keystroke Stress Detection - Behavioral Biometrics")
+        
+        st.markdown("""
+        **Innovation 1**: Analyzes typing patterns during transaction entry to detect
+        hesitation and stress. Useful for spotting coerced payments or nervous fraudsters.
+        """
+        )
+        
+        st.markdown("---")
+        st.info("💡 This module is automatically invoked during any transaction check if keystroke data is provided; you can simulate it here.")
+        
+        st.subheader("📝 Simulate Keystroke Data")
+        hold = st.text_area("Hold times (ms, comma-separated)", "120,180,220,160")
+        flight = st.text_area("Flight times (ms, comma-separated)", "80,90,85,95")
+        if st.button("🔍 Analyze Typing Stress", use_container_width=True):
+            try:
+                hold_times = [float(x.strip()) for x in hold.split(',') if x.strip()]
+                flight_times = [float(x.strip()) for x in flight.split(',') if x.strip()]
+                payload = {
+                    "transaction_id": f"KS_{int(time.time())}",
+                    "source_account": "KS_SRC",
+                    "target_account": "KS_TGT",
+                    "amount": 1,
+                    "currency": "INR",
+                    "mode": "UPI",
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "biometrics": {"hold_times": hold_times, "flight_times": flight_times}
+                }
+                resp = requests.post(f"{API_URL}/api/v1/fraud/check", json=payload, timeout=10)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    st.success(f"Stress detected: {result['behavioral_stress_detected']}")
+                    st.json(result)
+                else:
+                    st.error(f"API error: {resp.text}")
+            except Exception as e:
+                st.error(f"Failed to analyze: {e}")
+
+    # Sub-page: Aegis-Oracle Explainer
+    elif innovation_page == "🔮 Aegis-Oracle Explainer":
+        st.header("🔮 Aegis-Oracle - AI Explanations Engine")
+        
+        st.markdown("""
+        **Innovation 3**: Our proprietary oracle generates human-readable explanations
+        for each fraud decision, highlighting key risk factors and recommended actions.
+        """
+        )
+        
+        st.markdown("---")
+        st.info("💡 Enter a sample transaction and risk result to see an explanation.")
+        
+        txn_id = st.text_input("Transaction ID", "EXPL_001")
+        amt = st.number_input("Amount", value=1000.0)
+        score = st.slider("Risk Score", 0.0, 1.0, 0.25)
+        dec = st.selectbox("Decision", ["ALLOW","REVIEW","BLOCK"])
+        if st.button("🔍 Generate Explanation"):
+            payload = {
+                "transaction_id": txn_id,
+                "amount": amt,
+                "source_account": "SRC",
+                "target_account": "TGT",
+                "risk_score": score,
+                "decision": dec
+            }
+            try:
+                resp = requests.post(f"{API_URL}/api/v1/explain", json=payload, timeout=10)
+                if resp.status_code == 200:
+                    st.json(resp.json())
+                else:
+                    st.error(f"Explanation API error: {resp.text}")
+            except Exception as e:
+                st.error(f"Error calling oracle: {e}")
     
     # Sub-page: Blockchain Evidence
     elif innovation_page == "⛓️ Blockchain Evidence":
@@ -1079,11 +1158,12 @@ elif page == "🎯 Innovations":
             st.info("💡 Enter Evidence ID to verify integrity across validator nodes")
             
             evidence_id = st.text_input("Evidence ID", value="EVID_001", help="Evidence identifier from transaction")
+            block_number = st.number_input("Block Number", min_value=0, value=0, help="Block containing the evidence")
             
             if st.button("✅ Verify Evidence", type="primary", use_container_width=True):
                 with st.spinner("Verifying across validator nodes..."):
                     try:
-                        response = requests.get(f"{API_URL}/api/v1/blockchain/verify/{evidence_id}",
+                        response = requests.get(f"{API_URL}/api/v1/blockchain/verify/{evidence_id}?block_number={block_number}",
                                                timeout=10)
                         
                         if response.status_code == 200:
@@ -1108,7 +1188,11 @@ elif page == "🎯 Innovations":
                             with col3:
                                 st.metric("Consensus Nodes", result['consensus_nodes'])
                             with col4:
-                                st.metric("Original Seal", result['original_timestamp'][:10])
+                                orig = result.get('original_timestamp')
+                                if orig:
+                                    st.metric("Original Seal", orig[:10])
+                                else:
+                                    st.metric("Original Seal", "-")
                             
                             # Verification Details
                             if result['verification_details']:
