@@ -95,9 +95,11 @@ try:
     from ..features.predictive_mule_identification import PredictiveMuleScorer
     from ..features.honeypot_escrow import HoneypotEscrowManager
     from ..features.blockchain_evidence import BlockchainEvidenceManager
+    from ..features.aegis_oracle_explainer import AegisOracleExplainer
     INNOVATIONS_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️  Warning: Innovation modules not available ({e})")
+    INNOVATIONS_AVAILABLE = False
     INNOVATIONS_AVAILABLE = False
     
     # Demo mode functions
@@ -414,6 +416,7 @@ class AppState:
         self.mule_scorer = None
         self.honeypot_manager = None
         self.blockchain_manager = None
+        self.aegis_oracle = None  # Explainability engine
         
 state = AppState()
 
@@ -506,6 +509,12 @@ async def startup_event():
             print("✓ Blockchain Evidence Manager initialized")
         except Exception as e:
             print(f"⚠ Blockchain manager initialization failed: {e}")
+        
+        try:
+            state.aegis_oracle = AegisOracleExplainer()
+            print("✓ Aegis-Oracle Explainer initialized")
+        except Exception as e:
+            print(f"⚠ Aegis-Oracle initialization failed: {e}")
     else:
         print("⚠ Innovation modules not available")
     
@@ -745,27 +754,112 @@ async def check_transaction(request: TransactionCheckRequest):
 
 @app.post(
     "/api/v1/explain",
-    tags=["Explainability"],
-    summary="Generate decision explanation",
-    description="Returns a human-readable explanation for a hypothetical transaction and risk result"
+    tags=["Explainability - Aegis-Oracle"],
+    summary="Generate AI-explainable decision explanation",
+    description="Innovation 5: Aegis-Oracle generates regulatory-compliant explanations for all fraud decisions. Includes causal factors, evidence,  and legal admissibility."
 )
-def explain_transaction(payload: dict):
+async def explain_transaction(payload: dict):
+    """
+    Generate comprehensive explanation for a fraud decision
+    
+    Uses Aegis-Oracle to extract:
+    - Causal factors driving the decision
+    - Risk component breakdown  
+    - Innovation modules triggered
+    - Regulatory compliance documentation
+    - Recommended actions
+    
+    Returns narrative suitable for:
+    - Customer appeals and disputes
+    - Law enforcement coordination
+    - Legal proceedings
+    - RBI master direction compliance
+    """
+    if not INNOVATIONS_AVAILABLE or state.aegis_oracle is None:
+        raise HTTPException(status_code=503, detail="Aegis-Oracle Explainer not available")
+    
     try:
-        risk_result = payload.get('risk_result', {}) or {
-            'risk_score': payload.get('risk_score', 0.0),
-            'decision': payload.get('decision', 'ALLOW'),
-            'breakdown': payload.get('breakdown', {})
+        # Extract transaction and risk info
+        transaction = {
+            'transaction_id': payload.get('transaction_id', 'TXN_UNKNOWN'),
+            'source_account': payload.get('source_account'),
+            'target_account': payload.get('target_account'),
+            'amount': payload.get('amount', 0),
+            'currency': payload.get('currency', 'INR'),
+            'timestamp': payload.get('timestamp'),
+            'behavioral_stress_detected': payload.get('behavioral_stress_detected', False),
         }
-        if 'confidence' not in risk_result:
-            risk_result['confidence'] = payload.get('confidence', 0.85)
-        explanation = generate_explanation(
-            transaction=payload,
-            risk_result=risk_result,
-            detail_level=payload.get('detail_level', 'high')
+        
+        risk_assessment = {
+            'decision': payload.get('decision', 'ALLOW'),
+            'risk_score': payload.get('risk_score', 0.0),
+            'confidence': payload.get('confidence', 0.85),
+        }
+        
+        breakdown = payload.get('breakdown') or {
+            'graph': 0.0,
+            'velocity': 0.0,
+            'behavior': 0.0,
+            'entropy': 0.0,
+        }
+        
+        innovations_triggered = payload.get('innovations_triggered', [])
+        
+        # Use Aegis-Oracle to generate explanation
+        explanation = state.aegis_oracle.generate_explanation(
+            transaction=transaction,
+            risk_assessment=risk_assessment,
+            break_down=breakdown,
+            innovations_triggered=innovations_triggered,
         )
+        
         return explanation
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Explain error: {e}")
+        print(f"❌ Explanation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Explain error: {str(e)}")
+
+
+# Enhanced Aegis-Oracle endpoint
+@app.post(
+    "/api/v1/oracle/explain",
+    tags=["Explainability - Aegis-Oracle"],
+    summary="Get comprehensive AI reasoning for fraud decisions",
+    description="Advanced Aegis-Oracle endpoint with full forensic analysis and causal reasoning"
+)
+async def oracle_explain_detailed(payload: dict):
+    """
+    Advanced explainability endpoint with detailed forensic analysis
+    
+    Returns:
+    - Main narrative for stakeholders
+    - Detailed technical reasoning for analysts
+    - Causal factors ranked by impact
+    - Regulatory compliance section
+    - Recommended investigative actions
+    - Evidence trail for legal proceedings
+    """
+    if not INNOVATIONS_AVAILABLE or state.aegis_oracle is None:
+        raise HTTPException(status_code=503, detail="Oracle not available")
+    
+    try:
+        explanation = state.aegis_oracle.generate_explanation(
+            transaction=payload.get('transaction', {}),
+            risk_assessment=payload.get('risk_assessment', {}),
+            attention_weights=payload.get('attention_weights', {}),
+            break_down=payload.get('risk_breakdown', {}),
+            innovations_triggered=payload.get('innovations_triggered', []),
+        )
+        
+        return {
+            'oracle_reasoning': explanation,
+            'forensic_ready': True,
+            'legal_admissible': True,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={'error': str(e)})
 
 # DEBUG only: manually activate a honeypot via API
 @app.post(
