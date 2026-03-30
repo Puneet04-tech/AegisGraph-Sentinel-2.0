@@ -540,6 +540,22 @@ async def root():
     }
 
 
+@app.get("/api/v1/health", response_model=HealthCheckResponse, tags=["System"])
+async def health_check_v1():
+    """Health check endpoint (v1 routing)"""
+    uptime = time.time() - state.start_time if hasattr(state, 'start_time') else 0
+    
+    return HealthCheckResponse(
+        status="healthy",
+        version="2.0",
+        model_loaded=MODEL_AVAILABLE,
+        graph_loaded=state.graph_loaded if hasattr(state, 'graph_loaded') else False,
+        innovations_available=INNOVATIONS_AVAILABLE,
+        uptime_seconds=uptime,
+        requests_processed=state.requests_processed,
+        timestamp=datetime.utcnow().isoformat() + 'Z',
+    )
+
 @app.get("/health", response_model=HealthCheckResponse, tags=["General"])
 async def health_check():
     """
@@ -547,15 +563,17 @@ async def health_check():
     
     Returns service status and basic statistics
     """
-    uptime = time.time() - state.start_time
+    uptime = time.time() - state.start_time if hasattr(state, 'start_time') else 0
     
     return HealthCheckResponse(
         status="healthy",
         version="2.0.0",
         model_loaded=state.model_loaded,
         graph_loaded=state.graph_loaded,
+        innovations_available=INNOVATIONS_AVAILABLE,
         uptime_seconds=uptime,
         requests_processed=state.requests_processed,
+        timestamp=datetime.utcnow().isoformat() + 'Z',
     )
 
 
@@ -618,12 +636,26 @@ async def check_transaction(request: TransactionCheckRequest):
             # Innovation 1: Simple keystroke stress detection
             if INNOVATIONS_AVAILABLE:
                 try:
-                    # Simple heuristic: check for slow/variable typing
+                    # Detect stress via typing variance, not absolute timing
                     hold_times = biometrics['hold_times']
-                    if hold_times:
-                        avg_hold = sum(hold_times) / len(hold_times)
-                        if avg_hold > 250:  # > 250ms average hold time indicates stress
+                    flight_times = biometrics['flight_times']
+                    
+                    if hold_times and len(hold_times) > 1:
+                        # Calculate coefficient of variation (std/mean)
+                        hold_times_arr = np.array(hold_times)
+                        hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
+                        
+                        # High variance (CV > 0.30) indicates stress/coercion
+                        if hold_cv > 0.30:
                             behavioral_stress_detected = True
+                    
+                    if flight_times and len(flight_times) > 1:
+                        # Check flight time consistency too
+                        flight_times_arr = np.array(flight_times)
+                        flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
+                        if flight_cv > 0.35:
+                            behavioral_stress_detected = True
+                            
                 except Exception as e:
                     print(f"Keystroke analysis failed: {e}")
         
@@ -1074,6 +1106,19 @@ async def score_account_opening(request: AccountOpeningRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Account scoring failed: {str(e)}")
+
+
+# Alias endpoint for mule assessment
+@app.post(
+    "/api/v1/mule/assess",
+    response_model=AccountOpeningResponse,
+    tags=["Innovation - Predictive Mule"],
+    summary="Assess account mule risk",
+    description="Innovation 3: Alias for mule assessment endpoint"
+)
+async def assess_mule_risk(request: AccountOpeningRequest):
+    """Alias endpoint for mule assessment"""
+    return await score_account_opening(request)
 
 
 @app.get(

@@ -131,11 +131,13 @@ class BatchTransactionResponse(BaseModel):
 class HealthCheckResponse(BaseModel):
     """Health check response"""
     status: str = Field(description="Service status")
-    version: str = Field(description="API version")
+    version: str = Field(default="2.0", description="API version")
     model_loaded: bool = Field(description="Whether model is loaded")
     graph_loaded: bool = Field(description="Whether transaction graph is loaded")
-    uptime_seconds: float = Field(description="Service uptime in seconds")
+    innovations_available: bool = Field(default=True, description="Whether innovations are available")
+    uptime_seconds: float = Field(default=0.0, description="Service uptime in seconds")
     requests_processed: int = Field(description="Total requests processed")
+    timestamp: str = Field(description="Response timestamp")
 
 
 class ModelInfo(BaseModel):
