@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import time
+import asyncio
 from datetime import datetime
 from pathlib import Path
 import yaml
@@ -525,6 +526,16 @@ async def startup_event():
     print(f"🎯 Innovations: {'ENABLED' if INNOVATIONS_AVAILABLE else 'DISABLED'}")
     print("📖 API Documentation: http://localhost:8000/docs")
     print("=" * 80)
+    asyncio.ensure_future(_honeypot_auto_release_loop())
+
+async def _honeypot_auto_release_loop(interval_seconds: int = 60):
+    while True:
+        await asyncio.sleep(interval_seconds)
+        if state.honeypot_manager is not None:
+            try:
+                state.honeypot_manager.check_auto_release()
+            except Exception as exc:
+                print(f"⚠ Honeypot auto-release check failed: {exc}")
 
 
 @app.get("/", tags=["General"])
