@@ -64,21 +64,21 @@ class FocalLoss(nn.Module):
         Returns:
             Scalar loss
         """
-        # Clip probabilities to avoid log(0)
+        # The current training pipeline passes probabilities here, despite the
+        # parameter name. Clip them to avoid log(0) in the focal-loss formula.
         epsilon = 1e-7
-        probs_clipped = torch.clamp(logits, epsilon, 1 - epsilon)
-        
-        # Focal weight
-        focal_weight = (1 - probs_clipped) ** self.gamma
-        
-        # Cross entropy loss on probabilities
-        ce_loss = F.binary_cross_entropy(
-            probs_clipped.squeeze(), targets.squeeze(), reduction='none'
-        )
-        
-        # Apply focal weight
-        focal_loss = self.alpha * focal_weight.squeeze() * ce_loss
-        
+        probs = torch.clamp(logits, epsilon, 1 - epsilon)
+        targets = targets.type_as(probs)
+
+        # Standard binary focal loss uses class-conditional p_t and alpha_t:
+        #   p_t = p for positive targets, 1 - p for negative targets
+        #   alpha_t = alpha for positive targets, 1 - alpha for negative targets
+        p_t = targets * probs + (1 - targets) * (1 - probs)
+        alpha_t = targets * self.alpha + (1 - targets) * (1 - self.alpha)
+
+        focal_weight = (1 - p_t) ** self.gamma
+        focal_loss = -alpha_t * focal_weight * torch.log(p_t)
+
         return focal_loss.mean()
 
 
