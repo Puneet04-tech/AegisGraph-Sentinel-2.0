@@ -7,8 +7,6 @@ Shows "Success" to criminal but holds funds in isolated shadow escrow.
 Strategic Innovation: Don't alert criminals that detection exists
 - Traditional: Block transaction → Criminal knows detection → Adapts
 - AegisGraph: Fake success → Criminal withdraws → Police alerted → Arrest
-"""
-# Working on honeypot escrow for fraudster deception
 
 Key Benefits:
 - Physical arrests with card in hand
@@ -22,11 +20,7 @@ Pilot Results (HDFC Mumbai, 6 months):
 - 18 networks dismantled
 - ₹4.7 crore recovered
 - 7 false positives (18% - auto-released after 1.5 hours)
-
-Thresholds loaded from config/thresholds.yaml - see that file for all
-detection limits and sensitivity values.
 """
-# Working on honeypot escrow for fraudster deception
 
 import json
 import time
@@ -36,12 +30,6 @@ from datetime import datetime, timedelta
 from enum import Enum
 import uuid
 import networkx as nx
-
-try:
-    from ..utils.helpers import load_thresholds
-    THRESHOLDS_AVAILABLE = True
-except ImportError:
-    THRESHOLDS_AVAILABLE = False
 
 
 class HoneypotStatus(Enum):
@@ -109,28 +97,12 @@ class HoneypotEscrowManager:
     
     def __init__(
         self,
-        activation_threshold: float = None,
+        activation_threshold: float = 0.90,
         auto_release_hours: float = 2.0,
         escrow_prefix: str = "ESCROW_",
     ):
-        # Load thresholds from config with fallback to defaults
-        if THRESHOLDS_AVAILABLE:
-            try:
-                threshold_config = load_thresholds('config/thresholds.yaml', validate=True)
-                he = threshold_config.get('honeypot_escrow', {})
-                self.activation_threshold = he.get('activation_threshold', 0.90)
-                self.critical_indicator_threshold = he.get('critical_indicator_threshold', 0.80)
-                escrow_duration = he.get('escrow_duration_seconds', 900)  # Default 15 min
-                self.auto_release_hours = escrow_duration / 3600  # Convert to hours
-            except Exception:
-                self.activation_threshold = activation_threshold if activation_threshold is not None else 0.90
-                self.critical_indicator_threshold = 0.80  # Default
-                self.auto_release_hours = auto_release_hours
-        else:
-            self.activation_threshold = activation_threshold if activation_threshold is not None else 0.90
-            self.critical_indicator_threshold = 0.80  # Default
-            self.auto_release_hours = auto_release_hours
-        
+        self.activation_threshold = activation_threshold
+        self.auto_release_hours = auto_release_hours
         self.escrow_prefix = escrow_prefix
         
         # Active honeypots
@@ -176,7 +148,7 @@ class HoneypotEscrowManager:
         
         has_critical = any(ind in ' '.join(fraud_indicators).lower() for ind in critical_indicators)
         
-        return (risk_score >= self.activation_threshold) or (has_critical and risk_score >= self.critical_indicator_threshold)
+        return (risk_score >= self.activation_threshold) or (has_critical and risk_score >= 0.80)
     
     def activate_honeypot(
         self,

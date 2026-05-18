@@ -7,8 +7,6 @@ Every AegisGraph decision sealed in blockchain within 100ms for legal admissibil
 Key Innovation: Cryptographic proof of real-time detection
 - Traditional: SQL logs can be altered post-facto
 - AegisGraph: Blockchain timestamp proves detection happened at transaction time
-"""
-# Working on blockchain evidence for court-admissible proof
 
 Legal Benefits:
 - Proof of timeliness (timestamp proves real-time detection)

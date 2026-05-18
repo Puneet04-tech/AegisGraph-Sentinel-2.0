@@ -8,30 +8,18 @@ Features Analyzed:
 - Fundamental frequency (F0): Pitch changes under stress
 - Jitter: Cycle-to-cycle pitch variation
 - Shimmer: Amplitude perturbation
-"""
-# Working on voice stress detection for fraud prevention
 - Speech rate: Unnatural pacing from coaching
 - Prosody entropy: Flattened intonation
 - Background audio: Call-center detection
 
 Accuracy: 92% detection rate in retrospective analysis
 Privacy: Voice clips deleted after 24 hours, no content analysis
-
-Thresholds loaded from config/thresholds.yaml - see that file for all
-detection limits and sensitivity values.
 """
-# Working on voice stress detection for fraud prevention
 
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import warnings
-
-try:
-    from ..utils.helpers import load_thresholds
-    THRESHOLDS_AVAILABLE = True
-except ImportError:
-    THRESHOLDS_AVAILABLE = False
 
 try:
     import librosa
@@ -76,25 +64,12 @@ class VoiceStressAnalyzer:
     def __init__(
         self,
         sample_rate: int = 16000,
-        stress_threshold: float = None,
-        coercion_threshold: float = None,
+        stress_threshold: float = 30.0,
+        coercion_threshold: float = 75.0,
     ):
-        # Load thresholds from config with fallback to defaults
-        if THRESHOLDS_AVAILABLE:
-            try:
-                threshold_config = load_thresholds('config/thresholds.yaml', validate=True)
-                vs = threshold_config.get('voice_stress', {})
-                self.stress_threshold = vs.get('stress_threshold', 30.0)
-                self.coercion_threshold = vs.get('coercion_threshold', 75.0)
-                self.sample_rate = vs.get('sample_rate', sample_rate)
-            except Exception:
-                self.stress_threshold = stress_threshold if stress_threshold is not None else 30.0
-                self.coercion_threshold = coercion_threshold if coercion_threshold is not None else 75.0
-                self.sample_rate = sample_rate
-        else:
-            self.stress_threshold = stress_threshold if stress_threshold is not None else 30.0
-            self.coercion_threshold = coercion_threshold if coercion_threshold is not None else 75.0
-            self.sample_rate = sample_rate
+        self.sample_rate = sample_rate
+        self.stress_threshold = stress_threshold
+        self.coercion_threshold = coercion_threshold
         
         # Baseline values (updated with user data over time)
         self.baseline_f0 = 120.0  # Hz (typical for mixed gender)

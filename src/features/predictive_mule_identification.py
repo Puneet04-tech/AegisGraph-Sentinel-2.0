@@ -7,8 +7,6 @@ Identifies mule accounts at creation using 12 behavioral and technical features.
 Key Innovation: Proactive detection vs reactive blocking
 Traditional: Wait for suspicious transaction → Flag account
 AegisGraph: Flag at account opening → Prevent first transaction
-"""
-# Working on predictive mule detection at account opening
 
 Accuracy: 86% precision in pilot study (726/847 flagged accounts attempted fraud)
 
@@ -25,23 +23,13 @@ Features Analyzed:
 10. Social isolation: No connections to existing customers
 11. Initial balance: Zero-balance accounts
 12. KYC document anomalies
-
-Thresholds loaded from config/thresholds.yaml - see that file for all
-detection limits and sensitivity values.
 """
-# Working on predictive mule detection at account opening
 
 import numpy as np
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
-
-try:
-    from ..utils.helpers import load_thresholds
-    THRESHOLDS_AVAILABLE = True
-except ImportError:
-    THRESHOLDS_AVAILABLE = False
 
 
 @dataclass
@@ -97,21 +85,10 @@ class PredictiveMuleScorer:
     def __init__(
         self,
         temporal_window: int = 60,
-        risk_threshold: float = None,
+        risk_threshold: float = 75.0,
     ):
-        # Load thresholds from config with fallback to defaults
-        if THRESHOLDS_AVAILABLE:
-            try:
-                threshold_config = load_thresholds('config/thresholds.yaml', validate=True)
-                pm = threshold_config.get('predictive_mule', {})
-                self.risk_threshold = pm.get('risk_threshold', 75.0)
-                self.temporal_window = temporal_window
-            except Exception:
-                self.risk_threshold = risk_threshold if risk_threshold is not None else 75.0
-                self.temporal_window = temporal_window
-        else:
-            self.risk_threshold = risk_threshold if risk_threshold is not None else 75.0
-            self.temporal_window = temporal_window
+        self.temporal_window = temporal_window
+        self.risk_threshold = risk_threshold
         
         # Cache for temporal clustering
         self.recent_openings: List[AccountOpeningData] = []

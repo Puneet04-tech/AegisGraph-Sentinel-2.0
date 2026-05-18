@@ -128,7 +128,7 @@ try:
     from ..features.blockchain_evidence import BlockchainEvidenceManager
     from ..features.aegis_oracle_explainer import AegisOracleExplainer
     INNOVATIONS_AVAILABLE = True
-except ImportError as e:
+except (ImportError, SyntaxError) as e:
     print(f"⚠️  Warning: Innovation modules not available ({e})")
     INNOVATIONS_AVAILABLE = False
     INNOVATIONS_AVAILABLE = False
