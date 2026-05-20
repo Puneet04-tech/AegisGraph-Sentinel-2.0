@@ -3,7 +3,7 @@ Pydantic schemas for API request/response validation
 """
 # Schema validation for all fraud detection endpoints
 
-from pydantic import BaseModel, Field, field_validator, AliasChoices
+from pydantic import BaseModel, Field, field_validator, AliasChoices, ConfigDict
 from typing import Optional, List, Dict, Union
 from datetime import datetime
 
@@ -25,25 +25,7 @@ class BiometricsData(BaseModel):
 
 class TransactionCheckRequest(BaseModel):
     """Request schema for transaction fraud check"""
-    transaction_id: str = Field(description="Unique transaction identifier")
-    source_account: str = Field(
-        validation_alias=AliasChoices('source_account', 'from_account'),
-        description="Source account ID",
-    )
-    target_account: str = Field(
-        validation_alias=AliasChoices('target_account', 'to_account'),
-        description="Target account ID",
-    )
-    amount: float = Field(gt=0, description="Transaction amount")
-    currency: str = Field(default="INR", description="Currency code")
-    mode: str = Field(default="payment", description="Transaction mode (UPI, IMPS, NEFT, etc.)")
-    timestamp: Union[str, float] = Field(description="Transaction timestamp (ISO format or epoch seconds)")
-    device_id: Optional[str] = Field(default=None, description="Device identifier")
-    biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
-    ip_address: Optional[str] = Field(default=None, description="IP address")
-    location: Optional[str] = Field(default=None, description="Transaction location")
-    
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "transaction_id": "TXN123456789",
@@ -62,6 +44,26 @@ class TransactionCheckRequest(BaseModel):
                 "location": "Mumbai, India"
             }
         }
+    )
+    
+    transaction_id: str = Field(description="Unique transaction identifier")
+    source_account: str = Field(
+        validation_alias=AliasChoices('source_account', 'from_account'),
+        description="Source account ID",
+    )
+    target_account: str = Field(
+        validation_alias=AliasChoices('target_account', 'to_account'),
+        description="Target account ID",
+    )
+    amount: float = Field(gt=0, description="Transaction amount")
+    currency: str = Field(default="INR", description="Currency code")
+    mode: str = Field(default="payment", description="Transaction mode (UPI, IMPS, NEFT, etc.)")
+    timestamp: Union[str, float] = Field(description="Transaction timestamp (ISO format or epoch seconds)")
+    device_id: Optional[str] = Field(default=None, description="Device identifier")
+    biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    location: Optional[str] = Field(default=None, description="Transaction location")
+    
 
 
 class RiskBreakdown(BaseModel):
@@ -74,6 +76,31 @@ class RiskBreakdown(BaseModel):
 
 class TransactionCheckResponse(BaseModel):
     """Response schema for transaction fraud check"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+                "example": {
+                    "transaction_id": "TXN123456789",
+                    "risk_score": 0.92,
+                    "decision": "BLOCK",
+                    "confidence": 0.97,
+                    "breakdown": {
+                        "graph": 0.89,
+                        "velocity": 0.95,
+                        "behavior": 0.88,
+                        "entropy": 0.93
+                    },
+                    "explanation": "High-risk mule chain pattern detected...",
+                    "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
+                    "processing_time_ms": 142.5,
+                    "timestamp": "2026-02-26T14:30:00.142Z",
+                    "honeypot_activated": True,
+                    "honeypot_id": "HP_ABC123",
+                    "blockchain_evidence_id": "EVID_XYZ789",
+                    "behavioral_stress_detected": True,
+                    "lateral_movement_detected": False
+                }
+            }
+    )
     transaction_id: str
     risk_score: float = Field(ge=0, le=1, description="Overall risk score")
     decision: str = Field(description="Decision: ALLOW, REVIEW, or BLOCK")
@@ -92,30 +119,6 @@ class TransactionCheckResponse(BaseModel):
     behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
     lateral_movement_detected: bool = Field(default=False, description="Lateral movement pattern detected (MITRE ATT&CK TA0008)")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "transaction_id": "TXN123456789",
-                "risk_score": 0.92,
-                "decision": "BLOCK",
-                "confidence": 0.97,
-                "breakdown": {
-                    "graph": 0.89,
-                    "velocity": 0.95,
-                    "behavior": 0.88,
-                    "entropy": 0.93
-                },
-                "explanation": "High-risk mule chain pattern detected...",
-                "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
-                "processing_time_ms": 142.5,
-                "timestamp": "2026-02-26T14:30:00.142Z",
-                "honeypot_activated": True,
-                "honeypot_id": "HP_ABC123",
-                "blockchain_evidence_id": "EVID_XYZ789",
-                "behavioral_stress_detected": True,
-                "lateral_movement_detected": False
-            }
-        }
 
 
 class BatchTransactionRequest(BaseModel):
@@ -202,15 +205,7 @@ class VoiceAnalysisRequest(BaseModel):
 
 class VoiceAnalysisResponse(BaseModel):
     """Response for voice stress analysis"""
-    transaction_id: str
-    stress_score: float = Field(ge=0, le=100, description="Voice stress score (0-100)")
-    classification: str = Field(description="NORMAL, MILD_STRESS, or SEVERE_COERCION")
-    confidence: float = Field(ge=0, le=1, description="Confidence in classification")
-    features: Dict[str, float] = Field(description="Acoustic features extracted")
-    recommended_action: str = Field(description="Recommended action based on stress level")
-    processing_time_ms: float = Field(description="Processing time in milliseconds")
-    
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "transaction_id": "TXN123",
@@ -228,6 +223,16 @@ class VoiceAnalysisResponse(BaseModel):
                 "processing_time_ms": 245.3
             }
         }
+    )
+    
+    transaction_id: str
+    stress_score: float = Field(ge=0, le=100, description="Voice stress score (0-100)")
+    classification: str = Field(description="NORMAL, MILD_STRESS, or SEVERE_COERCION")
+    confidence: float = Field(ge=0, le=1, description="Confidence in classification")
+    features: Dict[str, float] = Field(description="Acoustic features extracted")
+    recommended_action: str = Field(description="Recommended action based on stress level")
+    processing_time_ms: float = Field(description="Processing time in milliseconds")
+    
 
 
 # Innovation 4: Predictive Mule Identification
@@ -251,16 +256,7 @@ class AccountOpeningRequest(BaseModel):
 
 class AccountOpeningResponse(BaseModel):
     """Response for account opening risk assessment"""
-    account_id: str
-    risk_score: float = Field(ge=0, le=100, description="Mule risk score (0-100)")
-    risk_level: str = Field(description="CRITICAL_MULE_RISK, HIGH_MULE_RISK, MODERATE, or LOW")
-    confidence: float = Field(ge=0, le=1, description="Confidence in assessment")
-    features: Dict[str, float] = Field(description="Feature scores breakdown")
-    red_flags: List[str] = Field(description="List of identified red flags")
-    recommended_action: str = Field(description="Recommended action")
-    processing_time_ms: float = Field(description="Processing time in milliseconds")
-    
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "account_id": "ACC_NEW_123",
@@ -281,7 +277,17 @@ class AccountOpeningResponse(BaseModel):
                 "processing_time_ms": 89.2
             }
         }
-
+    ) 
+    
+    account_id: str
+    risk_score: float = Field(ge=0, le=100, description="Mule risk score (0-100)")
+    risk_level: str = Field(description="CRITICAL_MULE_RISK, HIGH_MULE_RISK, MODERATE, or LOW")
+    confidence: float = Field(ge=0, le=1, description="Confidence in assessment")
+    features: Dict[str, float] = Field(description="Feature scores breakdown")
+    red_flags: List[str] = Field(description="List of identified red flags")
+    recommended_action: str = Field(description="Recommended action")
+    processing_time_ms: float = Field(description="Processing time in milliseconds")
+    
 
 # Innovation 2: Honeypot Escrow
 class HoneypotStatus(BaseModel):
@@ -333,15 +339,7 @@ class BlockchainSealRequest(BaseModel):
 
 class BlockchainEvidenceResponse(BaseModel):
     """Response from blockchain evidence sealing"""
-    evidence_id: str = Field(description="Unique evidence identifier")
-    transaction_hash: str = Field(description="Transaction hash (no PII)")
-    block_number: int = Field(description="Block number in chain")
-    block_hash: str = Field(description="Block hash for integrity")
-    timestamp: str = Field(description="Timestamp of sealing")
-    finality_time_ms: float = Field(description="Time to achieve consensus")
-    validators: List[str] = Field(description="Validator nodes that confirmed")
-    
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "evidence_id": "EVID_001",
@@ -353,6 +351,16 @@ class BlockchainEvidenceResponse(BaseModel):
                 "validators": ["INDIAN_BANK_1", "VIT_CHENNAI_2", "RBI_1"]
             }
         }
+    )
+    
+    evidence_id: str = Field(description="Unique evidence identifier")
+    transaction_hash: str = Field(description="Transaction hash (no PII)")
+    block_number: int = Field(description="Block number in chain")
+    block_hash: str = Field(description="Block hash for integrity")
+    timestamp: str = Field(description="Timestamp of sealing")
+    finality_time_ms: float = Field(description="Time to achieve consensus")
+    validators: List[str] = Field(description="Validator nodes that confirmed")
+
 
 
 class BlockchainVerificationResponse(BaseModel):
