@@ -24,7 +24,7 @@ from typing import Dict, List
 import uvicorn
 import random
 import json
-import pickle
+# Removed pickle import for security reasons
 import networkx as nx
 import numpy as np
 
@@ -439,9 +439,9 @@ async def lifespan(app: FastAPI):
         # === SECURE GRAPH LOADING ===
         # We verify the SHA256 hash of the pickle file before loading it.
         # This mitigates supply-chain / tampering attacks on the .gpickle artifact.
-        graph_path = Path("data/synthetic/graph.gpickle")
+        graph_path = Path("data/synthetic/graph.graphml")
         
-        # TODO: Replace this with the actual SHA256 of your generated graph.gpickle
+        # TODO: Replace this with the actual SHA256 of your generated graph.graphml
         EXPECTED_GRAPH_SHA256 = None   # Example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         
         if graph_path.exists():
@@ -451,20 +451,20 @@ async def lifespan(app: FastAPI):
             
             if EXPECTED_GRAPH_SHA256 and actual_hash != EXPECTED_GRAPH_SHA256:
                 raise RuntimeError(
-                    f"SECURITY ALERT: graph.gpickle integrity check FAILED!\n"
+                    f"SECURITY ALERT: graph.graphml integrity check FAILED!\n"
                     f"Expected SHA256: {EXPECTED_GRAPH_SHA256}\n"
                     f"Actual SHA256:   {actual_hash}\n"
                     "Possible file tampering or corrupted artifact. Aborting startup."
                 )
             
-            with open(graph_path, "rb") as f:
-                state.transaction_graph = pickle.load(f)
+            import networkx as nx
+            state.transaction_graph = nx.read_graphml(graph_path)
             
             print(f"✓ Loaded verified transaction graph: {state.transaction_graph.number_of_nodes()} nodes, "
                   f"{state.transaction_graph.number_of_edges()} edges")
             state.graph_loaded = True
         else:
-            print("⚠ Graph file not found at data/synthetic/graph.gpickle")
+            print("⚠ Graph file not found at data/synthetic/graph.graphml")
         
         # Load fraud chains
         chains_path = Path("data/synthetic/fraud_chains.json")
