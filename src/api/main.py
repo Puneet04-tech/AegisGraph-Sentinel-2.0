@@ -917,7 +917,7 @@ async def get_stats():
     summary="Check transaction for fraud",
     description="Analyze a single transaction for fraud risk using HTGNN and behavioral biometrics"
 )
-def check_transaction(request: TransactionCheckRequest):
+async def check_transaction(request: TransactionCheckRequest):
     """
     Check a single transaction for fraud
     
