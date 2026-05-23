@@ -490,7 +490,7 @@ class FraudPatternDetector:
         """Score fan-out hub risk"""
         score = 0.0
         
-diversity_score = min(unique_targets / 30.0, 1.0)
+        diversity_score = min(unique_targets / 30.0, 1.0)
         count_score = min(len(transfers) / 60.0, 1.0)
         total = sum(self._txn_value(t, 'amount', 0) for t in transfers)
         total_score = 0.2 if total > 1000000 else 0.0
