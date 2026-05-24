@@ -336,19 +336,34 @@ def compute_risk_score(
     **kwargs
 ) -> Dict[str, float]:
     """
-    Enhanced risk scorer with graph-based mule account detection
-    
+    Enhanced risk scorer with graph-based mule account detection.
+
     Args:
-        transaction: Transaction data
-        graph_data: Graph representation
-        biometrics: Behavioral biometrics
-        **kwargs: Additional parameters (state, etc.)
-    
+        transaction: Transaction data dict.
+        graph_data:  Graph representation (unused; graph is read from state).
+        biometrics:  Behavioral biometrics dict.
+        **kwargs:    Must include ``state`` — the AppState singleton.
+                     Accepting it as a kwarg instead of importing it from
+                     api.main breaks the circular-import cycle (fix for Issue #134).
+
     Returns:
-        Risk score dictionary with mule detection
+        Risk score dictionary with mule detection results.
     """
-    # Import state from the API module
-    from ..api.main import state
+    # Resolve AppState via kwarg to avoid the circular import:
+    #   from ..api.main import state  ← caused ImportError / partially-init state
+    # api/main.py now passes state=state explicitly at the call site.
+    state = kwargs.get('state')
+    if state is None:
+        # Fallback: lazy import only if caller forgot to supply it.
+        # Should never be hit in normal server operation.
+        try:
+            from ..api.main import state as _state  # noqa: PLC0415
+            state = _state
+        except ImportError as exc:
+            raise RuntimeError(
+                "compute_risk_score() requires `state` to be supplied via kwarg "
+                "or importable from api.main. Neither succeeded."
+            ) from exc
     
     risk_score = 0.0
     breakdown = {
@@ -459,11 +474,9 @@ def compute_risk_score(
             except Exception as e:
                 logger.error(f"Error in centrality analysis: {e}")
     
-    # First clamp — before lateral-movement block.
-    # A second clamp is applied after the block so the increment
-    # cannot push graph_risk above 1.0 (fix for Issue #132).
     graph_risk = min(graph_risk, 1.0)
-
+    breakdown['graph'] = graph_risk
+    
     # LATERAL MOVEMENT DETECTION (MITRE ATT&CK TA0008)
     lateral_movement_detected = False
     lateral_movement_reason = ""
@@ -511,13 +524,7 @@ def compute_risk_score(
                     
         except Exception as e:
             pass
-
-    # Re-clamp after lateral-movement increment.
-    # Without this, graph_risk can reach 1.25 when _LATERAL_RISK_INCREMENT (0.25)
-    # is added after the first min() call above (fix for Issue #132).
-    graph_risk = min(graph_risk, 1.0)
-    breakdown['graph'] = graph_risk
-
+    
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     
