@@ -386,22 +386,11 @@ def compute_risk_score(
             graph_risk += 0.3
 
     if state.graph_loaded and state.transaction_graph:
-        # Check if accounts are in known fraud chains
-        if source_account in state.mule_accounts:
-            graph_risk += 0.6
-            _inference_logger.warning(
-                f"Source account {source_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": source_account, "role": "source"},
-            )
-        if target_account in state.mule_accounts:
-            graph_risk += 0.4
-            _inference_logger.warning(
-                f"Target account {target_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": target_account, "role": "target"},
-            )
-        
+        # Mule-account penalties are applied in the block above.
+        # They are intentionally NOT repeated here — the original code added
+        # them a second time, doubling graph_risk for every mule transaction
+        # and masking all topology signals (fix for Issue #133).
+
         # Check graph topology patterns
         G = state.transaction_graph
         
@@ -459,11 +448,9 @@ def compute_risk_score(
             except Exception as e:
                 logger.error(f"Error in centrality analysis: {e}")
     
-    # First clamp — before lateral-movement block.
-    # A second clamp is applied after the block so the increment
-    # cannot push graph_risk above 1.0 (fix for Issue #132).
     graph_risk = min(graph_risk, 1.0)
-
+    breakdown['graph'] = graph_risk
+    
     # LATERAL MOVEMENT DETECTION (MITRE ATT&CK TA0008)
     lateral_movement_detected = False
     lateral_movement_reason = ""
@@ -511,13 +498,7 @@ def compute_risk_score(
                     
         except Exception as e:
             pass
-
-    # Re-clamp after lateral-movement increment.
-    # Without this, graph_risk can reach 1.25 when _LATERAL_RISK_INCREMENT (0.25)
-    # is added after the first min() call above (fix for Issue #132).
-    graph_risk = min(graph_risk, 1.0)
-    breakdown['graph'] = graph_risk
-
+    
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     
