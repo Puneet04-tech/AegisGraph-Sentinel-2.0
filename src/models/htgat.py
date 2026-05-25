@@ -21,50 +21,30 @@ try:
     TORCH_GEOMETRIC_AVAILABLE = True
 except ImportError:
     print("⚠️  torch_geometric not available - HTGAT will use fallback implementation")
-    class MessagePassing(nn.Module):
-        def __init__(self, aggr='add', node_dim=0):
-            super().__init__()
-            self.aggr = aggr
-            self.node_dim = node_dim
+    class MessagePassing:
+        def __init__(self, **kwargs):
+            pass
     TORCH_GEOMETRIC_AVAILABLE = False
     
     def softmax(src, index, num_nodes=None):
-        """
-        Fallback scatter softmax that matches torch_geometric.utils.softmax.
-
-        For each target node, normalises the attention logits of all its
-        incoming edges so they sum to 1 — i.e. a grouped softmax keyed by
-        `index`. The original implementation called torch.softmax(src, dim=-1)
-        which normalised each edge's vector against itself (wrong axis) and
-        completely ignored `index` (fix for Issue #135).
-
-        Args:
-            src:       Tensor [num_edges, heads] — raw attention logits.
-            index:     LongTensor [num_edges]    — target-node index per edge.
-            num_nodes: int (optional)            — total nodes in the graph.
+        """Scatter softmax matching torch_geometric.utils.softmax.
+        Normalises each target node's incoming edge weights (fix #135).
         """
         if num_nodes is None:
             num_nodes = int(index.max().item()) + 1
-
-        # ── Numerically stable scatter softmax ───────────────────────────────
-        # Step 1: find per-node max logit (subtract before exp to avoid overflow)
+        # Step 1: per-node max for numerical stability
         src_max = torch.full(
             (num_nodes, src.size(-1)), float('-inf'),
             dtype=src.dtype, device=src.device,
         )
-        idx = index.unsqueeze(-1).expand_as(src)   # [num_edges, heads]
+        idx = index.unsqueeze(-1).expand_as(src)
         src_max.scatter_reduce_(0, idx, src, reduce='amax', include_self=True)
-        # Nodes with no incoming edges get -inf; clamp to 0 so exp doesn't NaN
-        src_max = src_max.clamp(min=0)
-
         # Step 2: shifted exp
         out = (src - src_max[index]).exp()
-
-        # Step 3: per-node sum of exp values
+        # Step 3: per-node sum
         out_sum = torch.zeros_like(src_max)
         out_sum.scatter_add_(0, idx, out)
-
-        # Step 4: normalise, guard against zero-degree nodes
+        # Step 4: normalise
         return out / (out_sum[index] + 1e-16)
 
 
@@ -151,8 +131,8 @@ class HTGATConv(MessagePassing):
                 for _ in range(num_edge_types)
             ])
         else:
-            self.W_edge = None
-            self.att_edge = None
+            self.register_parameter('W_edge', None)
+            self.register_parameter('att_edge', None)
         
         # Bias
         if concat:
