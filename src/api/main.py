@@ -20,8 +20,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import asyncio
 import time
 import os
+from functools import partial
 from datetime import datetime, timezone
 from datetime import timezone
 from pathlib import Path
@@ -753,6 +755,50 @@ async def _stop_runtime_background_tasks():
     print("Background tasks stopped cleanly")
 
 
+def _run_scoring_pipeline(
+    transaction: dict,
+    biometrics: dict | None,
+    source_account: str,
+    target_account: str,
+    lateral_detector,
+    innovations_available: bool,
+) -> dict:
+    """
+    Pure synchronous scoring work safe to run in a thread pool executor.
+    Returns the final risk_result dict.
+    """
+    risk_result = compute_risk_score(
+        transaction=transaction,
+        biometrics=biometrics,
+    )
+
+    if innovations_available and lateral_detector is not None:
+        try:
+            lateral_detector.update_graph(source_account, target_account)
+            lm_risk_added, is_pivoting = lateral_detector.analyze_account(source_account)
+
+            if is_pivoting:
+                current_score = risk_result.get("risk_score", 0.0)
+                new_score = min(1.0, current_score + lm_risk_added)
+                risk_result["risk_score"] = new_score
+                risk_result["breakdown"]["lateral_movement"] = lm_risk_added
+                risk_result["lateral_movement_detected"] = True
+                risk_result["lateral_movement_reason"] = (
+                    "MITRE TA0008: Rapid centrality spike indicating network pivoting."
+                )
+                if new_score >= 0.7:
+                    risk_result["decision"] = "BLOCK"
+                elif new_score >= 0.4 and risk_result["decision"] == "ALLOW":
+                    risk_result["decision"] = "REVIEW"
+        except Exception as e:
+            _api_logger.warning(
+                f"Lateral movement check failed: {e}",
+                event_type="lateral_movement_error",
+            )
+
+    return risk_result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -983,44 +1029,20 @@ async def check_transaction(request: TransactionCheckRequest):
                         event_type="keystroke_analysis_error",
                     )
         
-        # Compute risk score
-        risk_result = compute_risk_score(
-            transaction=transaction,
-            biometrics=biometrics,
+        # Offload CPU-bound scoring + graph analysis to thread pool
+        loop = asyncio.get_running_loop()
+        risk_result = await loop.run_in_executor(
+            None,
+            partial(
+                _run_scoring_pipeline,
+                transaction,
+                biometrics,
+                request.source_account,
+                request.target_account,
+                state.lateral_movement_detector if INNOVATIONS_AVAILABLE else None,
+                INNOVATIONS_AVAILABLE,
+            ),
         )
-        
-        # --- NEW: LATERAL MOVEMENT INTEGRATION ---
-        if INNOVATIONS_AVAILABLE and state.lateral_movement_detector:
-            try:
-                # 1. Update the live temporal graph
-                state.lateral_movement_detector.update_graph(
-                    request.source_account,
-                    request.target_account
-                )
-                
-                # 2. Analyze the source account for centrality spikes
-                lm_risk_added, is_pivoting = state.lateral_movement_detector.analyze_account(
-                    request.source_account
-                )
-
-                # 3. Apply penalty if attacker is pivoting
-                if is_pivoting:
-                    current_score = risk_result.get('risk_score', 0.0)
-                    new_score = min(1.0, current_score + lm_risk_added)
-                    
-                    risk_result['risk_score'] = new_score
-                    risk_result['breakdown']['lateral_movement'] = lm_risk_added
-                    risk_result['lateral_movement_detected'] = True
-                    risk_result['lateral_movement_reason'] = "MITRE TA0008: Rapid centrality spike indicating network pivoting."
-                    
-                    # Escalate decision if thresholds are crossed
-                    if new_score >= 0.7:
-                        risk_result['decision'] = 'BLOCK'
-                    elif new_score >= 0.4 and risk_result['decision'] == 'ALLOW':
-                        risk_result['decision'] = 'REVIEW'
-            except Exception as e:
-                _api_logger.warning(f"Lateral movement check failed: {e}", event_type="lateral_movement_error")
-        # -----------------------------------------
 
         # Generate explanation
         explanation_result = generate_explanation(
