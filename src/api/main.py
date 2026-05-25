@@ -22,12 +22,10 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
 import time
-import os
 from functools import partial
 from datetime import datetime, timezone
 from datetime import timezone
 from pathlib import Path
-import yaml
 from typing import Dict, List
 import uvicorn
 import random
@@ -35,6 +33,7 @@ import json
 import networkx as nx
 import numpy as np
 
+from ..config import get_settings
 from ..config.validation import validate_environment
 from ..runtime import LifecycleManager, RuntimeState, honeypot_auto_release_loop
 from .schemas import (
@@ -68,6 +67,7 @@ from ..observability import get_audit_logger, get_logger
 
 _api_logger = get_logger("api")
 _audit_logger = get_audit_logger()
+settings = get_settings()
 
 # Try to import model components, record availability but never disable completely
 try:
@@ -510,6 +510,7 @@ class AppState:
         self.runtime.bind_legacy_state(self)
         self.services = self.runtime.services
         self.tasks = self.runtime.tasks
+        self.settings = settings
         
 state = AppState()
 
@@ -528,32 +529,42 @@ def _startup_banner():
     print("=" * 80)
 
 
-def _validate_runtime_environment():
-    validate_environment()
+def _validate_runtime_environment(startup_logger):
+    validate_environment(state.settings, startup_logger=startup_logger)
 
 
 def _load_runtime_configuration(startup_logger):
-    config_path = Path("config/config.yaml")
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            state.config = yaml.safe_load(f)
-        startup_logger.info("Configuration loaded", event_type="config_loaded")
-    else:
-        startup_logger.warning("Configuration file not found, using defaults", event_type="config_missing")
-        state.config = {}
+    state.settings = get_settings(refresh=True)
+    state.config = state.settings.raw_config
+    state.services.register_service("settings", state.settings, replace=True)
     state.services.register_service("config", state.config, replace=True)
+    if state.settings.runtime.config_path.exists():
+        startup_logger.info(
+            "Configuration loaded",
+            event_type="config_loaded",
+            metadata={"path": str(state.settings.runtime.config_path)},
+        )
+    else:
+        startup_logger.warning(
+            "Configuration file not found, using defaults",
+            event_type="config_missing",
+            metadata={"path": str(state.settings.runtime.config_path)},
+        )
     
 
 def _load_graph_runtime_data(startup_logger):
     try:
         # === SECURE GRAPH LOADING ===
+        runtime_settings = state.settings
         graph_candidates = [
-            Path(os.getenv("AEGIS_GRAPH_PATH")) if os.getenv("AEGIS_GRAPH_PATH") else None,
-            Path("data/synthetic/graph.graphml"),
+            runtime_settings.graph.graph_path
+            if runtime_settings.raw_environment.aegis_graph_path
+            else None,
+            runtime_settings.graph.graph_path,
         ]
         graph_path = next((path for path in graph_candidates if path and path.exists()), None)
         
-        EXPECTED_GRAPH_SHA256 = os.environ.get("AEGIS_GRAPH_SHA256")
+        EXPECTED_GRAPH_SHA256 = runtime_settings.graph.graph_sha256
         
         if graph_path:
             with open(graph_path, "rb") as f:
@@ -710,9 +721,9 @@ def _initialize_innovation_runtime(startup_logger):
         
         try:
             state.lateral_movement_detector = LateralMovementDetector()
-            _startup_logger.info("Lateral Movement Detector initialized", event_type="innovation_ready")
+            startup_logger.info("Lateral Movement Detector initialized", event_type="innovation_ready")
         except Exception as e:
-            _startup_logger.warning(
+            startup_logger.warning(
                 f"Lateral movement initialization failed: {e}",
                 event_type="innovation_init_failed",
             )
@@ -861,10 +872,13 @@ async def lifespan(app: FastAPI):
     app.state.runtime = state.runtime
 
     lifecycle_manager.register_startup("startup_banner", _startup_banner, critical=False)
-    lifecycle_manager.register_startup("validate_environment", _validate_runtime_environment)
     lifecycle_manager.register_startup(
         "load_configuration",
         lambda: _load_runtime_configuration(startup_logger),
+    )
+    lifecycle_manager.register_startup(
+        "validate_environment",
+        lambda: _validate_runtime_environment(startup_logger),
     )
     lifecycle_manager.register_startup(
         "load_graph_runtime_data",
@@ -911,12 +925,7 @@ app = FastAPI(
 # header back, effectively allowing credentialed cross-origin requests
 # from any site. Read the allowed origins from AEGIS_ALLOWED_ORIGINS
 # (comma-separated) instead, defaulting to local dev URLs.
-_default_origins = "http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501"
-ALLOWED_ORIGINS = [
-    o.strip()
-    for o in os.getenv("AEGIS_ALLOWED_ORIGINS", _default_origins).split(",")
-    if o.strip()
-]
+ALLOWED_ORIGINS = settings.api.allowed_origins
 
 app.add_middleware(
     CORSMiddleware,
@@ -1400,7 +1409,7 @@ async def oracle_explain_detailed(request: OracleExplainRequest):
 # DEBUG only: manually activate a honeypot via API.
 # This endpoint is ONLY registered when DEBUG env var is set to "true".
 # Never expose this route in production.
-if os.getenv("DEBUG", "false").lower() == "true":
+if settings.runtime.debug:
     @app.post(
         "/debug/activate_honeypot",
         tags=["Debug"],
@@ -1832,25 +1841,17 @@ async def export_legal_evidence(request: LegalExportRequest):
 
 def main():
     """Run the API server"""
-    config_path = Path("config/config.yaml")
-    
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        api_config = config.get('api', {})
-    else:
-        api_config = {}
-    
-    host = api_config.get('host', '0.0.0.0')
-    port = api_config.get('port', 8000)
-    reload = api_config.get('reload', True)
+    runtime_settings = get_settings(refresh=True)
+    host = runtime_settings.api.host
+    port = runtime_settings.api.port
+    reload = runtime_settings.api.reload
     
     uvicorn.run(
         "src.api.main:app",
         host=host,
         port=port,
         reload=reload,
-        log_level="info",
+        log_level=runtime_settings.api.log_level,
     )
 
 

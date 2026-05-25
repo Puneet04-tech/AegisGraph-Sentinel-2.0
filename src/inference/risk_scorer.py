@@ -26,6 +26,7 @@ from ..features.entropy_calculator import compute_entropy_risk_score
 from ..utils.helpers import load_thresholds
 from ..scoring import ThresholdConfig, RiskScorer as CentralRiskScorer
 from ..observability import get_logger
+from ..config import defaults as config_defaults
 
 _inference_logger = get_logger("inference.risk_scorer")
 
@@ -66,25 +67,33 @@ class RiskScorer:
         try:
             threshold_config = load_thresholds('config/thresholds.yaml', validate=True)
             rs = threshold_config.get('risk_scoring', {})
-            self.threshold_block = rs.get('block', 0.90)
-            self.threshold_review = rs.get('review', 0.70)
-            self.threshold_allow = rs.get('allow', 0.50)
+            self.threshold_block = rs.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"])
+            self.threshold_review = rs.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"])
+            self.threshold_allow = rs.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"])
             
             # Graph analysis thresholds
             ga = threshold_config.get('graph_analysis', {})
-            self.lateral_movement_std = ga.get('lateral_movement_std_multiplier', 2.0)
-            self.lateral_movement_mult = ga.get('lateral_movement_threshold_multiplier', 3.0)
-            self.lateral_movement_risk_increment = 0.25  # Hardcoded but documented
+            self.lateral_movement_std = ga.get(
+                'lateral_movement_std_multiplier',
+                config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER,
+            )
+            self.lateral_movement_mult = ga.get(
+                'lateral_movement_threshold_multiplier',
+                config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER,
+            )
+            self.lateral_movement_risk_increment = (
+                config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
+            )
         except Exception as e:
             logger.error(f"Error: {e}")
             # Fallback to config.yaml
             thresholds = config.get('risk_scoring', {}).get('thresholds', {})
-            self.threshold_block = thresholds.get('block', 0.90)
-            self.threshold_review = thresholds.get('review', 0.70)
-            self.threshold_allow = thresholds.get('allow', 0.50)
-            self.lateral_movement_std = 2.0
-            self.lateral_movement_mult = 3.0
-            self.lateral_movement_risk_increment = 0.25
+            self.threshold_block = thresholds.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"])
+            self.threshold_review = thresholds.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"])
+            self.threshold_allow = thresholds.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"])
+            self.lateral_movement_std = config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER
+            self.lateral_movement_mult = config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
+            self.lateral_movement_risk_increment = config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
         
         thresholds = {
             'allow': self.threshold_allow,
@@ -590,23 +599,23 @@ def compute_risk_score(
         threshold_data = load_thresholds('config/thresholds.yaml', validate=True)
         rs = threshold_data.get('risk_scoring', {})
         thresholds = {
-            'allow': rs.get('allow', 0.50),
-            'review': rs.get('review', 0.70),
-            'block': rs.get('block', 0.90),
+            'allow': rs.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"]),
+            'review': rs.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"]),
+            'block': rs.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"]),
         }
     except Exception as e:
         logger.error(f"Error: {e}")
         thresholds = state.config.get('risk_scoring', {}).get('thresholds', {
-            'allow': 0.50,
-            'review': 0.70,
-            'block': 0.90,
+            'allow': config_defaults.DEFAULT_RISK_THRESHOLDS["allow"],
+            'review': config_defaults.DEFAULT_RISK_THRESHOLDS["review"],
+            'block': config_defaults.DEFAULT_RISK_THRESHOLDS["block"],
         })
 
     component_weights = {
-        'graph': 0.50,
-        'velocity': 0.20,
-        'behavior': 0.20,
-        'entropy': 0.10,
+        'graph': config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"],
+        'velocity': config_defaults.DEFAULT_COMPONENT_WEIGHTS["velocity"],
+        'behavior': config_defaults.DEFAULT_COMPONENT_WEIGHTS["behavior"],
+        'entropy': config_defaults.DEFAULT_COMPONENT_WEIGHTS["entropy"],
     }
     central_thresholds = ThresholdConfig(thresholds=thresholds)
     central_scorer = CentralRiskScorer(

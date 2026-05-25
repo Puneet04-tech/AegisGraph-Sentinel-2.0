@@ -1,0 +1,57 @@
+"""Runtime configuration defaults.
+
+Defaults live here so runtime code and tests can share one deterministic source
+without reaching directly into environment variables.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+DEFAULT_ENVIRONMENT = "development"
+DEFAULT_CONFIG_PATH = Path("config/config.yaml")
+DEFAULT_THRESHOLDS_PATH = Path("config/thresholds.yaml")
+
+DEFAULT_API_HOST = "0.0.0.0"
+DEFAULT_API_PORT = 8000
+DEFAULT_API_RELOAD = True
+DEFAULT_API_LOG_LEVEL = "info"
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000",
+    "http://localhost:8501",
+    "http://127.0.0.1:8501",
+)
+DEFAULT_RATE_LIMIT = "100/minute"
+
+DEFAULT_GRAPH_PATH = Path("data/synthetic/graph.graphml")
+DEFAULT_GRAPH_ALLOWED_SUFFIX = ".graphml"
+DEFAULT_GRAPH_LOAD_TIMEOUT_SECONDS = 30
+
+DEFAULT_RISK_THRESHOLDS = {
+    "allow": 0.50,
+    "review": 0.70,
+    "block": 0.90,
+}
+DEFAULT_COMPONENT_WEIGHTS = {
+    "graph": 0.50,
+    "velocity": 0.20,
+    "behavior": 0.20,
+    "entropy": 0.10,
+}
+
+DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER = 2.0
+DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER = 3.0
+DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT = 0.25
+DEFAULT_LATERAL_MOVEMENT_HISTORY_SIZE = 10
+
+DEFAULT_HONEYPOT_ESCROW_SECONDS = 900
+DEFAULT_HONEYPOT_ACTIVATION_THRESHOLD = 0.90
+DEFAULT_HONEYPOT_CRITICAL_INDICATOR_THRESHOLD = 0.80
+DEFAULT_VOICE_STRESS_THRESHOLD = 30.0
+DEFAULT_VOICE_COERCION_THRESHOLD = 75.0
+DEFAULT_PREDICTIVE_MULE_RISK_THRESHOLD = 75.0
+
+DEFAULT_OBSERVABILITY_LOG_LEVEL = "INFO"
+DEFAULT_OBSERVABILITY_LOG_FORMAT = "json"
+DEFAULT_OBSERVABILITY_OUTPUT_DIR = Path("logs")
+DEFAULT_PROMETHEUS_PORT = 9090

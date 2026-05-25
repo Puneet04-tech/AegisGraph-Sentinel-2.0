@@ -1,9 +1,10 @@
-import os
 import threading
 from collections import defaultdict, deque
 
 import networkx as nx
 import numpy as np
+
+from ..config import get_settings
 
 # Optional Redis import for production scaling
 try:
@@ -32,8 +33,8 @@ class LateralMovementDetector:
         self.spike_multiplier = spike_multiplier
         self.risk_penalty = risk_penalty
 
-        # Check for Redis URL in environment variables
-        self.redis_url = os.getenv("REDIS_URL")
+        runtime_settings = get_settings()
+        self.redis_url = runtime_settings.innovations.redis_url
         self.use_redis = REDIS_AVAILABLE and self.redis_url
 
         if self.use_redis:
