@@ -38,6 +38,8 @@ from datetime import datetime
 from datetime import timezone
 import uuid
 import secrets
+import threading
+import pathlib
 
 
 @dataclass
@@ -222,6 +224,52 @@ class BlockchainNode:
         return True
 
 
+class EvidenceJournal:
+    """
+    Append-only file journal for evidence records.
+
+    Writes one JSON line per sealed evidence record so the audit trail
+    survives process restarts. Thread-safe for same-process concurrency.
+    Multi-worker safety (Phase 2) will layer Redis on top of this.
+    """
+
+    def __init__(self, journal_path: str = "data/evidence_journal.jsonl"):
+        self._path = pathlib.Path(journal_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def append(self, evidence: "BlockchainEvidence") -> None:
+        """Atomically append one evidence record to the journal."""
+        record = {
+            **asdict(evidence),
+            "_journaled_at": datetime.now(timezone.utc).isoformat(),
+        }
+        line = json.dumps(record, default=str) + "\n"
+        with self._lock:
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+
+    def read_all(self) -> list:
+        """Read all records from the journal (used on startup)."""
+        if not self._path.exists():
+            return []
+        records = []
+        with self._lock:
+            with self._path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass  # skip corrupted lines
+        return records
+
+    def count(self) -> int:
+        """Return number of journaled records."""
+        return len(self.read_all())
+
+
 class BlockchainEvidenceManager:
     """
     Manages blockchain evidence sealing for fraud detection decisions
@@ -255,6 +303,14 @@ class BlockchainEvidenceManager:
             'average_finality_ms': 0.0,
             'chain_verified': True,
         }
+
+        # Durable evidence journal - persists across restarts
+        self._journal = EvidenceJournal()
+
+        # Restore stats counter from journal so restarts don't reset to zero
+        _prior_count = self._journal.count()
+        if _prior_count > 0:
+            self.stats['total_sealed'] = _prior_count
     
     def _initialize_network(self) -> List[BlockchainNode]:
         """Initialize simulated Hyperledger Fabric network"""
@@ -406,10 +462,11 @@ class BlockchainEvidenceManager:
                 else:
                     print(f"⛓️ BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) ⚠️ Over target")
                 
+                self._journal.append(evidence)
                 return evidence
         
         # Fallback: create evidence without blockchain
-        return BlockchainEvidence(
+        _fallback_evidence = BlockchainEvidence(
             evidence_id=evidence_id,
             transaction_hash=transaction_hash,
             detection_timestamp=detection_timestamp,
@@ -431,6 +488,8 @@ class BlockchainEvidenceManager:
             consensus_timestamp=datetime.now(timezone.utc).isoformat(),
             finality_time_ms=0.0,
         )
+        self._journal.append(_fallback_evidence)
+        return _fallback_evidence
     
     def verify_evidence(
         self,
