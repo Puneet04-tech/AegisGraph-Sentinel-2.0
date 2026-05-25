@@ -1660,13 +1660,13 @@ async def seal_evidence(request: BlockchainSealRequest):
         )
         
         return BlockchainEvidenceResponse(
-            evidence_id=result['evidence_id'],
-            transaction_hash=result['transaction_hash'],
-            block_number=result['block_number'],
-            block_hash=result['block_hash'],
-            timestamp=result['timestamp'],
-            finality_time_ms=result['finality_time_ms'],
-            validators=result['validators'],
+            evidence_id=result.evidence_id,
+            transaction_hash=result.transaction_hash,
+            block_number=result.block_number,
+            block_hash=result.block_hash,
+            timestamp=result.consensus_timestamp,
+            finality_time_ms=result.finality_time_ms,
+            validators=result.validator_signatures,
         )
     
     except Exception as e:
@@ -1731,6 +1731,8 @@ async def export_legal_evidence(request: LegalExportRequest):
             requesting_authority=request.requesting_authority,
             authorization_token=request.authorization_token,
         )
+        if 'error' in result:
+            raise HTTPException(status_code=404, detail=result['error'])
         
         return LegalExportResponse(
             evidence_id=request.evidence_id,

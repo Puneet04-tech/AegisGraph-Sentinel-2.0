@@ -119,7 +119,7 @@ class BlockchainNode:
     
     def _create_genesis_block(self):
         """Create the first block in the chain"""
-        creation_time = datetime.now(timezone.utc).isoformat()
+        creation_time = "2026-01-01T00:00:00+00:00"
         genesis = {
             'block_number': 0,
             'timestamp': creation_time,
@@ -276,6 +276,20 @@ class EvidenceJournal:
         """Return number of journaled records."""
         return len(self.read_all())
 
+    def load_evidence(self, evidence_id: str) -> dict | None:
+        """Load one evidence record from the journal by ID."""
+        for record in reversed(self.read_all()):
+            if record.get('evidence_id') == evidence_id:
+                return record
+        return None
+
+    def latest_block_number(self) -> int:
+        """Return the highest block number recorded in the journal."""
+        latest = 0
+        for record in self.read_all():
+            latest = max(latest, int(record.get('block_number', 0)))
+        return latest
+
 
 class RedisLedger:
     """
@@ -309,6 +323,10 @@ class RedisLedger:
         except Exception:
             self._client = None  # fall back silently; journal is the safety net
 
+    def _mark_unavailable(self) -> None:
+        """Disable Redis usage after a runtime failure."""
+        self._client = None
+
     @property
     def available(self) -> bool:
         return self._client is not None
@@ -317,40 +335,69 @@ class RedisLedger:
         """Persist one evidence record and append its ID to the index."""
         if not self.available:
             return
-        key = f"{self.PREFIX}:evidence:{evidence.evidence_id}"
-        self._client.set(key, json.dumps(asdict(evidence), default=str))
-        self._client.rpush(f"{self.PREFIX}:evidence:index", evidence.evidence_id)
-        self._client.incr(f"{self.PREFIX}:stats:total_sealed")
+        try:
+            key = f"{self.PREFIX}:evidence:{evidence.evidence_id}"
+            self._client.set(key, json.dumps(asdict(evidence), default=str))
+            self._client.rpush(f"{self.PREFIX}:evidence:index", evidence.evidence_id)
+            self._client.incr(f"{self.PREFIX}:stats:total_sealed")
+        except Exception:
+            self._mark_unavailable()
 
     def load_evidence(self, evidence_id: str) -> dict | None:
         """Load one evidence record by ID."""
         if not self.available:
             return None
-        raw = self._client.get(f"{self.PREFIX}:evidence:{evidence_id}")
-        return json.loads(raw) if raw else None
+        try:
+            raw = self._client.get(f"{self.PREFIX}:evidence:{evidence_id}")
+            return json.loads(raw) if raw else None
+        except Exception:
+            self._mark_unavailable()
+            return None
 
     def total_sealed(self) -> int:
         """Return the authoritative sealed count across all workers."""
         if not self.available:
             return 0
-        val = self._client.get(f"{self.PREFIX}:stats:total_sealed")
-        return int(val) if val else 0
+        try:
+            val = self._client.get(f"{self.PREFIX}:stats:total_sealed")
+            return int(val) if val else 0
+        except Exception:
+            self._mark_unavailable()
+            return 0
 
     def save_block_metadata(self, block: dict) -> None:
         """Store latest block metadata for cross-worker verification."""
         if not self.available:
             return
-        self._client.set(
-            f"{self.PREFIX}:block:latest",
-            json.dumps(block, default=str),
-        )
+        try:
+            payload = json.dumps(block, default=str)
+            self._client.set(
+                f"{self.PREFIX}:block:latest",
+                payload,
+            )
+            if 'block_number' in block:
+                self._client.set(
+                    f"{self.PREFIX}:block:{block['block_number']}",
+                    payload,
+                )
+        except Exception:
+            self._mark_unavailable()
 
-    def load_block_metadata(self) -> dict | None:
+    def load_block_metadata(self, block_number: Optional[int] = None) -> dict | None:
         """Load latest block metadata."""
         if not self.available:
             return None
-        raw = self._client.get(f"{self.PREFIX}:block:latest")
-        return json.loads(raw) if raw else None
+        try:
+            key = (
+                f"{self.PREFIX}:block:latest"
+                if block_number is None
+                else f"{self.PREFIX}:block:{block_number}"
+            )
+            raw = self._client.get(key)
+            return json.loads(raw) if raw else None
+        except Exception:
+            self._mark_unavailable()
+            return None
 
 
 class BlockchainEvidenceManager:
@@ -369,6 +416,8 @@ class BlockchainEvidenceManager:
         self,
         model_version: str = "2.0.0",
         enable_blockchain: bool = True,
+        journal_path: str = "data/evidence_journal.jsonl",
+        redis_url: Optional[str] = None,
     ):
         self.model_version = model_version
         self.enable_blockchain = enable_blockchain
@@ -388,18 +437,24 @@ class BlockchainEvidenceManager:
         }
 
         # Durable evidence journal - persists across restarts
-        self._journal = EvidenceJournal()
+        self._journal = EvidenceJournal(journal_path)
 
         # Shared Redis ledger - authoritative across all Uvicorn workers
-        self._redis = RedisLedger()
+        self._redis = RedisLedger(redis_url)
 
         # Restore stats counter from durable stores so restarts don't reset to zero
         _prior_count = self._journal.count()
+        _prior_latest_block = self._journal.latest_block_number()
         _redis_count = self._redis.total_sealed()
+        _redis_latest_block = self._redis.load_block_metadata()
         if _redis_count > 0:
             self.stats['total_sealed'] = _redis_count
         elif _prior_count > 0:
             self.stats['total_sealed'] = _prior_count
+        if _redis_latest_block and 'block_number' in _redis_latest_block:
+            self.stats['total_blocks'] = int(_redis_latest_block['block_number']) + 1
+        elif _prior_latest_block > 0:
+            self.stats['total_blocks'] = _prior_latest_block + 1
     
     def _initialize_network(self) -> List[BlockchainNode]:
         """Initialize simulated Hyperledger Fabric network"""
@@ -424,6 +479,112 @@ class BlockchainEvidenceManager:
                 nodes.append(node)
         
         return nodes
+
+    def _derive_fraud_patterns(self, breakdown: Dict[str, float]) -> List[str]:
+        """Derive fraud pattern labels from the risk breakdown."""
+        fraud_patterns = []
+        if breakdown.get('graph', 0.0) > 0.5:
+            fraud_patterns.append('high_graph_risk')
+        if breakdown.get('velocity', 0.0) > 0.5:
+            fraud_patterns.append('velocity_anomaly')
+        if breakdown.get('behavior', 0.0) > 0.5:
+            fraud_patterns.append('behavioral_anomaly')
+        if breakdown.get('entropy', 0.0) > 0.5:
+            fraud_patterns.append('entropy_spike')
+        return fraud_patterns
+
+    def _block_metadata_from_evidence(self, evidence: dict | None) -> dict | None:
+        """Build minimal block metadata from a stored evidence record."""
+        if not evidence or int(evidence.get('block_number', 0)) <= 0:
+            return None
+        validator = "durable_store"
+        signatures = evidence.get('validator_signatures') or []
+        if signatures:
+            validator = signatures[0].split(':', 1)[0]
+        return {
+            'block_number': evidence['block_number'],
+            'timestamp': evidence.get('consensus_timestamp'),
+            'transactions': [{'evidence_id': evidence.get('evidence_id')}],
+            'previous_hash': evidence.get('previous_block_hash', ''),
+            'hash': evidence.get('block_hash', ''),
+            'validator': validator,
+        }
+
+    def _load_evidence_record(self, evidence_id: str) -> dict | None:
+        """Load evidence from Redis first, then the append-only journal."""
+        record = self._redis.load_evidence(evidence_id)
+        if record:
+            record['_storage'] = 'redis'
+            return record
+
+        record = self._journal.load_evidence(evidence_id)
+        if record:
+            record['_storage'] = 'journal'
+            return record
+
+        for block in self.nodes[0].chain:
+            for tx in block.get('transactions', []):
+                if tx.get('evidence_id') == evidence_id:
+                    record = {
+                        **tx,
+                        'block_number': block['block_number'],
+                        'block_hash': block['hash'],
+                        'previous_block_hash': block['previous_hash'],
+                        'validator_signatures': [],
+                        'consensus_timestamp': block['timestamp'],
+                        'finality_time_ms': 0.0,
+                        '_storage': 'memory',
+                    }
+                    return record
+
+        return None
+
+    def _load_block_metadata(self, block_number: int, evidence: dict | None = None) -> dict | None:
+        """Load block metadata from Redis, in-memory chain, or evidence fallback."""
+        block = self._redis.load_block_metadata(block_number)
+        if block:
+            return block
+
+        block = self.nodes[0].get_block(block_number)
+        if block:
+            return block
+
+        return self._block_metadata_from_evidence(evidence)
+
+    def _build_attestations(self, evidence: dict) -> List[Dict]:
+        """Build validator attestation metadata for legal export."""
+        signatures = {}
+        for entry in evidence.get('validator_signatures', []):
+            node_id, _, signature = entry.partition(':')
+            if node_id:
+                signatures[node_id] = signature
+
+        attestations = []
+        for node in self.nodes[:6]:
+            signature = signatures.get(node.node_id)
+            attestations.append(
+                {
+                    'node_id': node.node_id,
+                    'organization': node.organization,
+                    'attested': signature is not None,
+                    'signature': signature,
+                    'integrity_verified': signature is not None,
+                }
+            )
+
+        extra_nodes = signatures.keys() - {node.node_id for node in self.nodes[:6]}
+        for node_id in sorted(extra_nodes):
+            attestations.append(
+                {
+                    'node_id': node_id,
+                    'organization': 'external_validator',
+                    'attested': True,
+                    'signature': signatures[node_id],
+                    'integrity_verified': True,
+                }
+            )
+
+        return attestations
     
     def seal_evidence(
         self,
@@ -431,12 +592,13 @@ class BlockchainEvidenceManager:
         source_account: str,
         target_account: str,
         amount: float,
-        risk_score: float,
-        decision: str,
-        confidence: float,
-        breakdown: Dict[str, float],
-        explanation: str,
-        fraud_patterns: List[str],
+        risk_score: Optional[float] = None,
+        decision: Optional[str] = None,
+        confidence: Optional[float] = None,
+        breakdown: Optional[Dict[str, float]] = None,
+        explanation: str = "",
+        fraud_patterns: Optional[List[str]] = None,
+        risk_result: Optional[Dict] = None,
     ) -> BlockchainEvidence:
         """
         Seal fraud detection decision in blockchain
@@ -456,6 +618,21 @@ class BlockchainEvidenceManager:
         Returns:
             BlockchainEvidence object with blockchain metadata
         """
+        breakdown = breakdown or {}
+        if risk_result:
+            risk_score = risk_result.get('risk_score', risk_score)
+            decision = risk_result.get('decision', decision)
+            confidence = risk_result.get('confidence', confidence)
+            breakdown = risk_result.get('breakdown', breakdown) or {}
+            if fraud_patterns is None:
+                fraud_patterns = self._derive_fraud_patterns(breakdown)
+
+        if risk_score is None or decision is None or confidence is None:
+            raise ValueError("risk_score, decision, and confidence are required to seal evidence")
+
+        if fraud_patterns is None:
+            fraud_patterns = []
+
         start_time = time.time()
         
         # Create transaction hash (exclude PII)
@@ -547,9 +724,9 @@ class BlockchainEvidenceManager:
                 total_time = (time.time() - start_time) * 1000
                 
                 if total_time < 100:  # Target <100ms
-                    print(f"⛓️ BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms)")
+                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms)")
                 else:
-                    print(f"⛓️ BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) ⚠️ Over target")
+                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) WARNING Over target")
                 
                 self._journal.append(evidence)
                 self._redis.save_evidence(evidence)
@@ -598,7 +775,9 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with verification results
         """
-        # basic flags we derive during checks
+        evidence = self._load_evidence_record(evidence_id)
+        block = self._load_block_metadata(block_number, evidence)
+
         verification = {
             'evidence_found': False,
             'block_exists': False,
@@ -606,31 +785,52 @@ class BlockchainEvidenceManager:
             'consensus_verified': False,
             'timestamp_verified': False,
         }
-        
-        # find block and optionally evidence
-        block = None
-        block = self.nodes[0].get_block(block_number)
-        if block:
-            verification['block_exists'] = True
 
-            # scan transactions for the evidence
-            for tx in block['transactions']:
-                if tx.get('evidence_id') == evidence_id:
-                    verification['evidence_found'] = True
-                    verification['timestamp_verified'] = True
-                    break
+        if evidence:
+            verification['evidence_found'] = True
+            verification['timestamp_verified'] = bool(
+                evidence.get('consensus_timestamp') or evidence.get('detection_timestamp')
+            )
 
-        # verify chain integrity across a quorum of nodes
-        integrity_count = sum(1 for node in self.nodes[:6] if node.verify_chain_integrity())
-        verification['chain_integrity'] = integrity_count >= 4  # quorum of 6
-        verification['consensus_verified'] = integrity_count >= 4
+            stored_block_number = int(evidence.get('block_number', 0))
+            verification['block_exists'] = stored_block_number == block_number and stored_block_number > 0
 
-        # compose higher-level fields for API compatibility
-        verification['consensus_nodes'] = integrity_count
-        verification['original_timestamp'] = block['timestamp'] if block else None
-        verification['verified'] = verification['evidence_found'] and verification['consensus_verified']
+            if verification['block_exists']:
+                verification['chain_integrity'] = bool(
+                    evidence.get('block_hash') and evidence.get('previous_block_hash')
+                )
 
-        # include everything as a details dict
+            if block and verification['block_exists']:
+                block_hash = block.get('hash')
+                previous_hash = block.get('previous_hash')
+                if block_hash:
+                    verification['chain_integrity'] = (
+                        verification['chain_integrity']
+                        and block_hash == evidence.get('block_hash')
+                    )
+                if previous_hash:
+                    verification['chain_integrity'] = (
+                        verification['chain_integrity']
+                        and previous_hash == evidence.get('previous_block_hash')
+                    )
+
+            verification['consensus_verified'] = len(evidence.get('validator_signatures', [])) > 0
+
+        verification['consensus_nodes'] = (
+            len(evidence.get('validator_signatures', [])) if evidence else 0
+        )
+        verification['original_timestamp'] = (
+            evidence.get('consensus_timestamp')
+            if evidence
+            else (block['timestamp'] if block else None)
+        )
+        verification['verified'] = (
+            verification['evidence_found']
+            and verification['block_exists']
+            and verification['chain_integrity']
+            and verification['consensus_verified']
+        )
+
         verification['details'] = {
             'evidence_found': verification['evidence_found'],
             'block_exists': verification['block_exists'],
@@ -638,6 +838,8 @@ class BlockchainEvidenceManager:
             'consensus_verified': verification['consensus_verified'],
             'timestamp_verified': verification['timestamp_verified'],
             'consensus_nodes': verification['consensus_nodes'],
+            'storage_backend': evidence.get('_storage') if evidence else None,
+            'block_hash': evidence.get('block_hash') if evidence else None,
         }
 
         return verification
@@ -646,6 +848,8 @@ class BlockchainEvidenceManager:
         self,
         evidence_id: str,
         case_number: str,
+        requesting_authority: Optional[str] = None,
+        authorization_token: Optional[str] = None,
     ) -> Dict:
         """
         Export evidence for court proceedings
@@ -657,44 +861,85 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with evidence and verification proof
         """
-        # Find evidence in blockchain
-        for node in self.nodes[:3]:  # Check multiple nodes
-            for block in node.chain:
-                for tx in block['transactions']:
-                    if tx.get('evidence_id') == evidence_id:
-                        # Found evidence
-                        verification = self.verify_evidence(evidence_id, block['block_number'])
-                        
-                        export = {
-                            'case_number': case_number,
-                            'export_timestamp': datetime.now(timezone.utc).isoformat(),
-                            'evidence': tx,
-                            'block_metadata': {
-                                'block_number': block['block_number'],
-                                'block_hash': block['hash'],
-                                'block_timestamp': block['timestamp'],
-                                'validator': block['validator'],
-                            },
-                            'chain_verification': verification,
-                            'node_attestations': [
-                                {
-                                    'node_id': node.node_id,
-                                    'organization': node.organization,
-                                    'chain_length': len(node.chain),
-                                    'integrity_verified': node.verify_chain_integrity(),
-                                }
-                                for node in self.nodes[:6]
-                            ],
-                        }
-                        
-                        print(f"📋 LEGAL EXPORT GENERATED: {evidence_id}")
-                        print(f"   Case: {case_number}")
-                        print(f"   Block: {block['block_number']}")
-                        print(f"   Verified by {len(export['node_attestations'])} nodes")
-                        
-                        return export
-        
-        return {'error': 'Evidence not found'}
+        evidence = self._load_evidence_record(evidence_id)
+        if not evidence:
+            return {'error': 'Evidence not found'}
+
+        block_number = int(evidence.get('block_number', 0))
+        verification = self.verify_evidence(evidence_id, block_number)
+        block = self._load_block_metadata(block_number, evidence)
+        block = block or self._block_metadata_from_evidence(evidence) or {}
+
+        export_timestamp = datetime.now(timezone.utc).isoformat()
+        attestations = self._build_attestations(evidence)
+        chain_of_custody = [
+            {
+                'event': 'detection_recorded',
+                'timestamp': evidence.get('detection_timestamp'),
+                'actor': 'aegisgraph_sentinel',
+                'details': f"Decision {evidence.get('decision')} at risk {evidence.get('risk_score')}",
+            },
+            {
+                'event': 'evidence_sealed',
+                'timestamp': evidence.get('consensus_timestamp'),
+                'actor': block.get('validator', 'blockchain_evidence_manager'),
+                'details': f"Block {block_number} hash {evidence.get('block_hash', '')}",
+            },
+        ]
+        if evidence.get('_journaled_at'):
+            chain_of_custody.append(
+                {
+                    'event': 'journal_persisted',
+                    'timestamp': evidence.get('_journaled_at'),
+                    'actor': evidence.get('_storage', 'journal'),
+                    'details': 'Append-only journal durability checkpoint',
+                }
+            )
+        chain_of_custody.append(
+            {
+                'event': 'legal_export_generated',
+                'timestamp': export_timestamp,
+                'actor': requesting_authority or 'authorized_requestor',
+                'details': f"Case {case_number}",
+            }
+        )
+
+        package = {
+            'case_number': case_number,
+            'evidence': evidence,
+            'block_metadata': {
+                'block_number': block.get('block_number', block_number),
+                'block_hash': block.get('hash', evidence.get('block_hash', '')),
+                'block_timestamp': block.get('timestamp', evidence.get('consensus_timestamp')),
+                'previous_block_hash': block.get(
+                    'previous_hash',
+                    evidence.get('previous_block_hash', ''),
+                ),
+                'validator': block.get('validator', 'durable_store'),
+            },
+            'chain_verification': verification,
+            'authorization': {
+                'requesting_authority': requesting_authority,
+                'authorization_token_hash': (
+                    hashlib.sha256(authorization_token.encode()).hexdigest()[:16]
+                    if authorization_token
+                    else None
+                ),
+            },
+        }
+
+        print(f"LEGAL EXPORT GENERATED: {evidence_id}")
+        print(f"   Case: {case_number}")
+        print(f"   Block: {block_number}")
+        print(f"   Verified by {len(attestations)} nodes")
+
+        return {
+            'package': package,
+            'chain_of_custody': chain_of_custody,
+            'attestations': attestations,
+            'export_timestamp': export_timestamp,
+            'authorized_by': requesting_authority or 'UNKNOWN',
+        }
     
     def get_statistics(self) -> Dict:
         """Get blockchain statistics"""
