@@ -485,7 +485,7 @@ class ProductionTrainer:
             logger.warning(f"No best model found at {best_path}")
             return False
         
-        checkpoint = torch.load(best_path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(best_path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint['model_state'])
         logger.info(f"Loaded best model from {best_path}")
         return True
