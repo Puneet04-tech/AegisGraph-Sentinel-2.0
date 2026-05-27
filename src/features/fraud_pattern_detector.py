@@ -73,6 +73,8 @@ class FraudPatternDetector:
         self,
         transactions: List[Dict],
         reference_time: datetime,
+        max_cycle_length: int = 6,
+        max_cycle_count: int = 200,
     ) -> List[Dict]:
         """
         Detect mule rings: circular chains of rapid transfers.
@@ -89,19 +91,21 @@ class FraudPatternDetector:
             - total_amount: Sum transferred
             - risk_score: [0, 1]
             - detected_at: timestamp
+            - max_cycle_length: Hard cap on cycle search depth
+            - max_cycle_count: Hard cap on emitted cycle candidates
         """
         # Build directed transfer graph
         graph = self._build_transfer_graph(transactions)
         
         detected_rings = []
         
-        # Search for cycles
+        # Search for cycles with bounded depth and lazy enumeration.
         try:
-            # Materialize the generator first so a traversal error cannot leave
-            # partially processed rings in the output.
-            all_cycles = list(nx.simple_cycles(graph))
-
-            for cycle in all_cycles:
+            for cycle in self._iter_bounded_cycles(
+                graph,
+                max_cycle_length=max_cycle_length,
+                max_cycle_count=max_cycle_count,
+            ):
                 if len(cycle) >= self.min_chain_length:
                     # Extract transactions in this cycle
                     cycle_transactions = self._get_cycle_transactions(
@@ -131,6 +135,61 @@ class FraudPatternDetector:
             logger.warning("Error detecting cycles while enumerating mule rings: %s", e)
         
         return detected_rings
+
+    def _iter_bounded_cycles(
+        self,
+        graph: nx.DiGraph,
+        max_cycle_length: int,
+        max_cycle_count: int,
+    ):
+        """Yield unique directed cycles without materializing the full search space."""
+        if max_cycle_length < 2 or max_cycle_count < 1:
+            return
+
+        seen_cycles: Set[Tuple] = set()
+        emitted = 0
+        nodes = sorted(graph.nodes(), key=repr)
+
+        for start_node in nodes:
+            stack = [(start_node, [start_node], {start_node})]
+            while stack:
+                current_node, path, path_nodes = stack.pop()
+                if len(path) > max_cycle_length:
+                    continue
+
+                try:
+                    neighbors = list(graph.successors(current_node))
+                except nx.NetworkXError:
+                    continue
+
+                for neighbor in neighbors:
+                    if neighbor == start_node and len(path) >= self.min_chain_length:
+                        cycle = path[:]
+                        cycle_key = self._canonical_cycle_key(cycle)
+                        if cycle_key not in seen_cycles:
+                            seen_cycles.add(cycle_key)
+                            emitted += 1
+                            yield cycle
+                            if emitted >= max_cycle_count:
+                                return
+                        continue
+
+                    if neighbor in path_nodes:
+                        continue
+                    if len(path) >= max_cycle_length:
+                        continue
+
+                    next_path = path + [neighbor]
+                    stack.append((neighbor, next_path, path_nodes | {neighbor}))
+
+    @staticmethod
+    def _canonical_cycle_key(cycle: List) -> Tuple:
+        """Canonicalize a cycle so rotations are deduplicated."""
+        if not cycle:
+            return tuple()
+
+        rotations = [tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))]
+        return min(rotations, key=lambda candidate: tuple(map(repr, candidate)))
     
     def detect_fan_in_hubs(
         self,
