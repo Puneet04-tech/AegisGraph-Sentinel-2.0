@@ -1,46 +1,58 @@
-name: "Strict PR Validator"
+name: "PR Hard Gatekeeper"
 
 on:
   pull_request:
-    types: [opened, edited, synchronize]
+    types: [opened, edited]
 
 jobs:
-  validate-pr:
+  gatekeeper:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Crucial: gives the script power to comment and close
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-level: '3.10'
-
-      - name: Run Validation Script
+      - name: Validate PR Content
+        id: checker
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          python -c "
           import os, sys, re
-
           body = os.getenv('PR_BODY', '')
-
-          # 1. Check for Issue Number (Fixes #123)
+          
+          errors = []
           if not re.search(r'Fixes\s*#\s*\d+', body, re.IGNORECASE):
-              print('❌ ERROR: You must link a valid issue number using \"Fixes #<number>\"')
-              sys.exit(1)
-
-          # 2. Check for Screenshots/Images
-          # Looks for markdown image syntax: ![alt text](url) or HTML <img> tags
+              errors.append("- Missing valid issue number link (e.g., `Fixes #123`).")
           if not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):
-              print('❌ ERROR: You must upload a screenshot (UI or Terminal output) in the Proof section.')
+              errors.append("- Missing an attached screenshot or terminal log image.")
+              
+          if errors:
+              # Export errors to a file so the next step can read them
+              with open("errors.txt", "w") as f:
+                  f.write("\n".join(errors))
               sys.exit(1)
+          print("All good!")
+        shell: python
 
-          # 3. Check for Testing Description
-          # Ensure they didn't leave the default placeholder and actually wrote something
-          if 'Describe your tests or paste a terminal test log' in body or len(body.strip()) < 100:
-              print('❌ ERROR: Please provide a meaningful description of your testing.')
-              sys.exit(1)
-
-          print('✅ All PR formatting requirements met!')
-          "
+      - name: Reject and Auto-Close PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const errors = fs.readFileSync('errors.txt', 'utf8');
+            const commentBody = `⚠️ **PULL REQUEST REJECTED** ⚠️\n\n@${context.actor}, your PR has been automatically closed because it failed validation requirements:\n${errors}\n\n*Please fix your description/screenshots locally and re-open the PR.*`;
+            
+            // 1. Post the violation comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+            
+            // 2. Instantly close the PR
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              state: 'closed'
+            });
