@@ -343,14 +343,21 @@ class TestBatchFraudCheck:
         monkeypatch.setattr(api_main, "check_transaction", fake_check_transaction)
         monkeypatch.setattr(api_main.asyncio, "gather", recording_gather)
 
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        
         transactions = [
             {
                 "transaction_id": f"batch_{i}",
+                "source_account": f"user_{i}",
+                "target_account": f"merchant_{i}",
                 "amount": 50.0 * (i + 1),
-                "timestamp": 1234567890.0 + i * 60,
-                "from_account": f"user_{i}",
-                "to_account": f"merchant_{i}",
-                "transaction_type": "payment",
+                "currency": "INR",
+                "mode": "UPI",
+                "timestamp": now,
+                "device_id": f"device_{i}",
+                "ip_address": f"103.1.1.{i}",
+                "location": "Mumbai, India",
             }
             for i in range(17)
         ]

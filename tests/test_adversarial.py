@@ -8,10 +8,20 @@ Each attack class is tested for:
     - Edge cases (zero budget, max budget) behave correctly
 """
 from __future__ import annotations
-import torch
+import pytest
 
-from src.adversarial.base import AttackConfig
-from src.adversarial.attacks import EdgeAddition, EdgeDeletion, FeaturePerturbation
+# Handle optional torch dependency
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch not installed")
+
+if TORCH_AVAILABLE:
+    from src.adversarial.base import AttackConfig
+    from src.adversarial.attacks import EdgeAddition, EdgeDeletion, FeaturePerturbation
 
 
 def _build_graph(num_nodes=30, num_edges=60, feature_dim=32, seed=0):

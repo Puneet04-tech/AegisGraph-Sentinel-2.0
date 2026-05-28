@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from src.inference.production_scorer import FraudScore, ProductionRiskScorer
+import pytest
+
+# Handle optional torch dependency
+try:
+    from src.inference.production_scorer import FraudScore, ProductionRiskScorer
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch not installed")
+
+if not TORCH_AVAILABLE:
+    pytest.skip(allow_module_level=True)
 
 
 class _DummyModel:

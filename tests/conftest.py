@@ -16,6 +16,10 @@ Two concerns handled here:
    installs a dependency override that no-ops the gate for every test
    file *except* test_api_auth.py — those tests exercise the real gate
    and need the dependency to fire.
+
+3. ``torch_available`` — Marker and fixture to gracefully handle missing
+   PyTorch dependency. Tests that require torch are marked with @pytest.mark.torch
+   and skipped if torch is not available.
 """
 
 from __future__ import annotations
@@ -26,6 +30,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
+
+# Check if torch is available
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+# Skip torch tests if torch is not available
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "torch: mark test as requiring PyTorch (skip if not installed)"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip torch-marked tests if torch is not available."""
+    if not TORCH_AVAILABLE:
+        skip_torch = pytest.mark.skip(reason="PyTorch not installed")
+        for item in items:
+            if "torch" in item.keywords:
+                item.add_marker(skip_torch)
 
 
 # Files whose tests should exercise the real API key gate. The autouse
