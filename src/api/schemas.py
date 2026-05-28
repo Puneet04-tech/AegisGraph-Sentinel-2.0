@@ -3,23 +3,43 @@ Pydantic schemas for API request/response validation
 """
 # Schema validation for all fraud detection endpoints
 
-from pydantic import BaseModel, Field, field_validator, AliasChoices, ConfigDict
-from typing import Optional, List, Dict, Union
+from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices, ConfigDict
+from typing import Optional, List, Dict, Union, Tuple
 from datetime import datetime
+from .validators import (
+    TransactionValidator, 
+    ValidationError,
+    VALID_CURRENCY_CODES,
+    VALID_MODES,
+)
 
 
 class BiometricsData(BaseModel):
     """Keystroke biometrics data"""
-    hold_times: List[float] = Field(default_factory=list, description="Key hold times in milliseconds")
-    flight_times: List[float] = Field(default_factory=list, description="Key flight times in milliseconds")
+    hold_times: List[float] = Field(
+        default_factory=list, 
+        description="Key hold times in milliseconds",
+        examples=[[120, 135, 128, 142, 118]]
+    )
+    flight_times: List[float] = Field(
+        default_factory=list, 
+        description="Key flight times in milliseconds",
+        examples=[[200, 185, 210, 195]]
+    )
     keystroke_events: Optional[List[Dict]] = Field(default=None, description="Raw keystroke events")
     mouse_movements: Optional[List[Dict]] = Field(default=None, description="Raw mouse movement events")
     
-    @field_validator('hold_times', 'flight_times') #ready
+    @field_validator('hold_times', 'flight_times')
     @classmethod
-    def validate_positive(cls, v):
-        if any(x < 0 for x in v):
-            raise ValueError("Times must be non-negative")
+    def validate_biometric_times(cls, v):
+        """Validate biometric time arrays"""
+        if isinstance(v, list) and len(v) > 0:
+            if any(x < 0 for x in v):
+                raise ValueError("Times must be non-negative")
+            if any(x > 10000 for x in v):
+                raise ValueError("Times exceed reasonable range (>10000ms)")
+            if len(v) > 1000:
+                raise ValueError("Array size exceeds 1000 elements")
         return v
 
 
@@ -46,23 +66,144 @@ class TransactionCheckRequest(BaseModel):
         }
     )
     
-    transaction_id: str = Field(description="Unique transaction identifier")
+    transaction_id: str = Field(
+        min_length=3,
+        max_length=100,
+        description="Unique transaction identifier"
+    )
     source_account: str = Field(
         validation_alias=AliasChoices('source_account', 'from_account'),
+        min_length=3,
+        max_length=50,
         description="Source account ID",
     )
     target_account: str = Field(
         validation_alias=AliasChoices('target_account', 'to_account'),
+        min_length=3,
+        max_length=50,
         description="Target account ID",
     )
-    amount: float = Field(gt=0, description="Transaction amount")
-    currency: str = Field(default="INR", description="Currency code")
-    mode: str = Field(default="payment", description="Transaction mode (UPI, IMPS, NEFT, etc.)")
-    timestamp: Union[str, float] = Field(description="Transaction timestamp (ISO format or epoch seconds)")
-    device_id: Optional[str] = Field(default=None, description="Device identifier")
-    biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
-    ip_address: Optional[str] = Field(default=None, description="IP address")
-    location: Optional[str] = Field(default=None, description="Transaction location")
+    amount: float = Field(
+        gt=0,
+        le=10000000,
+        description="Transaction amount (must be positive, max 10M)"
+    )
+    currency: str = Field(
+        default="INR",
+        min_length=3,
+        max_length=3,
+        description="ISO 4217 currency code"
+    )
+    mode: str = Field(
+        default="payment",
+        description="Transaction mode (UPI, IMPS, NEFT, SWIFT, ACH, WIRE)"
+    )
+    timestamp: Union[str, float] = Field(
+        description="Transaction timestamp (ISO format or epoch seconds)"
+    )
+    device_id: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Device identifier"
+    )
+    biometrics: Optional[BiometricsData] = Field(
+        default=None,
+        description="Behavioral biometrics"
+    )
+    ip_address: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="IP address"
+    )
+    location: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Transaction location"
+    )
+    
+    @field_validator('amount')
+    @classmethod
+    def validate_amount_precision(cls, v: float) -> float:
+        """Validate amount has correct decimal precision"""
+        decimal_str = str(v)
+        if '.' in decimal_str:
+            decimal_places = len(decimal_str.split('.')[1])
+            if decimal_places > 2:
+                raise ValueError(
+                    f'Amount must have at most 2 decimal places, got {decimal_places}'
+                )
+        return v
+    
+    @field_validator('source_account')
+    @classmethod
+    def validate_source_account_format(cls, v: str) -> str:
+        """Validate source account ID format"""
+        if not v or not isinstance(v, str):
+            raise ValueError('Source account must be a non-empty string')
+        if not v.replace('_', '').replace('-', '').isalnum():
+            raise ValueError(
+                'Source account must contain only alphanumeric, underscore, or dash characters'
+            )
+        return v
+    
+    @field_validator('target_account')
+    @classmethod
+    def validate_target_account_format(cls, v: str) -> str:
+        """Validate target account ID format"""
+        if not v or not isinstance(v, str):
+            raise ValueError('Target account must be a non-empty string')
+        if not v.replace('_', '').replace('-', '').isalnum():
+            raise ValueError(
+                'Target account must contain only alphanumeric, underscore, or dash characters'
+            )
+        return v
+    
+    @field_validator('timestamp')
+    @classmethod
+    def validate_timestamp_format(cls, v: Union[str, float]) -> Union[str, float]:
+        """Validate timestamp is not in future and not too old"""
+        try:
+            is_valid, error_msg = TransactionValidator.validate_timestamp(str(v))
+            if not is_valid:
+                raise ValueError(error_msg or 'Invalid timestamp')
+        except Exception as e:
+            raise ValueError(f'Timestamp validation failed: {str(e)}')
+        return v
+    
+    @field_validator('currency')
+    @classmethod
+    def validate_currency_code(cls, v: str) -> str:
+        """Validate currency is valid ISO 4217 code"""
+        if not v:
+            raise ValueError('Currency code is required')
+        v_upper = v.upper()
+        if v_upper not in VALID_CURRENCY_CODES:
+            raise ValueError(
+                f'Currency must be valid ISO 4217 code. Got: {v}'
+            )
+        return v_upper
+    
+    @field_validator('mode')
+    @classmethod
+    def validate_transaction_mode(cls, v: str) -> str:
+        """Validate transaction mode is supported"""
+        if not v:
+            raise ValueError('Transaction mode is required')
+        v_upper = v.upper()
+        if v_upper not in VALID_MODES:
+            raise ValueError(
+                f'Mode must be one of: {{", ".join(sorted(VALID_MODES))}}. Got: {v}'
+            )
+        return v_upper
+    
+    @model_validator(mode='after')
+    def validate_cross_fields(self) -> 'TransactionCheckRequest':
+        """Validate relationships between fields"""
+        if self.source_account == self.target_account:
+            raise ValueError(
+                'Source and target accounts must be different'
+            )
+        return self
     
 
 
