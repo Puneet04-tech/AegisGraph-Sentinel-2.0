@@ -8,7 +8,9 @@ on:
 
 jobs:
   gatekeeper:
-    if: github.event_name == 'pull_request' || github.event.issue.pull_request != null
+    if: |
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -24,6 +26,7 @@ jobs:
             
             if (context.eventName === 'pull_request') {
               body = context.payload.pull_request.body || "";
+              prNumber = context.payload.pull_request.number;
             } else {
               const pr = await github.rest.pulls.get({
                 owner: context.repo.owner,
@@ -33,7 +36,7 @@ jobs:
               body = pr.data.body || "";
             }
             core.setOutput('body', body);
-            core.setOutput('number', prNumber);
+            core.setOutput('number', prNumber.toString());
 
       - name: Validate PR Content
         id: checker
@@ -72,19 +75,23 @@ jobs:
             let errors = "Unknown validation error.";
             try { errors = fs.readFileSync('errors.txt', 'utf8'); } catch (err) {}
             
+            const prNumber = parseInt(${{ steps.pr_info.outputs.number }}, 10);
+            
             const commentBody = `⚠️ **PULL REQUEST REJECTED & CLOSED** ⚠️\n\n@${context.actor}, your Pull Request has been automatically closed because it is missing core requirements:\n\n${errors}\n\n💡 **How to fix:** Edit your description, add the details and screenshot, and then **re-open** this PR!`;
             
+            // 1. Post rejection message
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: parseInt('${{ steps.pr_info.outputs.number }}'),
+              issue_number: prNumber,
               body: commentBody
             });
             
+            // 2. Hard close the PR immediately
             await github.rest.pulls.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: parseInt('${{ steps.pr_info.outputs.number }}'),
+              pull_number: prNumber,
               state: 'closed'
             });
 
@@ -96,7 +103,7 @@ jobs:
             const fs = require('fs');
             if (!fs.existsSync('issue_num.txt')) return;
             const issueNumber = fs.readFileSync('issue_num.txt', 'utf8').trim();
-            const prNumber = parseInt('${{ steps.pr_info.outputs.number }}');
+            const prNumber = parseInt(${{ steps.pr_info.outputs.number }}, 10);
             
             let labelsToAdd = ['gssoc:approved'];
             
@@ -104,10 +111,9 @@ jobs:
               const issue = await github.rest.issues.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: parseInt(issueNumber)
+                issue_number: parseInt(issueNumber, 10)
               });
               
-              // Clean mapping extracts level:, type:, and quality: tags
               const inheritedLabels = issue.data.labels
                 .map(l => l.name)
                 .filter(name => name.indexOf('type:') === 0 || name.indexOf('level:') === 0 || name.indexOf('quality:') === 0);
