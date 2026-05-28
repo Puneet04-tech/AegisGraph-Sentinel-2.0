@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ class ModelRegistry:
         self.registry_dir.mkdir(parents=True, exist_ok=True)
         self.backend = backend or LocalBackend(self.registry_dir)
         self.manifest_path = self.registry_dir / "registry_manifest.json"
+        self._manifest_lock = threading.RLock()
         self._manifest = self._load_manifest()
 
     def save_version(self, epoch: int, checkpoint: dict, metrics: dict) -> str:
@@ -48,35 +50,43 @@ class ModelRegistry:
             "saved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "artifact_path": artifact_name,
         }
-        self._manifest["versions"].append(entry)
-        self._write_manifest()
+        with self._manifest_lock:
+            manifest = self._load_manifest()
+            manifest["versions"].append(entry)
+            self._manifest = manifest
+            self._write_manifest()
         return version_id
 
     def promote_champion(self, version_id: str) -> None:
         """Promote one manifest entry to champion and demote the others."""
-        versions = self._manifest.get("versions", [])
-        found = False
-        for entry in versions:
-            if isinstance(entry, dict) and entry.get("version_id") == version_id:
-                entry["stage"] = "champion"
-                found = True
-            elif isinstance(entry, dict):
-                entry["stage"] = "candidate"
+        with self._manifest_lock:
+            manifest = self._load_manifest()
+            versions = manifest.get("versions", [])
+            found = False
+            for entry in versions:
+                if isinstance(entry, dict) and entry.get("version_id") == version_id:
+                    entry["stage"] = "champion"
+                    found = True
+                elif isinstance(entry, dict):
+                    entry["stage"] = "candidate"
 
-        if not found:
-            raise ValueError(f"Unknown version_id: {version_id}")
+            if not found:
+                raise ValueError(f"Unknown version_id: {version_id}")
 
-        self._manifest["champion_version_id"] = version_id
-        self._write_manifest()
+            manifest["champion_version_id"] = version_id
+            self._manifest = manifest
+            self._write_manifest()
 
     def load_champion(self, model: torch.nn.Module, device: str) -> bool:
         """Load the champion checkpoint into the supplied model if one exists."""
-        champion_version_id = self._manifest.get("champion_version_id")
+        with self._manifest_lock:
+            champion_version_id = self._manifest.get("champion_version_id")
+            entry = self._find_version_entry(champion_version_id) if champion_version_id else None
+
         if not champion_version_id:
             logger.warning("No champion version recorded in %s", self.manifest_path)
             return False
 
-        entry = self._find_version_entry(champion_version_id)
         if entry is None:
             logger.warning(
                 "Champion version %s is missing from registry manifest",
@@ -107,7 +117,8 @@ class ModelRegistry:
 
     def get_manifest(self) -> dict:
         """Return a deep copy of the current manifest."""
-        return copy.deepcopy(self._manifest)
+        with self._manifest_lock:
+            return copy.deepcopy(self._manifest)
 
     def _default_manifest(self) -> dict[str, Any]:
         """Create a fresh manifest structure."""
@@ -118,41 +129,42 @@ class ModelRegistry:
 
     def _load_manifest(self) -> dict[str, Any]:
         """Load the manifest from disk or initialise a new one."""
-        if not self.manifest_path.exists():
-            manifest = self._default_manifest()
-            self._manifest = manifest
-            self._write_manifest()
+        with self._manifest_lock:
+            if not self.manifest_path.exists():
+                manifest = self._default_manifest()
+                self._manifest = manifest
+                self._write_manifest()
+                return manifest
+
+            try:
+                with self.manifest_path.open("r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Resetting invalid registry manifest at %s: %s", self.manifest_path, exc)
+                manifest = self._default_manifest()
+                self._manifest = manifest
+                self._write_manifest()
+                return manifest
+
+            if not isinstance(manifest, dict):
+                logger.warning("Registry manifest at %s was not a JSON object; resetting", self.manifest_path)
+                manifest = self._default_manifest()
+                self._manifest = manifest
+                self._write_manifest()
+                return manifest
+
+            changed = False
+            if not isinstance(manifest.get("versions"), list):
+                manifest["versions"] = []
+                changed = True
+            if "champion_version_id" not in manifest:
+                manifest["champion_version_id"] = None
+                changed = True
+
+            if changed:
+                self._manifest = manifest
+                self._write_manifest()
             return manifest
-
-        try:
-            with self.manifest_path.open("r", encoding="utf-8") as handle:
-                manifest = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Resetting invalid registry manifest at %s: %s", self.manifest_path, exc)
-            manifest = self._default_manifest()
-            self._manifest = manifest
-            self._write_manifest()
-            return manifest
-
-        if not isinstance(manifest, dict):
-            logger.warning("Registry manifest at %s was not a JSON object; resetting", self.manifest_path)
-            manifest = self._default_manifest()
-            self._manifest = manifest
-            self._write_manifest()
-            return manifest
-
-        changed = False
-        if not isinstance(manifest.get("versions"), list):
-            manifest["versions"] = []
-            changed = True
-        if "champion_version_id" not in manifest:
-            manifest["champion_version_id"] = None
-            changed = True
-
-        if changed:
-            self._manifest = manifest
-            self._write_manifest()
-        return manifest
 
     def _write_manifest(self) -> None:
         """Atomically persist the in-memory manifest to disk."""

@@ -73,6 +73,8 @@ class FraudPatternDetector:
         self,
         transactions: List[Dict],
         reference_time: datetime,
+        max_cycle_length: int = 6,
+        max_cycle_count: int = 200,
     ) -> List[Dict]:
         """
         Detect mule rings: circular chains of rapid transfers.
@@ -89,19 +91,21 @@ class FraudPatternDetector:
             - total_amount: Sum transferred
             - risk_score: [0, 1]
             - detected_at: timestamp
+            - max_cycle_length: Hard cap on cycle search depth
+            - max_cycle_count: Hard cap on emitted cycle candidates
         """
         # Build directed transfer graph
         graph = self._build_transfer_graph(transactions)
         
         detected_rings = []
         
-        # Search for cycles
+        # Search for cycles with bounded depth and lazy enumeration.
         try:
-            # Materialize the generator first so a traversal error cannot leave
-            # partially processed rings in the output.
-            all_cycles = list(nx.simple_cycles(graph))
-
-            for cycle in all_cycles:
+            for cycle in self._iter_bounded_cycles(
+                graph,
+                max_cycle_length=max_cycle_length,
+                max_cycle_count=max_cycle_count,
+            ):
                 if len(cycle) >= self.min_chain_length:
                     # Extract transactions in this cycle
                     cycle_transactions = self._get_cycle_transactions(
@@ -131,6 +135,61 @@ class FraudPatternDetector:
             logger.warning("Error detecting cycles while enumerating mule rings: %s", e)
         
         return detected_rings
+
+    def _iter_bounded_cycles(
+        self,
+        graph: nx.DiGraph,
+        max_cycle_length: int,
+        max_cycle_count: int,
+    ):
+        """Yield unique directed cycles without materializing the full search space."""
+        if max_cycle_length < 2 or max_cycle_count < 1:
+            return
+
+        seen_cycles: Set[Tuple] = set()
+        emitted = 0
+        nodes = sorted(graph.nodes(), key=repr)
+
+        for start_node in nodes:
+            stack = [(start_node, [start_node], {start_node})]
+            while stack:
+                current_node, path, path_nodes = stack.pop()
+                if len(path) > max_cycle_length:
+                    continue
+
+                try:
+                    neighbors = list(graph.successors(current_node))
+                except nx.NetworkXError:
+                    continue
+
+                for neighbor in neighbors:
+                    if neighbor == start_node and len(path) >= self.min_chain_length:
+                        cycle = path[:]
+                        cycle_key = self._canonical_cycle_key(cycle)
+                        if cycle_key not in seen_cycles:
+                            seen_cycles.add(cycle_key)
+                            emitted += 1
+                            yield cycle
+                            if emitted >= max_cycle_count:
+                                return
+                        continue
+
+                    if neighbor in path_nodes:
+                        continue
+                    if len(path) >= max_cycle_length:
+                        continue
+
+                    next_path = path + [neighbor]
+                    stack.append((neighbor, next_path, path_nodes | {neighbor}))
+
+    @staticmethod
+    def _canonical_cycle_key(cycle: List) -> Tuple:
+        """Canonicalize a cycle so rotations are deduplicated."""
+        if not cycle:
+            return tuple()
+
+        rotations = [tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))]
+        return min(rotations, key=lambda candidate: tuple(map(repr, candidate)))
     
     def detect_fan_in_hubs(
         self,
@@ -739,8 +798,15 @@ class FraudPatternDetector:
         detected_rings = []
         
         try:
-            # Find all maximal cliques (cached for performance)
-            cliques_cached = self.cache.cache_find_cliques(undirected_graph, ttl=900)
+            pruned_graph = self._prune_graph_for_clique_search(
+                undirected_graph,
+                min_clique_size=min_clique_size,
+            )
+            if len(pruned_graph.nodes()) < min_clique_size:
+                return []
+
+            # Find all maximal cliques on the pruned subgraph.
+            cliques_cached = self.cache.cache_find_cliques(pruned_graph, ttl=900)
             cliques = [list(c) for c in cliques_cached]  # Convert frozensets back to lists
             
             for clique in cliques:
@@ -783,6 +849,36 @@ class FraudPatternDetector:
             logger.warning("Error in fraud ring detection: %s", e)
         
         return sorted(detected_rings, key=lambda x: x['risk_score'], reverse=True)
+
+    def _prune_graph_for_clique_search(
+        self,
+        graph: nx.Graph,
+        min_clique_size: int,
+    ) -> nx.Graph:
+        """
+        Prune nodes that cannot belong to a clique of size min_clique_size.
+
+        A node in a clique of size k must have degree at least k - 1 inside the
+        induced subgraph, so we first remove nodes below that bound and then
+        apply a k-core reduction to collapse the remaining low-degree fringe.
+        """
+        if min_clique_size <= 2 or len(graph) == 0:
+            return graph
+
+        required_degree = min_clique_size - 1
+        degree_filtered = graph.subgraph(
+            [node for node, degree in graph.degree() if degree >= required_degree]
+        ).copy()
+
+        if len(degree_filtered) < min_clique_size:
+            return degree_filtered
+
+        try:
+            return nx.k_core(degree_filtered, k=required_degree)
+        except nx.NetworkXError:
+            # If the graph becomes too sparse after filtering, fall back to the
+            # degree-pruned subgraph rather than failing the entire detector.
+            return degree_filtered
 
     def apply_temporal_decay_to_pattern(
         self,
