@@ -7,6 +7,7 @@ Real-time fraud detection API service
 from __future__ import annotations
 
 import asyncio
+import binascii
 import hashlib
 import hmac
 import json
@@ -1920,7 +1921,8 @@ async def get_model_info():
     description="Innovation 5: Detects phone coercion through acoustic stress analysis",
     dependencies=[Depends(require_api_key)]
 )
-def analyze_voice(request: VoiceAnalysisRequest):
+@limiter.limit("10/minute")
+async def analyze_voice(request: Request, request_body: VoiceAnalysisRequest):
     """
     Analyze voice recording for stress and coercion indicators
     
@@ -1937,26 +1939,39 @@ def analyze_voice(request: VoiceAnalysisRequest):
     try:
         import base64
         import tempfile
-        import wave
         
         # Decode base64 audio
-        audio_bytes = base64.b64decode(request.audio_base64, validate=True)
+        try:
+            audio_bytes = base64.b64decode(request_body.audio_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid base64 audio payload") from exc
+
+        # Base64 can still expand into a large decoded blob. Cap decoded bytes
+        # as well so short voice samples cannot monopolize memory or CPU.
+        if len(audio_bytes) > 350_000:
+            raise HTTPException(status_code=413, detail="Audio payload too large")
         
         # Save to temporary file
         with tempfile.NamedTemporaryFile(mode='wb', suffix='.wav', delete=False) as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
         
-        # Analyze voice stress
-        result = voice_analyzer.analyze_voice(
-            audio_file=tmp_path,
-            sample_rate=request.sample_rate
+        # Offload CPU-heavy analysis so a few voice requests do not monopolize
+        # the request worker thread.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                voice_analyzer.analyze_voice,
+                audio_file=tmp_path,
+                sample_rate=request_body.sample_rate,
+            ),
         )
         
         processing_time_ms = (time.time() - start_time) * 1000
         
         return VoiceAnalysisResponse(
-            transaction_id=request.transaction_id,
+            transaction_id=request_body.transaction_id,
             stress_score=result['stress_score'],
             classification=result['classification'],
             confidence=result['confidence'],
@@ -1964,8 +1979,8 @@ def analyze_voice(request: VoiceAnalysisRequest):
             recommended_action=result['recommended_action'],
             processing_time_ms=processing_time_ms,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid voice analysis request") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         _raise_internal_server_error("Voice analysis", exc)
     finally:

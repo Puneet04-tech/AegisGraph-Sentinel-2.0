@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -301,6 +302,40 @@ class _BoomVoiceAnalyzer:
         raise RuntimeError("voice internal secret")
 
 
+class _VoiceAnalyzerStub:
+    def __init__(self, result=None):
+        self.result = result or {
+            "stress_score": 12.5,
+            "classification": "NORMAL",
+            "confidence": 0.91,
+            "features": {
+                "f0_mean": 120.0,
+                "f0_std": 8.0,
+                "f0_range": 22.0,
+                "jitter": 0.01,
+                "shimmer": 0.02,
+                "speech_rate": 4.5,
+                "prosody_entropy": 1.2,
+                "snr": 28.0,
+                "background_voices": 0,
+            },
+            "recommended_action": "PROCEED",
+        }
+        self.calls = []
+
+    def analyze_voice(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.result
+
+
+def _valid_voice_payload(audio_base64="dGVzdA=="):
+    return {
+        "transaction_id": "txn_voice",
+        "audio_base64": audio_base64,
+        "sample_rate": 16000,
+    }
+
+
 class _BoomMuleScorer:
     def score_account_opening(self, *args, **kwargs):
         raise RuntimeError("scoring internal secret")
@@ -371,3 +406,95 @@ def test_public_api_internal_errors_are_sanitized(
     assert body["error"]["code"] == "INTERNAL_ERROR"
     assert body["error"]["message"] == "Internal Server Error"
     assert secret not in response.text
+
+
+def test_voice_analysis_accepts_small_payload(api_client, monkeypatch):
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+    stub = _VoiceAnalyzerStub()
+    monkeypatch.setattr(api_main.state, "voice_analyzer", stub, raising=False)
+
+    response = api_client.post("/api/v1/voice/analyze", json=_valid_voice_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["transaction_id"] == "txn_voice"
+    assert body["classification"] == "NORMAL"
+    assert stub.calls
+
+
+def test_voice_analysis_rejects_oversized_base64_payload(api_client):
+    response = api_client.post(
+        "/api/v1/voice/analyze",
+        json=_valid_voice_payload(audio_base64="A" * 500_004),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_voice_analysis_rejects_oversized_decoded_audio(api_client, monkeypatch):
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+    monkeypatch.setattr(api_main.state, "voice_analyzer", _VoiceAnalyzerStub(), raising=False)
+
+    response = api_client.post(
+        "/api/v1/voice/analyze",
+        json=_valid_voice_payload(audio_base64="A" * 470_000),
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["message"] == "Audio payload too large"
+
+
+def test_voice_analysis_rejects_malformed_base64(api_client, monkeypatch):
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+    monkeypatch.setattr(api_main.state, "voice_analyzer", _VoiceAnalyzerStub(), raising=False)
+
+    response = api_client.post(
+        "/api/v1/voice/analyze",
+        json=_valid_voice_payload(audio_base64="%%%INVALID%%%"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "Invalid base64 audio payload"
+
+
+def test_voice_analysis_cleans_temp_file_on_failure(api_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+    monkeypatch.setattr(api_main.state, "voice_analyzer", _BoomVoiceAnalyzer(), raising=False)
+
+    temp_file_path = tmp_path / "voice-upload.wav"
+
+    class _TempFileContext:
+        def __enter__(self):
+            self.handle = temp_file_path.open("wb")
+            return self.handle
+
+        def __exit__(self, exc_type, exc, tb):
+            self.handle.close()
+            return False
+
+    monkeypatch.setattr(
+        tempfile,
+        "NamedTemporaryFile",
+        lambda *args, **kwargs: _TempFileContext(),
+    )
+
+    response = api_client.post("/api/v1/voice/analyze", json=_valid_voice_payload())
+
+    assert response.status_code == 500
+    assert not temp_file_path.exists()
+
+
+def test_voice_analysis_rate_limit_enforced(api_client, monkeypatch):
+    if not api_main.SLOWAPI_AVAILABLE:
+        pytest.skip("SlowAPI is not installed")
+
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+    monkeypatch.setattr(api_main.state, "voice_analyzer", _VoiceAnalyzerStub(), raising=False)
+
+    statuses = []
+    for _ in range(11):
+        response = api_client.post("/api/v1/voice/analyze", json=_valid_voice_payload())
+        statuses.append(response.status_code)
+
+    assert 429 in statuses
