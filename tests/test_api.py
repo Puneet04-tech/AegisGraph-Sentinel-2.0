@@ -53,17 +53,19 @@ class TestFraudCheckEndpoint:
     
     def test_low_risk_transaction(self):
         """Test with a low-risk transaction"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transaction = {
             "transaction_id": "test_001",
+            "source_account": "user_001",
+            "target_account": "merchant_001",
             "amount": 50.0,
-            "timestamp": 1234567890.0,
-            "from_account": "user_1",
-            "to_account": "merchant_1",
-            "transaction_type": "payment",
-            "metadata": {
-                "location": "US",
-                "device_id": "device_1"
-            }
+            "currency": "INR",
+            "mode": "UPI",
+            "timestamp": now,
+            "device_id": "device_1",
+            "ip_address": "103.1.1.1",
+            "location": "Mumbai, India"
         }
         
         response = client.post("/api/v1/fraud/check", json=transaction)
@@ -86,17 +88,19 @@ class TestFraudCheckEndpoint:
     
     def test_high_risk_transaction(self):
         """Test with a high-risk transaction (large amount, rapid)"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transaction = {
             "transaction_id": "test_002",
+            "source_account": "new_user",
+            "target_account": "unknown_merchant",
             "amount": 10000.0,
-            "timestamp": 1234567890.0,
-            "from_account": "new_user",
-            "to_account": "unknown_merchant",
-            "transaction_type": "transfer",
-            "metadata": {
-                "location": "XX",
-                "device_id": "new_device"
-            }
+            "currency": "INR",
+            "mode": "NEFT",
+            "timestamp": now,
+            "device_id": "new_device",
+            "ip_address": "192.168.1.1",
+            "location": "Unknown"
         }
         
         response = client.post("/api/v1/fraud/check", json=transaction)
@@ -111,20 +115,23 @@ class TestFraudCheckEndpoint:
     
     def test_transaction_with_biometrics(self):
         """Test transaction with behavioral biometrics"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transaction = {
             "transaction_id": "test_003",
+            "source_account": "user_001",
+            "target_account": "merchant_001",
             "amount": 100.0,
-            "timestamp": 1234567890.0,
-            "from_account": "user_1",
-            "to_account": "merchant_1",
-            "transaction_type": "payment",
+            "currency": "INR",
+            "mode": "UPI",
+            "timestamp": now,
+            "device_id": "device_1",
             "biometrics": {
-                "keystroke_events": [
-                    {"key": "a", "timestamp": 0.0, "event_type": "keydown"},
-                    {"key": "a", "timestamp": 0.1, "event_type": "keyup"}
-                ],
-                "mouse_movements": []
-            }
+                "hold_times": [120, 135, 128, 142, 118],
+                "flight_times": [200, 185, 210, 195]
+            },
+            "ip_address": "103.1.1.1",
+            "location": "Mumbai, India"
         }
         
         response = client.post("/api/v1/fraud/check", json=transaction)
@@ -151,13 +158,19 @@ class TestFraudCheckEndpoint:
 
         monkeypatch.setattr('src.api.main.compute_risk_score', fake_compute_risk_score)
 
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transaction = {
             "transaction_id": "test_allow_001",
+            "source_account": "user_allow",
+            "target_account": "merchant_allow",
             "amount": 100.0,
-            "timestamp": 1234567890.0,
-            "from_account": "user_allow",
-            "to_account": "merchant_allow",
-            "transaction_type": "payment"
+            "currency": "INR",
+            "mode": "UPI",
+            "timestamp": now,
+            "device_id": "device_1",
+            "ip_address": "103.1.1.1",
+            "location": "Mumbai, India"
         }
 
         response = client.post("/api/v1/fraud/check", json=transaction)
@@ -210,30 +223,44 @@ class TestBatchFraudCheck:
 
         monkeypatch.setattr('src.api.main.check_transaction', fake_check_transaction)
 
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transactions = [
             {
                 "transaction_id": "batch_allow",
+                "source_account": "user_allow",
+                "target_account": "merchant_allow",
                 "amount": 50.0,
-                "timestamp": 1234567890.0,
-                "from_account": "user_allow",
-                "to_account": "merchant_allow",
-                "transaction_type": "payment",
+                "currency": "INR",
+                "mode": "UPI",
+                "timestamp": now,
+                "device_id": "device_1",
+                "ip_address": "103.1.1.1",
+                "location": "Mumbai, India",
             },
             {
                 "transaction_id": "batch_review",
+                "source_account": "user_review",
+                "target_account": "merchant_review",
                 "amount": 75.0,
-                "timestamp": 1234567950.0,
-                "from_account": "user_review",
-                "to_account": "merchant_review",
-                "transaction_type": "payment",
+                "currency": "INR",
+                "mode": "NEFT",
+                "timestamp": now,
+                "device_id": "device_2",
+                "ip_address": "103.1.1.2",
+                "location": "Delhi, India",
             },
             {
                 "transaction_id": "batch_block",
+                "source_account": "user_block",
+                "target_account": "merchant_block",
                 "amount": 100.0,
-                "timestamp": 1234568010.0,
-                "from_account": "user_block",
-                "to_account": "merchant_block",
-                "transaction_type": "payment",
+                "currency": "INR",
+                "mode": "IMPS",
+                "timestamp": now,
+                "device_id": "device_3",
+                "ip_address": "103.1.1.3",
+                "location": "Bangalore, India",
             },
         ]
 
@@ -248,14 +275,20 @@ class TestBatchFraudCheck:
     
     def test_batch_check(self):
         """Test batch processing of transactions"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         transactions = [
             {
                 "transaction_id": f"batch_{i}",
+                "source_account": f"user_{i}",
+                "target_account": f"merchant_{i+10}",  # Ensure different from source
                 "amount": 50.0 * (i + 1),
-                "timestamp": 1234567890.0 + i * 60,
-                "from_account": f"user_{i}",
-                "to_account": f"merchant_{i}",
-                "transaction_type": "payment"
+                "currency": "INR",
+                "mode": "UPI",
+                "timestamp": now,
+                "device_id": f"device_{i}",
+                "ip_address": f"103.1.1.{i+1}",
+                "location": "India"
             }
             for i in range(3)
         ]

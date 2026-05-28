@@ -235,13 +235,18 @@ class TestApiIntegration:
         monkeypatch.setattr("src.api.main.compute_risk_score", fake_compute_risk_score)
         monkeypatch.setattr("src.api.main.generate_explanation", fake_generate_explanation)
 
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        
         client = TestClient(app)
         payload = {
             "transaction_id": "compat_001",
+            "source_account": "user_a",
+            "target_account": "user_b",
             "amount": 100.0,
-            "timestamp": 1234567890.0,
-            "from_account": "user_a",
-            "to_account": "user_b",
+            "currency": "INR",
+            "mode": "UPI",
+            "timestamp": now,
         }
         response = client.post("/api/v1/fraud/check", json=payload)
         assert response.status_code == 200
