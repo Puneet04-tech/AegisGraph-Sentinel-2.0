@@ -11,6 +11,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.api import main as api_main
 from src.api.main import app, state
 from src.api.schemas import RiskBreakdown, TransactionCheckResponse
 
@@ -314,6 +315,51 @@ class TestBatchFraudCheck:
         assert response.status_code == 200
         data = response.json()
         assert len(data["results"]) == 0
+
+    def test_batch_processing_is_chunked(self, monkeypatch):
+        """Batch processing should fan out in bounded chunks."""
+        call_sizes = []
+
+        async def fake_check_transaction(txn_request):
+            return TransactionCheckResponse(
+                transaction_id=txn_request.transaction_id,
+                risk_score=0.25,
+                decision="approve",
+                factors={"graph": 0.0, "velocity": 0.0, "behavior": 0.0, "entropy": 0.0},
+                confidence=0.9,
+                breakdown=RiskBreakdown(graph=0.0, velocity=0.0, behavior=0.0, entropy=0.0),
+                explanation="ok",
+                recommended_action="approve",
+                processing_time_ms=1.0,
+                timestamp="2026-01-01T00:00:00Z",
+            )
+
+        original_gather = api_main.asyncio.gather
+
+        async def recording_gather(*args, **kwargs):
+            call_sizes.append(len(args))
+            return await original_gather(*args, **kwargs)
+
+        monkeypatch.setattr(api_main, "check_transaction", fake_check_transaction)
+        monkeypatch.setattr(api_main.asyncio, "gather", recording_gather)
+
+        transactions = [
+            {
+                "transaction_id": f"batch_{i}",
+                "amount": 50.0 * (i + 1),
+                "timestamp": 1234567890.0 + i * 60,
+                "from_account": f"user_{i}",
+                "to_account": f"merchant_{i}",
+                "transaction_type": "payment",
+            }
+            for i in range(17)
+        ]
+
+        response = client.post("/api/v1/fraud/batch", json={"transactions": transactions})
+
+        assert response.status_code == 200
+        assert call_sizes == [8, 8, 1]
+        assert len(response.json()["results"]) == 17
 
 
 class TestCORSandSecurity:

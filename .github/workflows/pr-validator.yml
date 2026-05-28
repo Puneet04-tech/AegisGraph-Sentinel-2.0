@@ -1,0 +1,130 @@
+name: "PR Hard Gatekeeper & GSSoC Labeler"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  gatekeeper:
+    if: |
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Fetch PR Details
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let body = "";
+            let prNumber = context.issue.number;
+            
+            if (context.eventName === 'pull_request') {
+              body = context.payload.pull_request.body || "";
+              prNumber = context.payload.pull_request.number;
+            } else {
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              body = pr.data.body || "";
+            }
+            core.setOutput('body', body);
+            core.setOutput('number', prNumber.toString());
+
+      - name: Validate PR Content
+        id: checker
+        env:
+          PR_BODY: ${{ steps.pr_info.outputs.body }}
+        run: |
+          import os, sys, re
+          
+          body = os.getenv('PR_BODY', '')
+          errors = []
+          
+          # Require Issue Number Link
+          match = re.search(r'Fixes\s*#\s*(\d+)', body, re.IGNORECASE)
+          if not match:
+              errors.append("- **Missing Linked Issue:** You must include a valid issue number link (e.g., `Fixes #123`).")
+          else:
+              with open("issue_num.txt", "w") as f:
+                  f.write(match.group(1))
+              
+          # Require Screenshot/Visual Evidence
+          if not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):
+              errors.append("- **Missing Screenshot/Visual Proof:** You must attach a UI screenshot or a terminal test log image.")
+          
+          if errors:
+              with open("errors.txt", "w") as f:
+                  f.write("\n".join(errors))
+              sys.exit(1)
+        shell: python
+
+      - name: Reject and Auto-Close PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let errors = "Unknown validation error.";
+            try { errors = fs.readFileSync('errors.txt', 'utf8'); } catch (err) {}
+            
+            const prNumber = parseInt(${{ steps.pr_info.outputs.number }}, 10);
+            const commentBody = `⚠️ **PULL REQUEST REJECTED & CLOSED** ⚠️\n\n@${context.actor}, your Pull Request has been automatically closed because it is missing core requirements:\n\n${errors}\n\n💡 **How to fix:** Edit your description, add the details and screenshot, and then **re-open** this PR!`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: commentBody
+            });
+            
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              state: 'closed'
+            });
+
+      - name: Process GSSoC Rewards and Approval
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('issue_num.txt')) return;
+            const issueNumber = fs.readFileSync('issue_num.txt', 'utf8').trim();
+            const prNumber = parseInt(${{ steps.pr_info.outputs.number }}, 10);
+            
+            let labelsToAdd = ['gssoc:approved'];
+            
+            try {
+              const issue = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(issueNumber, 10)
+              });
+              
+              const inheritedLabels = issue.data.labels
+                .map(l => l.name)
+                .filter(name => name.indexOf('type:') === 0 || name.indexOf('level:') === 0 || name.indexOf('quality:') === 0);
+                
+              labelsToAdd = labelsToAdd.concat(inheritedLabels);
+              
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: labelsToAdd
+              });
+              console.log(`Successfully synced GSSoC Metrics: ${labelsToAdd}`);
+              
+            } catch (error) {
+              console.log("Could not process GSSoC labels automatically: ", error.message);
+            }

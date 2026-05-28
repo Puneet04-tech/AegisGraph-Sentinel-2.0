@@ -7,6 +7,11 @@ Real-time Fraud Detection Interface
 import logging
 logger = logging.getLogger(__name__)
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
 import requests
 import json
 import base64
@@ -14,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime
 from datetime import timezone
 import time
 import os
@@ -32,11 +37,128 @@ st.set_page_config(
 
 # API Configuration
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+MAX_BATCH_UPLOAD_BYTES = 5 * 1024 * 1024
+BATCH_PREVIEW_ROWS = 10
+BATCH_CHUNK_SIZE = 50
+BATCH_MAX_ROWS = 500
+COMMAND_CENTER_REFRESH_KEY = "command_center_live_refresh"
+COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
+
+def _cache_data(ttl: int):
+    """Return a cache decorator that degrades gracefully on older Streamlit builds."""
+    cache_data = getattr(st, "cache_data", None)
+    if cache_data is None:
+        def passthrough(fn):
+            return fn
+        return passthrough
+    return cache_data(ttl=ttl)
 
 
 def _accessible_status(emoji: str, label: str) -> str:
     """Return a visual status with an adjacent plain-text equivalent."""
     return f"{emoji} {label} ({label})"
+
+
+def _build_batch_transaction(row, index: int) -> dict:
+    """Normalize one CSV row into the fraud-check request payload."""
+    return {
+        "transaction_id": str(row.get("transaction_id", f"TXN_{index}")),
+        "source_account": str(row.get("source_account", "unknown")),
+        "target_account": str(row.get("target_account", "unknown")),
+        "amount": float(row.get("amount", 0)),
+        "currency": str(row.get("currency", "INR")),
+        "mode": str(row.get("mode", "UPI")),
+        "timestamp": str(row.get("timestamp", datetime.now(timezone.utc).isoformat() + "Z")),
+    }
+
+
+def _estimate_csv_rows(uploaded_file) -> int:
+    """Count CSV rows in bounded chunks without materializing the file."""
+    uploaded_file.seek(0)
+    total_rows = 0
+    for chunk in pd.read_csv(uploaded_file, chunksize=BATCH_CHUNK_SIZE):
+        total_rows += len(chunk)
+        if total_rows >= BATCH_MAX_ROWS:
+            break
+    uploaded_file.seek(0)
+    return total_rows
+
+
+def _schedule_live_refresh(interval_ms: int = 1500) -> None:
+    """Request a non-blocking dashboard refresh when the helper is available."""
+    if st_autorefresh is not None:
+        st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
+
+
+@_cache_data(ttl=5)
+def _fetch_health_snapshot(api_url: str) -> dict:
+    response = requests.get(f"{api_url}/health", timeout=2)
+    return response.json() if response.status_code == 200 else {}
+
+
+@_cache_data(ttl=5)
+def _fetch_stats_snapshot(api_url: str) -> dict:
+    response = requests.get(f"{api_url}/stats", timeout=5)
+    return response.json() if response.status_code == 200 else {}
+
+
+def _build_live_event(api_url: str, txn: dict) -> dict | None:
+    """Execute one live fraud check off the UI thread and shape the dashboard payload."""
+    try:
+        start_t = time.time()
+        resp = requests.post(f"{api_url}/api/v1/fraud/check", json=txn, timeout=2)
+        latency = int((time.time() - start_t) * 1000)
+        if resp.status_code != 200:
+            return None
+
+        result = resp.json()
+        return {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "id": txn["transaction_id"],
+            "amount": txn["amount"],
+            "decision": result.get("decision", "ALLOW"),
+            "risk": result.get("risk_score", 0.0),
+            "latency": latency,
+            "explanation": result.get("explanation", ""),
+            "breakdown": result.get("breakdown", {}),
+        }
+    except Exception:
+        return None
+
+
+def _advance_timed_state(
+    state_key: str,
+    timestamp_key: str,
+    interval_seconds: float,
+    max_steps: int,
+    loop: bool = True,
+) -> bool:
+    """Advance a session-state animation step when enough time has elapsed."""
+    if max_steps <= 0:
+        return False
+
+    now = datetime.now(timezone.utc)
+    last_tick = st.session_state.get(timestamp_key)
+    if last_tick is None:
+        st.session_state[timestamp_key] = now
+        return False
+
+    elapsed = (now - last_tick).total_seconds()
+    if elapsed < interval_seconds:
+        return False
+
+    current_step = int(st.session_state.get(state_key, 0))
+    steps_to_advance = max(1, int(elapsed // interval_seconds))
+
+    if loop:
+        next_step = (current_step + steps_to_advance) % max_steps
+    else:
+        next_step = min(current_step + steps_to_advance, max_steps - 1)
+
+    st.session_state[state_key] = next_step
+    st.session_state[timestamp_key] = now
+    return next_step != current_step
 
 # Custom CSS
 st.markdown("""
@@ -89,8 +211,7 @@ st.markdown("""
         backdrop-filter: blur(10px) !important;
         box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.3) !important;
     }
-    
-    /* Micro-animations and active elements */
+     /* Micro-animations and active elements */
     button[kind="primary"] {
         background: linear-gradient(135deg, #0f766e 0%, #0284c7 100%) !important;
         border: none !important;
@@ -98,14 +219,70 @@ st.markdown("""
         color: white !important;
         font-weight: 600 !important;
         padding: 10px 24px !important;
-        box-shadow: 0 4px 15px rgba(045, 212,191, 0.3) !important;
-        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        transition: all 0.3s ease !important;
     }
+    
+    /* Alert Center Styling */
+    .alert-card {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        animation: slideIn 0.3s ease-out forwards;
+        transition: transform 0.2s;
+    }
+    .alert-card:hover {
+        transform: translateX(5px);
+        background: rgba(30, 41, 59, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    @keyframes slideIn {
+        from { opacity: 0; transform: translateX(-20px); }
+        to { opacity: 1; transform: translateX(0); }
+    }
+    .severity-badge {
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .severity-Low { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; }
+    .severity-Medium { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid #f59e0b; }
+    .severity-High { background: rgba(249, 115, 22, 0.2); color: #f97316; border: 1px solid #f97316; }
+    .severity-Critical { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; animation: pulse 2s infinite; }
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+        70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+    .alert-time { font-family: monospace; color: #94a3b8; font-size: 0.85rem; }
+    .alert-title { font-weight: 600; color: #f1f5f9; margin: 0 12px; flex-grow: 1; }
     
     button[kind="primary"]:hover {
         transform: scale(1.03);
         box-shadow: 0 8px 25px rgba(056, 189,248, 0.5) !important;
         background: linear-gradient(135deg, #14b8a6 0%, #f59e0b 100%) !important;
+    }
+    
+    button[kind="secondary"] {
+        background: rgba(30, 41, 59, 0.7) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 10px !important;
+        color: white !important;
+        font-weight: 600 !important;
+        padding: 10px 24px !important;
+        transition: all 0.3s ease !important;
+    }
+    button[kind="secondary"]:hover {
+        background: rgba(16, 185, 129, 0.2) !important;
+        border-color: #10b981 !important;
+        transform: scale(1.03);
     }
     
     /* Navigation Sidebar Enhancements */
@@ -130,6 +307,28 @@ st.markdown("""
         border-color: rgba(45, 212, 191, 0.55) !important;
         background: rgba(20, 184, 166, 0.12) !important;
         cursor: pointer;
+    }
+
+    [data-testid="stSidebar"] [role="radiogroup"] label:focus-within,
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:focus-visible) {
+        outline: 3px solid rgba(45, 212, 191, 0.95) !important;
+        outline-offset: 2px !important;
+        border-color: rgba(45, 212, 191, 0.9) !important;
+        background: rgba(20, 184, 166, 0.16) !important;
+        box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.18) !important;
+    }
+
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked),
+    [data-testid="stSidebar"] [role="radiogroup"] label[aria-checked="true"] {
+        border-color: rgba(45, 212, 191, 0.9) !important;
+        background: linear-gradient(135deg, rgba(8, 47, 73, 0.95) 0%, rgba(15, 118, 110, 0.35) 100%) !important;
+        box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.35), 0 8px 24px rgba(15, 118, 110, 0.2) !important;
+    }
+
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p,
+    [data-testid="stSidebar"] [role="radiogroup"] label[aria-checked="true"] p {
+        color: #e6fffb !important;
+        font-weight: 800 !important;
     }
 
     [data-testid="stSidebar"] [role="radiogroup"] label p {
@@ -218,48 +417,45 @@ if page == "🧭 Command Center":
     
     if 'live_events' not in st.session_state:
         st.session_state.live_events = []
-        
+    if 'live_event_future' not in st.session_state:
+        st.session_state.live_event_future = None
+    if 'live_event_txn' not in st.session_state:
+        st.session_state.live_event_txn = None
+
     try:
-        response = requests.get(f"{API_URL}/stats", timeout=5)
-        stats = response.json() if response.status_code == 200 else {}
-    except:
+        health = _fetch_health_snapshot(API_URL)
+    except Exception:
+        health = {}
+    try:
+        stats = _fetch_stats_snapshot(API_URL)
+    except Exception:
         stats = {}
         
     # Generate a live event if active
     if live_mode:
-        # Local imports consolidated globally
-        # Create a mock transaction to send to the backend
-        accounts = ["ACC" + str(random.randint(1000, 9999)), "mule_acc_001", "ACC" + str(random.randint(1000, 9999))]
-        txn = {
-            "transaction_id": f"LIVE_{int(time.time()*1000)}",
-            "source_account": random.choice(accounts),
-            "target_account": random.choice(accounts),
-            "amount": float(random.choice([500, 2500, 50000, 150000, 300000])),
-            "currency": "INR",
-            "mode": random.choice(["UPI", "IMPS"]),
-            "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
-        }
-        try:
-            start_t = time.time()
-            resp = requests.post(f"{API_URL}/api/v1/fraud/check", json=txn, timeout=2)
-            latency = int((time.time() - start_t) * 1000)
-            if resp.status_code == 200:
-                result = resp.json()
-                event = {
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "id": txn["transaction_id"],
-                    "amount": txn["amount"],
-                    "decision": result.get("decision", "ALLOW"),
-                    "risk": result.get("risk_score", 0.0),
-                    "latency": latency,
-                    "explanation": result.get("explanation", ""),
-                    "breakdown": result.get("breakdown", {})
-                }
+        _schedule_live_refresh()
+        live_event_future = st.session_state.live_event_future
+        if live_event_future is not None and live_event_future.done():
+            event = live_event_future.result()
+            if event is not None:
                 st.session_state.live_events.insert(0, event)
-                # Keep last 15
                 st.session_state.live_events = st.session_state.live_events[:15]
-        except Exception as e:
-            pass
+            st.session_state.live_event_future = None
+            st.session_state.live_event_txn = None
+
+        if st.session_state.live_event_future is None:
+            accounts = ["ACC" + str(random.randint(1000, 9999)), "mule_acc_001", "ACC" + str(random.randint(1000, 9999))]
+            txn = {
+                "transaction_id": f"LIVE_{int(time.time()*1000)}",
+                "source_account": random.choice(accounts),
+                "target_account": random.choice(accounts),
+                "amount": float(random.choice([500, 2500, 50000, 150000, 300000])),
+                "currency": "INR",
+                "mode": random.choice(["UPI", "IMPS"]),
+                "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
+            }
+            st.session_state.live_event_txn = txn
+            st.session_state.live_event_future = COMMAND_CENTER_IO_EXECUTOR.submit(_build_live_event, API_URL, txn)
 
     # Metrics
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
@@ -354,10 +550,6 @@ if page == "🧭 Command Center":
                 st.success(latest['explanation'])
         else:
             st.write("Awaiting transactions...")
-
-    if live_mode:
-        time.sleep(1.5)
-        st.rerun()
 
 # Page: Single Transaction Check
 elif page == "💳 Transaction Scan":
@@ -495,62 +687,94 @@ elif page == "📁 Batch Triage":
     
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file)
-            st.success(f"✅ Loaded {len(df)} transactions")
+            if getattr(uploaded_file, "size", 0) > MAX_BATCH_UPLOAD_BYTES:
+                st.error(
+                    f"File too large. Maximum allowed size is {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB."
+                )
+                st.stop()
+
+            uploaded_file.seek(0)
+            preview_df = pd.read_csv(uploaded_file, nrows=BATCH_PREVIEW_ROWS)
+            uploaded_file.seek(0)
+            estimated_rows = _estimate_csv_rows(uploaded_file)
+            uploaded_file.seek(0)
+
+            st.success(
+                f"Loaded CSV preview. Estimated rows: "
+                f"{estimated_rows}{'+' if estimated_rows >= BATCH_MAX_ROWS else ''}"
+            )
             
             st.subheader("Preview")
-            st.dataframe(df.head(10), use_container_width=True)
+            st.dataframe(preview_df, use_container_width=True)
             
-            if st.button("🚀 Process All Transactions", use_container_width=True):
+            if estimated_rows >= BATCH_MAX_ROWS:
+                st.warning(
+                    f"Processing will stop after {BATCH_MAX_ROWS} rows to keep memory usage bounded."
+                )
+            
+            if st.button("Process All Transactions", use_container_width=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
                 results = []
+                processed_rows = 0
+                total_rows = max(min(estimated_rows, BATCH_MAX_ROWS), 1)
                 
-                for idx, row in df.iterrows():
-                    status_text.text(f"Processing {idx+1}/{len(df)}...")
-                    
-                    txn = {
-                        "transaction_id": str(row.get('transaction_id', f'TXN_{idx}')),
-                        "source_account": str(row.get('source_account', 'unknown')),
-                        "target_account": str(row.get('target_account', 'unknown')),
-                        "amount": float(row.get('amount', 0)),
-                        "currency": str(row.get('currency', 'INR')),
-                        "mode": str(row.get('mode', 'UPI')),
-                        "timestamp": str(row.get('timestamp', datetime.now(timezone.utc).isoformat() + "Z"))
-                    }
-                    
-                    # Add optional fields if present in CSV
-                    if 'ip_address' in row and pd.notna(row['ip_address']):
-                        txn['ip_address'] = str(row['ip_address'])
-                    if 'device_id' in row and pd.notna(row['device_id']):
-                        txn['device_id'] = str(row['device_id'])
-                    if 'location' in row and pd.notna(row['location']):
-                        txn['location'] = str(row['location'])
-                    
-                    try:
-                        response = requests.post(f"{API_URL}/api/v1/fraud/check", json=txn, timeout=30)
-                        if response.status_code == 200:
-                            result = response.json()
+                uploaded_file.seek(0)
+                for chunk in pd.read_csv(uploaded_file, chunksize=BATCH_CHUNK_SIZE):
+                    for _, row in chunk.iterrows():
+                        if processed_rows >= BATCH_MAX_ROWS:
+                            break
+                        
+                        status_text.text(f"Processing {processed_rows + 1}/{total_rows}...")
+                        
+                        txn = _build_batch_transaction(row, processed_rows)
+                        
+                        # Add optional fields if present in CSV
+                        if 'ip_address' in row and pd.notna(row['ip_address']):
+                            txn['ip_address'] = str(row['ip_address'])
+                        if 'device_id' in row and pd.notna(row['device_id']):
+                            txn['device_id'] = str(row['device_id'])
+                        if 'location' in row and pd.notna(row['location']):
+                            txn['location'] = str(row['location'])
+                        
+                        try:
+                            response = requests.post(f"{API_URL}/api/v1/fraud/check", json=txn, timeout=30)
+                            if response.status_code == 200:
+                                result = response.json()
+                                results.append({
+                                    'Transaction ID': txn['transaction_id'],
+                                    'Source': txn['source_account'],
+                                    'Target': txn['target_account'],
+                                    'Amount': f"Rs. {txn['amount']:,.0f}",
+                                    'Risk Score': f"{result['risk_score']:.2%}",
+                                    'risk_score_numeric': result['risk_score'],  # For charting
+                                    'Decision': result['decision'],
+                                    'Confidence': f"{result['confidence']:.0%}",
+                                    'Graph Risk': f"{result['breakdown']['graph']:.2%}",
+                                    'Velocity Risk': f"{result['breakdown']['velocity']:.2%}",
+                                })
+                            else:
+                                st.error(f"API Error for {txn['transaction_id']}: Status {response.status_code}")
+                                results.append({
+                                    'Transaction ID': txn['transaction_id'],
+                                    'Source': txn['source_account'],
+                                    'Target': txn['target_account'],
+                                    'Amount': f"Rs. {txn['amount']:,.0f}",
+                                    'Risk Score': 'ERROR',
+                                    'risk_score_numeric': 0,
+                                    'Decision': 'ERROR',
+                                    'Confidence': 'N/A',
+                                    'Graph Risk': 'N/A',
+                                    'Velocity Risk': 'N/A',
+                                })
+                        except Exception as e:
+                            st.error(f"Error processing {txn.get('transaction_id', 'unknown')}: {str(e)}")
                             results.append({
-                                'Transaction ID': txn['transaction_id'],
-                                'Source': txn['source_account'],
-                                'Target': txn['target_account'],
-                                'Amount': f"₹{txn['amount']:,.0f}",
-                                'Risk Score': f"{result['risk_score']:.2%}",
-                                'risk_score_numeric': result['risk_score'],  # For charting
-                                'Decision': result['decision'],
-                                'Confidence': f"{result['confidence']:.0%}",
-                                'Graph Risk': f"{result['breakdown']['graph']:.2%}",
-                                'Velocity Risk': f"{result['breakdown']['velocity']:.2%}",
-                            })
-                        else:
-                            st.error(f"API Error for {txn['transaction_id']}: Status {response.status_code}")
-                            results.append({
-                                'Transaction ID': txn['transaction_id'],
-                                'Source': txn['source_account'],
-                                'Target': txn['target_account'],
-                                'Amount': f"₹{txn['amount']:,.0f}",
+                                'Transaction ID': txn.get('transaction_id', 'unknown'),
+                                'Source': txn.get('source_account', 'unknown'),
+                                'Target': txn.get('target_account', 'unknown'),
+                                'Amount': f"Rs. {txn.get('amount', 0):,.0f}",
                                 'Risk Score': 'ERROR',
                                 'risk_score_numeric': 0,
                                 'Decision': 'ERROR',
@@ -558,24 +782,18 @@ elif page == "📁 Batch Triage":
                                 'Graph Risk': 'N/A',
                                 'Velocity Risk': 'N/A',
                             })
-                    except Exception as e:
-                        st.error(f"Error processing {txn.get('transaction_id', 'unknown')}: {str(e)}")
-                        results.append({
-                            'Transaction ID': txn.get('transaction_id', 'unknown'),
-                            'Source': txn.get('source_account', 'unknown'),
-                            'Target': txn.get('target_account', 'unknown'),
-                            'Amount': f"₹{txn.get('amount', 0):,.0f}",
-                            'Risk Score': 'ERROR',
-                            'risk_score_numeric': 0,
-                            'Decision': 'ERROR',
-                            'Confidence': 'N/A',
-                            'Graph Risk': 'N/A',
-                            'Velocity Risk': 'N/A',
-                        })
+                        
+                        processed_rows += 1
+                        progress_bar.progress(min(processed_rows / total_rows, 1.0))
                     
-                    progress_bar.progress((idx + 1) / len(df))
+                    if processed_rows >= BATCH_MAX_ROWS:
+                        break
                 
-                status_text.text("✅ Processing complete!")
+                status_text.text("Processing complete!")
+                
+                if not results:
+                    st.warning("No transactions were processed from the uploaded CSV.")
+                    st.stop()
                 
                 # Results
                 st.markdown("---")
@@ -849,21 +1067,42 @@ elif page == "📊 Risk Analytics":
         st.session_state.risk_tps_history = list(np.random.normal(loc=12.5, scale=2.5, size=20).clip(1, 100))
     if 'risk_time_history' not in st.session_state:
         st.session_state.risk_time_history = list(pd.date_range(end=pd.Timestamp.now(), periods=20, freq='2S'))
+    if 'fraud_risk_score_history' not in st.session_state:
+        st.session_state.fraud_risk_score_history = list(np.random.normal(loc=30, scale=5.0, size=20).clip(0, 100))
         
     if is_live:
         # Generate new data point
         new_latency = np.random.normal(loc=avg_time, scale=6.0)
         new_tps = np.random.normal(loc=15.0 if flagged > 0 else 10.0, scale=3.0)
         
+        # Calculate new risk score based on real-time alerts
+        new_risk = np.random.normal(loc=30, scale=5.0)
+        if 'realtime_alerts' in st.session_state and len(st.session_state.realtime_alerts) > 0:
+            active_alerts_for_risk = [a for a in st.session_state.realtime_alerts if a.get('status', 'Active') != 'Resolved']
+            if active_alerts_for_risk:
+                latest_alert = active_alerts_for_risk[0]
+                # Link to alert severity if fresh (within 3 seconds)
+                time_diff = (pd.Timestamp.now() - latest_alert['time']).total_seconds()
+                if time_diff < 3:
+                    if latest_alert['severity'] == "Critical":
+                        new_risk = np.random.normal(loc=95, scale=2.0)
+                    elif latest_alert['severity'] == "High":
+                        new_risk = np.random.normal(loc=82, scale=4.0)
+                    elif latest_alert['severity'] == "Medium":
+                        new_risk = np.random.normal(loc=65, scale=6.0)
+        new_risk = max(0, min(100, new_risk))
+        
         st.session_state.risk_latency_history.append(new_latency)
         st.session_state.risk_tps_history.append(new_tps)
         st.session_state.risk_time_history.append(pd.Timestamp.now())
+        st.session_state.fraud_risk_score_history.append(new_risk)
         
-        # Keep only last 20
+        # Keep only last 20 using slice reassignment (faster and safer in Streamlit)
         if len(st.session_state.risk_latency_history) > 20:
-            st.session_state.risk_latency_history.pop(0)
-            st.session_state.risk_tps_history.pop(0)
-            st.session_state.risk_time_history.pop(0)
+            st.session_state.risk_latency_history = st.session_state.risk_latency_history[-20:]
+            st.session_state.risk_tps_history = st.session_state.risk_tps_history[-20:]
+            st.session_state.risk_time_history = st.session_state.risk_time_history[-20:]
+            st.session_state.fraud_risk_score_history = st.session_state.fraud_risk_score_history[-20:]
 
     # Top metrics display
     col1, col2, col3, col4 = st.columns(4)
@@ -923,6 +1162,108 @@ elif page == "📊 Risk Analytics":
         
         st.plotly_chart(fig_lat, use_container_width=True)
         
+        def render_risk_and_threat_charts():
+            risk_col, threat_col = st.columns([2, 1])
+            
+            with risk_col:
+                st.subheader("🌐 Global Fraud Risk Index")
+                st.markdown("**Real-time aggregate risk score driven by live alert severities**")
+                
+                # Build Risk Trend Chart
+                risk_df = pd.DataFrame({
+                    'Time': st.session_state.risk_time_history,
+                    'RiskScore': st.session_state.fraud_risk_score_history
+                })
+                
+                # Color line based on latest risk score
+                current_risk = risk_df['RiskScore'].iloc[-1]
+                if current_risk >= 80:
+                    line_color = '#ef4444'
+                    fill_color = 'rgba(239, 68, 68, 0.2)'
+                elif current_risk >= 50:
+                    line_color = '#f59e0b'
+                    fill_color = 'rgba(245, 158, 11, 0.2)'
+                else:
+                    line_color = '#10b981'
+                    fill_color = 'rgba(16, 185, 129, 0.2)'
+                    
+                fig_risk = go.Figure()
+                
+                # Gradient area fill
+                fig_risk.add_trace(go.Scatter(
+                    x=risk_df['Time'], 
+                    y=risk_df['RiskScore'],
+                    fill='tozeroy',
+                    mode='lines',
+                    line=dict(color=line_color, width=3),
+                    fillcolor=fill_color,
+                    name="Risk Index"
+                ))
+                
+                # Add spike markers for high risk
+                high_risk_points = risk_df[risk_df['RiskScore'] >= 80]
+                if not high_risk_points.empty:
+                    fig_risk.add_trace(go.Scatter(
+                        x=high_risk_points['Time'],
+                        y=high_risk_points['RiskScore'],
+                        mode='markers',
+                        marker=dict(color='#ef4444', size=10, symbol='diamond-open', line=dict(width=2, color='#ef4444')),
+                        name="Critical Anomaly"
+                    ))
+                    
+                fig_risk.update_layout(
+                    height=200,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    hovermode='x unified',
+                    showlegend=False,
+                    yaxis=dict(range=[0, 100], title="Risk Score", gridcolor='rgba(255,255,255,0.1)'),
+                    xaxis=dict(showgrid=False)
+                )
+                st.plotly_chart(fig_risk, use_container_width=True)
+                
+            with threat_col:
+                st.subheader("🍩 Threat Distribution")
+                st.markdown("**Live severity breakdown**")
+                
+                if 'realtime_alerts' in st.session_state and len(st.session_state.realtime_alerts) > 0:
+                    alerts = st.session_state.realtime_alerts
+                    
+                    if not alerts:
+                        st.info("No active threats.")
+                    else:
+                        sev_counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0}
+                        for a in alerts:
+                            sev_counts[a['severity']] += 1
+                        
+                        labels = list(sev_counts.keys())
+                        values = list(sev_counts.values())
+                        colors = ['#ef4444', '#f97316', '#f59e0b', '#10b981'] # Critical, High, Medium, Low
+                        
+                        fig_pie = go.Figure(data=[go.Pie(
+                            labels=labels, 
+                            values=values, 
+                            hole=.6,
+                            marker=dict(colors=colors, line=dict(color='#0b0f19', width=2)),
+                            textinfo='none',
+                            hoverinfo='label+percent'
+                        )])
+                        fig_pie.update_layout(
+                            height=200,
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            showlegend=False,
+                            annotations=[dict(text=f"{len(alerts)}", x=0.5, y=0.5, font_size=24, showarrow=False, font_color="white")]
+                        )
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("No active threats.")
+                    
+        # Call the modularized function
+        render_risk_and_threat_charts()
+        
         st.subheader("🧠 AI Decision Breakdown Engine")
         
         # Stacked Risk Bar selector for different high-profile alerts
@@ -950,7 +1291,7 @@ elif page == "📊 Risk Analytics":
             y=['Anomaly Contribution'] * len(values), 
             orientation='h', 
             color=categories,
-            color_discrete_sequence=['#ff4d4d', '#ffaa00', '#00ccff', '#cc33ff'],
+            color_discrete_sequence=['#ef4444', '#f59e0b', '#0ea5e9', '#8b5cf6'],
             labels={'x': 'Risk Component Contribution', 'y': ''}
         )
         fig_bar.update_layout(
@@ -1026,9 +1367,242 @@ elif page == "📊 Risk Analytics":
             # Clear after display or on next run
             st.session_state.action_taken = None
 
+        # Calculate dynamic metrics if alerts exist
+        active_threats = 0
+        critical_incidents = 0
+        if 'realtime_alerts' in st.session_state:
+            active_threats = len(st.session_state.realtime_alerts)
+            critical_incidents = sum(1 for a in st.session_state.realtime_alerts if a['severity'] == 'Critical')
+            
+    st.markdown("---")
+    
+    # Fraud Heatmap Visualization
+    st.subheader("🗺️ Global Threat Telemetry")
+    st.markdown("**Real-time geolocation of active fraud vectors**")
+    
+    if 'realtime_alerts' in st.session_state and len(st.session_state.realtime_alerts) > 0:
+        active_threats = st.session_state.realtime_alerts
+        
+        if active_threats:
+            geo_df = pd.DataFrame(active_threats)
+            
+            size_map = {"Critical": 24, "High": 16, "Medium": 10, "Low": 6}
+            color_map = {"Critical": "#ef4444", "High": "#f97316", "Medium": "#f59e0b", "Low": "#10b981"}
+            
+            geo_df['size'] = geo_df['severity'].map(size_map)
+            geo_df['color'] = geo_df['severity'].map(color_map)
+            
+            fig_geo = go.Figure(go.Scattergeo(
+                lon = geo_df['lon'],
+                lat = geo_df['lat'],
+                text = geo_df['title'] + '<br>' + geo_df['severity'],
+                mode = 'markers',
+                marker = dict(
+                    size = geo_df['size'],
+                    color = geo_df['color'],
+                    line = dict(width=1, color='rgba(255, 255, 255, 0.5)'),
+                    opacity = 0.8
+                )
+            ))
+            
+            fig_geo.update_geos(
+                projection_type="natural earth",
+                showcoastlines=True, coastlinecolor="rgba(255, 255, 255, 0.1)",
+                showland=True, landcolor="rgba(30, 41, 59, 0.5)",
+                showocean=True, oceancolor="rgba(15, 23, 42, 0.5)",
+                showlakes=True, lakecolor="rgba(15, 23, 42, 0.5)",
+                showcountries=True, countrycolor="rgba(255, 255, 255, 0.1)",
+                bgcolor="rgba(0,0,0,0)"
+            )
+            
+            fig_geo.update_layout(
+                height=350,
+                margin={"r":0,"t":0,"l":0,"b":0},
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_geo, use_container_width=True)
+        else:
+            st.info("No active geolocation threats detected.")
+            
+    st.markdown("---")
+    
+    export_col1, export_col2 = st.columns([4, 1])
+    with export_col1:
+        st.subheader("📈 Realtime Alert Analytics")
+    with export_col2:
+        if 'realtime_alerts' in st.session_state and st.session_state.realtime_alerts:
+            csv_data = pd.DataFrame(st.session_state.realtime_alerts).to_csv(index=False)
+            st.download_button(
+                label="📥 Export Intel",
+                data=csv_data,
+                file_name=f"threat_intel_export_{int(time.time())}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    with summary_col1:
+        st.metric("Active Threats", f"{active_threats if 'realtime_alerts' in st.session_state else 12}", "+2 this hour")
+    with summary_col2:
+        st.metric("Critical Incidents", f"{critical_incidents if 'realtime_alerts' in st.session_state else 3}", "Immediate Action Required" if critical_incidents > 0 else "Stable", delta_color="inverse")
+    with summary_col3:
+        st.metric("Avg Resolution Time", "4.2m", "-30s")
+    with summary_col4:
+        st.metric("False Positive Rate", "1.8%", "-0.2%")
+        
+    st.markdown("---")
+    
+    with st.expander("🚨 Realtime Fraud Alert Center", expanded=True):
+
+        
+        # Initialize alerts
+        if 'realtime_alerts' not in st.session_state:
+            st.session_state.realtime_alerts = [
+                {"id": "AL-1001", "time": pd.Timestamp.now() - pd.Timedelta(seconds=45), "severity": "Critical", "title": "Mule Ring Topology Detected (Fan-out)", "category": "Graph", "lat": 51.50, "lon": -0.12, "status": "Active"},
+                {"id": "AL-1002", "time": pd.Timestamp.now() - pd.Timedelta(seconds=120), "severity": "High", "title": "Velocity Spike on ACC00003254", "category": "Velocity", "lat": 40.71, "lon": -74.00, "status": "Active"},
+                {"id": "AL-1003", "time": pd.Timestamp.now() - pd.Timedelta(minutes=5), "severity": "Medium", "title": "Hesitation Cadence Anomaly", "category": "Biometric", "lat": 35.67, "lon": 139.65, "status": "Active"},
+                {"id": "AL-1004", "time": pd.Timestamp.now() - pd.Timedelta(minutes=15), "severity": "Low", "title": "Unusual Device Fingerprint", "category": "Device", "lat": 1.35, "lon": 103.81, "status": "Active"}
+            ]
+            
+        # Simulate incoming alerts if live
+        if is_live and np.random.random() > 0.6:
+            severities = ["Low", "Medium", "High", "Critical"]
+            probs = [0.4, 0.3, 0.2, 0.1]
+            sev = np.random.choice(severities, p=probs)
+            
+            categories = {"Low": "Device", "Medium": "Biometric", "High": "Velocity", "Critical": "Graph"}
+            titles = {
+                "Low": ["New IP Address Login", "Unusual Browser User-Agent", "Minor Typo Correction Rate"],
+                "Medium": ["Hesitation Cadence Anomaly", "High Flight Time (Keyboard)", "Location Jump (100km)"],
+                "High": ["Velocity Spike on Account", "Multiple Rapid Transfers", "Known Bad Actor Interaction"],
+                "Critical": ["Mule Ring Topology Detected", "Large Value Extraction", "Account Takeover Pattern"]
+            }
+            
+            hubs = [(40.71, -74.00), (51.50, -0.12), (35.67, 139.65), (1.35, 103.81), (37.77, -122.41), (50.11, 8.68)]
+            base_lat, base_lon = hubs[np.random.randint(0, len(hubs))]
+            new_alert = {
+                "id": f"AL-{int(time.time())}",
+                "time": pd.Timestamp.now(),
+                "severity": sev,
+                "title": np.random.choice(titles[sev]),
+                "category": categories[sev],
+                "lat": base_lat + np.random.normal(0, 5.0),
+                "lon": base_lon + np.random.normal(0, 5.0),
+                "status": "Active"
+            }
+            # Prepend and keep max 50 alerts safely
+            st.session_state.realtime_alerts = [new_alert] + st.session_state.realtime_alerts[:49]
+                
+        # Filters UI
+        filter_col1, filter_col2 = st.columns([2, 1])
+        with filter_col1:
+            # Safely try to use st.pills if available in this Streamlit version, else fallback to multiselect
+            try:
+                selected_severities = st.pills("Filter by Severity", ["Critical", "High", "Medium", "Low"], default=["Critical", "High", "Medium", "Low"], selection_mode="multi")
+            except AttributeError:
+                selected_severities = st.multiselect("Filter by Severity", ["Critical", "High", "Medium", "Low"], default=["Critical", "High", "Medium", "Low"])
+        with filter_col2:
+            search_term = st.text_input("🔍 Search Alerts", placeholder="e.g. Mule, Velocity...")
+            
+        # Filter alerts
+        filtered_alerts = [
+            a for a in st.session_state.realtime_alerts 
+            if a["severity"] in (selected_severities or [])
+            and (search_term.lower() in a["title"].lower() or search_term.lower() in a["category"].lower() or search_term.lower() in a["id"].lower())
+        ]
+        
+        # Investigation Timeline
+        if 'investigate_alert_id' in st.session_state and st.session_state.investigate_alert_id:
+            inv_id = st.session_state.investigate_alert_id
+            target_alert = next((a for a in st.session_state.realtime_alerts if a['id'] == inv_id), None)
+            if target_alert:
+                timeline_steps = [
+                    (target_alert['time'] - pd.Timedelta(minutes=45), "Initial Login (Normal IP)"),
+                    (target_alert['time'] - pd.Timedelta(minutes=10), "Security Settings Changed (2FA Disabled)"),
+                    (target_alert['time'] - pd.Timedelta(minutes=2), "Large Transfer Initiated"),
+                    (target_alert['time'], f"ALERT TRIGGERED: {target_alert['title']}"),
+                ]
+                if st.session_state.get('investigation_alert_id_active') != inv_id:
+                    st.session_state.investigation_alert_id_active = inv_id
+                    st.session_state.investigation_timeline_step = 0
+                    st.session_state.investigation_timeline_last_tick = datetime.now(timezone.utc)
+
+                _schedule_live_refresh(1000)
+                _advance_timed_state(
+                    'investigation_timeline_step',
+                    'investigation_timeline_last_tick',
+                    2.0,
+                    len(timeline_steps),
+                    loop=False,
+                )
+                current_step = int(st.session_state.get('investigation_timeline_step', 0))
+
+                st.info(f"🔎 **Active Investigation:** {target_alert['title']} (`{inv_id}`)")
+                st.progress((current_step + 1) / len(timeline_steps))
+                timeline_col1, timeline_col2 = st.columns([3, 1])
+                
+                with timeline_col1:
+                    for idx, (timestamp_value, label) in enumerate(timeline_steps):
+                        time_label = timestamp_value.strftime('%H:%M:%S')
+                        is_current = idx == current_step
+                        is_complete = idx < current_step
+
+                        if is_current:
+                            st.info(f"**{time_label}** &nbsp; ▶ {label}")
+                        elif is_complete:
+                            st.markdown(f"**{time_label}** &nbsp; ✅ {label}")
+                        else:
+                            st.markdown(
+                                f"<div style='opacity:0.4;'><strong>{time_label}</strong> &nbsp; {label}</div>",
+                                unsafe_allow_html=True,
+                            )
+                with timeline_col2:
+                    st.markdown("<br><br>", unsafe_allow_html=True)
+                    if st.button("Close Investigation", use_container_width=True, type="primary"):
+                        st.session_state.investigate_alert_id = None
+                        st.session_state.pop('investigation_alert_id_active', None)
+                        st.session_state.pop('investigation_timeline_step', None)
+                        st.session_state.pop('investigation_timeline_last_tick', None)
+                        st.rerun()
+                st.markdown("---")
+
+        # Render Alerts
+        st.markdown('<div style="max-height: 400px; overflow-y: auto; padding-right: 10px; margin-top: 15px;">', unsafe_allow_html=True)
+        if not filtered_alerts:
+            st.info("No alerts match the current filters.")
+        else:
+            for alert in filtered_alerts:
+                time_str = alert["time"].strftime("%H:%M:%S")
+                is_resolved = alert.get('status', 'Active') == 'Resolved'
+                opacity = "0.5" if is_resolved else "1.0"
+                status_badge = "Resolved" if is_resolved else alert['severity']
+                
+                alert_col, inv_col, btn_col = st.columns([4, 1, 1])
+                with alert_col:
+                    html = f"""
+                    <div class="alert-card" style="opacity: {opacity}; margin-bottom: 0;">
+                        <span class="alert-time">{time_str}</span>
+                        <span class="alert-title">[{alert['category']}] {alert['title']} <span style="color:#64748b; font-size:0.75rem; margin-left:8px;">#{alert['id']}</span></span>
+                        <span class="severity-badge severity-{alert['severity']}">{status_badge}</span>
+                    </div>
+                    """
+                    st.markdown(html, unsafe_allow_html=True)
+                with inv_col:
+                    if st.button("Investigate", key=f"inv_{alert['id']}", use_container_width=True):
+                        st.session_state.investigate_alert_id = alert['id']
+                        st.rerun()
+                with btn_col:
+                    if not is_resolved:
+                        if st.button("Resolve", key=f"resolve_{alert['id']}", use_container_width=True):
+                            alert['status'] = 'Resolved'
+                            st.rerun()
+                    else:
+                        st.button("Resolved", key=f"resolved_{alert['id']}", disabled=True, use_container_width=True)
+                st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
     if is_live:
-        time.sleep(2)
-        st.rerun()
+        _schedule_live_refresh(2000)
 
 # Page: Innovations
 elif page == "🧪 Innovation Lab":
@@ -1615,12 +2189,19 @@ elif page == "🕸️ Network Graph Explorer":
         st.session_state.prop_step = 0
         
     if animate_propagation:
-        # Auto advance
-        st.session_state.prop_step = (st.session_state.prop_step + 1) % 4
+        if st.session_state.get('prop_animate_enabled') != True:
+            st.session_state.prop_animate_enabled = True
+            st.session_state.prop_last_advance_at = datetime.now(timezone.utc)
+
+        _schedule_live_refresh(1000)
+        _advance_timed_state('prop_step', 'prop_last_advance_at', 2.0, 4, loop=True)
         # Sync selectbox
         step_names = list(step_indices.keys())
         selected_step_name = step_names[st.session_state.prop_step]
     else:
+        if st.session_state.get('prop_animate_enabled') != False:
+            st.session_state.prop_animate_enabled = False
+            st.session_state.prop_last_advance_at = datetime.now(timezone.utc)
         st.session_state.prop_step = step_indices[step_option]
         selected_step_name = step_option
 
@@ -1750,10 +2331,6 @@ elif page == "🕸️ Network Graph Explorer":
     *   **Target Intervention Point**: Freezing `ACC00001071` (Mule Hub) dismantles 100% of Layering and Withdrawal activities.
     """)
     
-    if animate_propagation:
-        time.sleep(2.0)
-        st.rerun()
-
 # Page: Behavioral Biometrics
 elif page == "⌨️ Behavioral Biometrics":
     st.header("⌨️ Keystroke Dynamics & Biometric Analysis")

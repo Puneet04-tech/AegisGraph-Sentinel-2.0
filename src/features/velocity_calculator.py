@@ -123,15 +123,22 @@ class VelocityCalculator:
                 'avg_hop_time': 0.0,
             }
         
-        # Compute network distances
+        # Compute network distances with a per-source SSSP cache so repeated
+        # adjacent pairs do not retraverse the graph.
+        shortest_path_cache: Dict[str, Dict[str, int]] = {}
         total_distance = 0
         for i in range(len(transactions) - 1):
             source = transactions[i].source
             target = transactions[i+1].target
             
-            try:
-                distance = nx.shortest_path_length(graph, source, target)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
+            if source not in shortest_path_cache:
+                try:
+                    shortest_path_cache[source] = nx.single_source_shortest_path_length(graph, source)
+                except nx.NodeNotFound:
+                    shortest_path_cache[source] = {}
+
+            distance = shortest_path_cache[source].get(target)
+            if distance is None:
                 distance = len(transactions)  # Use chain length as proxy
             
             total_distance += distance

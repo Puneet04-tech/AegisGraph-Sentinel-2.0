@@ -8,7 +8,55 @@ for regulatory compliance and transparency.
 
 from typing import Dict, List, Optional
 import numpy as np
+import torch
+from torch_geometric.explain import Explainer, GNNExplainer
 
+class AegisModelExplainer:
+    """
+    Compliance engine for the HTGNN. Extracts the critical subgraph 
+    responsible for triggering a fraud alert using Mutual Information.
+    """
+    def __init__(self, model):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = model.to(self.device)
+        self.model.eval()
+        
+        # Initialize the PyTorch Geometric Explainer API
+        self.explainer = Explainer(
+            model=self.model,
+            algorithm=GNNExplainer(epochs=200),
+            explanation_type='model',
+            node_mask_type='attributes',
+            edge_mask_type='object',
+            model_config=dict(
+                mode='binary_classification',
+                task_level='node',
+                return_type='probs',
+            ),
+        )
+
+    def extract_critical_topology(self, node_features, edge_index, target_node_idx):
+        """Returns a list of the most suspicious connections."""
+        x = node_features.to(self.device)
+        edge_idx = edge_index.to(self.device)
+
+        with torch.enable_grad():
+            explanation = self.explainer(x, edge_idx, index=target_node_idx)
+        
+        edge_weights = explanation.edge_mask
+        k = min(10, edge_weights.size(0))
+        top_edges = torch.topk(edge_weights, k)
+        
+        critical_path = []
+        for idx in top_edges.indices:
+            weight = edge_weights[idx].item()
+            if weight > 0.5:
+                critical_path.append({
+                    "source_node": edge_idx[0, idx].item(), 
+                    "target_node": edge_idx[1, idx].item(), 
+                    "fraud_contribution": weight
+                })
+        return critical_path
 
 class AegisOracle:
     """
@@ -181,6 +229,15 @@ class AegisOracle:
             count = graph_patterns.get('new_account_count', 0)
             explanations.append(f"  • {count} recently created accounts involved")
         
+        # --- NEW DEEP LEARNING EXPLAINER INTEGRATION ---
+        if graph_patterns.get('critical_topology'):
+            explanations.append("\n  **Mathematical GNN Subgraph Interrogation (Top Edges):**")
+            for edge in graph_patterns['critical_topology']:
+                src = edge['source_node']
+                dst = edge['target_node']
+                weight = edge['fraud_contribution']
+                explanations.append(f"  • Suspicious Edge [Node {src} -> Node {dst}]: AI Impact Weight {weight:.4f}")
+
         if not explanations:
             explanations.append("  • Structural anomalies in transaction network")
         
@@ -291,3 +348,45 @@ def generate_explanation(
     """
     oracle = AegisOracle(detail_level=detail_level)
     return oracle.explain_decision(transaction, risk_result, graph_patterns)
+
+if __name__ == "__main__":
+    print("--- 🛡️ Booting AegisOracle Compliance Engine ---")
+    
+    # 1. Mock a flagged transaction
+    mock_txn = {
+        "transaction_id": "TXN-9942-X", 
+        "source_account": "ACC-8091", 
+        "target_account": "ACC-4432", 
+        "amount": 250000, 
+        "currency": "USD"
+    }
+    
+    # 2. Mock the ML risk scores
+    mock_risk = {
+        "risk_score": 0.94, 
+        "decision": "BLOCK", 
+        "breakdown": {"graph": 0.91, "velocity": 0.85, "behavior": 0.40}, 
+        "confidence": 0.96
+    }
+    
+    # 3. Mock the PyTorch GNNExplainer output
+    mock_patterns = {
+        "chain_detected": True,
+        "chain_length": 3,
+        "critical_topology": [
+            {"source_node": 8091, "target_node": 7712, "fraud_contribution": 0.9412},
+            {"source_node": 7712, "target_node": 4432, "fraud_contribution": 0.8845}
+        ]
+    }
+
+    # Run the engine
+    report = generate_explanation(mock_txn, mock_risk, mock_patterns, detail_level='high')
+    
+    print("\n[EXECUTIVE SUMMARY]")
+    print(report['summary'])
+    
+    print("\n[FULL COMPLIANCE EXPLANATION]")
+    print(report['explanation'])
+    
+    print("\n[RECOMMENDED ACTION]")
+    print(report['recommended_action'])

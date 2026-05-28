@@ -310,6 +310,53 @@ class TestFraudRingDetection:
         # In undirected form it's only 3 edges, density = 2*3/(4*3) = 0.5
         assert len(rings) == 0 or rings[0]['density'] <= 0.75
 
+    def test_prunes_low_degree_fringe_before_clique_enumeration(self, detector):
+        """Test that clique enumeration sees only the k-core candidate subgraph."""
+        clique_accounts = ['ACC_A', 'ACC_B', 'ACC_C', 'ACC_D']
+        fringe_accounts = [f'ACC_FRINGE_{i}' for i in range(6)]
+        transactions = []
+
+        timestamp = datetime.now(timezone.utc)
+        for source in clique_accounts:
+            for target in clique_accounts:
+                if source != target:
+                    transactions.append({
+                        'source_account': source,
+                        'target_account': target,
+                        'amount': 25000,
+                        'timestamp': timestamp,
+                    })
+
+        for account in fringe_accounts:
+            transactions.append({
+                'source_account': account,
+                'target_account': 'ACC_A',
+                'amount': 500,
+                'timestamp': timestamp,
+            })
+
+        captured = {}
+
+        class RecordingCache:
+            def cache_find_cliques(self, graph, ttl=900):
+                captured['nodes'] = set(graph.nodes())
+                captured['edge_count'] = graph.number_of_edges()
+                return [frozenset(clique_accounts)]
+
+        detector.cache = RecordingCache()
+
+        rings = detector.detect_fraud_rings(
+            transactions,
+            min_clique_size=4,
+            max_clique_size=8,
+            density_threshold=0.75,
+        )
+
+        assert captured['nodes'] == set(clique_accounts)
+        assert captured['edge_count'] == 6
+        assert len(rings) == 1
+        assert rings[0]['ring_size'] == 4
+
 
 class TestTemporalDecay:
     """Test temporal decay weighting"""

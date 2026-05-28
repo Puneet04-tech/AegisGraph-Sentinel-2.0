@@ -269,22 +269,23 @@ class EvidenceJournal:
         self._index_loaded = False
         self._cache_mtime_ns = 0
         self._record_count = 0
+        self._last_file_pos = 0
 
-    def _refresh_cache_from_disk(self) -> None:
-        """Rebuild the in-memory journal index from the append-only file."""
-        if not self._path.exists():
-            with self._lock:
-                self._records_by_evidence_id.clear()
-                self._latest_block_number = 0
-                self._index_loaded = True
-                self._cache_mtime_ns = 0
-                self._record_count = 0
-            return
-
-        records_by_id: dict[str, dict] = {}
-        latest_block = 0
-        count = 0
+    def _load_cache_slice_from_disk(
+        self,
+        *,
+        start_pos: int = 0,
+        seed_records: dict[str, dict] | None = None,
+        seed_latest_block: int = 0,
+        seed_count: int = 0,
+    ) -> tuple[dict[str, dict], int, int, int]:
+        """Load records from disk starting at a byte offset."""
+        records_by_id = dict(seed_records or {})
+        latest_block = seed_latest_block
+        count = seed_count
         with self._path.open("r", encoding="utf-8") as fh:
+            if start_pos:
+                fh.seek(start_pos)
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -299,13 +300,56 @@ class EvidenceJournal:
                     records_by_id[evidence_id] = record
                 latest_block = max(latest_block, int(record.get("block_number", 0)))
                 count += 1
+            last_file_pos = fh.tell()
+        return records_by_id, latest_block, count, last_file_pos
+
+    def _refresh_cache_from_disk(self) -> None:
+        """Refresh the in-memory journal index from the append-only file."""
+        if not self._path.exists():
+            with self._lock:
+                self._records_by_evidence_id.clear()
+                self._latest_block_number = 0
+                self._index_loaded = True
+                self._cache_mtime_ns = 0
+                self._record_count = 0
+                self._last_file_pos = 0
+            return
+
+        stat_result = self._path.stat()
+        with self._lock:
+            index_loaded = self._index_loaded
+            cached_mtime_ns = self._cache_mtime_ns
+            cached_last_file_pos = self._last_file_pos
+            cached_records = self._records_by_evidence_id
+            cached_latest_block = self._latest_block_number
+            cached_count = self._record_count
+
+        start_pos = 0
+        seed_records = None
+        seed_latest_block = 0
+        seed_count = 0
+        if index_loaded and stat_result.st_size >= cached_last_file_pos:
+            if stat_result.st_mtime_ns == cached_mtime_ns:
+                return
+            start_pos = cached_last_file_pos
+            seed_records = cached_records
+            seed_latest_block = cached_latest_block
+            seed_count = cached_count
+
+        records_by_id, latest_block, count, last_file_pos = self._load_cache_slice_from_disk(
+            start_pos=start_pos,
+            seed_records=seed_records,
+            seed_latest_block=seed_latest_block,
+            seed_count=seed_count,
+        )
 
         with self._lock:
             self._records_by_evidence_id = records_by_id
             self._latest_block_number = latest_block
             self._record_count = count
             self._index_loaded = True
-            self._cache_mtime_ns = self._path.stat().st_mtime_ns
+            self._cache_mtime_ns = stat_result.st_mtime_ns
+            self._last_file_pos = last_file_pos
 
     def _ensure_index_loaded(self) -> None:
         """Reload the in-memory index if the journal changed on disk."""
@@ -317,6 +361,7 @@ class EvidenceJournal:
                 self._latest_block_number = 0
                 self._cache_mtime_ns = 0
                 self._record_count = 0
+                self._last_file_pos = 0
             return
 
         current_mtime_ns = self._path.stat().st_mtime_ns
@@ -336,6 +381,7 @@ class EvidenceJournal:
         with self._lock:
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
+                self._last_file_pos = fh.tell()
             self._records_by_evidence_id[record["evidence_id"]] = record
             self._latest_block_number = max(self._latest_block_number, int(record.get("block_number", 0)))
             self._record_count += 1

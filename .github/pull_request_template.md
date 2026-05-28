@@ -1,14 +1,10 @@
 ## 🛠️ Description of Changes
-Please include a summary of the changes and the related issue.
-
-Fixes # (issue)
-
-## 🧪 How Has This Been Tested?
-Please describe the tests that you ran to verify your changes.
-
+**Fixes #:** ## 🧪 How Has This Been Tested?
 - [ ] Test A
 - [ ] Test B
 
+## 📸 Proof & Visuals
+### Screenshots / Evidence:
 ## ✔️ Checklist
 - [ ] My code follows the style guidelines of this project
 - [ ] My changes generate no new warnings

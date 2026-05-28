@@ -10,6 +10,7 @@ Implements real-time HTGNN-based fraud scoring with:
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from itertools import islice
 import os
 
 import torch
@@ -17,7 +18,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 from collections import deque
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
@@ -225,16 +226,31 @@ class ProductionRiskScorer:
         scores: List[Optional[FraudScore]] = [None] * len(transactions)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_index = {
-                executor.submit(self.score_transaction, txn, reference_time): idx
-                for idx, txn in enumerate(transactions)
-            }
+            for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
+                future_to_index = {
+                    executor.submit(self.score_transaction, txn, reference_time): idx
+                    for idx, txn in transaction_batch
+                }
 
-            for future in as_completed(future_to_index):
-                idx = future_to_index[future]
-                scores[idx] = future.result()
+                for future in as_completed(future_to_index):
+                    idx = future_to_index.pop(future)
+                    scores[idx] = future.result()
 
         return [score for score in scores if score is not None]
+
+    def _iter_transaction_batches(
+        self,
+        transactions: List[Dict],
+        batch_size: int,
+    ) -> Iterator[List[Tuple[int, Dict]]]:
+        """Yield bounded batches of indexed transactions for concurrent scoring."""
+        iterator = iter(enumerate(transactions))
+
+        while True:
+            batch = list(islice(iterator, batch_size))
+            if not batch:
+                break
+            yield batch
     
     def _make_decision(self, risk_score: float) -> Tuple[str, float]:
         """

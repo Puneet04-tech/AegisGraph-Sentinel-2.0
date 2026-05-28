@@ -7,6 +7,7 @@ from src.utils.cache import (
     GraphCache,
     GraphOperationCache,
     InMemoryGraphCache,
+    RedisGraphCache,
     get_graph_cache,
     reset_cache,
 )
@@ -319,6 +320,57 @@ class TestGlobalCacheInstance:
         cache2 = get_graph_cache()
         
         assert cache1 is not cache2
+
+
+class TestRedisGraphCache:
+    """Test secure JSON serialization for Redis cache payloads."""
+
+    @pytest.fixture
+    def cache(self):
+        class FakeRedisClient:
+            def __init__(self):
+                self.storage = {}
+
+            def get(self, key):
+                return self.storage.get(key)
+
+            def setex(self, key, ttl, value):
+                self.storage[key] = value
+
+            def delete(self, *keys):
+                for key in keys:
+                    self.storage.pop(key, None)
+
+            def scan(self, cursor, match=None, count=None):
+                return 0, []
+
+            def ping(self):
+                return True
+
+        cache = RedisGraphCache.__new__(RedisGraphCache)
+        cache.client = FakeRedisClient()
+        cache.default_ttl = 900
+        cache.redis_url = "redis://example.invalid/0"
+        return cache
+
+    def test_roundtrip_uses_json_not_pickle(self, cache):
+        payload = {
+            "alpha": 0.85,
+            "cliques": [frozenset({"A", "B"}), frozenset({"C", "D"})],
+            "meta": {"count": 2, "enabled": True},
+        }
+
+        cache.set("graph:test", payload, ttl=60)
+
+        stored = cache.client.storage["graph:test"]
+        assert stored.startswith(b"{")
+        assert b"__cache_format__" in stored
+        assert cache.get("graph:test") == payload
+
+    def test_rejects_malformed_payload(self, cache):
+        cache.client.storage["graph:bad"] = b'{"__cache_format__":1,"value":{"__type__":"evil"}}'
+
+        assert cache.get("graph:bad") is None
 
 
 class TestCachePerformance:

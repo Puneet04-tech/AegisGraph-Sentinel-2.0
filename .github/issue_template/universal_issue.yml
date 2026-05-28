@@ -1,0 +1,30 @@
+name: "Universal Issue Form"
+description: "File an issue, bug report, or feature request for AegisGraph-Sentinel-2.0"
+title: "[Task]: "
+labels: ["triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to open an issue! Please fill out the form below carefully.
+  - type: input
+    id: title-summary
+    attributes:
+      label: "Short Descriptive Title"
+      placeholder: "e.g., Fix performance bottleneck in network I/O loop"
+    validations:
+      required: true
+  - type: textarea
+    id: issue-description
+    attributes:
+      label: "Detailed Description"
+      placeholder: "Provide a detailed explanation of what is wrong, what needs refactoring, or your feature goal."
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-steps
+    attributes:
+      label: "Proposed Solution / Implementation Plan"
+      placeholder: "List out your proposed changes step-by-step."
+    validations:
+      required: false

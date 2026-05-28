@@ -57,6 +57,41 @@ def test_save_version_returns_version_id(tmp_path):
     assert version_id == "v_epoch_7"
 
 
+def test_save_version_refreshes_manifest_before_write(tmp_path):
+    registry = ModelRegistry(tmp_path)
+    manifest_path = tmp_path / "registry_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "versions": [
+                    {
+                        "version_id": "v_epoch_1",
+                        "epoch": 1,
+                        "stage": "candidate",
+                        "metrics": {},
+                        "saved_at": "2026-01-01T00:00:00Z",
+                        "artifact_path": "htgnn_v_epoch_1.pt",
+                    }
+                ],
+                "champion_version_id": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry._manifest = {
+        "versions": [],
+        "champion_version_id": None,
+    }
+
+    registry.save_version(epoch=2, checkpoint={"model_state": {}}, metrics={})
+
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+
+    version_ids = [entry["version_id"] for entry in manifest["versions"]]
+    assert version_ids == ["v_epoch_1", "v_epoch_2"]
+
+
 def test_promote_champion_sets_stage_and_manifest_key(tmp_path):
     registry = ModelRegistry(tmp_path)
     registry.save_version(epoch=1, checkpoint={"model_state": {}}, metrics={})
@@ -69,6 +104,49 @@ def test_promote_champion_sets_stage_and_manifest_key(tmp_path):
     stages = {entry["version_id"]: entry["stage"] for entry in manifest["versions"]}
     assert stages["v_epoch_2"] == "champion"
     assert stages["v_epoch_1"] == "candidate"
+
+
+def test_promote_champion_refreshes_manifest_before_write(tmp_path):
+    registry = ModelRegistry(tmp_path)
+    registry.save_version(epoch=1, checkpoint={"model_state": {}}, metrics={})
+    manifest_path = tmp_path / "registry_manifest.json"
+
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    manifest["versions"].append(
+        {
+            "version_id": "v_epoch_99",
+            "epoch": 99,
+            "stage": "candidate",
+            "metrics": {},
+            "saved_at": "2026-01-01T00:00:00Z",
+            "artifact_path": "htgnn_v_epoch_99.pt",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    registry._manifest = {
+        "versions": [
+            {
+                "version_id": "v_epoch_1",
+                "epoch": 1,
+                "stage": "candidate",
+                "metrics": {},
+                "saved_at": "2026-01-01T00:00:00Z",
+                "artifact_path": "htgnn_v_epoch_1.pt",
+            }
+        ],
+        "champion_version_id": None,
+    }
+
+    registry.promote_champion("v_epoch_1")
+
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+
+    version_ids = [entry["version_id"] for entry in manifest["versions"]]
+    assert version_ids == ["v_epoch_1", "v_epoch_99"]
+    assert manifest["champion_version_id"] == "v_epoch_1"
+    assert manifest["versions"][1]["stage"] == "candidate"
 
 
 def test_promote_champion_raises_on_unknown_version(tmp_path):

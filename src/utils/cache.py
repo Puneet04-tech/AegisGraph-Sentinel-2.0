@@ -8,9 +8,9 @@ Supports both Redis (production) and in-memory (testing) backends.
 """
 
 import hashlib
+import json
 import logging
 import os
-import pickle
 from abc import ABC, abstractmethod
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, Set, Tuple
@@ -123,6 +123,8 @@ class InMemoryGraphCache(GraphCache):
 class RedisGraphCache(GraphCache):
     """Redis-backed cache for production multi-worker deployment."""
 
+    _FORMAT_VERSION = 1
+
     def __init__(self, redis_url: str, default_ttl: int = 900):
         """
         Initialize Redis cache.
@@ -147,7 +149,7 @@ class RedisGraphCache(GraphCache):
             data = self.client.get(key)
             if data:
                 logger.debug(f"Cache HIT: {key}")
-                return pickle.loads(data)
+                return self._deserialize_value(data)
             logger.debug(f"Cache MISS: {key}")
             return None
         except Exception as e:
@@ -158,11 +160,51 @@ class RedisGraphCache(GraphCache):
         """Serialize and store value in Redis."""
         try:
             ttl = ttl or self.default_ttl
-            serialized = pickle.dumps(value)
+            serialized = self._serialize_value(value)
             self.client.setex(key, ttl, serialized)
             logger.debug(f"Cache SET: {key} (ttl={ttl}s)")
         except Exception as e:
             logger.error(f"Cache SET error: {e}")
+
+    def _serialize_value(self, value: Any) -> bytes:
+        """Serialize cache payloads to a JSON document."""
+        def encode(obj: Any) -> Any:
+            if isinstance(obj, frozenset):
+                return {"__type__": "frozenset", "items": [encode(item) for item in sorted(obj, key=repr)]}
+            if isinstance(obj, tuple):
+                return {"__type__": "tuple", "items": [encode(item) for item in obj]}
+            if isinstance(obj, list):
+                return [encode(item) for item in obj]
+            if isinstance(obj, dict):
+                return {str(key): encode(item) for key, item in obj.items()}
+            return obj
+
+        payload = {
+            "__cache_format__": self._FORMAT_VERSION,
+            "value": encode(value),
+        }
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+    def _deserialize_value(self, payload: bytes) -> Any:
+        """Deserialize cache payloads from JSON and reconstruct tagged types."""
+        def decode(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                obj_type = obj.get("__type__")
+                if obj_type == "frozenset":
+                    return frozenset(decode(item) for item in obj.get("items", []))
+                if obj_type == "tuple":
+                    return tuple(decode(item) for item in obj.get("items", []))
+                if obj_type is not None:
+                    raise ValueError(f"Unsupported cached object type: {obj_type}")
+                return {key: decode(item) for key, item in obj.items()}
+            if isinstance(obj, list):
+                return [decode(item) for item in obj]
+            return obj
+
+        loaded = json.loads(payload.decode("utf-8"))
+        if not isinstance(loaded, dict) or loaded.get("__cache_format__") != self._FORMAT_VERSION:
+            raise ValueError("Unsupported cache payload format")
+        return decode(loaded["value"])
 
     def invalidate(self, key: str) -> None:
         """Remove specific key from Redis."""
