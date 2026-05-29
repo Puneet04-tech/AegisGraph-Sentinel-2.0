@@ -21,6 +21,31 @@ def _make_transactions(edges):
     ]
 
 
+def test_get_clique_transactions_indexed_lookup():
+    """_get_clique_transactions uses indexed lookup instead of full-data scan."""
+    import networkx as nx
+    detector = FraudPatternDetector()
+    transactions = _make_transactions([
+        ("A", "B"),
+        ("B", "A"),
+        ("A", "C"),
+        ("C", "A"),
+        ("B", "C"),
+        ("C", "B"),
+        ("A", "D"),  # D is not in clique — should be excluded
+        ("X", "Y"),  # noise
+    ])
+
+    g = nx.DiGraph()
+    clique = ["A", "B", "C"]
+    result = detector._get_clique_transactions(clique, g, transactions)
+    assert len(result) == 6  # all edges among A, B, C
+    for t in result:
+        assert t["source_account"] in ("A", "B", "C")
+        assert t["target_account"] in ("A", "B", "C")
+        assert t["source_account"] != t["target_account"]
+
+
 def test_detect_mule_rings_respects_max_cycle_length(monkeypatch):
     detector = FraudPatternDetector(min_chain_length=3)
     transactions = _make_transactions(

@@ -1143,14 +1143,19 @@ class FraudPatternDetector:
         transactions: List[Dict],
     ) -> List[Dict]:
         """Extract all transactions within a clique"""
-        clique_set = set(clique)
-        clique_txns = []
-        
+        # Build a (source, target) -> [txns] index, then iterate only over
+        # directed pairs within the clique — avoids scanning the full dataset.
+        index: Dict[tuple, List[Dict]] = defaultdict(list)
         for txn in transactions:
-            source = self._txn_value(txn, 'source_account')
-            target = self._txn_value(txn, 'target_account')
-            
-            if source in clique_set and target in clique_set:
-                clique_txns.append(txn)
-        
+            src = self._txn_value(txn, 'source_account')
+            tgt = self._txn_value(txn, 'target_account')
+            if src and tgt:
+                index[(src, tgt)].append(txn)
+
+        clique_txns = []
+        for src in clique:
+            for tgt in clique:
+                if src == tgt:
+                    continue
+                clique_txns.extend(index.get((src, tgt), []))
         return clique_txns
