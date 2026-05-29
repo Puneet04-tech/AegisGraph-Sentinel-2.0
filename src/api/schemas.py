@@ -466,6 +466,19 @@ class LegalExportRequest(BaseModel):
     """Request for legal evidence export"""
     evidence_id: str
     case_number: str = Field(description="Legal case number")
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        if not v or not isinstance(v, str):
+            raise ValueError("Evidence ID must be a non-empty string")
+        if ".." in v:
+            raise ValueError("Evidence ID must not contain directory traversal sequences")
+        if "/" in v or "\\" in v:
+            raise ValueError("Evidence ID must not contain path separators")
+        if "\0" in v:
+            raise ValueError("Evidence ID must not contain null bytes")
+        return v
     requesting_authority: str = Field(description="Law enforcement agency")
 
 

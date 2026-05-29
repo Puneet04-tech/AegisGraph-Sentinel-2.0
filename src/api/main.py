@@ -2490,6 +2490,11 @@ async def verify_evidence(evidence_id: str, block_number: int):
         raise HTTPException(status_code=503, detail="Blockchain system not available")
     
     try:
+        try:
+            blockchain_manager.validate_evidence_id(evidence_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
@@ -2541,6 +2546,11 @@ async def export_legal_evidence(
             x_legal_export_token=x_legal_export_token,
             x_request_timestamp=x_request_timestamp,
         )
+
+        try:
+            blockchain_manager.validate_evidence_id(export_request.evidence_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
         loop = asyncio.get_running_loop()
         # Derive a verified authority from the validated token

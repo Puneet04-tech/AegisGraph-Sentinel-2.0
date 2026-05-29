@@ -637,8 +637,41 @@ class BlockchainEvidenceManager:
             'validator': validator,
         }
 
+    @staticmethod
+    def validate_evidence_id(evidence_id: str) -> str:
+        """Sanitize and validate an evidence ID to prevent path traversal.
+
+        Raises:
+            ValueError: If the ID contains path traversal sequences or
+                        unexpected characters.
+        """
+        if not evidence_id or not isinstance(evidence_id, str):
+            raise ValueError("Evidence ID must be a non-empty string")
+
+        if evidence_id.startswith((".", "/", "\\")):
+            raise ValueError("Evidence ID must not start with a path separator or dot")
+
+        if ".." in evidence_id:
+            raise ValueError("Evidence ID must not contain directory traversal sequences")
+
+        if "/" in evidence_id or "\\" in evidence_id:
+            raise ValueError("Evidence ID must not contain path separators")
+
+        if "\0" in evidence_id:
+            raise ValueError("Evidence ID must not contain null bytes")
+
+        allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        if any(ch not in allowed for ch in evidence_id):
+            raise ValueError(
+                "Evidence ID must contain only alphanumeric characters, "
+                "underscores, and hyphens"
+            )
+
+        return evidence_id
+
     def _load_evidence_record(self, evidence_id: str) -> Optional[dict]:
         """Load evidence from Redis first, then the append-only journal."""
+        self.validate_evidence_id(evidence_id)
         record = self._redis.load_evidence(evidence_id)
         if record:
             record['_storage'] = 'redis'
@@ -1026,6 +1059,7 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with evidence and verification proof
         """
+        self.validate_evidence_id(evidence_id)
         evidence = self._load_evidence_record(evidence_id)
         if not evidence:
             return {'error': 'Evidence not found'}
