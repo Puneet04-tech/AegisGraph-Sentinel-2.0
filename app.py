@@ -2524,6 +2524,26 @@ elif page == "🕸️ Network Graph Explorer":
     """
     
     st.components.v1.html(html_content, height=600)
+
+    fallback_rows = []
+    for node in G.nodes():
+        node_data = G.nodes[node]
+        risk_value = float(node_data.get('risk', 0.0))
+        fallback_rows.append({
+            "node_id": node,
+            "role": node_data.get('type', 'Unknown'),
+            "risk_score": f"{risk_value:.2%}",
+            "connections": G.degree(node),
+            "node_weight": "High" if risk_value >= 0.7 else "Medium" if risk_value >= 0.4 else "Low",
+        })
+
+    st.markdown("### 🧾 Accessible Topology Summary")
+    st.caption("Structured fallback for screen readers and keyboard-only review of the active network topology.")
+    st.dataframe(
+        fallback_rows,
+        use_container_width=True,
+        hide_index=True,
+    )
     
     st.markdown("""
     ### 📊 Topology Analytics
