@@ -28,12 +28,18 @@ class Neo4jGraphProvider:
 
     def __init__(
         self,
-        uri: str = "bolt://localhost:7687",
-        user: str = "neo4j",
-        password: str = "password",
+        uri: str,
+        user: str,
+        password: str,
         enabled: bool = True,
         cache_ttl_seconds: int = 60,
     ) -> None:
+        if enabled and (not uri or not user or not password):
+            raise RuntimeError(
+                "Neo4j provider requires uri, user, and password. "
+                "Set the Neo4j connection settings before enabling the provider."
+            )
+
         self.uri = uri
         self.user = user
         self.password = password

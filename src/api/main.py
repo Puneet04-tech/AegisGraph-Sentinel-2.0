@@ -1095,9 +1095,15 @@ async def _load_graph_runtime_data(startup_logger):
             neo4j_enabled = env_enabled.lower() == "true"
 
         if neo4j_enabled:
-            uri = env_uri or neo4j_config.get("uri", "bolt://localhost:7687")
-            user = env_user or neo4j_config.get("user", "neo4j")
-            password = env_password or neo4j_config.get("password", "password")
+            uri = env_uri or neo4j_config.get("uri")
+            user = env_user or neo4j_config.get("user")
+            password = env_password or neo4j_config.get("password")
+
+            if not uri or not user or not password:
+                raise RuntimeError(
+                    "Neo4j is enabled but connection settings are incomplete. "
+                    "Set AEGIS_NEO4J_URI, AEGIS_NEO4J_USER, and AEGIS_NEO4J_PASSWORD."
+                )
 
             from ..core.providers.neo4j import Neo4jGraphProvider
 

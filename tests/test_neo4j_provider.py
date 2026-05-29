@@ -16,6 +16,11 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         self.mock_user = "neo4j"
         self.mock_password = "password"
 
+    def test_provider_requires_credentials_when_enabled(self) -> None:
+        """Verify missing Neo4j credentials fail fast before any driver setup."""
+        with self.assertRaises(RuntimeError):
+            Neo4jGraphProvider(uri="", user="", password="", enabled=True)
+
     @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_provider_initialization_success(self, mock_neo4j_lib) -> None:
         """Verify driver connectivity check and configuration when Neo4j is available."""
