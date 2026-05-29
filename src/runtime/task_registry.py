@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ class TaskRegistry:
 
     def __init__(self, logger: Any = None) -> None:
         self._tasks: Dict[asyncio.Task, TaskInfo] = {}
+        self._lock = threading.Lock()
         self._logger = logger or _logger
 
     def register_task(
@@ -54,21 +56,24 @@ class TaskRegistry:
             done=task.done(),
             cancelled=task.cancelled(),
         )
-        self._tasks[task] = info
+        with self._lock:
+            self._tasks[task] = info
+            active_count = len(self._tasks)
         task.add_done_callback(self._on_task_done)
         self._logger.info(
             "Background task registered",
             event_type="runtime_task_registered",
-            metadata={"task": name, "owner": owner, "active_tasks": len(self._tasks)},
+            metadata={"task": name, "owner": owner, "active_tasks": active_count},
         )
         return task
 
     def _on_task_done(self, task: asyncio.Task) -> None:
-        info = self._tasks.pop(task, None)
-        if info is None:
-            return
-
-        metadata = {"task": info.name, "owner": info.owner, "active_tasks": len(self._tasks)}
+        with self._lock:
+            info = self._tasks.pop(task, None)
+            if info is None:
+                return
+            active_count = len(self._tasks)
+        metadata = {"task": info.name, "owner": info.owner, "active_tasks": active_count}
         if task.cancelled():
             self._logger.info(
                 "Background task cancelled",
@@ -106,12 +111,15 @@ class TaskRegistry:
 
     def unregister_task(self, task: asyncio.Task) -> None:
         """Remove a task from tracking without cancelling it."""
-        self._tasks.pop(task, None)
+        with self._lock:
+            self._tasks.pop(task, None)
 
     def get_active_tasks(self) -> List[TaskInfo]:
         """Return active task metadata for inspection and metrics."""
+        with self._lock:
+            items = list(self._tasks.items())
         active: List[TaskInfo] = []
-        for task, info in self._tasks.items():
+        for task, info in items:
             if not task.done():
                 active.append(
                     TaskInfo(
@@ -126,7 +134,8 @@ class TaskRegistry:
 
     def find_tasks_by_name(self, name: str) -> List[asyncio.Task]:
         """Return a snapshot of tasks whose metadata matches the given name."""
-        return [t for t, info in list(self._tasks.items()) if info.name == name]
+        with self._lock:
+            return [t for t, info in list(self._tasks.items()) if info.name == name]
 
     @property
     def active_count(self) -> int:
@@ -140,11 +149,12 @@ class TaskRegistry:
     ) -> List[Any]:
         """Cancel managed tasks and wait for completion up to a timeout."""
         owner_filter = set(owners) if owners is not None else None
-        tasks = [
-            task
-            for task, info in list(self._tasks.items())
-            if not task.done() and (owner_filter is None or info.owner in owner_filter)
-        ]
+        with self._lock:
+            tasks = [
+                task
+                for task, info in list(self._tasks.items())
+                if not task.done() and (owner_filter is None or info.owner in owner_filter)
+            ]
         if not tasks:
             self._logger.info(
                 "No background tasks to cancel",
@@ -165,11 +175,12 @@ class TaskRegistry:
         try:
             results = await asyncio.wait_for(asyncio.shield(gather_future), timeout=timeout_seconds)
         except asyncio.TimeoutError:
-            still_active = [
-                self._tasks[task].name
-                for task in tasks
-                if task in self._tasks and not task.done()
-            ]
+            with self._lock:
+                still_active = [
+                    self._tasks[task].name
+                    for task in tasks
+                    if task in self._tasks and not task.done()
+                ]
             self._logger.error(
                 "Timed out cancelling background tasks",
                 event_type="runtime_task_cancel_timeout",
