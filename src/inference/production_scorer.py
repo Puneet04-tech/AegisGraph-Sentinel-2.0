@@ -380,11 +380,11 @@ class ProductionRiskScorer:
             explanation += f"3. Connected to {len(influential_neighbors)} suspicious accounts\n"
         
         if risk_score >= 0.9:
-            explanation += f"\nREASON: High-confidence fraud indicators detected"
+            explanation += "\nREASON: High-confidence fraud indicators detected"
         elif risk_score >= 0.6:
-            explanation += f"\nREASON: Multiple risk factors present - requires verification"
+            explanation += "\nREASON: Multiple risk factors present requires verification"
         else:
-            explanation += f"\nREASON: Transaction appears normal"
+            explanation += "\nREASON: Transaction appears normal"
         
         return explanation
     
