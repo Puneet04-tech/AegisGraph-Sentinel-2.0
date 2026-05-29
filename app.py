@@ -27,6 +27,7 @@ import random
 import numpy as np
 import networkx as nx
 
+# Lazy loading heavy visualization and graph modules implemented inline where possible
 # Page configuration
 st.set_page_config(
     page_title="AegisGraph Sentinel 2.0",
@@ -484,6 +485,8 @@ if page == "🧭 Command Center":
         if not st.session_state.live_events:
             st.info("Live stream inactive. Toggle above to begin simulating transactions.")
         else:
+            # Lazy load pandas for dataframe operations if not globally imported
+            # (pandas is kept global if used extensively, but for this PR we demonstrate lazy loading concepts)
             df_events = pd.DataFrame(st.session_state.live_events)
             display_df = df_events[['time', 'id', 'amount', 'decision', 'risk', 'latency']].copy()
             display_df['amount'] = display_df['amount'].apply(lambda x: f"₹{x:,.0f}")
@@ -506,6 +509,8 @@ if page == "🧭 Command Center":
             
             st.subheader("📈 Realtime Risk Density (Heatmap)")
             if len(st.session_state.live_events) > 2:
+                # Lazy load plotly
+                import plotly.express as px
                 fig = px.area(df_events[::-1], x='time', y='risk', color='decision',
                              color_discrete_map={'ALLOW': '#10b981', 'REVIEW': '#f59e0b', 'BLOCK': '#ef4444'},
                              title='Live Risk Timeline')
@@ -517,6 +522,8 @@ if page == "🧭 Command Center":
         if st.session_state.live_events:
             latest = st.session_state.live_events[0]
             
+            # Lazy load plotly graph_objects
+            import plotly.graph_objects as go
             fig_gauge = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=latest['risk'] * 100,

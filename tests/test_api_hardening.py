@@ -1,11 +1,15 @@
 """Regression tests for production-readiness hardening."""
 
 import asyncio
+import importlib.util
 import hashlib
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
+import types
 
+import networkx as nx
 import pytest
 
 from src.api import main as api_main
@@ -217,6 +221,113 @@ def test_scoring_recovers_when_lateral_analysis_raises(monkeypatch):
     assert result["risk_score"] == pytest.approx(0.33)
     assert result["decision"] == "ALLOW"
     assert "lateral_movement" not in result["breakdown"]
+
+
+class TestGraphPatternAnalysisFallback:
+    def _load_graph_fallback_module(self, monkeypatch):
+        for module_name in (
+            "src.features.voice_stress_analysis",
+            "src.features.predictive_mule_identification",
+            "src.features.honeypot_escrow",
+            "src.features.blockchain_evidence",
+            "src.features.aegis_oracle_explainer",
+            "src.features.lateral_movement",
+        ):
+            monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+
+        module_path = Path(api_main.__file__)
+        spec = importlib.util.spec_from_file_location(
+            "src.api.main_graph_fallback_test",
+            module_path,
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def _base_transaction(self, source_account="acct_src", target_account="acct_dst"):
+        return {
+            "transaction_id": "txn_graph_001",
+            "source_account": source_account,
+            "target_account": target_account,
+            "amount": 100.0,
+            "currency": "INR",
+            "mode": "UPI",
+            "timestamp": "2026-02-26T14:30:00Z",
+        }
+
+    def _configure_graph_state(self, monkeypatch, module, graph):
+        monkeypatch.setattr(module.state, "graph_loaded", True)
+        monkeypatch.setattr(module.state, "transaction_graph", graph)
+        monkeypatch.setattr(module.state, "mule_accounts", set())
+        monkeypatch.setattr(module.state, "account_profiles", {})
+
+    def test_linear_chain_adds_graph_risk(self, monkeypatch):
+        fallback_main = self._load_graph_fallback_module(monkeypatch)
+        graph = nx.DiGraph()
+        graph.add_edges_from([("acct_src", "acct_b"), ("acct_b", "acct_c"), ("acct_c", "acct_d")])
+        self._configure_graph_state(monkeypatch, fallback_main, graph)
+
+        result = fallback_main.compute_risk_score(self._base_transaction())
+
+        assert result["breakdown"]["graph"] == pytest.approx(0.2)
+        assert result["risk_score"] > 0.0
+
+    def test_cyclic_graph_exits_safely(self, monkeypatch):
+        fallback_main = self._load_graph_fallback_module(monkeypatch)
+        graph = nx.DiGraph()
+        graph.add_edges_from([("acct_src", "acct_b"), ("acct_b", "acct_c"), ("acct_c", "acct_src")])
+        self._configure_graph_state(monkeypatch, fallback_main, graph)
+
+        result = fallback_main.compute_risk_score(self._base_transaction())
+
+        assert result["risk_score"] >= 0.0
+        assert result["breakdown"]["graph"] == pytest.approx(0.0)
+
+    def test_branching_graph_remains_stable(self, monkeypatch):
+        fallback_main = self._load_graph_fallback_module(monkeypatch)
+        graph = nx.DiGraph()
+        graph.add_edges_from([("acct_src", "acct_b"), ("acct_src", "acct_c")])
+        self._configure_graph_state(monkeypatch, fallback_main, graph)
+
+        result = fallback_main.compute_risk_score(self._base_transaction())
+
+        assert result["risk_score"] >= 0.0
+        assert result["breakdown"]["graph"] == pytest.approx(0.0)
+
+    def test_missing_source_node_does_not_raise(self, monkeypatch):
+        fallback_main = self._load_graph_fallback_module(monkeypatch)
+        graph = nx.DiGraph()
+        graph.add_edge("acct_other", "acct_next")
+        self._configure_graph_state(monkeypatch, fallback_main, graph)
+
+        result = fallback_main.compute_risk_score(self._base_transaction())
+
+        assert result["risk_score"] >= 0.0
+        assert result["breakdown"]["graph"] == pytest.approx(0.0)
+
+    def test_malformed_graph_logs_warning_and_returns_score(self, monkeypatch):
+        fallback_main = self._load_graph_fallback_module(monkeypatch)
+
+        class BrokenGraph(nx.DiGraph):
+            def successors(self, node):
+                raise RuntimeError("graph backend unavailable")
+
+        graph = BrokenGraph()
+        graph.add_node("acct_src")
+        self._configure_graph_state(monkeypatch, fallback_main, graph)
+
+        warning_mock = Mock()
+        monkeypatch.setattr(fallback_main._api_logger, "warning", warning_mock)
+
+        result = fallback_main.compute_risk_score(self._base_transaction())
+
+        assert result["risk_score"] >= 0.0
+        warning_mock.assert_called()
+        assert any(
+            kwargs.get("event_type") == "graph_pattern_analysis_error"
+            for _, kwargs in warning_mock.call_args_list
+        )
 
 
 def test_startup_disk_reads_use_thread_pool(monkeypatch, tmp_path):

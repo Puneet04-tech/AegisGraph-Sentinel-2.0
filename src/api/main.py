@@ -518,7 +518,7 @@ except (ImportError, SyntaxError) as e:
             # Check graph topology patterns
             G = state.transaction_graph
             
-            if source_account in G.nodes:
+            if source_account is not None and source_account in G:
                 # Analyze source account patterns
                 out_degree = G.out_degree(source_account)
                 in_degree = G.in_degree(source_account)
@@ -545,23 +545,26 @@ except (ImportError, SyntaxError) as e:
                 
                 # Check if part of a chain (linear path pattern) - LIMITED DEPTH FOR PERFORMANCE
                 try:
-                    neighbors = list(G.neighbors(source_account))
-                    if len(neighbors) >= 2:
+                    initial_successors = list(G.successors(source_account))
+                    if 1 <= len(initial_successors) <= 2:
                         # Check for sequential chain pattern (max 10 hops)
-                        chain_length = 0 #ready
+                        chain_length = 0
                         current = source_account
                         visited = set()
                         max_depth = 10  # Prevent long searches
-                        
-                        while current in G.nodes and current not in visited and chain_length < max_depth:
+
+                        while current not in visited and chain_length < max_depth:
                             visited.add(current)
                             successors = list(G.successors(current))
-                            if len(successors) == 1:
+                            if 1 <= len(successors) <= 2:
+                                next_node = successors[0]
+                                if next_node in visited:
+                                    break
                                 chain_length += 1
-                                current = successors[0]
+                                current = next_node
                             else:
                                 break
-                        
+
                         if chain_length >= 3:
                             graph_risk += 0.2
                             _api_logger.warning(
@@ -569,11 +572,15 @@ except (ImportError, SyntaxError) as e:
                                 event_type="graph_pattern",
                                 metadata={"pattern": "chain", "chain_length": chain_length},
                             )
-                except Exception as e:
-                    _api_logger.error(f"Error in graph pattern analysis: {e}")
-                    pass
-                except:
-                    print(f"⚠️ Chain pattern: {source_account} is part of a {chain_length}-hop chain")
+                except Exception as exc:
+                    _api_logger.warning(
+                        f"Graph pattern analysis failed for {source_account}: {exc}",
+                        event_type="graph_pattern_analysis_error",
+                        metadata={
+                            "source_account": source_account,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
         
         graph_risk = min(graph_risk, 1.0)
         breakdown['graph'] = graph_risk

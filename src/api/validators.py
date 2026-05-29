@@ -3,7 +3,7 @@ API Input Validation Layer for AegisGraph Sentinel 2.0
 
 Comprehensive validation for:
 - Transaction amounts (positive, max limits, precision)
-- Timestamps (ISO 8601 format, not future, not too old)
+- Timestamps (ISO 8601 UTC format, not future, not too old)
 - Account IDs (format, length, allowed characters)
 - Currency codes (ISO 4217 compliance)
 - Transaction modes (valid types)
@@ -74,6 +74,8 @@ VALID_MODES = {
     "NET_BANKING",
 }
 
+CANONICAL_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
 
 class TransactionValidator:
     """Static validation methods for transaction data."""
@@ -119,27 +121,29 @@ class TransactionValidator:
         Validate transaction timestamp.
 
         Constraints:
-        - Must be ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)
+        - Must be strict ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)
         - Must not be in the future (within 60 second tolerance)
         - Must not be older than 90 days
         """
-        try:
-            # Parse ISO 8601 timestamp
-            if timestamp.endswith("Z"):
-                dt = datetime.fromisoformat(timestamp[:-1] + "+00:00")
-            else:
-                dt = datetime.fromisoformat(timestamp)
+        if not isinstance(timestamp, str):
+            raise ValidationError(
+                field="timestamp",
+                value=timestamp,
+                constraint="iso8601_format",
+                suggestion="Timestamp must be in ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)",
+            )
 
-            # Ensure timezone-aware
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.strptime(timestamp, CANONICAL_TIMESTAMP_FORMAT).replace(
+                tzinfo=timezone.utc
+            )
 
         except (ValueError, TypeError) as e:
             raise ValidationError(
                 field="timestamp",
                 value=timestamp,
                 constraint="iso8601_format",
-                suggestion="Timestamp must be in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)",
+                suggestion="Timestamp must be in ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)",
             ) from e
 
         now = datetime.now(timezone.utc)
@@ -163,6 +167,47 @@ class TransactionValidator:
                 constraint="not_too_old",
                 suggestion="Timestamp cannot be older than 90 days",
             )
+
+    @staticmethod
+    def normalize_timestamp(timestamp: Any) -> str:
+        """
+        Normalize a timestamp to canonical ISO 8601 UTC format.
+
+        Accepted inputs:
+        - Unix epoch seconds
+        - timezone-aware ISO 8601 strings
+        """
+        try:
+            if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+                dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            elif isinstance(timestamp, str):
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    raise ValidationError(
+                        field="timestamp",
+                        value=timestamp,
+                        constraint="iso8601_format",
+                        suggestion=(
+                            "Timestamp must include timezone information and use "
+                            "ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)"
+                        ),
+                    )
+            else:
+                raise TypeError("Unsupported timestamp type")
+        except (ValueError, TypeError) as e:
+            if isinstance(e, ValidationError):
+                raise
+            raise ValidationError(
+                field="timestamp",
+                value=timestamp,
+                constraint="iso8601_format",
+                suggestion=(
+                    "Timestamp must be in ISO 8601 UTC format "
+                    "(YYYY-MM-DDTHH:MM:SSZ) or be a Unix epoch value"
+                ),
+            ) from e
+
+        return dt.astimezone(timezone.utc).strftime(CANONICAL_TIMESTAMP_FORMAT)
 
     @staticmethod
     def validate_account_id(account_id: str, field_name: str = "account_id") -> None:

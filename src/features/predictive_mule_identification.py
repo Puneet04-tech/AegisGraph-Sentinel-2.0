@@ -410,7 +410,6 @@ class PredictiveMuleScorer:
         """
         profession = account_data.profession.lower()
         initial_deposit = features['initial_deposit']
-        age = features['age']
         
         high_risk_professions = ['student', 'unemployed', 'homemaker']
         

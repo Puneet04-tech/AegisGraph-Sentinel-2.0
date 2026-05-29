@@ -16,6 +16,7 @@ Tests for:
 
 import pytest
 from datetime import datetime, timezone, timedelta
+from pydantic import ValidationError as PydanticValidationError
 
 from src.api.validators import (
     TransactionValidator,
@@ -66,27 +67,95 @@ class TestTimestampValidation:
     """Test transaction timestamp validation."""
 
     def test_timestamp_iso8601_valid(self):
-        """Valid ISO 8601 timestamps should pass."""
-        now = datetime.now(timezone.utc).isoformat()
-        TransactionValidator.validate_timestamp(now)
-        
-        now_with_z = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        TransactionValidator.validate_timestamp(now_with_z)
+        """Valid canonical UTC timestamps should pass."""
+        canonical_now = (datetime.now(timezone.utc) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        TransactionValidator.validate_timestamp(canonical_now)
+
+    def test_timestamp_offset_and_naive_rejected(self):
+        """Only canonical UTC timestamps should be accepted directly."""
+        with pytest.raises(ValidationError, match="iso8601_format"):
+            TransactionValidator.validate_timestamp("2026-02-26T14:30:00+00:00")
+
+        with pytest.raises(ValidationError, match="iso8601_format"):
+            TransactionValidator.validate_timestamp("2026-02-26T14:30:00")
+
+    def test_schema_normalizes_timestamp_to_canonical_utc(self):
+        """Schema input should normalize epoch and offset timestamps to canonical UTC."""
+        base_timestamp = (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0)
+        canonical_timestamp = base_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        epoch_request = TransactionCheckRequest(
+            transaction_id="txn_epoch",
+            source_account="user_001",
+            target_account="merchant_001",
+            amount=100.0,
+            currency="INR",
+            mode="UPI",
+            timestamp=int(base_timestamp.timestamp()),
+        )
+        assert epoch_request.timestamp == canonical_timestamp
+
+        offset_input = base_timestamp.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat()
+        offset_request = TransactionCheckRequest(
+            transaction_id="txn_offset",
+            source_account="user_001",
+            target_account="merchant_001",
+            amount=100.0,
+            currency="INR",
+            mode="UPI",
+            timestamp=offset_input,
+        )
+        assert offset_request.timestamp == canonical_timestamp
+
+        utc_request = TransactionCheckRequest(
+            transaction_id="txn_utc",
+            source_account="user_001",
+            target_account="merchant_001",
+            amount=100.0,
+            currency="INR",
+            mode="UPI",
+            timestamp=base_timestamp.astimezone(timezone.utc).isoformat(),
+        )
+        assert utc_request.timestamp == canonical_timestamp
+
+    def test_schema_rejects_naive_and_bad_timestamps(self):
+        """Schema should reject naive and malformed timestamps."""
+        with pytest.raises(PydanticValidationError):
+            TransactionCheckRequest(
+                transaction_id="txn_naive",
+                source_account="user_001",
+                target_account="merchant_001",
+                amount=100.0,
+                currency="INR",
+                mode="UPI",
+                timestamp="2026-02-26T14:30:00",
+            )
+
+        with pytest.raises(PydanticValidationError):
+            TransactionCheckRequest(
+                transaction_id="txn_bad",
+                source_account="user_001",
+                target_account="merchant_001",
+                amount=100.0,
+                currency="INR",
+                mode="UPI",
+                timestamp="2026/02/26 14:30:00",
+            )
 
     def test_timestamp_future_rejected(self):
         """Future timestamps should be rejected."""
-        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with pytest.raises(ValidationError, match="not_future"):
             TransactionValidator.validate_timestamp(future)
 
     def test_timestamp_future_with_tolerance(self):
         """Timestamps up to 60 seconds in future should be allowed."""
-        future = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         TransactionValidator.validate_timestamp(future)
 
     def test_timestamp_too_old_rejected(self):
         """Timestamps older than 90 days should be rejected."""
-        old = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+        old = (datetime.now(timezone.utc) - timedelta(days=91)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with pytest.raises(ValidationError, match="not_too_old"):
             TransactionValidator.validate_timestamp(old)
 
@@ -98,9 +167,15 @@ class TestTimestampValidation:
         with pytest.raises(ValidationError, match="iso8601_format"):
             TransactionValidator.validate_timestamp("2026-13-01T10:00:00Z")
 
+        with pytest.raises(ValidationError, match="iso8601_format"):
+            TransactionValidator.validate_timestamp("2026-02-26T14:30:00+00:00")
+
+        with pytest.raises(ValidationError, match="iso8601_format"):
+            TransactionValidator.validate_timestamp("2026-02-26T14:30:00")
+
     def test_timestamp_within_90_days_valid(self):
         """Timestamps within 90 days should pass."""
-        old_but_valid = (datetime.now(timezone.utc) - timedelta(days=89)).isoformat()
+        old_but_valid = (datetime.now(timezone.utc) - timedelta(days=89)).strftime("%Y-%m-%dT%H:%M:%SZ")
         TransactionValidator.validate_timestamp(old_but_valid)
 
 
@@ -255,7 +330,7 @@ class TestBatchValidation:
                 "amount": 100.0,
                 "currency": "INR",
                 "mode": "UPI",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
             for i in range(50)
         ]
@@ -369,7 +444,7 @@ class TestEdgeCases:
             amount=100.0,
             currency="INR",
             mode="UPI",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         assert request.transaction_id == "test_txn_001"
 
@@ -399,7 +474,7 @@ class TestIntegration:
             amount=5000.50,
             currency="INR",
             mode="UPI",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             device_id="device_123",
             biometrics=BiometricsData(
                 hold_times=[100, 120, 115],
