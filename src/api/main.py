@@ -2319,13 +2319,17 @@ async def export_legal_evidence(
         )
 
         loop = asyncio.get_running_loop()
+        # Derive a verified authority from the validated token
+        token = _extract_legal_export_token(authorization, x_legal_export_token)
+        # In a real system, map token to authority identity; here we use the token string directly
+        verified_authority = token if token else "unknown_authority"
         result = await loop.run_in_executor(
             None,
             partial(
                 state.blockchain_manager.export_for_legal_proceedings,
                 evidence_id=export_request.evidence_id,
                 case_number=export_request.case_number,
-                requesting_authority=export_request.requesting_authority,
+                requesting_authority=verified_authority,
             ),
         )
         if 'error' in result:
