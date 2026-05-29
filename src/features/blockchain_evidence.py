@@ -384,6 +384,10 @@ class EvidenceJournal:
                 fh.write(line)
                 self._last_file_pos = fh.tell()
             self._records_by_evidence_id[record["evidence_id"]] = record
+            if len(self._records_by_evidence_id) > 10000:
+                keys_to_remove = list(self._records_by_evidence_id.keys())[:1000]
+                for k in keys_to_remove:
+                    del self._records_by_evidence_id[k]
             self._latest_block_number = max(self._latest_block_number, int(record.get("block_number", 0)))
             self._record_count += 1
             self._index_loaded = True
