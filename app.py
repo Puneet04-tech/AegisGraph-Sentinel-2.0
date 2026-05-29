@@ -2224,18 +2224,99 @@ elif page == "🕸️ Network Graph Explorer":
     else:
         st.error("🛑 **Propagation Phase 4: Cashout Extraction** — Layered accounts distribute funds to withdrawal endpoints (ATM nodes/crypto gateways) for final extraction.")
 
-    # Generate layout positions
-    pos = nx.spring_layout(G, seed=42)
-    
-    # Render edges
-    edge_traces = []
-    
+    # Interactivity settings panel
+    col_p1, col_p2, col_p3 = st.columns([1.5, 1, 1.5])
+    with col_p1:
+        search_query = st.text_input("🔍 Search Account ID (e.g. ACC_VICTIM_3)", value="", key="graph_search_box")
+    with col_p2:
+        physics_enabled = st.toggle("🔒 Dynamic Spring Physics", value=True, key="graph_physics_toggle")
+    with col_p3:
+        st.write("")
+        st.caption("💡 **Tip**: Double-click any node to expand or collapse its transaction paths!")
+
+    # === CONSTRUCT VIS.JS DATA ===
+    vis_nodes = []
+    for node in G.nodes():
+        role = G.nodes[node]['type']
+        risk = G.nodes[node]['risk']
+        
+        # Shapes & Sizes based on Role
+        if role == 'Mule Hub (Level 1)':
+            shape = 'star'
+            size = 35
+            group = 'hub'
+            label = node
+        elif 'Layer' in role:
+            shape = 'dot'
+            size = 20
+            group = 'layer'
+            label = ''
+        elif role == 'Victim':
+            shape = 'dot'
+            size = 15
+            group = 'victim'
+            label = ''
+        else:
+            shape = 'diamond'
+            size = 18
+            group = 'cashout'
+            label = ''
+            
+        # Color coding based on risk scores
+        if risk >= 0.7:
+            color = {
+                'background': '#ef4444',
+                'border': '#b91c1c',
+                'highlight': {'background': '#f87171', 'border': '#dc2626'},
+                'hover': {'background': '#f87171', 'border': '#dc2626'}
+            }
+        elif risk >= 0.4:
+            color = {
+                'background': '#f59e0b',
+                'border': '#b45309',
+                'highlight': {'background': '#fbbf24', 'border': '#d97706'},
+                'hover': {'background': '#fbbf24', 'border': '#d97706'}
+            }
+        else:
+            color = {
+                'background': '#10b981',
+                'border': '#047857',
+                'highlight': {'background': '#34d399', 'border': '#059669'},
+                'hover': {'background': '#34d399', 'border': '#059669'}
+            }
+            
+        # Dynamic tooltip with risk statistics and node details
+        title = f"""
+        <div style="font-family: 'Plus Jakarta Sans', sans-serif; padding: 10px; color: #f1f5f9; background: #0f172a; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); font-size: 13px;">
+            <b style="color: #38bdf8; font-size: 14px;">{node}</b><br/>
+            <b>Role:</b> {role}<br/>
+            <b>Risk Score:</b> <span style="color: {'#ef4444' if risk >= 0.7 else '#f59e0b' if risk >= 0.4 else '#10b981'}">{risk:.2%}</span><br/>
+            <hr style="margin: 6px 0; border: 0; border-top: 1px solid rgba(255,255,255,0.1);"/>
+            <span style="font-size: 11px; color: #94a3b8;">Double-click to expand/collapse connections</span>
+        </div>
+        """
+        
+        # Hide connected nodes initially in static exploration mode to allow click-to-discover
+        hidden = False
+        if role != 'Mule Hub (Level 1)' and not animate_propagation and not search_query:
+            hidden = True
+            
+        vis_nodes.append({
+            'id': node,
+            'label': label,
+            'title': title,
+            'shape': shape,
+            'size': size,
+            'color': color,
+            'hidden': hidden,
+            'group': group
+        })
+
+    vis_edges = []
     for edge in G.edges():
         u, v = edge
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
+        amount = G[u][v].get('amount', 10000)
         
-        # Decide edge color and width based on propagation step
         is_active_edge = False
         if st.session_state.prop_step == 0 and G.nodes[u]['type'] == 'Victim':
             is_active_edge = True
@@ -2244,98 +2325,216 @@ elif page == "🕸️ Network Graph Explorer":
         elif st.session_state.prop_step == 2 and G.nodes[u]['type'] == 'Mule Layer (Level 2)' and G.nodes[v]['type'] == 'Withdrawal Node':
             is_active_edge = True
         elif st.session_state.prop_step == 3:
-            # Everything is active in final step
             is_active_edge = True
             
-        color = '#ef4444' if is_active_edge else '#334155'
-        width = 1.5 if is_active_edge else 0.4
+        width = 3.0 if is_active_edge else 1.0
+        color = {
+            'color': '#ef4444' if is_active_edge else 'rgba(148, 163, 184, 0.4)',
+            'highlight': '#ef4444',
+            'hover': '#ef4444'
+        }
         
-        edge_trace = go.Scatter(
-            x=[x0, x1, None], y=[y0, y1, None],
-            line=dict(width=width, color=color),
-            hoverinfo='none',
-            mode='lines'
-        )
-        edge_traces.append(edge_trace)
+        title = f"""
+        <div style="font-family: 'Plus Jakarta Sans', sans-serif; padding: 6px 10px; color: #f1f5f9; background: #1e293b; border-radius: 6px; font-size: 12px;">
+            <b>Transfer Amount:</b> ₹{amount:,.2f}<br/>
+            <b>Route:</b> {u} ➡️ {v}
+        </div>
+        """
         
-    # Render nodes
-    node_x = []
-    node_y = []
-    node_color = []
-    node_text = []
-    node_size = []
-    node_symbol = []
-    
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        role = G.nodes[node]['type']
-        risk = G.nodes[node]['risk']
-        
-        # Highlight node size/color depending on active simulation step
-        is_active_node = False
-        if st.session_state.prop_step == 0 and role == 'Victim':
-            is_active_node = True
-        elif st.session_state.prop_step == 1 and node == central_hub:
-            is_active_node = True
-        elif st.session_state.prop_step == 2 and role == 'Mule Layer (Level 2)':
-            is_active_node = True
-        elif st.session_state.prop_step == 3 and role == 'Withdrawal Node':
-            is_active_node = True
+        hidden = False
+        if (G.nodes[u]['type'] != 'Mule Hub (Level 1)' and G.nodes[v]['type'] != 'Mule Hub (Level 1)') and not animate_propagation and not search_query:
+            hidden = True
             
-        if is_active_node:
-            node_color.append('rgba(239, 68, 68, 1.0)') # Bright red
-            node_size.append(30 if node == central_hub else 20)
-            node_symbol.append('hexagram')
-        else:
-            # Dimmed/normal coloring
-            if risk > 0.8:
-                node_color.append('rgba(239, 68, 68, 0.4)' if st.session_state.prop_step != 3 else 'rgba(239, 68, 68, 0.9)')
-                node_size.append(25 if node == central_hub else 15)
-            elif risk > 0.4:
-                node_color.append('rgba(245, 158, 11, 0.4)' if st.session_state.prop_step != 3 else 'rgba(245, 158, 11, 0.9)')
-                node_size.append(12)
-            else:
-                node_color.append('rgba(16, 185, 129, 0.4)' if st.session_state.prop_step != 3 else 'rgba(16, 185, 129, 0.9)')
-                node_size.append(10)
-            node_symbol.append('circle')
-            
-        node_text.append(f"<b>{node}</b><br>Risk Score: {risk:.2f}<br>Role: {role}")
-        
-    node_trace = go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers',
-        hoverinfo='text',
-        marker=dict(
-            showscale=False,
-            color=node_color,
-            size=node_size,
-            symbol=node_symbol,
-            line=dict(width=2, color='rgba(255,255,255,0.8)')
-        ))
-            
-    node_trace.text = node_text
+        vis_edges.append({
+            'from': u,
+            'to': v,
+            'value': amount,
+            'width': width,
+            'color': color,
+            'title': title,
+            'hidden': hidden,
+            'arrows': 'to'
+        })
+
+    # Render custom HTML5 vis.js graph Component
+    import json
+    nodes_json = json.dumps(vis_nodes)
+    edges_json = json.dumps(vis_edges)
+    physics_val = "true" if physics_enabled else "false"
+    search_val = search_query.strip() if search_query.strip() else "None"
     
-    fig = go.Figure(data=edge_traces + [node_trace],
-             layout=go.Layout(
-                title='<span style="font-size: 20px;">Active Money Laundering Topology (Star Pattern)</span>',
-                showlegend=False,
-                hovermode='closest',
-                margin=dict(b=20,l=5,r=5,t=60),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
-                )
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Network Explorer</title>
+        <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+        <style type="text/css">
+            html, body {{
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+                background-color: #0b0f19;
+                overflow: hidden;
+            }}
+            #network-canvas {{
+                width: 100%;
+                height: 100%;
+                border: none;
+            }}
+            div.vis-tooltip {{
+                background-color: transparent !important;
+                border: none !important;
+                box-shadow: none !important;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="network-canvas"></div>
+        <script type="text/javascript">
+            var nodesRaw = {nodes_json};
+            var edgesRaw = {edges_json};
+
+            // Convert raw HTML title strings into actual DOM elements so vis.js renders them as HTML
+            nodesRaw.forEach(function(node) {{
+                if (node.title) {{
+                    var el = document.createElement("div");
+                    el.innerHTML = node.title;
+                    node.title = el;
+                }}
+            }});
+
+            edgesRaw.forEach(function(edge) {{
+                if (edge.title) {{
+                    var el = document.createElement("div");
+                    el.innerHTML = edge.title;
+                    edge.title = el;
+                }}
+            }});
+
+            var nodes = new vis.DataSet(nodesRaw);
+            var edges = new vis.DataSet(edgesRaw);
+
+            var container = document.getElementById('network-canvas');
+            var data = {{
+                nodes: nodes,
+                edges: edges
+            }};
+
+            var options = {{
+                physics: {{
+                    enabled: {physics_val},
+                    stabilization: {{
+                        enabled: true,
+                        iterations: 100,
+                        fit: true
+                    }},
+                    barnesHut: {{
+                        gravitationalConstant: -2500,
+                        centralGravity: 0.15,
+                        springLength: 95,
+                        springConstant: 0.04
+                    }}
+                }},
+                interaction: {{
+                    hover: true,
+                    zoomView: true,
+                    dragView: true,
+                    navigationButtons: true
+                }},
+                nodes: {{
+                    borderWidth: 2,
+                    shadow: true,
+                    font: {{
+                        color: '#f1f5f9',
+                        size: 13,
+                        face: 'Plus Jakarta Sans, sans-serif'
+                    }}
+                }},
+                edges: {{
+                    shadow: true,
+                    smooth: {{
+                        type: 'continuous'
+                    }}
+                }}
+            }};
+
+            var network = new vis.Network(container, data, options);
+
+            // Double-click dynamic expander
+            network.on("doubleClick", function(params) {{
+                if (params.nodes.length > 0) {{
+                    var clickedNode = params.nodes[0];
+                    var connectedNodes = network.getConnectedNodes(clickedNode);
+                    var connectedEdges = network.getConnectedEdges(clickedNode);
+
+                    var anyHidden = false;
+                    connectedNodes.forEach(function(nodeId) {{
+                        var n = nodes.get(nodeId);
+                        if (n && n.hidden) {{
+                            anyHidden = true;
+                        }}
+                    }});
+
+                    connectedNodes.forEach(function(nodeId) {{
+                        if (nodeId !== clickedNode) {{
+                            var n = nodes.get(nodeId);
+                            if (n) {{
+                                var newLabel = n.group === 'victim' ? 'Victim Node' : n.group === 'layer' ? 'Layer Node' : 'Cashout Node';
+                                nodes.update({{
+                                    id: nodeId, 
+                                    hidden: !anyHidden,
+                                    label: !anyHidden ? newLabel : ''
+                                }});
+                            }}
+                        }}
+                    }});
+
+                    connectedEdges.forEach(function(edgeId) {{
+                        var e = edges.get(edgeId);
+                        if (e) {{
+                            edges.update({{id: edgeId, hidden: !anyHidden}});
+                        }}
+                    }});
+                }}
+            }});
+
+            // Search focusing
+            var searchId = "{search_val}";
+            if (searchId && searchId !== "None") {{
+                setTimeout(function() {{
+                    var targetNode = nodes.get(searchId);
+                    if (targetNode) {{
+                        nodes.update({{id: searchId, hidden: false, label: searchId}});
+                        network.selectNodes([searchId]);
+                        network.focus(searchId, {{
+                            scale: 1.6,
+                            animation: {{
+                                duration: 1200,
+                                easingFunction: 'easeInOutQuad'
+                            }}
+                        }});
+                    }}
+                }}, 500);
+            }}
+        </script>
+    </body>
+    </html>
+    """
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.components.v1.html(html_content, height=600)
     
     st.markdown("""
     ### 📊 Topology Analytics
-    *   🔴 **Red Highlighted (Hexagrams)**: Active nodes participating in the selected propagation phase.
-    *   **Laundering Cycle**: Infiltration ➡️ Consolidation (Mule Hub) ➡️ Layering ➡️ Cashout Extraction.
-    *   **Target Intervention Point**: Freezing `ACC00001071` (Mule Hub) dismantles 100% of Layering and Withdrawal activities.
+    *   🔴 **Red Glowing Nodes / Edges**: Represents the active transactions in the selected propagation simulation step.
+    *   🟢 **Green Nodes**: Low risk accounts ($<40\\%$ risk).
+    *   🟡 **Amber Nodes**: Medium risk review accounts ($40\\%-70\\%$ risk).
+    *   🔴 **Solid Red Nodes**: High risk blocked accounts ($\\ge 70\\%$ risk).
+    *   ⭐ **Star Shape**: Central Mule Hub (`ACC00001071`).
+    *   🔷 **Diamond Shape**: Withdrawal endpoints (ATM nodes/crypto gateways).
+    *   **Double-Click Interactive Mode**: Double-clicking any node dynamically expands or collapses its transactions with smooth spring physics.
     """)
     
 # Page: Behavioral Biometrics
