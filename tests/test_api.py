@@ -4,6 +4,7 @@ Unit tests for API endpoints
 # Working on API endpoint testing
 
 import pytest
+import asyncio
 from fastapi.testclient import TestClient
 import sys
 from pathlib import Path
@@ -53,6 +54,16 @@ def _clear_rate_limit_storage():
                 except TypeError:
                     continue
                 return
+
+
+class _RecordingLoop:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    async def run_in_executor(self, executor, func, *args):
+        self.calls.append((executor, func, args))
+        return self.results[len(self.calls) - 1]
 
 
 class _FakeBlockchainManager:
@@ -630,6 +641,39 @@ class TestCORSandSecurity:
         
         # All should succeed (rate limiting not implemented yet)
         assert all(code == 200 for code in responses)
+
+
+class TestAsyncExplainabilityOffload:
+    def test_oracle_explanations_use_executor(self, monkeypatch):
+        """Oracle explanation generation should be offloaded from the request thread."""
+        class _FakeOracle:
+            def generate_explanation(self, **kwargs):
+                return {"oracle_reasoning": "background result"}
+
+        fake_oracle = _FakeOracle()
+
+        def fake_optional_get(name):
+            if name == "aegis_oracle":
+                return fake_oracle
+            return None
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state.services, "optional_get", fake_optional_get)
+        oracle_loop = _RecordingLoop([{"oracle_reasoning": "background result"}])
+        monkeypatch.setattr(api_main.asyncio, "get_running_loop", lambda: oracle_loop)
+
+        oracle_request = api_main.OracleExplainRequest(
+            transaction={"transaction_id": "txn-380"},
+            risk_assessment={"decision": "ALLOW", "risk_score": 0.12, "confidence": 0.91},
+            risk_breakdown={"graph": 0.1, "velocity": 0.1, "behavior": 0.1, "entropy": 0.1},
+            innovations_triggered=["oracle"],
+        )
+
+        oracle_response = asyncio.run(api_main.oracle_explain_detailed(oracle_request))
+
+        assert len(oracle_loop.calls) == 1
+        assert oracle_loop.calls[0][1].keywords["transaction"] == {"transaction_id": "txn-380"}
+        assert oracle_response["oracle_reasoning"] == {"oracle_reasoning": "background result"}
 
 
 if __name__ == "__main__":

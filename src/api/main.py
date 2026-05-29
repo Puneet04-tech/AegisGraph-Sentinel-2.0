@@ -1780,11 +1780,16 @@ async def explain_transaction(request: ExplainRequest):
         innovations_triggered = request.innovations_triggered
         
         # Use Aegis-Oracle to generate explanation
-        explanation = aegis_oracle.generate_explanation(
-            transaction=transaction,
-            risk_assessment=risk_assessment,
-            break_down=breakdown,
-            innovations_triggered=innovations_triggered,
+        loop = asyncio.get_running_loop()
+        explanation = await loop.run_in_executor(
+            None,
+            partial(
+                aegis_oracle.generate_explanation,
+                transaction=transaction,
+                risk_assessment=risk_assessment,
+                break_down=breakdown,
+                innovations_triggered=innovations_triggered,
+            ),
         )
         
         return explanation
@@ -1820,12 +1825,17 @@ async def oracle_explain_detailed(request: OracleExplainRequest):
         raise HTTPException(status_code=503, detail="Oracle not available")
     
     try:
-        explanation = aegis_oracle.generate_explanation(
-            transaction=request.transaction,
-            risk_assessment=request.risk_assessment,
-            attention_weights=request.attention_weights,
-            break_down=request.risk_breakdown,
-            innovations_triggered=request.innovations_triggered,
+        loop = asyncio.get_running_loop()
+        explanation = await loop.run_in_executor(
+            None,
+            partial(
+                aegis_oracle.generate_explanation,
+                transaction=request.transaction,
+                risk_assessment=request.risk_assessment,
+                attention_weights=request.attention_weights,
+                break_down=request.risk_breakdown,
+                innovations_triggered=request.innovations_triggered,
+            ),
         )
         
         return {
