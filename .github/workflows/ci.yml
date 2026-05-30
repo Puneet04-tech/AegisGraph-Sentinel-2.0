@@ -12,6 +12,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+            run_coverage: true
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.11"
+      max-parallel: 4
+    env:
+      RUN_COVERAGE: ${{ matrix.run_coverage || 'false' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -31,4 +41,10 @@ jobs:
           AEGIS_ENV: test
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
-        run: python -m pytest tests/ --cov=src --cov-report=term-missing
+        shell: bash
+        run: |
+          if [ "${RUN_COVERAGE}" = "true" ]; then
+            python -m pytest tests/ --cov=src --cov-report=term-missing
+          else
+            python -m pytest tests/
+          fi

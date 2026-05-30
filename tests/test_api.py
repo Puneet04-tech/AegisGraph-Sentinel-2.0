@@ -12,6 +12,7 @@ import types
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import hashlib
+from unittest.mock import Mock
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -506,6 +507,57 @@ class TestFraudCheckEndpoint:
         assert state.decisions["ALLOW"] == 1
 
         state.decisions = original_decisions
+
+    def test_honeypot_activation_preserves_block_decision_and_explanation(self, monkeypatch):
+        """Honeypot activation must keep the real fraud decision and explanation."""
+        honeypot_manager = Mock()
+        blockchain_manager = Mock()
+        activate_mock = Mock(return_value=Mock(honeypot_id="HP_TEST_001"))
+        seal_mock = Mock(return_value=Mock(evidence_id="EVID_TEST_001"))
+
+        honeypot_manager.should_activate_honeypot.return_value = True
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "honeypot_manager", honeypot_manager, raising=False)
+        monkeypatch.setattr(api_main.state, "blockchain_manager", blockchain_manager, raising=False)
+        monkeypatch.setattr(api_main, "compute_risk_score", lambda transaction, biometrics=None, **kwargs: {
+            "risk_score": 0.91,
+            "decision": "BLOCK",
+            "confidence": 0.99,
+            "breakdown": {"graph": 0.95, "velocity": 0.88, "behavior": 0.74, "entropy": 0.67},
+        })
+        monkeypatch.setattr(api_main, "generate_explanation", lambda transaction=None, risk_result=None, detail_level='medium', **kwargs: {
+            "explanation": "Known mule chain pattern detected",
+            "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
+            "risk_factors": [],
+        })
+        monkeypatch.setattr(api_main, "_activate_honeypot_sync", activate_mock)
+        monkeypatch.setattr(api_main, "_seal_blockchain_sync", seal_mock)
+
+        transaction = {
+            "transaction_id": "test_honeypot_001",
+            "amount": 7500.0,
+            "timestamp": 1779883200.0,
+            "source_account": "mule_src",
+            "target_account": "mule_dst",
+            "currency": "INR",
+            "mode": "UPI",
+        }
+
+        response = client.post("/api/v1/fraud/check", json=transaction)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "block"
+        assert data["honeypot_activated"] is True
+        assert data["deceptive_success_response"] is True
+        assert "Known mule chain pattern detected" in data["explanation"]
+        assert "Honeypot containment activated" in data["explanation"]
+        assert "Transaction allowed" not in data["explanation"]
+        assert data["recommended_action"] == "BLOCK_AND_ALERT_LAW_ENFORCEMENT"
+        assert activate_mock.called
+        assert seal_mock.called
+        assert seal_mock.call_args.args[6] == "BLOCK"
 
     def test_invalid_transaction(self):
         """Test with invalid transaction data"""
