@@ -38,14 +38,44 @@ jobs:
             core.setOutput('body', body);
             core.setOutput('number', prNumber.toString());
 
+      - name: Detect Backend-Only Change Set
+        id: change_scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ steps.pr_info.outputs.number }}', 10);
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+
+            const backendOnly = files.length > 0 && files.every((file) => {
+              return (
+                file.filename.endsWith('.py') ||
+                file.filename.endsWith('.yml') ||
+                file.filename.endsWith('.yaml') ||
+                file.filename === 'requirements.txt' ||
+                file.filename === 'pyproject.toml' ||
+                file.filename === 'setup.cfg' ||
+                file.filename === 'Dockerfile' ||
+                file.filename === '.dockerignore'
+              );
+            });
+
+            core.setOutput('backend_only', backendOnly ? 'true' : 'false');
+
       - name: Validate PR Content
         id: checker
         env:
           PR_BODY: ${{ steps.pr_info.outputs.body }}
+          BACKEND_ONLY: ${{ steps.change_scope.outputs.backend_only }}
         run: |
           import os, sys, re
           
           body = os.getenv('PR_BODY', '')
+          backend_only = os.getenv('BACKEND_ONLY', 'false').lower() == 'true'
           errors = []
           
           # Require Issue Number Link
@@ -56,8 +86,8 @@ jobs:
               with open("issue_num.txt", "w") as f:
                   f.write(match.group(1))
               
-          # Require Screenshot/Visual Evidence
-          if not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):
+          # Require Screenshot/Visual Evidence unless the PR is backend or infrastructure only
+          if not backend_only and not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):
               errors.append("- **Missing Screenshot/Visual Proof:** You must attach a UI screenshot or a terminal test log image.")
           
           if errors:

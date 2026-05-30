@@ -179,6 +179,7 @@ class TransactionCheckResponse(BaseModel):
                     "timestamp": "2026-02-26T14:30:00.142Z",
                     "honeypot_activated": True,
                     "honeypot_id": "HP_ABC123",
+                    "deceptive_success_response": True,
                     "blockchain_evidence_id": "EVID_XYZ789",
                     "behavioral_stress_detected": True,
                     "lateral_movement_detected": False
@@ -199,6 +200,7 @@ class TransactionCheckResponse(BaseModel):
     # Innovation fields (real-time integration)
     honeypot_activated: bool = Field(default=False, description="Honeypot escrow activated (Innovation 2)")
     honeypot_id: Optional[str] = Field(default=None, description="Honeypot trap ID if activated")
+    deceptive_success_response: bool = Field(default=False, description="Deceptive monitoring response enabled while preserving the real fraud decision")
     blockchain_evidence_id: Optional[str] = Field(default=None, description="Blockchain evidence ID (Innovation 6)")
     behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
     lateral_movement_detected: bool = Field(default=False, description="Lateral movement pattern detected (MITRE ATT&CK TA0008)")

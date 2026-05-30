@@ -53,6 +53,17 @@ def test_runtime_state_isolation_and_metrics():
     assert metrics["lifecycle_events"] == 1
 
 
+def test_runtime_state_lifecycle_events_are_bounded(monkeypatch):
+    monkeypatch.setattr(RuntimeState, "_max_lifecycle_events", 3)
+
+    runtime_state = RuntimeState()
+    for index in range(5):
+        runtime_state.record_lifecycle_event("unit_test", index=index)
+
+    assert len(runtime_state.lifecycle_events) == 3
+    assert [event["metadata"]["index"] for event in runtime_state.lifecycle_events] == [2, 3, 4]
+
+
 def test_task_registry_registers_and_cleans_completed_tasks():
     async def _run():
         registry = TaskRegistry()
@@ -86,6 +97,37 @@ def test_task_registry_gracefully_cancels_tasks():
         assert registry.active_count == 1
         await registry.cancel_all_tasks(timeout_seconds=1)
         assert cancelled.is_set()
+        await asyncio.sleep(0)
+        assert registry.active_count == 0
+
+    asyncio.run(_run())
+
+
+def test_task_registry_handles_mutation_during_shutdown():
+    async def _run():
+        registry = TaskRegistry()
+        cleanup_started = asyncio.Event()
+
+        async def cleanup_worker():
+            cleanup_started.set()
+            await asyncio.sleep(60)
+
+        async def worker():
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                registry.register_task(cleanup_worker(), name="cleanup_worker", owner="test")
+                raise
+
+        task = registry.register_task(worker(), name="primary_worker", owner="test")
+        await registry.cancel_all_tasks(timeout_seconds=1)
+        await asyncio.sleep(0)
+
+        assert cleanup_started.is_set()
+        assert registry.active_count == 1
+
+        await registry.cancel_all_tasks(timeout_seconds=1)
+        await asyncio.gather(task, return_exceptions=True)
         await asyncio.sleep(0)
         assert registry.active_count == 0
 

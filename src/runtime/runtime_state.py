@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Deque, Dict, Optional
 
 from .service_container import ServiceContainer
 from .task_registry import TaskRegistry
@@ -15,6 +16,8 @@ from .health_monitor import RuntimeHealthMonitor
 class RuntimeState:
     """Central runtime container attached to the legacy AppState object."""
 
+    _max_lifecycle_events: ClassVar[int] = 1000
+
     services: ServiceContainer = field(default_factory=ServiceContainer)
     tasks: TaskRegistry = field(default_factory=TaskRegistry)
     health_monitor: RuntimeHealthMonitor = field(default_factory=RuntimeHealthMonitor)
@@ -23,7 +26,10 @@ class RuntimeState:
     legacy_state: Optional[Any] = None
     started: bool = False
     shutting_down: bool = False
-    lifecycle_events: List[Dict[str, Any]] = field(default_factory=list)
+    lifecycle_events: Deque[Dict[str, Any]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.lifecycle_events = deque(maxlen=self._max_lifecycle_events)
 
     def bind_legacy_state(self, state: Any) -> None:
         self.legacy_state = state
