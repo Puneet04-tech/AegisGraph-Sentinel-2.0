@@ -25,6 +25,7 @@ Features Analyzed:
 12. KYC document anomalies
 """
 
+from collections import OrderedDict
 import numpy as np
 from typing import Dict, List, Optional
 from dataclasses import dataclass
@@ -90,12 +91,14 @@ class PredictiveMuleScorer:
     ):
         self.temporal_window = temporal_window
         self.risk_threshold = risk_threshold
-        
+        self.MAX_HISTORY_SIZE = 10000
+
         # Cache for temporal clustering
         self.recent_openings: List[AccountOpeningData] = []
-        self.device_history: Dict[str, int] = {}  # device_id -> count
-        self.ip_history: Dict[str, int] = {}  # ip -> count
-        self.referral_history: Dict[str, int] = {}  # referral_code -> count
+        # OrderedDict enables LRU eviction: least recently used items sit at the front
+        self.device_history: Dict[str, int] = OrderedDict()
+        self.ip_history: Dict[str, int] = OrderedDict()
+        self.referral_history: Dict[str, int] = OrderedDict()
 
     def _normalize_referral_code(self, referral_code: Optional[str]) -> Optional[str]:
         """Normalize referral codes so empty values do not poison the same bucket."""
@@ -474,40 +477,37 @@ class PredictiveMuleScorer:
     
     def _update_cache(self, account_data: AccountOpeningData):
         """Update temporal cache with new account opening"""
-        # Add to recent openings
+        # Efficient in-place expiry: entries are appended chronologically,
+        # so stale entries always accumulate at the front.
         self.recent_openings.append(account_data)
-        
-        # Keep only recent openings (last 24 hours)
         cutoff = datetime.now() - timedelta(hours=24)
-        self.recent_openings = [
-            a for a in self.recent_openings
-            if a.opening_timestamp > cutoff
-        ]
-        
-        # Limit to prevent memory exhaustion
-        if len(self.recent_openings) > self.MAX_HISTORY_SIZE * 10:
-            self.recent_openings = self.recent_openings[-self.MAX_HISTORY_SIZE * 10:]
-        
-        # Update device history
+        while self.recent_openings and self.recent_openings[0].opening_timestamp <= cutoff:
+            self.recent_openings.pop(0)
+
+        # Enforce hard memory cap (in-place, no full-list rebuild)
+        while len(self.recent_openings) > self.MAX_HISTORY_SIZE:
+            self.recent_openings.pop(0)
+
+        # Update device history (LRU-friendly)
         device_id = account_data.device_id
         self.device_history[device_id] = self.device_history.get(device_id, 0) + 1
-        
+        self.device_history.move_to_end(device_id)
+
         # Update IP history
         ip = account_data.ip_address
         self.ip_history[ip] = self.ip_history.get(ip, 0) + 1
-        
+        self.ip_history.move_to_end(ip)
+
         # Update referral history
         ref = self._normalize_referral_code(account_data.referral_code)
         if ref:
             self.referral_history[ref] = self.referral_history.get(ref, 0) + 1
+            self.referral_history.move_to_end(ref)
 
-        # Prevent unbounded memory growth by capping dictionary sizes
-        MAX_HISTORY_SIZE = 10000
+        # LRU eviction: pop least recently used entries (front of OrderedDict)
         for history_dict in (self.device_history, self.ip_history, self.referral_history):
-            if len(history_dict) > MAX_HISTORY_SIZE:
-                keys_to_remove = list(history_dict.keys())[:1000]
-                for k in keys_to_remove:
-                    del history_dict[k]
+            while len(history_dict) > self.MAX_HISTORY_SIZE:
+                history_dict.popitem(last=False)
     
     def get_statistics(self) -> Dict[str, int]:
         """Get statistics about recent account openings"""

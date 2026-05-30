@@ -64,16 +64,20 @@ class VoiceStressAnalyzer:
         coercion_threshold: Threshold for severe coercion (75-100)
     """
     
+    MAX_SECONDS: int = 30
+
     def __init__(
         self,
         sample_rate: int = 16000,
+        max_seconds: Optional[int] = None,
         stress_threshold: float = 30.0,
         coercion_threshold: float = 75.0,
     ):
         self.sample_rate = sample_rate
         self.stress_threshold = stress_threshold
         self.coercion_threshold = coercion_threshold
-        
+        self.max_seconds = max_seconds if max_seconds is not None else self.MAX_SECONDS
+
         # Baseline values (updated with user data over time)
         self.baseline_f0 = 120.0  # Hz (typical for mixed gender)
         self.baseline_speech_rate = 4.5  # syllables/sec
@@ -104,7 +108,12 @@ class VoiceStressAnalyzer:
         # Ensure mono
         if len(audio.shape) > 1:
             audio = np.mean(audio, axis=1)
-        
+
+        # Bounded-window sampling: cap to max_seconds to bound compute cost
+        max_samples = self.max_seconds * sr
+        if audio.size > max_samples:
+            audio = audio[:max_samples]
+
         # Normalize
         audio = audio / (np.max(np.abs(audio)) + 1e-8)
         
@@ -454,7 +463,7 @@ class VoiceStressAnalyzer:
         try:
             # Load audio from file path into numpy array
             if AUDIO_LIBS_AVAILABLE:
-                audio, sr = librosa.load(audio_file, sr=sample_rate)
+                audio, sr = librosa.load(audio_file, sr=sample_rate, duration=self.max_seconds)
             else:
                 logger.warning("Audio libraries not available, returning mock features")
                 audio = None
@@ -514,9 +523,9 @@ def analyze_voice_recording(
         }
     
     try:
-        # Load audio
-        audio, sr = librosa.load(audio_file_path, sr=sample_rate)
-        
+        # Load audio (bounded by default max_seconds to bound compute cost)
+        audio, sr = librosa.load(audio_file_path, sr=sample_rate, duration=VoiceStressAnalyzer.MAX_SECONDS)
+
         # Analyze
         analyzer = VoiceStressAnalyzer(sample_rate=sample_rate)
         features = analyzer.extract_features(audio, sr)

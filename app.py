@@ -234,17 +234,21 @@ st.markdown("""
         display: flex;
         justify-content: space-between;
         align-items: center;
-        animation: slideIn 0.3s ease-out forwards;
-        transition: transform 0.2s;
     }
-    .alert-card:hover {
-        transform: translateX(5px);
-        background: rgba(30, 41, 59, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-    @keyframes slideIn {
-        from { opacity: 0; transform: translateX(-20px); }
-        to { opacity: 1; transform: translateX(0); }
+    @media (prefers-reduced-motion: no-preference) {
+        .alert-card {
+            animation: slideIn 0.3s ease-out forwards;
+            transition: transform 0.2s;
+        }
+        .alert-card:hover {
+            transform: translateX(5px);
+            background: rgba(30, 41, 59, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
     }
     .severity-badge {
         padding: 4px 10px;
@@ -256,11 +260,14 @@ st.markdown("""
     .severity-Low { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; }
     .severity-Medium { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid #f59e0b; }
     .severity-High { background: rgba(249, 115, 22, 0.2); color: #f97316; border: 1px solid #f97316; }
-    .severity-Critical { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; animation: pulse 2s infinite; }
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    .severity-Critical { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
+    @media (prefers-reduced-motion: no-preference) {
+        .severity-Critical { animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
     }
     .alert-time { font-family: monospace; color: #94a3b8; font-size: 0.85rem; }
     .alert-title { font-weight: 600; color: #f1f5f9; margin: 0 12px; flex-grow: 1; }
@@ -1038,23 +1045,8 @@ elif page == "📊 Risk Analytics":
     # Local imports consolidated globally
     
     # Check API Status
-    try:
-        stats_response = requests.get(f"{API_URL}/stats", timeout=3)
-        if stats_response.status_code == 200:
-            stats = stats_response.json()
-        else:
-            stats = {}
-    except Exception as e:
-        stats = {}
-        
-    try:
-        health_response = requests.get(f"{API_URL}/health", timeout=3)
-        if health_response.status_code == 200:
-            health = health_response.json()
-        else:
-            health = {}
-    except Exception as e:
-        health = {}
+    stats = _fetch_stats_snapshot(API_URL)
+    health = _fetch_health_snapshot(API_URL)
 
     # Extract metrics
     total_requests = stats.get('total_requests', 0)
@@ -1585,11 +1577,15 @@ elif page == "📊 Risk Analytics":
                 
                 alert_col, inv_col, btn_col = st.columns([4, 1, 1])
                 with alert_col:
+                    aria_label = (
+                        f"{alert['severity']} alert {alert['title']} in {alert['category']} category, "
+                        f"status {status_badge}, alert id {alert['id']}, time {time_str}"
+                    )
                     html = f"""
-                    <div class="alert-card" style="opacity: {opacity}; margin-bottom: 0;">
+                    <div class="alert-card" style="opacity: {opacity}; margin-bottom: 0;" role="article" aria-label="{aria_label}">
                         <span class="alert-time">{time_str}</span>
                         <span class="alert-title">[{alert['category']}] {alert['title']} <span style="color:#64748b; font-size:0.75rem; margin-left:8px;">#{alert['id']}</span></span>
-                        <span class="severity-badge severity-{alert['severity']}">{status_badge}</span>
+                        <span class="severity-badge severity-{alert['severity']}" role="status" aria-live="polite" aria-label="Alert status {status_badge}">{status_badge}</span>
                     </div>
                     """
                     st.markdown(html, unsafe_allow_html=True)

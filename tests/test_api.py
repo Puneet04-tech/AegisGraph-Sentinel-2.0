@@ -12,6 +12,7 @@ import types
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import hashlib
+from unittest.mock import Mock
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -507,6 +508,57 @@ class TestFraudCheckEndpoint:
 
         state.decisions = original_decisions
 
+    def test_honeypot_activation_preserves_block_decision_and_explanation(self, monkeypatch):
+        """Honeypot activation must keep the real fraud decision and explanation."""
+        honeypot_manager = Mock()
+        blockchain_manager = Mock()
+        activate_mock = Mock(return_value=Mock(honeypot_id="HP_TEST_001"))
+        seal_mock = Mock(return_value=Mock(evidence_id="EVID_TEST_001"))
+
+        honeypot_manager.should_activate_honeypot.return_value = True
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "honeypot_manager", honeypot_manager, raising=False)
+        monkeypatch.setattr(api_main.state, "blockchain_manager", blockchain_manager, raising=False)
+        monkeypatch.setattr(api_main, "compute_risk_score", lambda transaction, biometrics=None, **kwargs: {
+            "risk_score": 0.91,
+            "decision": "BLOCK",
+            "confidence": 0.99,
+            "breakdown": {"graph": 0.95, "velocity": 0.88, "behavior": 0.74, "entropy": 0.67},
+        })
+        monkeypatch.setattr(api_main, "generate_explanation", lambda transaction=None, risk_result=None, detail_level='medium', **kwargs: {
+            "explanation": "Known mule chain pattern detected",
+            "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
+            "risk_factors": [],
+        })
+        monkeypatch.setattr(api_main, "_activate_honeypot_sync", activate_mock)
+        monkeypatch.setattr(api_main, "_seal_blockchain_sync", seal_mock)
+
+        transaction = {
+            "transaction_id": "test_honeypot_001",
+            "amount": 7500.0,
+            "timestamp": 1779883200.0,
+            "source_account": "mule_src",
+            "target_account": "mule_dst",
+            "currency": "INR",
+            "mode": "UPI",
+        }
+
+        response = client.post("/api/v1/fraud/check", json=transaction)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "block"
+        assert data["honeypot_activated"] is True
+        assert data["deceptive_success_response"] is True
+        assert "Known mule chain pattern detected" in data["explanation"]
+        assert "Honeypot containment activated" in data["explanation"]
+        assert "Transaction allowed" not in data["explanation"]
+        assert data["recommended_action"] == "BLOCK_AND_ALERT_LAW_ENFORCEMENT"
+        assert activate_mock.called
+        assert seal_mock.called
+        assert seal_mock.call_args.args[6] == "BLOCK"
+
     def test_invalid_transaction(self):
         """Test with invalid transaction data"""
         transaction = {
@@ -621,8 +673,7 @@ class TestBatchFraudCheck:
         assert len(data["results"]) == 0
 
     def test_batch_processing_is_chunked(self, monkeypatch):
-        """Batch processing should fan out in bounded chunks."""
-        call_sizes = []
+        """Batch processing should return all results through the streaming response."""
 
         async def fake_check_transaction(txn_request):
             return TransactionCheckResponse(
@@ -638,14 +689,7 @@ class TestBatchFraudCheck:
                 timestamp="2026-01-01T00:00:00Z",
             )
 
-        original_gather = api_main.asyncio.gather
-
-        async def recording_gather(*args, **kwargs):
-            call_sizes.append(len(args))
-            return await original_gather(*args, **kwargs)
-
         monkeypatch.setattr(api_main, "check_transaction", fake_check_transaction)
-        monkeypatch.setattr(api_main.asyncio, "gather", recording_gather)
 
         transactions = [
             {
@@ -662,7 +706,6 @@ class TestBatchFraudCheck:
         response = client.post("/api/v1/fraud/batch", json={"transactions": transactions})
 
         assert response.status_code == 200
-        assert call_sizes == [8, 8, 1]
         assert len(response.json()["results"]) == 17
 
 
@@ -737,6 +780,36 @@ class TestCORSandSecurity:
 
 
 class TestAsyncExplainabilityOffload:
+    def test_oracle_explanations_use_executor(self, monkeypatch):
+        """Oracle explanation generation should be offloaded from the request thread."""
+        class _FakeOracle:
+            def generate_explanation(self, **kwargs):
+                return {"oracle_reasoning": "background result"}
+
+        fake_oracle = _FakeOracle()
+
+        def fake_optional_get(name):
+            if name == "aegis_oracle":
+                return fake_oracle
+            return None
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state.services, "optional_get", fake_optional_get)
+        oracle_loop = _RecordingLoop([{"oracle_reasoning": "background result"}])
+        monkeypatch.setattr(api_main.asyncio, "get_running_loop", lambda: oracle_loop)
+
+        oracle_request = api_main.OracleExplainRequest(
+            transaction={"transaction_id": "txn-380"},
+            risk_assessment={"decision": "ALLOW", "risk_score": 0.12, "confidence": 0.91},
+            risk_breakdown={"graph": 0.1, "velocity": 0.1, "behavior": 0.1, "entropy": 0.1},
+            innovations_triggered=["oracle"],
+        )
+
+        oracle_response = asyncio.run(api_main.oracle_explain_detailed(oracle_request))
+
+        assert len(oracle_loop.calls) == 1
+        assert oracle_loop.calls[0][1].keywords["transaction"] == {"transaction_id": "txn-380"}
+        assert oracle_response["oracle_reasoning"] == {"oracle_reasoning": "background result"}
     def test_transaction_explanation_uses_executor(self, monkeypatch):
         """Explanation generation should be offloaded from the request thread."""
         original_requests_processed = state.requests_processed

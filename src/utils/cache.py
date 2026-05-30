@@ -11,8 +11,11 @@ import hashlib
 import json
 import logging
 import os
+import threading
+import time
 from abc import ABC, abstractmethod
 from functools import wraps
+from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import networkx as nx
@@ -66,58 +69,88 @@ class InMemoryGraphCache(GraphCache):
         Args:
             max_size: Maximum number of cache entries
         """
-        self.cache: Dict[str, Tuple[Any, Optional[int]]] = {}
+        self.cache: "OrderedDict[str, Tuple[Any, Optional[int], float]]" = OrderedDict()
         self.max_size = max_size
         self.hits = 0
         self.misses = 0
+        self._lock = threading.RLock()
+
+    def _purge_expired_locked(self, now: Optional[float] = None) -> None:
+        """Remove expired entries before reads or capacity-based eviction."""
+        if now is None:
+            now = time.time()
+
+        expired_keys = [
+            key
+            for key, (_, ttl, stored_at) in self.cache.items()
+            if ttl is not None and now - stored_at >= ttl
+        ]
+        for key in expired_keys:
+            del self.cache[key]
+            logger.debug(f"Cache expired: {key}")
+
+    def _evict_if_needed_locked(self) -> None:
+        """Evict least-recently-used entries while the cache exceeds capacity."""
+        while len(self.cache) > self.max_size:
+            oldest_key, _ = self.cache.popitem(last=False)
+            logger.debug(f"Cache evicted: {oldest_key}")
 
     def get(self, key: str) -> Optional[Any]:
         """Retrieve value, returns None if not found."""
-        if key in self.cache:
-            value, _ = self.cache[key]
-            self.hits += 1
-            logger.debug(f"Cache HIT: {key}")
-            return value
-        self.misses += 1
-        logger.debug(f"Cache MISS: {key}")
-        return None
+        with self._lock:
+            now = time.time()
+            self._purge_expired_locked(now)
+
+            if key in self.cache:
+                value, _, _ = self.cache[key]
+                self.cache.move_to_end(key)
+                self.hits += 1
+                logger.debug(f"Cache HIT: {key}")
+                return value
+
+            self.misses += 1
+            logger.debug(f"Cache MISS: {key}")
+            return None
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        """Store value with optional TTL (not enforced in simple impl)."""
-        if len(self.cache) >= self.max_size:
-            # Simple eviction: remove first (oldest) entry
-            oldest_key = next(iter(self.cache))
-            del self.cache[oldest_key]
-            logger.debug(f"Cache evicted: {oldest_key}")
-
-        self.cache[key] = (value, ttl)
-        logger.debug(f"Cache SET: {key} (ttl={ttl}s)")
+        """Store value with optional TTL."""
+        with self._lock:
+            now = time.time()
+            self._purge_expired_locked(now)
+            self.cache[key] = (value, ttl, now)
+            self.cache.move_to_end(key)
+            self._evict_if_needed_locked()
+            logger.debug(f"Cache SET: {key} (ttl={ttl}s)")
 
     def invalidate(self, key: str) -> None:
         """Remove specific key from cache."""
-        if key in self.cache:
-            del self.cache[key]
-            logger.debug(f"Cache INVALIDATE: {key}")
+        with self._lock:
+            if key in self.cache:
+                del self.cache[key]
+                logger.debug(f"Cache INVALIDATE: {key}")
 
     def clear(self) -> None:
         """Clear entire cache."""
-        self.cache.clear()
-        logger.info("Cache cleared")
+        with self._lock:
+            self.cache.clear()
+            logger.info("Cache cleared")
 
     def get_stats(self) -> Dict[str, Any]:
         """Return cache statistics."""
-        total = self.hits + self.misses
-        hit_rate = (self.hits / total * 100) if total > 0 else 0.0
+        with self._lock:
+            self._purge_expired_locked()
+            total = self.hits + self.misses
+            hit_rate = (self.hits / total * 100) if total > 0 else 0.0
 
-        return {
-            "backend": "in_memory",
-            "size": len(self.cache),
-            "max_size": self.max_size,
-            "hits": self.hits,
-            "misses": self.misses,
-            "total_requests": total,
-            "hit_rate_percent": round(hit_rate, 2),
-        }
+            return {
+                "backend": "in_memory",
+                "size": len(self.cache),
+                "max_size": self.max_size,
+                "hits": self.hits,
+                "misses": self.misses,
+                "total_requests": total,
+                "hit_rate_percent": round(hit_rate, 2),
+            }
 
 
 class RedisGraphCache(GraphCache):
@@ -279,7 +312,15 @@ class GraphOperationCache:
         
         Uses sorted edge set to create consistent hash regardless of node order.
         """
-        edges = sorted([(u, v) for u, v in graph.edges()])
+        edges = sorted(
+            (
+                u,
+                v,
+                graph[u][v].get("weight"),
+                graph[u][v].get("timestamp"),
+            )
+            for u, v in graph.edges()
+        )
         edge_str = str(edges).encode()
         return hashlib.sha256(edge_str).hexdigest()[:16]
 

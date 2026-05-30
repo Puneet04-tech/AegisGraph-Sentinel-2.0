@@ -12,6 +12,11 @@ _logger = get_logger("runtime.recovery")
 
 
 class RecoveryManager:
+    def get_registered_names(self) -> list[str]:
+        """Return a list of service names that have registered recovery callbacks.
+        This provides a public way to discover registered services without exposing the private _callbacks dict.
+        """
+        return list(self._callbacks.keys())
     """Manages service recovery actions and prevents infinite restart loops."""
 
     def __init__(self, health_monitor: RuntimeHealthMonitor, logger: Optional[Any] = None) -> None:
