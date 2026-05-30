@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from collections import OrderedDict
+from typing import List, Optional, Tuple
 
 import networkx as nx
 
@@ -33,15 +34,19 @@ class Neo4jGraphProvider:
         password: str = "password",
         enabled: bool = True,
         cache_ttl_seconds: int = 60,
+        cache_max_entries: int = 1024,
     ) -> None:
         self.uri = uri
         self.user = user
         self.password = password
         self.enabled = enabled and NEO4J_AVAILABLE
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.cache_max_entries = cache_max_entries
+        if self.cache_max_entries < 1:
+            raise ValueError("cache_max_entries must be at least 1")
 
         self._driver: Optional[neo4j.Driver] = None
-        self._subgraph_cache: Dict[str, Tuple[float, nx.DiGraph]] = {}
+        self._subgraph_cache: OrderedDict[str, Tuple[float, nx.DiGraph]] = OrderedDict()
 
         if not NEO4J_AVAILABLE and enabled:
             logger.warning(
@@ -68,6 +73,26 @@ class Neo4jGraphProvider:
                 )
                 self.enabled = False
                 self._driver = None
+
+    def _get_cached_subgraph(self, account_id: str, now: float) -> Optional[nx.DiGraph]:
+        cached_entry = self._subgraph_cache.get(account_id)
+        if not cached_entry:
+            return None
+
+        cache_time, cached_graph = cached_entry
+        if now - cache_time >= self.cache_ttl_seconds:
+            self._subgraph_cache.pop(account_id, None)
+            return None
+
+        self._subgraph_cache.move_to_end(account_id)
+        return cached_graph
+
+    def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
+        self._subgraph_cache[account_id] = (now, graph)
+        self._subgraph_cache.move_to_end(account_id)
+
+        while len(self._subgraph_cache) > self.cache_max_entries:
+            self._subgraph_cache.popitem(last=False)
 
     @property
     def is_active(self) -> bool:
@@ -157,6 +182,8 @@ class Neo4jGraphProvider:
         except Exception as e:
             logger.error(f"Failed to record transaction {src_account} -> {dst_account} in Neo4j: {e}")
 
+    DEFAULT_SUBGRAPH_LIMIT = 10_000
+
     def get_approx_subgraph(self, account_id: str, max_hops: int = 2) -> nx.DiGraph:
         """
         Extract the k-hop local transaction network around an account ID from Neo4j,
@@ -170,22 +197,24 @@ class Neo4jGraphProvider:
 
         # Check in-memory TTL cache
         now = time.time()
-        if account_id in self._subgraph_cache:
-            cache_time, cached_graph = self._subgraph_cache[account_id]
-            if now - cache_time < self.cache_ttl_seconds:
-                return cached_graph
+        cached_graph = self._get_cached_subgraph(account_id, now)
+        if cached_graph is not None:
+            return cached_graph
 
         G = nx.DiGraph()
         G.add_node(account_id)
 
-        # Retrieve paths matching the k-hop undirected pattern
+        # Retrieve paths matching the k-hop undirected pattern with a hard limit
+        # to prevent super-node DoS (issue #477).
+        limit = self.DEFAULT_SUBGRAPH_LIMIT
         query = (
             "MATCH path = (a:Account {id: $account_id})-[r:TRANSFER*1..2]-(b:Account)\n"
-            "RETURN path"
+            "RETURN path\n"
+            "LIMIT $limit"
         )
         try:
             with self._driver.session() as session:
-                result = session.run(query, account_id=account_id)
+                result = session.run(query, account_id=account_id, limit=limit)
                 for record in result:
                     path = record["path"]
                     for relationship in path.relationships:
@@ -199,8 +228,7 @@ class Neo4jGraphProvider:
                         timestamp = relationship.get("timestamp", 0.0)
 
                         G.add_edge(start_id, end_id, weight=amount, timestamp=timestamp)
-
-            self._subgraph_cache[account_id] = (now, G)
+            self._store_cached_subgraph(account_id, G, now)
             return G
         except Exception as e:
             logger.error(f"Error extracting subgraph for account {account_id}: {e}")

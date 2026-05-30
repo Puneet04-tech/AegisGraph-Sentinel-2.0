@@ -181,3 +181,49 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             
             self.assertIs(cached_subgraph, subgraph)
             mock_session.run.assert_not_called()
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_subgraph_cache_evicts_lru_entry(self, mock_neo4j_lib) -> None:
+        """Verify the cache stays bounded and evicts the least-recently-used entry."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+
+        def build_result(src_id: str, dst_id: str) -> MagicMock:
+            mock_relationship = MagicMock()
+            mock_node_start = MagicMock()
+            mock_node_start.get.return_value = src_id
+            mock_node_start.__getitem__.return_value = src_id
+
+            mock_node_end = MagicMock()
+            mock_node_end.get.return_value = dst_id
+            mock_node_end.__getitem__.return_value = dst_id
+
+            mock_relationship.nodes = (mock_node_start, mock_node_end)
+            mock_relationship.get.side_effect = lambda key, default=None: {
+                "amount": 1.0,
+                "timestamp": 1.0,
+            }.get(key, default)
+
+            mock_path = MagicMock()
+            mock_path.relationships = [mock_relationship]
+
+            result = MagicMock()
+            result.__iter__.return_value = [{"path": mock_path}]
+            return result
+
+        mock_session.run.side_effect = [
+            build_result("ACC1", "ACC2"),
+            build_result("ACC3", "ACC4"),
+        ]
+
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True, cache_ttl_seconds=60, cache_max_entries=1)
+
+            provider.get_approx_subgraph("ACC1", max_hops=2)
+            provider.get_approx_subgraph("ACC3", max_hops=2)
+
+            self.assertEqual(list(provider._subgraph_cache.keys()), ["ACC3"])
+            self.assertNotIn("ACC1", provider._subgraph_cache)
+            self.assertEqual(mock_session.run.call_count, 2)

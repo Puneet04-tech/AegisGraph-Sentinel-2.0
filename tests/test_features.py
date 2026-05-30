@@ -231,5 +231,116 @@ class TestFeatureIntegration:
         assert isinstance(entropy, float)
 
 
+class TestPredictiveMuleCache:
+    """Test PredictiveMuleScorer cache optimization (issue #435)"""
+
+    def test_inplace_expiry_no_rebuild(self):
+        """_update_cache uses in-place pop(0) instead of full-list comprehension."""
+        from src.features.predictive_mule_identification import (
+            PredictiveMuleScorer,
+            AccountOpeningData,
+        )
+        from datetime import datetime, timedelta
+
+        scorer = PredictiveMuleScorer()
+
+        # Insert a stale entry (older than 24h)
+        stale = AccountOpeningData(
+            opening_timestamp=datetime.now() - timedelta(hours=48),
+            form_start_time=datetime.now() - timedelta(hours=48),
+            form_submit_time=datetime.now() - timedelta(hours=48),
+            name="stale", age=20, profession="s", stated_address="a",
+            email="s@t.com", phone_number="0", kyc_document_type="PAN",
+            facial_match_score=0.5, document_quality_score=0.5,
+            ip_address="1.1.1.1", device_id="d0", device_age_days=0,
+            browser_fingerprint="f0", referrer_url=None,
+            initial_deposit=0.0, account_type="S", referral_code=None,
+            existing_customer_connections=0,
+        )
+        scorer._update_cache(stale)
+        assert len(scorer.recent_openings) == 0, "Stale entry should be evicted in-place"
+
+        # Fresh entries should be kept
+        fresh = AccountOpeningData(
+            opening_timestamp=datetime.now(),
+            form_start_time=datetime.now(),
+            form_submit_time=datetime.now(),
+            name="fresh", age=20, profession="s", stated_address="a",
+            email="f@t.com", phone_number="1", kyc_document_type="PAN",
+            facial_match_score=0.5, document_quality_score=0.5,
+            ip_address="2.2.2.2", device_id="d1", device_age_days=0,
+            browser_fingerprint="f1", referrer_url=None,
+            initial_deposit=0.0, account_type="S", referral_code=None,
+            existing_customer_connections=0,
+        )
+        scorer._update_cache(fresh)
+        assert len(scorer.recent_openings) == 1
+
+    def test_lru_eviction(self):
+        """History dicts evict least recently used entries first."""
+        from src.features.predictive_mule_identification import (
+            PredictiveMuleScorer,
+            AccountOpeningData,
+        )
+        from datetime import datetime
+
+        scorer = PredictiveMuleScorer()
+        scorer.MAX_HISTORY_SIZE = 3  # small for testing
+
+        # Insert 4 entries with distinct IPs — the first should be evicted
+        for i in range(4):
+            data = AccountOpeningData(
+                opening_timestamp=datetime.now(),
+                form_start_time=datetime.now(),
+                form_submit_time=datetime.now(),
+                name=f"u{i}", age=20, profession="s", stated_address="a",
+                email=f"u{i}@t.com", phone_number=str(i),
+                kyc_document_type="PAN", facial_match_score=0.5,
+                document_quality_score=0.5, ip_address=f"10.0.0.{i}",
+                device_id=f"d{i}", device_age_days=0,
+                browser_fingerprint=f"f{i}", referrer_url=None,
+                initial_deposit=0.0, account_type="S", referral_code=None,
+                existing_customer_connections=0,
+            )
+            scorer._update_cache(data)
+
+        # LRU: 10.0.0.0 should be evicted, 10.0.0.{1,2,3} remain
+        assert "10.0.0.0" not in scorer.ip_history
+        assert "10.0.0.1" in scorer.ip_history
+        assert "10.0.0.2" in scorer.ip_history
+        assert "10.0.0.3" in scorer.ip_history
+        assert len(scorer.ip_history) == 3
+
+    def test_device_count_tracking(self):
+        """Device history correctly increments and survives eviction."""
+        from src.features.predictive_mule_identification import (
+            PredictiveMuleScorer,
+            AccountOpeningData,
+        )
+        from datetime import datetime
+
+        scorer = PredictiveMuleScorer()
+        scorer.MAX_HISTORY_SIZE = 2
+
+        for i in range(3):
+            data = AccountOpeningData(
+                opening_timestamp=datetime.now(),
+                form_start_time=datetime.now(),
+                form_submit_time=datetime.now(),
+                name=f"u{i}", age=20, profession="s", stated_address="a",
+                email=f"u{i}@t.com", phone_number=str(i),
+                kyc_document_type="PAN", facial_match_score=0.5,
+                document_quality_score=0.5, ip_address=f"10.0.0.{i}",
+                device_id="shared_device", device_age_days=0,
+                browser_fingerprint=f"f{i}", referrer_url=None,
+                initial_deposit=0.0, account_type="S", referral_code=None,
+                existing_customer_connections=0,
+            )
+            scorer._update_cache(data)
+
+        # Same device seen 3 times -> count is 3
+        assert scorer.device_history["shared_device"] == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
