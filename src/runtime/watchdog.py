@@ -78,6 +78,7 @@ class RuntimeWatchdog:
         failed_services = set()
 
         # 1. Stale Heartbeat Detection
+        stale_coros = []
         for name, health in snapshot.items():
             if health.status in ("healthy", "degraded"):
                 elapsed = current_time - health.last_heartbeat
@@ -93,17 +94,22 @@ class RuntimeWatchdog:
                     )
                     failed_services.add(name)
                     if self.recovery_manager:
-                        await self.recovery_manager.handle_failure(name)
+                        stale_coros.append(self.recovery_manager.handle_failure(name))
+        if stale_coros:
+            await asyncio.gather(*stale_coros)
 
         # 2. Dead Task Detection for Registered Runtime Tasks
         active_tasks = self.task_registry.get_active_tasks()
         active_names = {task.name for task in active_tasks}
 
+        # Collect recovery tasks to run concurrently
+        recovery_coros = []
         if self.recovery_manager:
-            for name in list(self.recovery_manager._callbacks.keys()):
+            # Use public accessor to get registered service names
+            registered_names = self.recovery_manager.get_registered_names()
+            for name in registered_names:
                 if name in failed_services:
-                    continue  # Already failed/recovered in this iteration
-                
+                    continue  # Already handled in stale heartbeat loop
                 health = snapshot.get(name)
                 if health is not None and health.status != "unhealthy":
                     if name not in active_names:
@@ -116,4 +122,7 @@ class RuntimeWatchdog:
                             name,
                             error="Dead task: background task has stopped running"
                         )
-                        await self.recovery_manager.handle_failure(name)
+                        recovery_coros.append(self.recovery_manager.handle_failure(name))
+        # Await all recovery callbacks concurrently
+        if recovery_coros:
+            await asyncio.gather(*recovery_coros)

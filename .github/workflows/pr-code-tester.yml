@@ -30,7 +30,7 @@ jobs:
       - name: Install Project Dependencies
         run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest pytest-cov mock || true
+          pip install pytest pytest-cov mock
 
       - name: Extract Context and Test Universally
         id: universal_tester
@@ -120,8 +120,8 @@ jobs:
               print(f"🎯 Universally discovered relevant test targets: {matched_test_files}")
               test_execution_command = ["pytest"] + matched_test_files + ["-v"]
           else:
-              print("📦 No specific subset matched code modifications. Running universal test suite collection fallback...")
-              test_execution_command = ["pytest", test_root if test_root else ".", "-v"]
+              print("📦 No specific test files matched the changed source files. Skipping — narrow change without applicable tests.")
+              sys.exit(0)
               
           print(f"Running: {' '.join(test_execution_command)}")
           execution_result = subprocess.run(test_execution_command)

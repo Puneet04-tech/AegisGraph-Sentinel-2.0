@@ -7,6 +7,7 @@ import inspect
 import threading
 import time
 import traceback
+import threading
 from dataclasses import dataclass
 from typing import Any, Awaitable, Dict, Iterable, List, Optional, Union
 
@@ -32,6 +33,7 @@ class TaskRegistry:
     def __init__(self, logger: Any = None) -> None:
         self._tasks: Dict[asyncio.Task, TaskInfo] = {}
         self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._logger = logger or _logger
 
     def register_task(
@@ -59,11 +61,13 @@ class TaskRegistry:
         with self._lock:
             self._tasks[task] = info
             active_count = len(self._tasks)
+            active_tasks = len(self._tasks)
         task.add_done_callback(self._on_task_done)
         self._logger.info(
             "Background task registered",
             event_type="runtime_task_registered",
             metadata={"task": name, "owner": owner, "active_tasks": active_count},
+            metadata={"task": name, "owner": owner, "active_tasks": active_tasks},
         )
         return task
 
@@ -74,6 +78,11 @@ class TaskRegistry:
                 return
             active_count = len(self._tasks)
         metadata = {"task": info.name, "owner": info.owner, "active_tasks": active_count}
+            active_tasks = len(self._tasks)
+        if info is None:
+            return
+
+        metadata = {"task": info.name, "owner": info.owner, "active_tasks": active_tasks}
         if task.cancelled():
             self._logger.info(
                 "Background task cancelled",
@@ -118,6 +127,8 @@ class TaskRegistry:
         """Return active task metadata for inspection and metrics."""
         with self._lock:
             items = list(self._tasks.items())
+            items = tuple(self._tasks.items())
+
         active: List[TaskInfo] = []
         for task, info in items:
             if not task.done():
@@ -155,6 +166,13 @@ class TaskRegistry:
                 for task, info in list(self._tasks.items())
                 if not task.done() and (owner_filter is None or info.owner in owner_filter)
             ]
+            tasks_snapshot = tuple(self._tasks.items())
+
+        tasks = [
+            task
+            for task, info in tasks_snapshot
+            if not task.done() and (owner_filter is None or info.owner in owner_filter)
+        ]
         if not tasks:
             self._logger.info(
                 "No background tasks to cancel",
