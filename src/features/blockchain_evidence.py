@@ -434,6 +434,7 @@ class RedisLedger:
     """
 
     PREFIX = "aegis"
+    MAX_EVIDENCE_INDEX_SIZE = 10000
 
     def __init__(self, redis_url: str = None):
         self._client = None
@@ -465,7 +466,9 @@ class RedisLedger:
         try:
             key = f"{self.PREFIX}:evidence:{evidence.evidence_id}"
             self._client.set(key, json.dumps(asdict(evidence), default=str))
-            self._client.rpush(f"{self.PREFIX}:evidence:index", evidence.evidence_id)
+            index_key = f"{self.PREFIX}:evidence:index"
+            self._client.rpush(index_key, evidence.evidence_id)
+            self._client.ltrim(index_key, -self.MAX_EVIDENCE_INDEX_SIZE, -1)
             self._client.incr(f"{self.PREFIX}:stats:total_sealed")
         except Exception:
             self._mark_unavailable()
@@ -555,6 +558,10 @@ class BlockchainEvidenceManager:
         # Simulated network nodes
         self.nodes = self._initialize_network()
         
+        # In-memory evidence ID -> record index, eliminating O(N) chain scans
+        self._evidence_index: Dict[str, dict] = {}
+        self._rebuild_evidence_index()
+        
         # Statistics
         self.stats = {
             'total_sealed': 0,
@@ -637,8 +644,26 @@ class BlockchainEvidenceManager:
             'validator': validator,
         }
 
+    def _rebuild_evidence_index(self) -> None:
+        """Populate _evidence_index from the in-memory chain (one-time O(N) scan)."""
+        self._evidence_index.clear()
+        for block in self.nodes[0].chain:
+            for tx in block.get('transactions', []):
+                eid = tx.get('evidence_id')
+                if eid and eid not in self._evidence_index:
+                    self._evidence_index[eid] = {
+                        **tx,
+                        'block_number': block['block_number'],
+                        'block_hash': block['hash'],
+                        'previous_block_hash': block['previous_hash'],
+                        'validator_signatures': [],
+                        'consensus_timestamp': block['timestamp'],
+                        'finality_time_ms': 0.0,
+                        '_storage': 'memory',
+                    }
+
     def _load_evidence_record(self, evidence_id: str) -> Optional[dict]:
-        """Load evidence from Redis first, then the append-only journal."""
+        """Load evidence from Redis first, then the append-only journal, then the in-memory index."""
         record = self._redis.load_evidence(evidence_id)
         if record:
             record['_storage'] = 'redis'
@@ -649,20 +674,10 @@ class BlockchainEvidenceManager:
             record['_storage'] = 'journal'
             return record
 
-        for block in self.nodes[0].chain:
-            for tx in block.get('transactions', []):
-                if tx.get('evidence_id') == evidence_id:
-                    record = {
-                        **tx,
-                        'block_number': block['block_number'],
-                        'block_hash': block['hash'],
-                        'previous_block_hash': block['previous_hash'],
-                        'validator_signatures': [],
-                        'consensus_timestamp': block['timestamp'],
-                        'finality_time_ms': 0.0,
-                        '_storage': 'memory',
-                    }
-                    return record
+        record = self._evidence_index.get(evidence_id)
+        if record:
+            record = {**record, '_storage': 'memory'}
+            return record
 
         return None
 
@@ -859,6 +874,16 @@ class BlockchainEvidenceManager:
                 else:
                     print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) WARNING Over target")
                 
+                self._evidence_index[evidence_id] = {
+                    **evidence_data,
+                    'block_number': block['block_number'],
+                    'block_hash': block['hash'],
+                    'previous_block_hash': block['previous_hash'],
+                    'validator_signatures': validator_signatures,
+                    'consensus_timestamp': block['timestamp'],
+                    'finality_time_ms': consensus_time,
+                    '_storage': 'memory',
+                }
                 self._journal.append(evidence)
                 self._redis.save_evidence(evidence)
                 self._redis.save_block_metadata(block)

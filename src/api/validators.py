@@ -337,6 +337,28 @@ class RateLimiter:
         # Initialize empty entries lazily in _check_limit
 
 
+    @staticmethod
+    def _prune_expired(
+        tracking_dict: "OrderedDict[str, Tuple[int, datetime]]",
+        now: datetime,
+        max_prune: int = 50,
+    ) -> None:
+        """Remove expired entries from the LRU end (front) of the ordered dict.
+
+        Because every access calls ``move_to_end()``, the oldest / least
+        recently used entries naturally reside at the front, making this
+        an O(max_prune) scan in the worst case and O(1) when there is
+        nothing to evict.
+        """
+        for _ in range(max_prune):
+            if not tracking_dict:
+                break
+            identifier, (_, window_start) = next(iter(tracking_dict.items()))
+            if (now - window_start).total_seconds() >= 60:
+                del tracking_dict[identifier]
+            else:
+                break  # remaining entries are even newer
+
     def _check_limit(
         self,
         identifier: str,
@@ -358,8 +380,8 @@ class RateLimiter:
             tracking_dict[identifier] = (1, now)
             # Enforce max size via LRU eviction (pop oldest)
             if len(tracking_dict) > self.max_entries:
-                # popitem(last=False) removes the first inserted (least recently used)
                 tracking_dict.popitem(last=False)
+            self._prune_expired(tracking_dict, now)
             return True, None
 
         count, window_start = entry
@@ -369,18 +391,21 @@ class RateLimiter:
             tracking_dict[identifier] = (1, now)
             # Move to end to mark recent use
             tracking_dict.move_to_end(identifier)
+            self._prune_expired(tracking_dict, now)
             return True, None
 
         # Within the same minute window
         if count < limit:
             tracking_dict[identifier] = (count + 1, window_start)
             tracking_dict.move_to_end(identifier)
+            self._prune_expired(tracking_dict, now)
             return True, None
         else:
             # Rate limited – calculate retry after seconds
             retry_after = int(60 - (now - window_start).total_seconds() + 1)
             # Move to end to keep LRU ordering consistent
             tracking_dict.move_to_end(identifier)
+            self._prune_expired(tracking_dict, now)
             return False, retry_after
 
     def check_account_limit(self, account_id: str) -> Tuple[bool, Optional[int]]:

@@ -1,0 +1,30 @@
+name: Duplicate Issue Detector
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  check-duplicate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find Duplicate Issues
+        uses: actions-cool/issues-helper@v3
+        with:
+          actions: 'find-issues'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-title: ${{ github.event.issue.title }}
+          issue-state: 'all'
+
+      - name: Mark as Duplicate
+        if: env.find-number != ''
+        uses: actions-cool/issues-helper@v3
+        with:
+          actions: 'create-label, create-comment'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.issue.number }}
+          labels: 'duplicate'
+          body: 'Hello! This issue appears to be a duplicate of #${{ env.find-number }}. Please check the original thread for updates. 🤖'

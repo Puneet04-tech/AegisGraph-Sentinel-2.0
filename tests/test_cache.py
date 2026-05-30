@@ -2,6 +2,7 @@
 
 import networkx as nx
 import pytest
+from unittest.mock import patch
 
 from src.utils.cache import (
     GraphCache,
@@ -69,6 +70,13 @@ class TestInMemoryGraphCache:
         
         assert len(cache.cache) == 10  # Should evict oldest
 
+    def test_cache_ttl_is_enforced_on_read(self, cache):
+        """Test that expired entries are removed and missed on access."""
+        with patch("src.utils.cache.time.time", side_effect=[100.0, 103.0]):
+            cache.set("key1", "value1", ttl=2)
+            assert cache.get("key1") is None
+            assert "key1" not in cache.cache
+
 
 class TestGraphOperationCache:
     """Test high-level graph operation caching"""
@@ -108,6 +116,18 @@ class TestGraphOperationCache:
         G2 = nx.DiGraph()
         G2.add_edges_from([("A", "B"), ("B", "D")])
         
+        hash1 = GraphOperationCache._hash_graph(G1)
+        hash2 = GraphOperationCache._hash_graph(G2)
+        assert hash1 != hash2
+
+    def test_graph_hash_changes_when_edge_weight_changes(self):
+        """Test that weighted edge changes invalidate the graph hash."""
+        G1 = nx.DiGraph()
+        G1.add_edge("A", "B", weight=1.0, timestamp=100.0)
+
+        G2 = nx.DiGraph()
+        G2.add_edge("A", "B", weight=2.0, timestamp=100.0)
+
         hash1 = GraphOperationCache._hash_graph(G1)
         hash2 = GraphOperationCache._hash_graph(G2)
         assert hash1 != hash2
