@@ -27,6 +27,7 @@ import numpy as np
 import uvicorn
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 try:
     _slowapi = import_module("slowapi")
@@ -2004,11 +2005,16 @@ async def explain_transaction(request: ExplainRequest):
         innovations_triggered = request.innovations_triggered
         
         # Use Aegis-Oracle to generate explanation
-        explanation = aegis_oracle.generate_explanation(
-            transaction=transaction,
-            risk_assessment=risk_assessment,
-            break_down=breakdown,
-            innovations_triggered=innovations_triggered,
+        loop = asyncio.get_running_loop()
+        explanation = await loop.run_in_executor(
+            None,
+            partial(
+                aegis_oracle.generate_explanation,
+                transaction=transaction,
+                risk_assessment=risk_assessment,
+                break_down=breakdown,
+                innovations_triggered=innovations_triggered,
+            ),
         )
         
         return explanation
@@ -2044,12 +2050,17 @@ async def oracle_explain_detailed(request: OracleExplainRequest):
         raise HTTPException(status_code=503, detail="Oracle not available")
     
     try:
-        explanation = aegis_oracle.generate_explanation(
-            transaction=request.transaction,
-            risk_assessment=request.risk_assessment,
-            attention_weights=request.attention_weights,
-            break_down=request.risk_breakdown,
-            innovations_triggered=request.innovations_triggered,
+        loop = asyncio.get_running_loop()
+        explanation = await loop.run_in_executor(
+            None,
+            partial(
+                aegis_oracle.generate_explanation,
+                transaction=request.transaction,
+                risk_assessment=request.risk_assessment,
+                attention_weights=request.attention_weights,
+                break_down=request.risk_breakdown,
+                innovations_triggered=request.innovations_triggered,
+            ),
         )
         
         return {
@@ -2097,7 +2108,6 @@ if settings.runtime.debug:
             _raise_internal_server_error("Debug honeypot activation", e)
 @app.post(
     "/api/v1/fraud/batch",
-    response_model=BatchTransactionResponse,
     tags=["Fraud Detection"],
     summary="Check multiple transactions",
     description="Batch processing of multiple transactions for fraud detection",
@@ -2111,56 +2121,63 @@ async def check_batch_transactions(request: BatchTransactionRequest):
     Maximum batch size: 100 transactions.
     """
     start_time = time.time()
-    
-    results = []
-    stats = {decision.value: 0 for decision in FraudDecision}
-
     max_concurrent_tasks = 8
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
-    txns = list(request.transactions)
+    txns = request.transactions
 
     async def _process_transaction(txn_request):
         async with semaphore:
             return await check_transaction(txn_request)
 
-    batch_results = []
-    for txn_chunk in _chunked(txns, max_concurrent_tasks):
-        chunk_results = await asyncio.gather(
-            *(_process_transaction(txn_request) for txn_request in txn_chunk),
-            return_exceptions=True,
-        )
-        batch_results.extend(chunk_results)
-
-    for txn_request, result in zip(txns, batch_results):
-        if isinstance(result, Exception):
-            _api_logger.error(
-                f"Error processing batch transaction {txn_request.transaction_id}: {result}",
-                event_type="batch_processing_error",
-            )
-            continue
-
-        results.append(result)
+    async def _stream_batch_response():
         api_to_internal = {
             "approve": FraudDecision.ALLOW.value,
             "review": FraudDecision.REVIEW.value,
             "block": FraudDecision.BLOCK.value,
         }
-        decision_key = api_to_internal.get(
-            str(result.decision).lower(),
-            FraudDecision.ALLOW.value,
+        stats = {decision.value: 0 for decision in FraudDecision}
+        processed = 0
+        first_result = True
+
+        yield '{"results":['
+
+        for txn_chunk in _chunked(txns, max_concurrent_tasks):
+            tasks = [asyncio.create_task(_process_transaction(txn_request)) for txn_request in txn_chunk]
+            for completed in asyncio.as_completed(tasks):
+                try:
+                    result = await completed
+                except Exception as result_error:
+                    _api_logger.error(
+                        f"Error processing batch transaction: {result_error}",
+                        event_type="batch_processing_error",
+                    )
+                    continue
+
+                processed += 1
+                decision_key = api_to_internal.get(
+                    str(result.decision).lower(),
+                    FraudDecision.ALLOW.value,
+                )
+                stats[decision_key] += 1
+
+                if not first_result:
+                    yield ","
+                else:
+                    first_result = False
+                yield json.dumps(result.model_dump(mode="json"), separators=(",", ":"))
+
+        processing_time_ms = (time.time() - start_time) * 1000
+        yield (
+            '],"total_processed":'
+            f"{processed},"
+            f"\"total_blocked\":{stats['BLOCK']},"
+            f"\"total_review\":{stats['REVIEW']},"
+            f"\"total_allowed\":{stats['ALLOW']},"
+            f"\"processing_time_ms\":{processing_time_ms}"
+            "}"
         )
-        stats[decision_key] += 1
-    
-    processing_time_ms = (time.time() - start_time) * 1000
-    
-    return BatchTransactionResponse(
-        results=results,
-        total_processed=len(results),
-        total_blocked=stats["BLOCK"],
-        total_review=stats["REVIEW"],
-        total_allowed=stats["ALLOW"],
-        processing_time_ms=processing_time_ms,
-    )
+
+    return StreamingResponse(_stream_batch_response(), media_type="application/json")
 
 
 @app.get("/api/v1/model/info", tags=["Model"], dependencies=[Depends(require_api_key)])

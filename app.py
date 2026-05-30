@@ -1045,23 +1045,8 @@ elif page == "📊 Risk Analytics":
     # Local imports consolidated globally
     
     # Check API Status
-    try:
-        stats_response = requests.get(f"{API_URL}/stats", timeout=3)
-        if stats_response.status_code == 200:
-            stats = stats_response.json()
-        else:
-            stats = {}
-    except Exception as e:
-        stats = {}
-        
-    try:
-        health_response = requests.get(f"{API_URL}/health", timeout=3)
-        if health_response.status_code == 200:
-            health = health_response.json()
-        else:
-            health = {}
-    except Exception as e:
-        health = {}
+    stats = _fetch_stats_snapshot(API_URL)
+    health = _fetch_health_snapshot(API_URL)
 
     # Extract metrics
     total_requests = stats.get('total_requests', 0)

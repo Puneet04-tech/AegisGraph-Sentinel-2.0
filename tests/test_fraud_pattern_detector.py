@@ -21,6 +21,69 @@ def _make_transactions(edges):
     ]
 
 
+def test_detect_fan_in_hubs_incremental_aggregation():
+    """Fan-in detection uses incremental aggregation, no repeated list traversals."""
+    detector = FraudPatternDetector()
+    transactions = [
+        {
+            "source_account": f"source_{i}",
+            "target_account": "hub_account",
+            "amount": 100.0 + i,
+            "timestamp": i,
+        }
+        for i in range(10)
+    ]
+
+    hubs = detector.detect_fan_in_hubs(transactions, threshold_incoming=5)
+    assert len(hubs) == 1
+    hub = hubs[0]
+    assert hub["account"] == "hub_account"
+    assert hub["incoming_transfer_count"] == 10
+    assert hub["unique_sources"] == 10
+    assert hub["total_received"] == sum(100.0 + i for i in range(10))
+    assert hub["avg_transfer_amount"] == pytest.approx((sum(100.0 + i for i in range(10))) / 10)
+
+
+def test_detect_fan_out_hubs_incremental_aggregation():
+    """Fan-out detection uses incremental aggregation, no repeated list traversals."""
+    detector = FraudPatternDetector()
+    transactions = [
+        {
+            "source_account": "hub_account",
+            "target_account": f"target_{i}",
+            "amount": 200.0 + i,
+            "timestamp": i,
+        }
+        for i in range(15)
+    ]
+
+    hubs = detector.detect_fan_out_hubs(transactions, threshold_outgoing=10)
+    assert len(hubs) == 1
+    hub = hubs[0]
+    assert hub["account"] == "hub_account"
+    assert hub["outgoing_transfer_count"] == 15
+    assert hub["unique_targets"] == 15
+    assert hub["total_distributed"] == sum(200.0 + i for i in range(15))
+    assert hub["avg_transfer_amount"] == pytest.approx((sum(200.0 + i for i in range(15))) / 15)
+
+
+def test_detect_fan_in_hubs_respects_threshold():
+    """Fan-in detection correctly filters below threshold."""
+    detector = FraudPatternDetector()
+    transactions = [
+        {"source_account": "s1", "target_account": t, "amount": 100, "timestamp": i}
+        for i, t in enumerate(["a", "a", "a", "b"])
+    ]
+
+    hubs = detector.detect_fan_in_hubs(transactions, threshold_incoming=3)
+    assert len(hubs) == 1
+    assert hubs[0]["account"] == "a"
+    assert hubs[0]["incoming_transfer_count"] == 3
+
+    hubs = detector.detect_fan_in_hubs(transactions, threshold_incoming=4)
+    assert len(hubs) == 0
+
+
 def test_detect_mule_rings_respects_max_cycle_length(monkeypatch):
     detector = FraudPatternDetector(min_chain_length=3)
     transactions = _make_transactions(
