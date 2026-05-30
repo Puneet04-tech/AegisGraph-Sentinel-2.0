@@ -583,7 +583,14 @@ def _resolve_model_components():
     return model_compute_risk_score, model_generate_explanation, True
 
 
-compute_risk_score, generate_explanation, MODEL_AVAILABLE = _resolve_model_components()
+def _model_components_not_initialized(*args, **kwargs):
+    raise RuntimeError("Model components are not initialized yet")
+
+
+compute_risk_score = _model_components_not_initialized
+generate_explanation = _model_components_not_initialized
+MODEL_AVAILABLE = False
+_DEFERRED_FALLBACK_MODEL_COMPONENTS = None
 
 # Import innovation modules
 try:
@@ -929,8 +936,10 @@ except (ImportError, SyntaxError) as e:
             'recommended_action': action
         }
 
-    compute_risk_score = _compute_risk_score_fallback
-    generate_explanation = _generate_explanation_fallback
+    _DEFERRED_FALLBACK_MODEL_COMPONENTS = (
+        _compute_risk_score_fallback,
+        _generate_explanation_fallback,
+    )
 
 
 try:
@@ -1030,6 +1039,23 @@ class AppState:
         self.services.register("lateral_movement_detector", value, replace=True)
         
 state = AppState()
+
+
+def _initialize_model_components() -> None:
+    """Resolve model functions only after the runtime state exists."""
+    global compute_risk_score, generate_explanation, MODEL_AVAILABLE
+
+    if "state" not in globals() or not isinstance(state, AppState):
+        raise RuntimeError("Model components cannot initialize before application state")
+
+    compute_risk_score, generate_explanation, MODEL_AVAILABLE = _resolve_model_components()
+
+    if _DEFERRED_FALLBACK_MODEL_COMPONENTS is not None:
+        compute_risk_score, generate_explanation = _DEFERRED_FALLBACK_MODEL_COMPONENTS
+        MODEL_AVAILABLE = False
+
+
+_initialize_model_components()
 
 
 def _get_metrics_lock() -> asyncio.Lock:
