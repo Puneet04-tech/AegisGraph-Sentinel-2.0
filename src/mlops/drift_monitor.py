@@ -25,6 +25,20 @@ class AdversarialDriftMonitor:
         # Load or simulate the baseline data (what the model was trained on)
         self.baselines = self._load_training_baselines()
 
+    def close(self):
+        """Shut down the alert executor, draining pending work."""
+        self._alert_executor.shutdown(wait=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __del__(self):
+        self.close()
+
     def _load_training_baselines(self):
         """Loads baseline distributions. Mocked here for CI/CD testing."""
         logging.info("Loading training baselines for drift monitoring...")
