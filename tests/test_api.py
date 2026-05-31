@@ -70,6 +70,21 @@ class _RecordingLoop:
 
 
 class _FakeBlockchainManager:
+    def __init__(self):
+        self.last_seal_kwargs = None
+
+    def seal_evidence(self, *args, **kwargs):
+        self.last_seal_kwargs = kwargs
+        return types.SimpleNamespace(
+            evidence_id="EVID-001",
+            transaction_hash="0xabc123",
+            block_number=12487,
+            block_hash="0xdef456",
+            consensus_timestamp="2026-05-27T00:00:00Z",
+            finality_time_ms=87.3,
+            validator_signatures=["validator-1", "validator-2"],
+        )
+
     def export_for_legal_proceedings(self, evidence_id, case_number, requesting_authority):
         return {
             "package": {
@@ -294,6 +309,90 @@ class TestLegalExportSecurity:
         )
 
         assert limited_response.status_code == 429
+
+
+def _valid_blockchain_seal_payload():
+    return {
+        "transaction_id": "txn_blockchain_001",
+        "source_account": "acct_src",
+        "target_account": "acct_dst",
+        "amount": 2500.0,
+        "risk_result": {
+            "risk_score": 0.93,
+            "decision": "BLOCK",
+            "confidence": 0.97,
+            "breakdown": {
+                "graph": 0.88,
+                "velocity": 0.73,
+                "behavior": 0.41,
+                "entropy": 0.62,
+            },
+        },
+        "explanation": "Synthetic fraud scenario for blockchain sealing validation.",
+    }
+
+
+class TestBlockchainSealValidation:
+    def _enable_blockchain_sealing(self, monkeypatch):
+        manager = _FakeBlockchainManager()
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "blockchain_manager", manager, raising=False)
+        return manager
+
+    def test_blockchain_seal_accepts_valid_strict_payload(self, monkeypatch):
+        manager = self._enable_blockchain_sealing(monkeypatch)
+
+        response = client.post("/api/v1/blockchain/seal", json=_valid_blockchain_seal_payload())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["evidence_id"] == "EVID-001"
+        assert manager.last_seal_kwargs["risk_result"] == _valid_blockchain_seal_payload()["risk_result"]
+
+    @pytest.mark.parametrize(
+        "risk_result",
+        [
+            {"bad": "schema"},
+            {"risk_score": 0.7, "decision": "BLOCK", "unexpected": True, "confidence": 0.9, "breakdown": {"graph": 0.1, "velocity": 0.2, "behavior": 0.3, "entropy": 0.4}},
+            {"risk_score": 0.7, "decision": "BLOCK", "confidence": 0.9, "breakdown": {"graph": 0.1, "velocity": 0.2, "behavior": 0.3, "entropy": {"deep": True}}},
+            {"risk_score": 0.7, "decision": "BLOCK", "confidence": 0.9, "breakdown": [1, 2, 3]},
+        ],
+    )
+    def test_blockchain_seal_rejects_malformed_risk_result(self, monkeypatch, risk_result):
+        self._enable_blockchain_sealing(monkeypatch)
+        payload = _valid_blockchain_seal_payload()
+        payload["risk_result"] = risk_result
+
+        response = client.post("/api/v1/blockchain/seal", json=payload)
+
+        assert response.status_code == 422
+
+    def test_blockchain_seal_rejects_oversized_explanation(self, monkeypatch):
+        self._enable_blockchain_sealing(monkeypatch)
+        payload = _valid_blockchain_seal_payload()
+        payload["explanation"] = "x" * 5001
+
+        response = client.post("/api/v1/blockchain/seal", json=payload)
+
+        assert response.status_code == 422
+
+    def test_blockchain_seal_rejects_invalid_decision_values(self, monkeypatch):
+        self._enable_blockchain_sealing(monkeypatch)
+        payload = _valid_blockchain_seal_payload()
+        payload["risk_result"]["decision"] = "BLOCKED"
+
+        response = client.post("/api/v1/blockchain/seal", json=payload)
+
+        assert response.status_code == 422
+
+    def test_blockchain_seal_rejects_unknown_risk_fields(self, monkeypatch):
+        self._enable_blockchain_sealing(monkeypatch)
+        payload = _valid_blockchain_seal_payload()
+        payload["risk_result"]["breakdown"]["unexpected"] = True
+
+        response = client.post("/api/v1/blockchain/seal", json=payload)
+
+        assert response.status_code == 422
 
 
 class TestApiModuleFallbacks:

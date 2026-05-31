@@ -2480,7 +2480,7 @@ async def seal_evidence(request: BlockchainSealRequest):
                 source_account=request.source_account,
                 target_account=request.target_account,
                 amount=request.amount,
-                risk_result=request.risk_result,
+                risk_result=request.risk_result.model_dump(),
                 explanation=request.explanation,
             ),
         )

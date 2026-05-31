@@ -4,7 +4,7 @@ Pydantic schemas for API request/response validation
 # Schema validation for all fraud detection endpoints
 
 from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices, ConfigDict
-from typing import Optional, List, Dict, Union, Any
+from typing import Optional, List, Dict, Union, Any, Literal
 from src.api.validators import (
     TransactionValidator,
     ValidationError,
@@ -417,14 +417,63 @@ class HoneypotStatsResponse(BaseModel):
 
 
 # Innovation 6: Blockchain Evidence Chain
+class BlockchainRiskBreakdown(BaseModel):
+    """Strict risk breakdown accepted for blockchain evidence sealing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    graph: float = Field(ge=0, le=1, description="Graph-based risk")
+    velocity: float = Field(ge=0, le=1, description="Velocity-based risk")
+    behavior: float = Field(ge=0, le=1, description="Behavioral risk")
+    entropy: float = Field(ge=0, le=1, description="Entropy-based risk")
+
+
+class BlockchainRiskResult(BaseModel):
+    """Canonical risk result sealed onto the blockchain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    risk_score: float = Field(ge=0, le=1, description="Overall risk score")
+    decision: Literal["ALLOW", "REVIEW", "BLOCK"] = Field(
+        description="Decision: ALLOW, REVIEW, or BLOCK"
+    )
+    confidence: float = Field(ge=0, le=1, description="Confidence in the decision")
+    breakdown: BlockchainRiskBreakdown = Field(description="Strict risk breakdown")
+
+
 class BlockchainSealRequest(BaseModel):
     """Request to seal evidence in blockchain"""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "transaction_id": "TXN123456789",
+                "source_account": "ACC987654321",
+                "target_account": "ACC123456789",
+                "amount": 50000.0,
+                "risk_result": {
+                    "risk_score": 0.92,
+                    "decision": "BLOCK",
+                    "confidence": 0.97,
+                    "breakdown": {
+                        "graph": 0.89,
+                        "velocity": 0.95,
+                        "behavior": 0.88,
+                        "entropy": 0.93,
+                    },
+                },
+                "explanation": "High-risk mule chain pattern detected...",
+            }
+        },
+    )
+
     transaction_id: str
     source_account: str
     target_account: str
-    amount: float
-    risk_result: Dict = Field(description="Complete risk assessment result")
-    explanation: str = Field(description="Decision explanation")
+    amount: float = Field(gt=0, description="Transaction amount")
+    risk_result: BlockchainRiskResult = Field(description="Complete risk assessment result")
+    explanation: str = Field(max_length=5000, description="Decision explanation")
 
 
 class BlockchainEvidenceResponse(BaseModel):
