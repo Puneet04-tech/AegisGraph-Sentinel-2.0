@@ -37,13 +37,40 @@ def get_open_prs(repo):
     return mine
 
 
-def get_failed_check_runs(repo, sha):
-    url = f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs"
-    resp = requests.get(url, headers=HEADERS)
-    if resp.status_code != 200:
-        return []
-    runs = resp.json().get("check_runs", [])
-    return [r for r in runs if r.get("conclusion") == "failure"]
+def get_failed_check_runs(repo, pr):
+    """
+    GitHub Actions runs CI on the MERGE commit (head merged into base),
+    not on the raw head SHA from the fork. We check both SHAs because
+    which one carries the check runs depends on the repo setup.
+    Also handles pagination for repos with many checks.
+    """
+    head_sha  = pr["head"]["sha"]
+    merge_sha = pr.get("merge_commit_sha")
+
+    seen_ids = set()
+    failed   = []
+
+    for sha in filter(None, [merge_sha, head_sha]):
+        page = 1
+        while True:
+            url = f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs"
+            resp = requests.get(url, headers=HEADERS,
+                                params={"per_page": 100, "page": page})
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            runs = data.get("check_runs", [])
+            if not runs:
+                break
+            for r in runs:
+                if r["id"] not in seen_ids and r.get("conclusion") == "failure":
+                    seen_ids.add(r["id"])
+                    failed.append(r)
+            if len(runs) < 100:
+                break
+            page += 1
+
+    return failed
 
 
 def get_failure_logs(repo, details_url):
@@ -239,10 +266,12 @@ def main():
         for pr in prs:
             pr_number = pr["number"]
             branch = pr["head"]["ref"]
-            sha = pr["head"]["sha"]
+            head_sha  = pr["head"]["sha"]
+            merge_sha = pr.get("merge_commit_sha", "")
             print(f"\nChecking PR #{pr_number}: {pr['title'][:60]}")
+            print(f"  head_sha={head_sha[:12]}  merge_sha={merge_sha[:12] if merge_sha else 'none'}")
 
-            failed_runs = get_failed_check_runs(repo, sha)
+            failed_runs = get_failed_check_runs(repo, pr)
             if not failed_runs:
                 print(f"✅ PR #{pr_number}: No failures")
                 continue
