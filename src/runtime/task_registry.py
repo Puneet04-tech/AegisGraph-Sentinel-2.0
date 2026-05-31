@@ -66,6 +66,10 @@ class TaskRegistry:
             metadata={"task": name, "owner": owner, "active_tasks": active_tasks},
         )
         return task
+        def get_tasks_snapshot(self):
+    """Return a thread-safe snapshot of registered tasks."""
+    with self._lock:
+        return dict(self._tasks)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         with self._lock:

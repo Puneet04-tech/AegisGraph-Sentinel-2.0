@@ -1595,9 +1595,14 @@ async def lifespan(app: FastAPI):
     state.runtime.watchdog = watchdog
 
     def restart_honeypot_task():
-        for task in list(state.tasks._tasks.keys()):
-            if state.tasks._tasks[task].name == "honeypot_auto_release" and not task.done():
-                task.cancel()
+        # for task in list(state.tasks._tasks.keys()):
+        #     if state.tasks._tasks[task].name == "honeypot_auto_release" and not task.done():
+        #         task.cancel()
+        tasks = state.tasks.get_tasks_snapshot()
+
+for task, info in tasks.items():
+    if info.name == "honeypot_auto_release" and not task.done():
+        task.cancel()
         state.tasks.register_task(
             _honeypot_auto_release_loop(),
             name="honeypot_auto_release",
