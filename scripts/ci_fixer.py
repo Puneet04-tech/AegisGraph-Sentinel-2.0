@@ -24,12 +24,16 @@ HEADERS = {
 
 def get_open_prs(repo):
     url = f"https://api.github.com/repos/{repo}/pulls"
-    params = {"state": "open", "head": f"{GITHUB_USERNAME}:{GITHUB_USERNAME}"}
+    params = {"state": "open", "per_page": 100}
     resp = requests.get(url, headers=HEADERS, params=params)
     if resp.status_code != 200:
         print(f"Could not get PRs for {repo}: {resp.status_code}")
         return []
-    return resp.json()
+    # Filter only PRs opened by your account
+    all_prs = resp.json()
+    my_prs = [pr for pr in all_prs if pr["head"]["user"]["login"] == GITHUB_USERNAME]
+    print(f"Total open PRs: {len(all_prs)}, yours: {len(my_prs)}")
+    return my_prs
 
 
 def get_failed_check_runs(repo, sha):
