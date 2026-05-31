@@ -1,4 +1,6 @@
 import os
+import re
+import json
 import base64
 import subprocess
 import requests
@@ -84,49 +86,105 @@ def get_file_content_and_sha(repo, filepath, branch):
     return content, data["sha"]
 
 
-def strip_markdown_fences(code):
-    """Remove markdown code fences that LLMs sometimes add despite being told not to."""
-    lines = code.strip().splitlines()
-    # Drop leading ```python or ``` line
-    if lines and lines[0].strip().startswith("```"):
-        lines = lines[1:]
-    # Drop trailing ``` line
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines)
+def extract_failing_window(original_code, failure_log, window=60):
+    """
+    Find the line numbers mentioned in the traceback and return a
+    ±window-line slice of the file around them, with 1-based line numbers.
+    Falls back to the first 120 lines if no line numbers are found.
+    """
+    lines = original_code.splitlines()
+
+    # Collect every "line N" mention from the traceback
+    hits = [int(n) for n in re.findall(r'[Ll]ine\s+(\d+)', failure_log)]
+    # Only keep hits that are actually inside this file
+    hits = [n for n in hits if 1 <= n <= len(lines)]
+
+    if hits:
+        center = sum(hits) // len(hits)
+        start = max(0, center - window)
+        end = min(len(lines), center + window)
+    else:
+        start = 0
+        end = min(120, len(lines))
+
+    numbered = "\n".join(
+        f"{start + i + 1}: {line}" for i, line in enumerate(lines[start:end])
+    )
+    return numbered, start, len(lines)
+
+
+def apply_line_changes(original_code, changes):
+    """
+    Apply a list of {"line": N, "new_content": "..."} changes to the original.
+    Lines that should be deleted should have new_content set to null/None.
+    """
+    lines = original_code.splitlines()
+    for change in changes:
+        ln = change.get("line")
+        new_content = change.get("new_content")
+        if ln is None or not (1 <= ln <= len(lines)):
+            continue
+        if new_content is None:
+            lines[ln - 1] = None          # mark for deletion
+        else:
+            lines[ln - 1] = new_content
+    return "\n".join(line for line in lines if line is not None)
 
 
 def fix_with_groq(failure_log, filepath, original_code):
-    original_line_count = len(original_code.splitlines())
+    window_text, window_start, total_lines = extract_failing_window(
+        original_code, failure_log
+    )
 
-    # Send the full file — truncating caused Groq to return a shortened
-    # "complete" file, deleting everything beyond the truncation point.
-    # We raise max_tokens to accommodate large files.
-    prompt = f"""Python CI test is failing. Fix ONLY the lines causing the failure.
+    prompt = f"""A Python CI test is failing. Identify and fix the broken lines.
 
-FAILURE LOG (last 80 lines):
+FAILURE LOG:
 {failure_log}
 
-FILE TO FIX ({filepath}):
-{original_code}
+RELEVANT SECTION OF {filepath} (with 1-based line numbers, total file has {total_lines} lines):
+{window_text}
+
+Return ONLY a JSON object in exactly this format, nothing else:
+{{
+  "changes": [
+    {{"line": <1-based line number>, "new_content": "<fixed line content>"}}
+  ]
+}}
 
 Rules:
-- Return ONLY the complete fixed Python file, no explanation, no markdown, no backticks.
-- Do NOT remove, rewrite, or shorten any code that is unrelated to the failure.
-- The returned file MUST have at least as many lines as the original ({original_line_count} lines).
-- If this file is not the cause of the failure, return it completely unchanged."""
+- Only include lines that must actually change to fix the failure.
+- Preserve exact indentation in new_content.
+- Do not add, remove, or renumber lines — only replace content of existing lines.
+- If no lines in this section need changing, return {{"changes": []}}
+- No explanation, no markdown, no backticks — pure JSON only."""
 
     response = client_groq.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=1000
     )
-    fixed_code = response.choices[0].message.content.strip()
+    raw = response.choices[0].message.content.strip()
 
-    # Strip markdown fences in case the model ignored instructions
-    fixed_code = strip_markdown_fences(fixed_code)
+    # Strip markdown fences if model ignored instructions
+    raw = re.sub(r'^```[a-z]*\n?', '', raw, flags=re.MULTILINE)
+    raw = re.sub(r'```$', '', raw, flags=re.MULTILINE)
+    raw = raw.strip()
 
-    return fixed_code
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        print(f"⚠️  Groq returned non-JSON response, skipping: {raw[:200]}")
+        return original_code  # return unchanged — do not push
+
+    changes = result.get("changes", [])
+    if not changes:
+        print("ℹ️  Groq found no changes needed in the failing section.")
+        return original_code
+
+    print(f"🩹 Groq suggests {len(changes)} line change(s): "
+          f"lines {[c['line'] for c in changes]}")
+
+    return apply_line_changes(original_code, changes)
 
 
 def push_fix(fork_repo, branch, filepath, fixed_code, file_sha):
@@ -191,18 +249,6 @@ def main():
 
                 if fixed_code.strip() == original_code.strip():
                     print(f"ℹ️  No changes suggested for {filepath}")
-                    continue
-
-                # Safety check: reject if Groq returned significantly fewer lines
-                # than the original — this means it deleted code, not fixed it
-                original_lines = len(original_code.splitlines())
-                fixed_lines = len(fixed_code.splitlines())
-                if fixed_lines < original_lines * 0.85:
-                    print(
-                        f"🚫 Rejected fix for {filepath}: "
-                        f"Groq returned {fixed_lines} lines vs original {original_lines} "
-                        f"(more than 15% shorter — likely deleted code, not fixed it)"
-                    )
                     continue
 
                 success = push_fix(fork_repo, branch, filepath, fixed_code, file_sha)
