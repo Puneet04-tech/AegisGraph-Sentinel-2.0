@@ -121,3 +121,32 @@ def test_journal_refresh_seeks_from_previous_offset(tmp_path, monkeypatch):
     assert seek_calls == [(starting_pos, 0)]
     assert journal.load_evidence("external_delta_record")["block_number"] == evidence.block_number + 1
     assert journal.count() == 2
+
+
+def test_load_evidence_record_uses_reverse_index_without_chain_scan(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    expected = {
+        "evidence_id": "evidence-lookup-1",
+        "block_number": 7,
+        "block_hash": "abc123",
+        "previous_block_hash": "def456",
+        "validator_signatures": [],
+        "consensus_timestamp": "2026-01-01T00:00:00Z",
+        "finality_time_ms": 0.0,
+        "_storage": "memory",
+    }
+
+    class ChainGuard:
+        def __iter__(self):
+            raise AssertionError("chain scan should not run for reverse-index lookup")
+
+    monkeypatch.setattr(manager._redis, "load_evidence", lambda evidence_id: None)
+    monkeypatch.setattr(manager._journal, "load_evidence", lambda evidence_id: None)
+    manager._evidence_index = {expected["evidence_id"]: expected}
+    manager.nodes[0].chain = ChainGuard()
+
+    record = manager._load_evidence_record(expected["evidence_id"])
+
+    assert record is not None
+    assert record["_storage"] == "memory"
+    assert record["evidence_id"] == expected["evidence_id"]
