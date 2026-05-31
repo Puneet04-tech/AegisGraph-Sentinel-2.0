@@ -14,12 +14,70 @@ class ConnectionState:
 class WebSocketManager:
     """Manages active WebSocket connections with bounded reconnect recovery and stale cleanup."""
     
-    def __init__(self, heartbeat_timeout: float = 60.0, max_reconnect_attempts: int = 5):
+    def __init__(
+        self,
+        heartbeat_timeout: float = 60.0,
+        max_reconnect_attempts: int = 5,
+        disconnect_history_ttl: float = 300.0,
+        max_disconnect_history_entries: int = 2048,
+    ):
         self.active_connections: Dict[str, ConnectionState] = {}
         self.disconnect_history: Dict[str, list] = {}  # client_id -> list of disconnect timestamps
         self.heartbeat_timeout = heartbeat_timeout
         self.max_reconnect_attempts = max_reconnect_attempts
+        self.disconnect_history_ttl = disconnect_history_ttl
+        self.max_disconnect_history_entries = max_disconnect_history_entries
         self._lock = asyncio.Lock()
+        self._eviction_task: asyncio.Task | None = None
+        self._eviction_interval = max(5.0, disconnect_history_ttl / 2.0)
+
+    async def start_eviction(self):
+        """Start a background task that periodically evicts stale disconnect history."""
+        if self._eviction_task is not None:
+            return
+
+        async def _evict_loop():
+            while True:
+                await asyncio.sleep(self._eviction_interval)
+                await self.evict_stale_disconnect_history()
+
+        self._eviction_task = asyncio.create_task(_evict_loop())
+
+    async def stop_eviction(self):
+        """Stop the background eviction task if it is running."""
+        if self._eviction_task is None:
+            return
+
+        self._eviction_task.cancel()
+        try:
+            await self._eviction_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._eviction_task = None
+
+    async def evict_stale_disconnect_history(self):
+        """Purge aged disconnect timestamps and drop empty client history buckets."""
+        cutoff = time.time() - self.disconnect_history_ttl
+
+        async with self._lock:
+            stale_clients = []
+            for client_id, history in self.disconnect_history.items():
+                fresh_history = [ts for ts in history if ts >= cutoff]
+                if fresh_history:
+                    self.disconnect_history[client_id] = fresh_history[-self.max_reconnect_attempts :]
+                else:
+                    stale_clients.append(client_id)
+
+            for client_id in stale_clients:
+                del self.disconnect_history[client_id]
+
+            while len(self.disconnect_history) > self.max_disconnect_history_entries:
+                oldest_client_id = min(
+                    self.disconnect_history,
+                    key=lambda client_id: self.disconnect_history[client_id][-1],
+                )
+                del self.disconnect_history[oldest_client_id]
         
     async def connect(self, websocket: WebSocket, client_id: str) -> bool:
         """
@@ -53,6 +111,7 @@ class WebSocketManager:
             if client_id in self.active_connections:
                 del self.active_connections[client_id]
                 self.disconnect_history.setdefault(client_id, []).append(time.time())
+                await self.evict_stale_disconnect_history()
                 logger.info(f"Client {client_id} disconnected")
 
     async def heartbeat(self, client_id: str):

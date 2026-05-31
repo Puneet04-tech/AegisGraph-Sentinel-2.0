@@ -85,7 +85,13 @@ class _FakeBlockchainManager:
             validator_signatures=["validator-1", "validator-2"],
         )
 
-    def export_for_legal_proceedings(self, evidence_id, case_number, requesting_authority):
+    def export_for_legal_proceedings(
+        self,
+        evidence_id,
+        case_number,
+        requesting_authority,
+        authorization_token=None,
+    ):
         return {
             "package": {
                 "evidence_id": evidence_id,
@@ -220,6 +226,7 @@ class TestLegalExportSecurity:
         monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
         monkeypatch.setattr(api_main.state, "blockchain_manager", _FakeBlockchainManager())
         monkeypatch.setenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH", hashlib.sha256(b"legal-token").hexdigest())
+        monkeypatch.setenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "Police Dept,CBI")
         _clear_rate_limit_storage()
 
     def _headers(self, token="legal-token", timestamp=None, use_fallback=False):

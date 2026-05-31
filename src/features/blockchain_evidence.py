@@ -32,6 +32,7 @@ State of Maharashtra vs. Ramesh Kumar, 2026
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import time
 import logging
@@ -565,7 +566,9 @@ class BlockchainEvidenceManager:
         
         # In-memory evidence ID -> record index, eliminating O(N) chain scans
         self._evidence_index: Dict[str, dict] = {}
+        self._transaction_block_index: Dict[str, dict] = {}
         self._rebuild_evidence_index()
+        self._rebuild_transaction_index()
         
         # Statistics
         self.stats = {
@@ -667,6 +670,26 @@ class BlockchainEvidenceManager:
                         '_storage': 'memory',
                     }
 
+    def _rebuild_transaction_index(self) -> None:
+        """Populate _transaction_block_index from the in-memory chain."""
+        self._transaction_block_index.clear()
+        for block in self.nodes[0].chain:
+            for tx_index, tx in enumerate(block.get('transactions', [])):
+                transaction_hash = tx.get('transaction_hash') or tx.get('tx_hash')
+                transaction_id = tx.get('transaction_id')
+                if transaction_hash:
+                    self._transaction_block_index[transaction_hash] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
+                    }
+                if transaction_id:
+                    self._transaction_block_index[hashlib.sha256(transaction_id.encode()).hexdigest()] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
+                    }
+
     def _load_evidence_record(self, evidence_id: str) -> Optional[dict]:
         """Load evidence from Redis first, then the append-only journal, then the in-memory index."""
         record = self._redis.load_evidence(evidence_id)
@@ -736,6 +759,41 @@ class BlockchainEvidenceManager:
     def _authorized_validator_ids(self) -> set[str]:
         """Return the trusted validator identities participating in quorum."""
         return {node.node_id for node in self.nodes[1:6] if node.is_validator}
+
+    def _validate_legal_export_authorization(
+        self,
+        requesting_authority: Optional[str],
+        authorization_token: Optional[str],
+    ) -> str:
+        """Validate the caller against the configured legal export token and authority allowlist."""
+        expected_hash = os.getenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH")
+        if not expected_hash:
+            raise RuntimeError("Legal export authorization is not configured")
+
+        if not authorization_token:
+            raise PermissionError("Missing legal export authorization token")
+
+        provided_hash = hashlib.sha256(authorization_token.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(provided_hash, expected_hash):
+            raise PermissionError("Unauthorized legal export request")
+
+        authorized_authority = (requesting_authority or "").strip()
+        if not authorized_authority:
+            raise PermissionError("Missing requesting authority")
+
+        allowlist_raw = os.getenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "")
+        allowed_authorities = {
+            authority.strip().lower()
+            for authority in allowlist_raw.split(",")
+            if authority.strip()
+        }
+        if not allowed_authorities:
+            raise RuntimeError("Legal export authority allowlist is not configured")
+
+        if authorized_authority.lower() not in allowed_authorities:
+            raise PermissionError("Requesting authority is not authorized")
+
+        return authorized_authority
     
     def seal_evidence(
         self,
@@ -888,6 +946,11 @@ class BlockchainEvidenceManager:
                     'consensus_timestamp': block['timestamp'],
                     'finality_time_ms': consensus_time,
                     '_storage': 'memory',
+                }
+                self._transaction_block_index[transaction_hash] = {
+                    'block_number': block['block_number'],
+                    'tx_index': 0,
+                    'transaction_id': transaction_id,
                 }
                 self._journal.append(evidence)
                 self._redis.save_evidence(evidence)
@@ -1056,6 +1119,11 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with evidence and verification proof
         """
+        authorized_authority = self._validate_legal_export_authorization(
+            requesting_authority=requesting_authority,
+            authorization_token=authorization_token,
+        )
+
         evidence = self._load_evidence_record(evidence_id)
         if not evidence:
             return {'error': 'Evidence not found'}
@@ -1096,7 +1164,7 @@ class BlockchainEvidenceManager:
             {
                 'event': 'legal_export_generated',
                 'timestamp': export_timestamp,
-                'actor': requesting_authority or 'authorized_requestor',
+                'actor': authorized_authority,
                 'details': f"Case {case_number}",
             }
         )
@@ -1116,7 +1184,7 @@ class BlockchainEvidenceManager:
             },
             'chain_verification': verification,
             'authorization': {
-                'requesting_authority': requesting_authority,
+                'requesting_authority': authorized_authority,
                 'authorization_token_hash': (
                     hashlib.sha256(authorization_token.encode()).hexdigest()[:16]
                     if authorization_token
@@ -1135,7 +1203,7 @@ class BlockchainEvidenceManager:
             'chain_of_custody': chain_of_custody,
             'attestations': attestations,
             'export_timestamp': export_timestamp,
-            'authorized_by': requesting_authority or 'UNKNOWN',
+            'authorized_by': authorized_authority,
         }
     
     def store_evidence(
@@ -1402,30 +1470,27 @@ class BlockchainEvidenceManager:
                 return False
             
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-            
-            # Find blocks containing this transaction
-            for node in self.nodes:
-                for i, block in enumerate(node.chain):
-                    for tx in block.get('transactions', []):
-                        if tx.get('transaction_id') == transaction_id or \
-                           tx.get('transaction_hash') == transaction_hash:
-                            # Verify block chain
-                            if i > 0:
-                                prev_block = node.chain[i-1]
-                                if block['previous_hash'] != prev_block['hash']:
-                                    return False
-                            
-                            # Verify block hash
-                            expected_hash = node._compute_hash(
-                                f"block_{block['block_number']}",
-                                block['previous_hash'],
-                                block.get('transactions', []),
-                                block['timestamp'],
-                            )
-                            if block['hash'] != expected_hash:
-                                return False
-            
-            return True
+            block_ref = self._transaction_block_index.get(transaction_hash)
+            if block_ref is None:
+                return False
+
+            block_number = block_ref['block_number']
+            block = self.nodes[0].get_block(block_number)
+            if not block:
+                return False
+
+            if block_number > 0:
+                prev_block = self.nodes[0].get_block(block_number - 1)
+                if not prev_block or block['previous_hash'] != prev_block['hash']:
+                    return False
+
+            expected_hash = self.nodes[0]._compute_hash(
+                f"block_{block['block_number']}",
+                block['previous_hash'],
+                block.get('transactions', []),
+                block['timestamp'],
+            )
+            return block['hash'] == expected_hash
             
         except Exception:
             return False

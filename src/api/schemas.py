@@ -569,3 +569,128 @@ class HoneypotDebugRequest(BaseModel):
     currency: str = Field(default="INR", description="Currency code")
     risk_score: float = Field(default=1.0, description="Risk score for the transaction")
     fraud_indicators: List[str] = Field(default_factory=list, description="Identified fraud indicators")
+
+
+# ============================================================================
+# BLAST RADIUS ANALYTICS SCHEMAS
+# ============================================================================
+
+
+class BlastRadiusRequest(BaseModel):
+    """
+    Request for blast-radius contagion analysis.
+
+    Given a verified-fraudulent or compromised node, the backend performs a
+    bounded graph traversal and computes a Contagion Score for every reachable
+    neighbor, returning results bucketed by risk tier.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "node_id": "ACC987654321",
+                "max_depth": 3,
+            }
+        }
+    )
+
+    node_id: str = Field(
+        description="ID of the flagged/compromised node to start from (e.g. account, device, IP)."
+    )
+    max_depth: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description=(
+            "Maximum hop count to traverse away from the source node. "
+            "Accepted range: 1–5. Defaults to 3."
+        ),
+    )
+
+
+class ContagionNode(BaseModel):
+    """
+    A single node reached during blast-radius traversal together with its
+    computed Contagion Score and assigned risk tier.
+    """
+
+    node_id: str = Field(description="Unique identifier of the affected node.")
+    contagion_score: float = Field(
+        ge=0.0,
+        description=(
+            "Accumulated Contagion Score Sc = Σ weight_edge / depth². "
+            "Higher values indicate stronger proximity to the fraud origin."
+        ),
+    )
+    risk_tier: str = Field(
+        description="Risk classification: CRITICAL (≥0.70), HIGH (≥0.35), or SUSPICIOUS (≥0.10)."
+    )
+    depth: int = Field(
+        ge=1,
+        description="Shortest-path hop distance from the source node.",
+    )
+
+
+class BlastRadiusResponse(BaseModel):
+    """
+    Structured blast-radius report categorising all reachable nodes by risk
+    tier so that consuming microservices can lock or quarantine them
+    automatically.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "source_node": "ACC987654321",
+                "max_depth": 3,
+                "total_nodes_evaluated": 12,
+                "critical": [
+                    {
+                        "node_id": "ACC_RING_001",
+                        "contagion_score": 0.85,
+                        "risk_tier": "CRITICAL",
+                        "depth": 1,
+                    }
+                ],
+                "high": [
+                    {
+                        "node_id": "DEV_abc123",
+                        "contagion_score": 0.50,
+                        "risk_tier": "HIGH",
+                        "depth": 2,
+                    }
+                ],
+                "suspicious": [
+                    {
+                        "node_id": "IP_10_0_0_5",
+                        "contagion_score": 0.18,
+                        "risk_tier": "SUSPICIOUS",
+                        "depth": 3,
+                    }
+                ],
+                "processing_time_ms": 14.7,
+                "timestamp": "2026-05-31T10:00:00.000Z",
+            }
+        }
+    )
+
+    source_node: str = Field(description="The origin node from which traversal started.")
+    max_depth: int = Field(description="The max-depth limit used for this traversal.")
+    total_nodes_evaluated: int = Field(
+        ge=0,
+        description="Total number of unique neighbor nodes scored (above 0.0).",
+    )
+    critical: List[ContagionNode] = Field(
+        default_factory=list,
+        description="Nodes with Contagion Score ≥ 0.70 — immediate lockdown recommended.",
+    )
+    high: List[ContagionNode] = Field(
+        default_factory=list,
+        description="Nodes with 0.35 ≤ Contagion Score < 0.70 — enhanced monitoring required.",
+    )
+    suspicious: List[ContagionNode] = Field(
+        default_factory=list,
+        description="Nodes with 0.10 ≤ Contagion Score < 0.35 — flag for investigation.",
+    )
+    processing_time_ms: float = Field(description="Wall-clock time taken to compute the blast radius.")
+    timestamp: str = Field(description="ISO-8601 UTC timestamp of the response.")

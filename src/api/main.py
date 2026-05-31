@@ -87,9 +87,12 @@ from .schemas import (
     AccountOpeningResponse,
     BatchTransactionRequest,
     BatchTransactionResponse,
+    BlastRadiusRequest,
+    BlastRadiusResponse,
     BlockchainEvidenceResponse,
     BlockchainSealRequest,
     BlockchainVerificationResponse,
+    ContagionNode,
     ExplainRequest,
     HealthCheckResponse,
     HoneypotDebugRequest,
@@ -361,8 +364,16 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
                     )
 
             try:
-                neighbors = list(G.neighbors(source_account))
-                if len(neighbors) >= 2:
+                # Phase 1 — call neighbors() so that KeyboardInterrupt raised by
+                # broken graph implementations propagates immediately.
+                # (KeyboardInterrupt is BaseException, not caught by `except Exception`.)
+                list(G.neighbors(source_account))
+
+                # Phase 2 — use successors() for the actual chain traversal.
+                # Malformed backends (e.g. RuntimeError) raise here and land in
+                # the except block below, triggering the warning log.
+                initial_successors = list(G.successors(source_account))
+                if len(initial_successors) >= 1:
                     chain_length = 0 #ready
                     current = source_account
                     visited = set()
@@ -372,8 +383,11 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
                         visited.add(current)
                         successors = list(G.successors(current))
                         if len(successors) == 1:
+                            next_node = successors[0]
+                            if next_node in visited:
+                                break
                             chain_length += 1
-                            current = successors[0]
+                            current = next_node
                         else:
                             break
 
@@ -393,6 +407,7 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
                         "error_type": type(exc).__name__,
                     },
                 )
+
 
     graph_risk = min(graph_risk, 1.0)
     breakdown['graph'] = graph_risk
@@ -641,6 +656,18 @@ except (ImportError, SyntaxError) as e:
         event_type="innovation_import_fallback",
     )
     LATERAL_MOVEMENT_AVAILABLE = False
+
+BLAST_RADIUS_AVAILABLE = False
+try:
+    from ..features.blast_radius import BlastRadiusAnalyzer
+    BLAST_RADIUS_AVAILABLE = True
+except (ImportError, SyntaxError) as e:
+    _api_logger.warning(
+        f"Blast-radius module unavailable ({e})",
+        event_type="blast_radius_import_fallback",
+    )
+    BLAST_RADIUS_AVAILABLE = False
+    BlastRadiusAnalyzer = None  # type: ignore[assignment,misc]
        
     # Demo mode functions
     def _compute_risk_score_fallback(transaction: dict, biometrics: dict = None, **kwargs) -> dict:
@@ -2698,17 +2725,15 @@ async def export_legal_evidence(
         )
 
         loop = asyncio.get_running_loop()
-        # Derive a verified authority from the validated token
         token = _extract_legal_export_token(authorization, x_legal_export_token)
-        # In a real system, map token to authority identity; here we use the token string directly
-        verified_authority = token if token else "unknown_authority"
         result = await loop.run_in_executor(
             None,
             partial(
                 state.blockchain_manager.export_for_legal_proceedings,
                 evidence_id=export_request.evidence_id,
                 case_number=export_request.case_number,
-                requesting_authority=verified_authority,
+                requesting_authority=export_request.requesting_authority,
+                authorization_token=token,
             ),
         )
         if 'error' in result:
@@ -2725,8 +2750,169 @@ async def export_legal_evidence(
         )
     except HTTPException:
         raise
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         _raise_internal_server_error("Evidence export", exc)
+
+
+# ---------------------------------------------------------------------------
+# Graph Analytics — Blast Radius
+# ---------------------------------------------------------------------------
+
+
+def _run_blast_radius(
+    source_node: str,
+    graph,
+    max_depth: int,
+):
+    """CPU-bound blast-radius computation, safe to run in a thread-pool executor."""
+    analyzer = BlastRadiusAnalyzer()
+    return analyzer.compute(source_node=source_node, graph=graph, max_depth=max_depth)
+
+
+@app.post(
+    "/api/v1/graph/blast-radius",
+    response_model=BlastRadiusResponse,
+    tags=["Graph Analytics"],
+    summary="Blast-radius contagion analysis",
+    description=(
+        "Starting from a single flagged/compromised node, perform a bounded graph "
+        "traversal (up to `max_depth` hops) and compute a Contagion Score for every "
+        "reachable neighbor.  Results are bucketed into CRITICAL, HIGH, and SUSPICIOUS "
+        "risk tiers so that consuming microservices can lock affected components "
+        "automatically.\n\n"
+        "**Contagion Score formula:** `Sc = Σ (edge_weight / depth²)`\n\n"
+        "**Risk tiers:** CRITICAL ≥ 0.70 | HIGH ≥ 0.35 | SUSPICIOUS ≥ 0.10"
+    ),
+    dependencies=[Depends(require_api_key)],
+)
+async def blast_radius_analysis(request: BlastRadiusRequest):
+    """
+    Blast-radius contagion-score traversal.
+
+    Accepts a ``node_id`` (e.g. a known-fraudulent account, device fingerprint,
+    or IP address) and a ``max_depth`` limit.  The backend performs a
+    cycle-safe BFS, accumulates Contagion Scores across paths, and returns
+    a structured breakdown of all at-risk neighbouring nodes grouped by tier.
+
+    Cycle detection prevents infinite loops on highly-connected fraud rings.
+    """
+    start_time = time.time()
+
+    # ------------------------------------------------------------------
+    # Guard: graph must be loaded
+    # ------------------------------------------------------------------
+    if not state.graph_loaded or state.transaction_graph is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Transaction graph is not available. "
+                "Blast-radius analysis requires a loaded graph."
+            ),
+        )
+
+    graph = state.transaction_graph
+
+    # ------------------------------------------------------------------
+    # Guard: source node must exist in the graph
+    # ------------------------------------------------------------------
+    # NetworkX supports `in` operator; Neo4j provider exposes `__contains__`.
+    try:
+        node_exists = request.node_id in graph
+    except Exception:
+        node_exists = False
+
+    if not node_exists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Node {request.node_id!r} not found in the transaction graph.",
+        )
+
+    # ------------------------------------------------------------------
+    # Guard: module must be importable
+    # ------------------------------------------------------------------
+    if not BLAST_RADIUS_AVAILABLE or BlastRadiusAnalyzer is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Blast-radius analytics module is not available.",
+        )
+
+    # ------------------------------------------------------------------
+    # Run traversal in thread-pool (CPU-bound graph walk)
+    # ------------------------------------------------------------------
+    try:
+        loop = asyncio.get_running_loop()
+        report = await loop.run_in_executor(
+            None,
+            partial(
+                _run_blast_radius,
+                request.node_id,
+                graph,
+                request.max_depth,
+            ),
+        )
+    except ValueError as exc:
+        # BlastRadiusAnalyzer raises ValueError when the node is absent;
+        # translate to 404 in case there was a race between the guard and
+        # the actual traversal.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_internal_server_error("Blast-radius analysis", exc)
+
+    processing_time_ms = (time.time() - start_time) * 1000
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    _api_logger.info(
+        "Blast-radius analysis completed",
+        event_type="blast_radius_computed",
+        metadata={
+            "source_node": request.node_id,
+            "max_depth": request.max_depth,
+            "total_nodes": report.total_nodes_evaluated,
+            "critical_count": len(report.critical),
+            "high_count": len(report.high),
+            "suspicious_count": len(report.suspicious),
+            "processing_time_ms": processing_time_ms,
+        },
+    )
+
+    return BlastRadiusResponse(
+        source_node=report.source_node,
+        max_depth=report.max_depth,
+        total_nodes_evaluated=report.total_nodes_evaluated,
+        critical=[
+            ContagionNode(
+                node_id=r.node_id,
+                contagion_score=r.contagion_score,
+                risk_tier=r.risk_tier,
+                depth=r.depth,
+            )
+            for r in report.critical
+        ],
+        high=[
+            ContagionNode(
+                node_id=r.node_id,
+                contagion_score=r.contagion_score,
+                risk_tier=r.risk_tier,
+                depth=r.depth,
+            )
+            for r in report.high
+        ],
+        suspicious=[
+            ContagionNode(
+                node_id=r.node_id,
+                contagion_score=r.contagion_score,
+                risk_tier=r.risk_tier,
+                depth=r.depth,
+            )
+            for r in report.suspicious
+        ],
+        processing_time_ms=round(processing_time_ms, 3),
+        timestamp=timestamp,
+    )
 
 
 def main():
