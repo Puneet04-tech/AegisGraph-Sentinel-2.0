@@ -17,6 +17,7 @@ import mlflow.pytorch
 from contextlib import contextmanager
 
 from .losses import FocalLoss, CombinedLoss
+from ..utils.helpers import get_device
 
 
 @contextmanager
@@ -51,7 +52,8 @@ class Trainer:
     ):
         self.model = model
         self.config = config
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        configured_device = config.get('model', {}).get('device')
+        self.device = get_device(str(device) if device is not None else configured_device)
         
         self.model.to(self.device)
         

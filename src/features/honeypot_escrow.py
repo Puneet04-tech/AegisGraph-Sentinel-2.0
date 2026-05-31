@@ -124,6 +124,13 @@ class HoneypotEscrowManager:
             'total_false_positives': 7,  # 18% false positive rate
             'average_response_time_minutes': 12.0,  # 12-min avg response time
         }
+        
+        # Daily statistics for realtime monitoring
+        self.daily_stats = {
+            'date': datetime.now().date(),
+            'arrests': 0,
+            'recovered': 0.0,
+        }
     
     def should_activate_honeypot(
         self,
@@ -347,6 +354,11 @@ class HoneypotEscrowManager:
             # Update statistics
             self.stats['total_arrests'] += 1
             self.stats['total_recovered'] += honeypot.amount
+            
+            # Update daily statistics
+            self._check_daily_reset()
+            self.daily_stats['arrests'] += 1
+            self.daily_stats['recovered'] += honeypot.amount
 
             # Calculate response time
             first_withdrawal = honeypot.withdrawal_attempts[0] if honeypot.withdrawal_attempts else None
@@ -482,9 +494,27 @@ class HoneypotEscrowManager:
             del self.active_honeypots[honeypot_id]
             self._active_honeypots_by_account.pop(honeypot.target_account, None)
     
+    def _check_daily_reset(self):
+        """Reset daily statistics if 24 hours have elapsed."""
+        today = datetime.now().date()
+        if self.daily_stats['date'] != today:
+            self.daily_stats['date'] = today
+            self.daily_stats['arrests'] = 0
+            self.daily_stats['recovered'] = 0.0
+
+    def get_daily_stats(self) -> Dict:
+        """Get thread-safe daily statistics"""
+        with self._lock:
+            self._check_daily_reset()
+            return {
+                'arrests_today': self.daily_stats['arrests'],
+                'recovered_today': self.daily_stats['recovered'],
+            }
+
     def get_statistics(self) -> Dict:
         """Get honeypot system statistics"""
         with self._lock:
+            self._check_daily_reset()
             total_activated = max(self.stats['total_activated'], 1)
             return {
                 'total_activated': self.stats['total_activated'],
@@ -496,8 +526,8 @@ class HoneypotEscrowManager:
                 'false_positive_rate': self.stats['total_false_positives'] / total_activated,
                 'avg_time_to_arrest_minutes': self.stats['average_response_time_minutes'],
                 'active_honeypots': len(self.active_honeypots),
-                'arrests_today': 0,  # TODO: Track daily stats
-                'recovered_today': 0.0,  # TODO: Track daily stats
+                'arrests_today': self.daily_stats['arrests'],
+                'recovered_today': self.daily_stats['recovered'],
             }
     
     def get_active_honeypots(self) -> List[Dict]:

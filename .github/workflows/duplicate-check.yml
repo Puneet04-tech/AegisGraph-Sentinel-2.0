@@ -19,12 +19,12 @@ jobs:
           issue-title: ${{ github.event.issue.title }}
           issue-state: 'all'
 
-      - name: Mark as Duplicate
-        if: env.find-number != ''
+        - name: Mark as Duplicate
+        if: ${{ steps.find_issues.outputs.issues != '[]' }}
         uses: actions-cool/issues-helper@v3
         with:
           actions: 'create-label, create-comment'
           token: ${{ secrets.GITHUB_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           labels: 'duplicate'
-          body: 'Hello! This issue appears to be a duplicate of #${{ env.find-number }}. Please check the original thread for updates. 🤖'
+          body: 'Hello! This issue appears to be a duplicate. Please check the original thread for updates. 🤖'

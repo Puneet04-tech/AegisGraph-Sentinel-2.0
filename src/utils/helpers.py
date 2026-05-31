@@ -62,22 +62,24 @@ def setup_logger(name: str, log_file: Optional[str] = None, level: int = logging
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-    
-    # File handler
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(level)
-        file_handler.setFormatter(console_formatter)
-        logger.addHandler(file_handler)
+
+    # Keep logger setup idempotent so repeated calls do not duplicate handlers.
+    if not logger.handlers:
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        # File handler is configured once alongside the console handler.
+        if log_file:
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setLevel(level)
+            file_handler.setFormatter(console_formatter)
+            logger.addHandler(file_handler)
     
     return logger
 
@@ -123,15 +125,34 @@ def get_device(device: Optional[str] = None) -> torch.device:
     Returns:
         torch.device
     """
-    if device is not None:
-        return torch.device(device)
-    
+    requested_device = device.strip().lower() if isinstance(device, str) else device
+
+    if requested_device == 'cpu':
+        return torch.device('cpu')
+
+    if requested_device == 'cuda' and torch.cuda.is_available():
+        return torch.device('cuda')
+
+    if (
+        requested_device == 'mps'
+        and hasattr(torch.backends, 'mps')
+        and torch.backends.mps.is_available()
+    ):
+        return torch.device('mps')
+
+    if requested_device in {'cuda', 'mps'}:
+        logging.getLogger(__name__).warning(
+            "Requested %s device is unavailable; falling back to best available device",
+            requested_device,
+        )
+    elif requested_device is not None:
+        raise ValueError(f"Unsupported torch device: {device!r}")
+
     if torch.cuda.is_available():
         return torch.device('cuda')
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         return torch.device('mps')
-    else:
-        return torch.device('cpu')
+    return torch.device('cpu')
 
 
 def format_time(seconds: float) -> str:

@@ -77,6 +77,34 @@ class TestInMemoryGraphCache:
             assert cache.get("key1") is None
             assert "key1" not in cache.cache
 
+    def test_cache_methods_use_lock(self, cache):
+        """Test that core cache operations run under the shared lock."""
+
+        class RecordingLock:
+            def __init__(self):
+                self.entered = 0
+                self.exited = 0
+
+            def __enter__(self):
+                self.entered += 1
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.exited += 1
+                return False
+
+        lock = RecordingLock()
+        cache._lock = lock
+
+        cache.set("key1", "value1")
+        cache.get("key1")
+        cache.invalidate("key1")
+        cache.clear()
+        cache.get_stats()
+
+        assert lock.entered == lock.exited
+        assert lock.entered >= 5
+
 
 class TestGraphOperationCache:
     """Test high-level graph operation caching"""

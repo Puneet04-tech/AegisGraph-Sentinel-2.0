@@ -84,6 +84,21 @@ class _FakeBlockchainManager:
         }
 
 
+class TestModelComponentInitialization:
+    """Protect API model wiring from import-order regressions."""
+
+    def test_model_components_initialize_after_app_state(self):
+        assert isinstance(api_main.state, api_main.AppState)
+        assert api_main.compute_risk_score is not api_main._model_components_not_initialized
+        assert api_main.generate_explanation is not api_main._model_components_not_initialized
+
+    def test_model_initializer_rejects_uninitialized_state(self, monkeypatch):
+        monkeypatch.setattr(api_main, "state", object())
+
+        with pytest.raises(RuntimeError, match="before application state"):
+            api_main._initialize_model_components()
+
+
 class TestHealthEndpoint:
     """Test health check endpoint"""
     

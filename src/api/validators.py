@@ -345,6 +345,10 @@ class RateLimiter:
     ) -> None:
         """Remove expired entries from the LRU end (front) of the ordered dict.
 
+        Every access calls ``move_to_end()``, so the least recently used
+        entries naturally reside at the front. This makes pruning an
+        O(max_prune) scan in the worst case and O(1) when nothing is
+        expired.
         Because every access calls ``move_to_end()``, the oldest / least
         recently used entries naturally reside at the front, making this
         an O(max_prune) scan in the worst case and O(1) when there is
@@ -357,6 +361,7 @@ class RateLimiter:
             if (now - window_start).total_seconds() >= 60:
                 del tracking_dict[identifier]
             else:
+                break
                 break  # remaining entries are even newer
 
     def _check_limit(

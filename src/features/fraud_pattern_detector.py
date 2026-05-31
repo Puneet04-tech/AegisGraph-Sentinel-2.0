@@ -1133,17 +1133,17 @@ class FraudPatternDetector:
         transactions: List[Dict],
     ) -> List[Dict]:
         """Extract transactions forming a linear chain"""
+        # Build a (source, target) -> [txns] index for O(1) lookups
+        index: Dict[tuple, List[Dict]] = defaultdict(list)
+        for txn in transactions:
+            src = self._txn_value(txn, 'source_account')
+            tgt = self._txn_value(txn, 'target_account')
+            if src and tgt:
+                index[(src, tgt)].append(txn)
+
         chain_txns = []
-        
         for i in range(len(chain) - 1):
-            source = chain[i]
-            target = chain[i + 1]
-            
-            for txn in transactions:
-                if (self._txn_value(txn, 'source_account') == source and
-                    self._txn_value(txn, 'target_account') == target):
-                    chain_txns.append(txn)
-        
+            chain_txns.extend(index.get((chain[i], chain[i + 1]), []))
         return chain_txns
 
     def _get_clique_transactions(

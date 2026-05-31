@@ -4,7 +4,6 @@ FastAPI Application for AegisGraph Sentinel 2.0
 Real-time fraud detection API service
 """
 
-from __future__ import annotations
 
 import asyncio
 import binascii
@@ -105,6 +104,10 @@ from .schemas import (
 )
 from .security import require_api_key
 
+
+INNOVATIONS_AVAILABLE = False
+state: Any = None
+
 def _require_legal_export_authorization(authorization_token: Optional[str]) -> None:
     """Legacy wrapper: ensure a provided authorization token matches configured hash.
 
@@ -196,9 +199,11 @@ def _require_verbose_health_access(
 
 
 def _build_health_response(include_details: bool) -> dict[str, Any]:
+    runtime_state = state
+    health_monitor = getattr(getattr(runtime_state, "runtime", None), "health_monitor", None)
     overall_status = "healthy"
-    if hasattr(state, "runtime") and hasattr(state.runtime, "health_monitor"):
-        overall_status = state.runtime.health_monitor.get_overall_status()
+    if health_monitor is not None:
+        overall_status = health_monitor.get_overall_status()
 
     response: dict[str, Any] = {
         "status": overall_status,
@@ -208,21 +213,22 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
     if not include_details:
         return response
 
-    uptime = time.time() - state.start_time if hasattr(state, "start_time") else 0.0
+    start_time = getattr(runtime_state, "start_time", None)
+    uptime = time.time() - start_time if isinstance(start_time, (int, float)) else 0.0
     response.update(
         {
             "version": "2.0.0",
-            "model_loaded": state.model_loaded,
-            "graph_loaded": state.graph_loaded,
+            "model_loaded": getattr(runtime_state, "model_loaded", False),
+            "graph_loaded": getattr(runtime_state, "graph_loaded", False),
             "innovations_available": INNOVATIONS_AVAILABLE,
-            "requests_processed": state.requests_processed,
+            "requests_processed": getattr(runtime_state, "requests_processed", 0),
             "uptime_seconds": uptime,
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     )
 
-    if hasattr(state, "runtime") and hasattr(state.runtime, "health_monitor"):
-        snapshot = state.runtime.health_monitor.get_health_snapshot()
+    if health_monitor is not None:
+        snapshot = health_monitor.get_health_snapshot()
         response["services_health"] = {
             name: {
                 "status": sh.status,
@@ -284,6 +290,12 @@ def _chunked(items, chunk_size):
         yield chunk
 def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **kwargs) -> dict:
     """Enhanced risk scorer with graph-based mule account detection."""
+    runtime_state = state
+    graph_loaded = getattr(runtime_state, "graph_loaded", False)
+    transaction_graph = getattr(runtime_state, "transaction_graph", None)
+    mule_accounts = getattr(runtime_state, "mule_accounts", set()) or set()
+    account_profiles = getattr(runtime_state, "account_profiles", {}) or {}
+
     risk_score = 0.0
     breakdown = {
         'graph': 0.0,
@@ -298,29 +310,29 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
 
     graph_risk = 0.0
 
-    if state.graph_loaded and state.transaction_graph:
-        if source_account in state.mule_accounts:
+    if graph_loaded and transaction_graph:
+        if source_account in mule_accounts:
             graph_risk += 0.6
             _api_logger.warning(
                 f"Source account {source_account} is a known mule account",
                 event_type="mule_account_detected",
                 metadata={"account": source_account, "role": "source"},
             )
-        if target_account in state.mule_accounts:
+        if target_account in mule_accounts:
             graph_risk += 0.4
             _api_logger.warning(
                 f"Target account {target_account} is a known mule account",
                 event_type="mule_account_detected",
                 metadata={"account": target_account, "role": "target"},
             )
-        if source_account in state.mule_accounts and target_account in state.mule_accounts:
+        if source_account in mule_accounts and target_account in mule_accounts:
             graph_risk += 0.3
             _api_logger.warning(
                 f"Mule-to-mule transaction detected: {source_account} -> {target_account}",
                 event_type="mule_to_mule_transaction",
             )
 
-        G = state.transaction_graph
+        G = transaction_graph
         if source_account in G.nodes:
             out_degree = G.out_degree(source_account)
             in_degree = G.in_degree(source_account)
@@ -367,11 +379,15 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
                             event_type="graph_pattern",
                             metadata={"pattern": "chain", "chain_length": chain_length},
                         )
-            except Exception as e:
-                _api_logger.error(f"Error in graph pattern analysis: {e}")
-                pass
-            except:
-                print(f"⚠️ Chain pattern: {source_account} is part of a {chain_length}-hop chain")
+            except Exception as exc:
+                _api_logger.warning(
+                    f"Graph pattern analysis failed for {source_account}: {exc}",
+                    event_type="graph_pattern_analysis_error",
+                    metadata={
+                        "source_account": source_account,
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
     graph_risk = min(graph_risk, 1.0)
     breakdown['graph'] = graph_risk
@@ -386,8 +402,8 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     elif amount > 5000:
         velocity_risk += 0.1
 
-    if source_account in state.account_profiles:
-        profile = state.account_profiles[source_account]
+    if source_account in account_profiles:
+        profile = account_profiles[source_account]
         avg_amount = profile.get('avg_transaction_amount', 5000)
         if amount > avg_amount * 3:
             velocity_risk += 0.3
@@ -473,11 +489,11 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
         decision = "ALLOW"
 
     confidence = 0.7
-    if state.graph_loaded:
+    if graph_loaded:
         confidence += 0.15
     if biometrics:
         confidence += 0.10
-    if source_account in state.account_profiles:
+    if source_account in account_profiles:
         confidence += 0.05
 
     confidence = min(confidence, 0.95)
@@ -492,6 +508,9 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
 
 def _fallback_generate_explanation(transaction: dict = None, risk_result: dict = None, detail_level: str = 'medium', **kwargs) -> dict:
     """Enhanced explainer with detailed fraud pattern descriptions."""
+    runtime_state = state
+    mule_accounts = getattr(runtime_state, "mule_accounts", set()) or set()
+
     if not risk_result or 'risk_score' not in risk_result:
         return {
             'explanation': "Unable to generate explanation",
@@ -540,9 +559,9 @@ def _fallback_generate_explanation(transaction: dict = None, risk_result: dict =
         source = transaction.get('source_account')
         target = transaction.get('target_account')
 
-        if source in state.mule_accounts:
+        if source in mule_accounts:
             explanation += f" | 🎯 SOURCE ACCOUNT ({source}) IS A KNOWN MULE ACCOUNT"
-        if target in state.mule_accounts:
+        if target in mule_accounts:
             explanation += f" | 🎯 TARGET ACCOUNT ({target}) IS A KNOWN MULE ACCOUNT"
 
     return {
@@ -583,7 +602,14 @@ def _resolve_model_components():
     return model_compute_risk_score, model_generate_explanation, True
 
 
-compute_risk_score, generate_explanation, MODEL_AVAILABLE = _resolve_model_components()
+def _model_components_not_initialized(*args, **kwargs):
+    raise RuntimeError("Model components are not initialized yet")
+
+
+compute_risk_score = _model_components_not_initialized
+generate_explanation = _model_components_not_initialized
+MODEL_AVAILABLE = False
+_DEFERRED_FALLBACK_MODEL_COMPONENTS = None
 
 # Import innovation modules
 try:
@@ -929,8 +955,10 @@ except (ImportError, SyntaxError) as e:
             'recommended_action': action
         }
 
-    compute_risk_score = _compute_risk_score_fallback
-    generate_explanation = _generate_explanation_fallback
+    _DEFERRED_FALLBACK_MODEL_COMPONENTS = (
+        _compute_risk_score_fallback,
+        _generate_explanation_fallback,
+    )
 
 
 try:
@@ -961,7 +989,7 @@ class AppState:
         self.decisions = {decision.value: 0 for decision in FraudDecision}
         self.total_risk_score = 0.0
         self.total_processing_time = 0.0
-        self.metrics_lock = None
+        self._metrics_lock = None
         self.model_loaded = False
         self.config = {}
         # Graph-based fraud detection
@@ -980,6 +1008,12 @@ class AppState:
         self.blockchain_manager = None
         self.aegis_oracle = None  # Explainability engine
         self.lateral_movement_detector = None
+
+    @property
+    def metrics_lock(self):
+        if self._metrics_lock is None:
+            self._metrics_lock = asyncio.Lock()
+        return self._metrics_lock
 
     @property
     def voice_analyzer(self) -> Any:
@@ -1030,6 +1064,23 @@ class AppState:
         self.services.register("lateral_movement_detector", value, replace=True)
         
 state = AppState()
+
+
+def _initialize_model_components() -> None:
+    """Resolve model functions only after the runtime state exists."""
+    global compute_risk_score, generate_explanation, MODEL_AVAILABLE
+
+    if "state" not in globals() or not isinstance(state, AppState):
+        raise RuntimeError("Model components cannot initialize before application state")
+
+    compute_risk_score, generate_explanation, MODEL_AVAILABLE = _resolve_model_components()
+
+    if _DEFERRED_FALLBACK_MODEL_COMPONENTS is not None:
+        compute_risk_score, generate_explanation = _DEFERRED_FALLBACK_MODEL_COMPONENTS
+        MODEL_AVAILABLE = False
+
+
+_initialize_model_components()
 
 
 def _get_metrics_lock() -> asyncio.Lock:
@@ -1104,9 +1155,16 @@ async def _load_graph_runtime_data(startup_logger):
             neo4j_enabled = env_enabled.lower() == "true"
 
         if neo4j_enabled:
-            uri = env_uri or neo4j_config.get("uri", "bolt://localhost:7687")
-            user = env_user or neo4j_config.get("user", "neo4j")
-            password = env_password or neo4j_config.get("password", "password")
+            uri = env_uri or neo4j_config.get("uri")
+            user = env_user or neo4j_config.get("user")
+            password = env_password or neo4j_config.get("password")
+
+            if not uri or not user or not password:
+                raise RuntimeError(
+                    "Neo4j is enabled but credentials are not configured. "
+                    "Set AEGIS_NEO4J_URI, AEGIS_NEO4J_USER, and AEGIS_NEO4J_PASSWORD "
+                    "environment variables (or NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)."
+                )
 
             from ..core.providers.neo4j import Neo4jGraphProvider
 
@@ -2073,6 +2131,10 @@ async def oracle_explain_detailed(request: OracleExplainRequest):
 # This endpoint is ONLY registered when DEBUG env var is set to "true".
 # Never expose this route in production.
 if settings.runtime.debug:
+    if settings.runtime.is_production:
+        raise RuntimeError(
+            "Unsafe configuration: debug honeypot routes cannot be enabled in production."
+        )
     @app.post(
         "/debug/activate_honeypot",
         tags=["Debug"],
@@ -2365,7 +2427,8 @@ def assess_mule_risk(request: AccountOpeningRequest):
     response_model=HoneypotListResponse,
     tags=["Innovation - Honeypot Escrow"],
     summary="List active honeypot traps",
-    description="Innovation 2: View all active deceptive containment operations"
+    description="Innovation 2: View all active deceptive containment operations",
+    dependencies=[Depends(require_api_key)],
 )
 async def list_active_honeypots(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
@@ -2418,7 +2481,8 @@ async def list_active_honeypots(
     response_model=HoneypotStatsResponse,
     tags=["Innovation - Honeypot Escrow"],
     summary="Get honeypot system statistics",
-    description="Innovation 2: View performance metrics including arrest rate and recovery amount"
+    description="Innovation 2: View performance metrics including arrest rate and recovery amount",
+    dependencies=[Depends(require_api_key)],
 )
 async def get_honeypot_stats(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),

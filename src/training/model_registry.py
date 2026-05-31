@@ -97,7 +97,12 @@ class ModelRegistry:
             )
             return False
 
-        artifact_path = self.registry_dir / Path(entry["artifact_path"])
+        try:
+            artifact_path = self._resolve_registry_artifact_path(entry["artifact_path"])
+        except ValueError as exc:
+            logger.warning("Refusing champion artifact outside registry_dir: %s", exc)
+            return False
+
         if not artifact_path.exists():
             try:
                 self.backend.load(entry["artifact_path"], artifact_path)
@@ -184,3 +189,13 @@ class ModelRegistry:
             if isinstance(entry, dict) and entry.get("version_id") == version_id:
                 return entry
         return None
+
+    def _resolve_registry_artifact_path(self, artifact_name: str) -> Path:
+        """Resolve a manifest artifact path and ensure it stays inside the registry directory."""
+        registry_root = self.registry_dir.resolve()
+        artifact_path = (registry_root / Path(artifact_name)).resolve()
+        if not artifact_path.is_relative_to(registry_root):
+            raise ValueError(
+                f"Invalid artifact_path {artifact_name} outside of registry_dir {self.registry_dir}"
+            )
+        return artifact_path
