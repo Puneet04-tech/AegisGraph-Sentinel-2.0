@@ -961,7 +961,7 @@ class AppState:
         self.decisions = {decision.value: 0 for decision in FraudDecision}
         self.total_risk_score = 0.0
         self.total_processing_time = 0.0
-        self.metrics_lock = None
+        self._metrics_lock = None
         self.model_loaded = False
         self.config = {}
         # Graph-based fraud detection
@@ -980,6 +980,12 @@ class AppState:
         self.blockchain_manager = None
         self.aegis_oracle = None  # Explainability engine
         self.lateral_movement_detector = None
+
+    @property
+    def metrics_lock(self):
+        if self._metrics_lock is None:
+            self._metrics_lock = asyncio.Lock()
+        return self._metrics_lock
 
     @property
     def voice_analyzer(self) -> Any:
@@ -1104,9 +1110,16 @@ async def _load_graph_runtime_data(startup_logger):
             neo4j_enabled = env_enabled.lower() == "true"
 
         if neo4j_enabled:
-            uri = env_uri or neo4j_config.get("uri", "bolt://localhost:7687")
-            user = env_user or neo4j_config.get("user", "neo4j")
-            password = env_password or neo4j_config.get("password", "password")
+            uri = env_uri or neo4j_config.get("uri")
+            user = env_user or neo4j_config.get("user")
+            password = env_password or neo4j_config.get("password")
+
+            if not uri or not user or not password:
+                raise RuntimeError(
+                    "Neo4j is enabled but credentials are not configured. "
+                    "Set AEGIS_NEO4J_URI, AEGIS_NEO4J_USER, and AEGIS_NEO4J_PASSWORD "
+                    "environment variables (or NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)."
+                )
 
             from ..core.providers.neo4j import Neo4jGraphProvider
 

@@ -359,6 +359,66 @@ st.markdown("""
     ::-webkit-scrollbar-thumb:hover {
         background: #0f766e;
     }
+    
+    /* Accessible Fallback Styling */
+    .fallback-container {
+        background: rgba(22, 27, 48, 0.45) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 16px !important;
+        padding: 24px !important;
+        box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.3) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        margin-top: 20px !important;
+        margin-bottom: 20px !important;
+    }
+    .fallback-table {
+        width: 100% !important;
+        border-collapse: collapse !important;
+        margin-top: 16px !important;
+        font-size: 0.9rem !important;
+    }
+    .fallback-table th {
+        text-align: left !important;
+        padding: 10px !important;
+        border-bottom: 2px solid rgba(255, 255, 255, 0.15) !important;
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+    }
+    .fallback-table td {
+        padding: 10px !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #cbd5e1 !important;
+    }
+    .fallback-table tr:hover {
+        background: rgba(255, 255, 255, 0.02) !important;
+    }
+    .fallback-highlight {
+        background: rgba(45, 212, 191, 0.15) !important;
+        border-left: 4px solid #2dd4bf !important;
+    }
+    .badge {
+        display: inline-block !important;
+        padding: 2px 8px !important;
+        border-radius: 4px !important;
+        font-size: 0.75rem !important;
+        font-weight: 600 !important;
+    }
+    .badge-high {
+        background: rgba(239, 68, 68, 0.15) !important;
+        color: #f87171 !important;
+        border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    }
+    .badge-medium {
+        background: rgba(245, 158, 11, 0.15) !important;
+        color: #fbbf24 !important;
+        border: 1px solid rgba(245, 158, 11, 0.3) !important;
+    }
+    .badge-low {
+        background: rgba(16, 185, 129, 0.15) !important;
+        color: #34d399 !important;
+        border: 1px solid rgba(16, 185, 129, 0.3) !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -2520,6 +2580,194 @@ elif page == "🕸️ Network Graph Explorer":
     """
     
     st.components.v1.html(html_content, height=600)
+    
+    # === RENDER ACCESSIBLE PARALLEL FALLBACK ===
+    st.markdown("---")
+    st.markdown("<div id='accessible-fallback' aria-label='Accessible Network Topology Summary'>", unsafe_allow_html=True)
+    
+    st.markdown("### 🧾 Accessible Topology Summary")
+    st.caption("A fully structured, screen-reader accessible representation of the active network graph, updating dynamically in sync with current filters and simulation states.")
+    
+    # Phase text description
+    phase_descriptions = [
+        "**Phase 1: Victim Infiltration** — Victims' accounts are compromised. 12 Victim nodes are initiating transfers to the central Mule Hub (`ACC00001071`). Only these incoming paths are active in this phase.",
+        "**Phase 2: Hub Aggregation** — Funds are aggregated at the central Mule Hub (`ACC00001071`). The hub is active and preparing outbound dispersion to 8 Level 2 Layering accounts.",
+        "**Phase 3: Outbound Layering** — High velocity dispersion from Level 2 Layering accounts to 16 withdrawal cashout endpoints. In this phase, the secondary outbound paths are active.",
+        "**Phase 4: Cashout Extraction** — Layered accounts distribute funds to withdrawal endpoints (ATM nodes/crypto gateways) for final extraction. All network connections are active."
+    ]
+    current_phase_desc = phase_descriptions[st.session_state.prop_step]
+    
+    # Display the current simulation step details
+    current_phase_html = f"""<div class="fallback-container" style="margin-bottom: 15px;">
+<strong style="color: #2dd4bf; font-size: 1.1rem;">Active Simulation Step: {selected_step_name}</strong><br/>
+<p style="margin-top: 8px; margin-bottom: 0; color: #cbd5e1;">{current_phase_desc}</p>
+{"<p style='margin-top: 8px; margin-bottom: 0; color: #38bdf8;'>🔄 <em>Autoplay is active, cycling steps every 2 seconds.</em></p>" if animate_propagation else ""}
+</div>"""
+    st.markdown(current_phase_html, unsafe_allow_html=True)
+    
+    # Extract and Filter Nodes
+    fallback_nodes = []
+    search_found = False
+    search_clean = search_query.strip().lower()
+    
+    for node in G.nodes():
+        node_data = G.nodes[node]
+        role = node_data.get('type', 'Unknown')
+        risk_value = float(node_data.get('risk', 0.0))
+        
+        # Calculate connections
+        in_degree = G.in_degree(node)
+        out_degree = G.out_degree(node)
+        connections_str = f"Inbound: {in_degree}, Outbound: {out_degree}"
+        
+        # Determine status/action
+        if risk_value >= 0.7:
+            risk_badge = '<span class="badge badge-high">High Risk (Block)</span>'
+            risk_text = f"High Risk: {risk_value:.2%}"
+        elif risk_value >= 0.4:
+            risk_badge = '<span class="badge badge-medium">Medium Risk (Review)</span>'
+            risk_text = f"Medium Risk: {risk_value:.2%}"
+        else:
+            risk_badge = '<span class="badge badge-low">Low Risk (Allow)</span>'
+            risk_text = f"Low Risk: {risk_value:.2%}"
+            
+        # Determine visibility in vis.js layout
+        is_visible_in_vis = True
+        if role != 'Mule Hub (Level 1)' and not animate_propagation and not search_query:
+            is_visible_in_vis = False
+            
+        # Determine if matched by search
+        is_match = False
+        if search_clean and search_clean in node.lower():
+            is_match = True
+            search_found = True
+            
+        # Determine if active in current step
+        is_active_in_step = False
+        if st.session_state.prop_step == 0 and role == 'Victim':
+            is_active_in_step = True
+        elif st.session_state.prop_step == 1 and role == 'Mule Hub (Level 1)':
+            is_active_in_step = True
+        elif st.session_state.prop_step == 2 and 'Layer' in role:
+            is_active_in_step = True
+        elif st.session_state.prop_step == 3:
+            is_active_in_step = True
+            
+        fallback_nodes.append({
+            "node_id": node,
+            "role": role,
+            "risk_val": risk_value,
+            "risk_badge": risk_badge,
+            "risk_text": risk_text,
+            "connections": connections_str,
+            "is_visible": is_visible_in_vis,
+            "is_match": is_match,
+            "is_active": is_active_in_step
+        })
+        
+    # Sort nodes so matched/active/hub ones come first for easier navigation
+    def sort_key(n):
+        return (not n["is_match"], not (n["node_id"] == central_hub), not n["is_active"], not n["is_visible"], n["role"])
+    fallback_nodes.sort(key=sort_key)
+    
+    # If search entered but no match found
+    if search_query and not search_found:
+        st.warning(f"No account matching '{search_query}' was found in the active topology.")
+        
+    # Construct Nodes Table HTML
+    table_rows = []
+    for fn in fallback_nodes:
+        row_class = "fallback-highlight" if fn["is_match"] else ""
+        match_label = " <strong style='color: #2dd4bf;'>[SEARCH MATCH]</strong>" if fn["is_match"] else ""
+        vis_label = "👁️ Visible" if fn["is_visible"] else "🔒 Hidden (Double-click hub in visualization to expand)"
+        active_label = "⚡ Active Propagation" if fn["is_active"] else "Idle"
+        
+        # Screen reader helper text in an invisible span
+        sr_only = f"<span style='position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0;'>Account {fn['node_id']}, Role {fn['role']}, Risk {fn['risk_text']}, {fn['connections']}, Status {active_label}, Visibility {vis_label}</span>"
+        
+        row_html = f'<tr class="{row_class}"><td><strong>{fn["node_id"]}</strong>{match_label}{sr_only}</td><td>{fn["role"]}</td><td>{fn["risk_badge"]}</td><td>{fn["connections"]}</td><td style="color: {"#ef4444" if fn["is_active"] else "#94a3b8"}">{active_label}</td><td>{vis_label}</td></tr>'
+        table_rows.append(row_html)
+        
+    nodes_table_html = f"""<div class="fallback-container">
+<h4 style="color: #f1f5f9; margin-top: 0; margin-bottom: 10px;">📋 Network Nodes Directory ({len(fallback_nodes)} accounts)</h4>
+<table class="fallback-table">
+<thead>
+<tr>
+<th>Account ID</th>
+<th>Network Role</th>
+<th>Risk Category</th>
+<th>Direct Connections</th>
+<th>Propagation State</th>
+<th>Canvas Visibility</th>
+</tr>
+</thead>
+<tbody>
+{"".join(table_rows)}
+</tbody>
+</table>
+</div>"""
+    st.markdown(nodes_table_html, unsafe_allow_html=True)
+    
+    # Active Connections Table HTML
+    fallback_edges = []
+    for edge in G.edges():
+        u, v = edge
+        amount = G[u][v].get('amount', 10000)
+        
+        is_active_edge = False
+        if st.session_state.prop_step == 0 and G.nodes[u]['type'] == 'Victim':
+            is_active_edge = True
+        elif st.session_state.prop_step == 1 and u == central_hub:
+            is_active_edge = True
+        elif st.session_state.prop_step == 2 and G.nodes[u]['type'] == 'Mule Layer (Level 2)' and G.nodes[v]['type'] == 'Withdrawal Node':
+            is_active_edge = True
+        elif st.session_state.prop_step == 3:
+            is_active_edge = True
+            
+        is_match = False
+        if search_clean and (search_clean in u.lower() or search_clean in v.lower()):
+            is_match = True
+            
+        fallback_edges.append({
+            "source": u,
+            "target": v,
+            "amount": amount,
+            "is_active": is_active_edge,
+            "is_match": is_match
+        })
+        
+    # Sort connections by: active first, matched first, then amount descending
+    def edge_sort_key(e):
+        return (not e["is_active"], not e["is_match"], -e["amount"])
+    fallback_edges.sort(key=edge_sort_key)
+    
+    edge_rows = []
+    for fe in fallback_edges:
+        row_class = "fallback-highlight" if fe["is_match"] else ""
+        match_label = " <strong style='color: #2dd4bf;'>[MATCH]</strong>" if fe["is_match"] else ""
+        active_label = "⚡ Active Flow" if fe["is_active"] else "Inactive"
+        
+        row_html = f'<tr class="{row_class}"><td><strong>{fe["source"]}</strong>{match_label}</td><td><strong>{fe["target"]}</strong></td><td>₹{fe["amount"]:,.2f}</td><td style="color: {"#ef4444" if fe["is_active"] else "#94a3b8"}">{active_label}</td></tr>'
+        edge_rows.append(row_html)
+        
+    edges_table_html = f"""<div class="fallback-container">
+<h4 style="color: #f1f5f9; margin-top: 0; margin-bottom: 10px;">💸 Money Routing Flows ({len(fallback_edges)} paths)</h4>
+<table class="fallback-table">
+<thead>
+<tr>
+<th>Source Account</th>
+<th>Destination Account</th>
+<th>Transfer Amount</th>
+<th>Flow Status</th>
+</tr>
+</thead>
+<tbody>
+{"".join(edge_rows)}
+</tbody>
+</table>
+</div>"""
+    st.markdown(edges_table_html, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     
     st.markdown("""
     ### 📊 Topology Analytics
