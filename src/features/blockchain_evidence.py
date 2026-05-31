@@ -566,7 +566,9 @@ class BlockchainEvidenceManager:
         
         # In-memory evidence ID -> record index, eliminating O(N) chain scans
         self._evidence_index: Dict[str, dict] = {}
+        self._transaction_block_index: Dict[str, dict] = {}
         self._rebuild_evidence_index()
+        self._rebuild_transaction_index()
         
         # Statistics
         self.stats = {
@@ -666,6 +668,26 @@ class BlockchainEvidenceManager:
                         'consensus_timestamp': block['timestamp'],
                         'finality_time_ms': 0.0,
                         '_storage': 'memory',
+                    }
+
+    def _rebuild_transaction_index(self) -> None:
+        """Populate _transaction_block_index from the in-memory chain."""
+        self._transaction_block_index.clear()
+        for block in self.nodes[0].chain:
+            for tx_index, tx in enumerate(block.get('transactions', [])):
+                transaction_hash = tx.get('transaction_hash') or tx.get('tx_hash')
+                transaction_id = tx.get('transaction_id')
+                if transaction_hash:
+                    self._transaction_block_index[transaction_hash] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
+                    }
+                if transaction_id:
+                    self._transaction_block_index[hashlib.sha256(transaction_id.encode()).hexdigest()] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
                     }
 
     def _load_evidence_record(self, evidence_id: str) -> Optional[dict]:
@@ -924,6 +946,11 @@ class BlockchainEvidenceManager:
                     'consensus_timestamp': block['timestamp'],
                     'finality_time_ms': consensus_time,
                     '_storage': 'memory',
+                }
+                self._transaction_block_index[transaction_hash] = {
+                    'block_number': block['block_number'],
+                    'tx_index': 0,
+                    'transaction_id': transaction_id,
                 }
                 self._journal.append(evidence)
                 self._redis.save_evidence(evidence)
@@ -1443,30 +1470,27 @@ class BlockchainEvidenceManager:
                 return False
             
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-            
-            # Find blocks containing this transaction
-            for node in self.nodes:
-                for i, block in enumerate(node.chain):
-                    for tx in block.get('transactions', []):
-                        if tx.get('transaction_id') == transaction_id or \
-                           tx.get('transaction_hash') == transaction_hash:
-                            # Verify block chain
-                            if i > 0:
-                                prev_block = node.chain[i-1]
-                                if block['previous_hash'] != prev_block['hash']:
-                                    return False
-                            
-                            # Verify block hash
-                            expected_hash = node._compute_hash(
-                                f"block_{block['block_number']}",
-                                block['previous_hash'],
-                                block.get('transactions', []),
-                                block['timestamp'],
-                            )
-                            if block['hash'] != expected_hash:
-                                return False
-            
-            return True
+            block_ref = self._transaction_block_index.get(transaction_hash)
+            if block_ref is None:
+                return False
+
+            block_number = block_ref['block_number']
+            block = self.nodes[0].get_block(block_number)
+            if not block:
+                return False
+
+            if block_number > 0:
+                prev_block = self.nodes[0].get_block(block_number - 1)
+                if not prev_block or block['previous_hash'] != prev_block['hash']:
+                    return False
+
+            expected_hash = self.nodes[0]._compute_hash(
+                f"block_{block['block_number']}",
+                block['previous_hash'],
+                block.get('transactions', []),
+                block['timestamp'],
+            )
+            return block['hash'] == expected_hash
             
         except Exception:
             return False

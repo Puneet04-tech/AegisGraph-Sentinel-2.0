@@ -174,3 +174,36 @@ def test_load_evidence_record_uses_reverse_index_without_chain_scan(tmp_path, mo
     assert record is not None
     assert record["_storage"] == "memory"
     assert record["evidence_id"] == expected["evidence_id"]
+
+
+def test_verify_chain_integrity_for_transaction_uses_reverse_index(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    transaction_id = "txn-indexed-1"
+    transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+
+    fake_block = {
+        "block_number": 1,
+        "previous_hash": "prev-hash",
+        "transactions": [{"transaction_hash": transaction_hash}],
+        "timestamp": "2026-01-01T00:00:00Z",
+        "hash": "expected-hash",
+    }
+    fake_prev_block = {"hash": "prev-hash"}
+
+    class FakeNode:
+        def get_block(self, block_number):
+            if block_number == 1:
+                return fake_block
+            if block_number == 0:
+                return fake_prev_block
+            return None
+
+        def _compute_hash(self, *args, **kwargs):
+            return "expected-hash"
+
+    manager.nodes = [FakeNode()]
+    manager._transaction_block_index = {
+        transaction_hash: {"block_number": 1, "tx_index": 0, "transaction_id": transaction_id}
+    }
+
+    assert manager.verify_chain_integrity_for_transaction(transaction_id) is True
