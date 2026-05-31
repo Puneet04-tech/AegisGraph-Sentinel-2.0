@@ -23,3 +23,15 @@ def test_trigger_alert_submits_webhook_work():
     assert fn.__name__ == "_dispatch_webhook_alert"
     assert "Feature: keystroke_flight_time" in args[0]
     assert kwargs == {}
+
+
+def test_monitor_uses_multi_worker_executor_and_closes_cleanly():
+    monitor = AdversarialDriftMonitor(webhook_url="https://example.invalid/webhook", alert_workers=3)
+
+    assert monitor._alert_executor._max_workers == 3
+    assert monitor._closed is False
+
+    monitor.close()
+
+    assert monitor._closed is True
+    assert monitor._alert_executor._shutdown is True

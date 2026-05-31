@@ -1,5 +1,6 @@
 """Unit test suite for verifying the Neo4jGraphProvider connection and subgraph extraction operations."""
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 import networkx as nx
@@ -15,6 +16,16 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         self.mock_uri = "bolt://localhost:7687"
         self.mock_user = "neo4j"
         self.mock_password = "password"
+        self.env_patcher = patch.dict(
+            "os.environ",
+            {"AEGIS_NEO4J_URI": self.mock_uri,
+             "AEGIS_NEO4J_USER": self.mock_user,
+             "AEGIS_NEO4J_PASSWORD": self.mock_password},
+        )
+        self.env_patcher.start()
+
+    def tearDown(self) -> None:
+        self.env_patcher.stop()
 
     @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_provider_initialization_success(self, mock_neo4j_lib) -> None:
@@ -64,6 +75,28 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         provider = Neo4jGraphProvider(enabled=False)
         self.assertFalse(provider.enabled)
         self.assertFalse(provider.is_active)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_provider_handles_missing_credentials_gracefully(self) -> None:
+        """Verify that enabling the provider without credentials raises a clear error."""
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", False):
+            provider = Neo4jGraphProvider(enabled=True)
+        
+        self.assertFalse(provider.is_active)
+        self.assertFalse(provider.enabled)
+
+    def test_provider_resolves_env_vars(self) -> None:
+        """Verify that credentials are resolved from environment variables."""
+        with patch.dict("os.environ", {
+            "NEO4J_URI": "bolt://env-test:7687",
+            "NEO4J_USER": "env_user",
+            "NEO4J_PASSWORD": "env_pass",
+        }, clear=True):
+            with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", False):
+                provider = Neo4jGraphProvider(enabled=True)
+                self.assertEqual(provider.uri, "bolt://env-test:7687")
+                self.assertEqual(provider.user, "env_user")
+                self.assertEqual(provider.password, "env_pass")
 
     @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_nodes_edges_count_queries(self, mock_neo4j_lib) -> None:

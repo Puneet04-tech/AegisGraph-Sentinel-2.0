@@ -1,6 +1,7 @@
 """Runtime orchestration primitives for AegisGraph Sentinel."""
 
 from .background_tasks import honeypot_auto_release_loop
+from .events import EventDispatcher, RuntimeEventBus
 from .lifecycle_manager import LifecycleManager
 from .runtime_state import RuntimeState
 from .service_container import ServiceContainer
@@ -21,5 +22,8 @@ __all__ = [
     "RuntimeHealthMonitor",
     "RecoveryManager",
     "RuntimeWatchdog",
+    # Event infrastructure
+    "RuntimeEventBus",
+    "EventDispatcher",
 ]
 

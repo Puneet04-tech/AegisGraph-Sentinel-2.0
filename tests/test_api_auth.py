@@ -111,6 +111,11 @@ _GATED_ENDPOINTS = [
     ("GET", "/api/v1/model/info", None),
 ]
 
+_HONEYPOT_ADMIN_ENDPOINTS = [
+    "/api/v1/honeypot/active",
+    "/api/v1/honeypot/stats",
+]
+
 
 @pytest.mark.parametrize(("method", "path", "body"), _GATED_ENDPOINTS)
 def test_gated_endpoint_rejects_missing_key(
@@ -146,6 +151,42 @@ def test_gated_endpoint_rejects_wrong_key(
     assert response.status_code == 403, (
         f"{method} {path} returned {response.status_code} with a wrong "
         f"X-API-Key; expected 403. Body: {response.text}"
+    )
+
+
+@pytest.mark.parametrize("path", _HONEYPOT_ADMIN_ENDPOINTS)
+def test_honeypot_admin_endpoint_rejects_missing_api_key(
+    client_with_auth_configured: TestClient,
+    path: str,
+) -> None:
+    """Honeypot admin routes still require the primary API key gate."""
+    response = client_with_auth_configured.get(
+        path,
+        headers={"X-Honeypot-Token": "admin-token-is-not-enough"},
+    )
+    assert response.status_code == 401, (
+        f"GET {path} returned {response.status_code} without X-API-Key; "
+        f"expected the primary API-key gate to reject first. Body: {response.text}"
+    )
+
+
+@pytest.mark.parametrize("path", _HONEYPOT_ADMIN_ENDPOINTS)
+def test_honeypot_admin_endpoint_rejects_wrong_api_key(
+    client_with_auth_configured: TestClient,
+    path: str,
+) -> None:
+    """A honeypot token cannot bypass an invalid primary API key."""
+    response = client_with_auth_configured.get(
+        path,
+        headers={
+            "X-API-Key": "this-key-is-not-in-the-allowed-list",
+            "X-Honeypot-Token": "admin-token-is-not-enough",
+        },
+    )
+    assert response.status_code == 403, (
+        f"GET {path} returned {response.status_code} with an invalid "
+        f"X-API-Key; expected 403 before honeypot data is accessed. "
+        f"Body: {response.text}"
     )
 
 

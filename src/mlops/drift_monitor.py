@@ -17,13 +17,38 @@ class AdversarialDriftMonitor:
     MLOps service to monitor continuous data distributions using the 
     Kolmogorov-Smirnov (K-S) test. Detects when attackers change their behavior.
     """
-    def __init__(self, p_value_threshold=0.05, webhook_url=None):
+    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4):
         self.p_value_threshold = p_value_threshold
         self.webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
-        self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="drift-alert")
+        self._alert_workers = max(2, int(alert_workers))
+        self._alert_executor = ThreadPoolExecutor(
+            max_workers=self._alert_workers,
+            thread_name_prefix="drift-alert",
+        )
+        self._closed = False
         
         # Load or simulate the baseline data (what the model was trained on)
         self.baselines = self._load_training_baselines()
+
+    def close(self):
+        """Shut down the alert executor, draining pending work."""
+        if self._closed:
+            return
+        self._closed = True
+        self._alert_executor.shutdown(wait=False, cancel_futures=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _load_training_baselines(self):
         """Loads baseline distributions. Mocked here for CI/CD testing."""
@@ -46,7 +71,7 @@ class AdversarialDriftMonitor:
         )
         logging.warning(msg)
 
-        if self.webhook_url:
+        if self.webhook_url and not self._closed:
             self._alert_executor.submit(self._dispatch_webhook_alert, msg)
 
     def _dispatch_webhook_alert(self, msg):

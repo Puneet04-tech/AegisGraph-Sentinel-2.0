@@ -218,6 +218,46 @@ def test_load_champion_returns_false_when_artifact_missing(tmp_path):
     assert registry.load_champion(model, "cpu") is False
 
 
+def test_load_champion_rejects_path_traversal_in_manifest(tmp_path):
+    from pathlib import Path
+
+    from src.training.storage_backends import StorageBackend
+
+    class RecordingBackend(StorageBackend):
+        def __init__(self):
+            self.load_calls = 0
+
+        def save(self, local_path: Path, artifact_key: str) -> str:
+            return str(local_path)
+
+        def load(self, artifact_key: str, local_path: Path) -> None:
+            self.load_calls += 1
+
+        def exists(self, artifact_key: str) -> bool:
+            return False
+
+    backend = RecordingBackend()
+    registry = ModelRegistry(tmp_path, backend=backend)
+    registry._manifest = {
+        "versions": [
+            {
+                "version_id": "v_epoch_9",
+                "epoch": 9,
+                "stage": "champion",
+                "metrics": {},
+                "saved_at": "2026-01-01T00:00:00Z",
+                "artifact_path": "../escape.pt",
+            }
+        ],
+        "champion_version_id": "v_epoch_9",
+    }
+
+    model = torch.nn.Linear(2, 1)
+
+    assert registry.load_champion(model, "cpu") is False
+    assert backend.load_calls == 0
+
+
 def test_registry_survives_corrupt_manifest(tmp_path):
     manifest_path = tmp_path / "registry_manifest.json"
     manifest_path.write_text("{not valid json", encoding="utf-8")

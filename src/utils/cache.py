@@ -310,14 +310,21 @@ class GraphOperationCache:
         """
         Generate deterministic hash for graph structure.
         
-        Uses sorted edge set to create consistent hash regardless of node order.
+        Uses sorted edge set and edge payloads to create a consistent hash
+        regardless of node order while still invalidating on attribute changes.
         """
+        def edge_payload(u, v):
+            if hasattr(graph, "get_edge_data"):
+                data = graph.get_edge_data(u, v, default={}) or {}
+            else:
+                data = getattr(graph, "_edge_attrs", {}).get((u, v), {})
+            return tuple((key, repr(value)) for key, value in sorted(data.items()))
+
         edges = sorted(
             (
                 u,
                 v,
-                graph[u][v].get("weight"),
-                graph[u][v].get("timestamp"),
+                edge_payload(u, v),
             )
             for u, v in graph.edges()
         )

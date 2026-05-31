@@ -32,10 +32,12 @@ State of Maharashtra vs. Ramesh Kumar, 2026
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import time
 import logging
 from typing import Dict, List, Optional
+from collections import OrderedDict
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from datetime import timezone
@@ -265,7 +267,7 @@ class EvidenceJournal:
         self._path = pathlib.Path(journal_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._records_by_evidence_id: dict[str, dict] = {}
+        self._records_by_evidence_id: OrderedDict = OrderedDict()
         self._latest_block_number = 0
         self._index_loaded = False
         self._cache_mtime_ns = 0
@@ -279,9 +281,9 @@ class EvidenceJournal:
         seed_records: dict[str, dict] | None = None,
         seed_latest_block: int = 0,
         seed_count: int = 0,
-    ) -> tuple[dict[str, dict], int, int, int]:
+    ) -> tuple[OrderedDict, int, int, int]:
         """Load records from disk starting at a byte offset."""
-        records_by_id = dict(seed_records or {})
+        records_by_id = OrderedDict(seed_records or {})
         latest_block = seed_latest_block
         count = seed_count
         with self._path.open("r", encoding="utf-8") as fh:
@@ -383,11 +385,12 @@ class EvidenceJournal:
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
                 self._last_file_pos = fh.tell()
-            self._records_by_evidence_id[record["evidence_id"]] = record
+            eid = record["evidence_id"]
+            self._records_by_evidence_id[eid] = record
+            self._records_by_evidence_id.move_to_end(eid)
             if len(self._records_by_evidence_id) > 10000:
-                keys_to_remove = list(self._records_by_evidence_id.keys())[:1000]
-                for k in keys_to_remove:
-                    del self._records_by_evidence_id[k]
+                for _ in range(1000):
+                    self._records_by_evidence_id.popitem(last=False)
             self._latest_block_number = max(self._latest_block_number, int(record.get("block_number", 0)))
             self._record_count += 1
             self._index_loaded = True
@@ -409,7 +412,10 @@ class EvidenceJournal:
         """Load one evidence record from the journal by ID."""
         self._ensure_index_loaded()
         with self._lock:
-            return self._records_by_evidence_id.get(evidence_id)
+            record = self._records_by_evidence_id.get(evidence_id)
+            if record is not None:
+                self._records_by_evidence_id.move_to_end(evidence_id)
+            return record
 
     def latest_block_number(self) -> int:
         """Return the highest block number recorded in the journal."""
@@ -435,6 +441,7 @@ class RedisLedger:
 
     PREFIX = "aegis"
     MAX_EVIDENCE_INDEX_SIZE = 10000
+    BLOCK_METADATA_TTL = 86400
 
     def __init__(self, redis_url: str = None):
         self._client = None
@@ -506,10 +513,9 @@ class RedisLedger:
                 payload,
             )
             if 'block_number' in block:
-                self._client.set(
-                    f"{self.PREFIX}:block:{block['block_number']}",
-                    payload,
-                )
+                key = f"{self.PREFIX}:block:{block['block_number']}"
+                self._client.set(key, payload)
+                self._client.expire(key, self.BLOCK_METADATA_TTL)
         except Exception:
             self._mark_unavailable()
 
@@ -560,7 +566,9 @@ class BlockchainEvidenceManager:
         
         # In-memory evidence ID -> record index, eliminating O(N) chain scans
         self._evidence_index: Dict[str, dict] = {}
+        self._transaction_block_index: Dict[str, dict] = {}
         self._rebuild_evidence_index()
+        self._rebuild_transaction_index()
         
         # Statistics
         self.stats = {
@@ -662,6 +670,26 @@ class BlockchainEvidenceManager:
                         '_storage': 'memory',
                     }
 
+    def _rebuild_transaction_index(self) -> None:
+        """Populate _transaction_block_index from the in-memory chain."""
+        self._transaction_block_index.clear()
+        for block in self.nodes[0].chain:
+            for tx_index, tx in enumerate(block.get('transactions', [])):
+                transaction_hash = tx.get('transaction_hash') or tx.get('tx_hash')
+                transaction_id = tx.get('transaction_id')
+                if transaction_hash:
+                    self._transaction_block_index[transaction_hash] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
+                    }
+                if transaction_id:
+                    self._transaction_block_index[hashlib.sha256(transaction_id.encode()).hexdigest()] = {
+                        'block_number': block['block_number'],
+                        'tx_index': tx_index,
+                        'transaction_id': transaction_id,
+                    }
+
     def _load_evidence_record(self, evidence_id: str) -> Optional[dict]:
         """Load evidence from Redis first, then the append-only journal, then the in-memory index."""
         record = self._redis.load_evidence(evidence_id)
@@ -731,6 +759,41 @@ class BlockchainEvidenceManager:
     def _authorized_validator_ids(self) -> set[str]:
         """Return the trusted validator identities participating in quorum."""
         return {node.node_id for node in self.nodes[1:6] if node.is_validator}
+
+    def _validate_legal_export_authorization(
+        self,
+        requesting_authority: Optional[str],
+        authorization_token: Optional[str],
+    ) -> str:
+        """Validate the caller against the configured legal export token and authority allowlist."""
+        expected_hash = os.getenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH")
+        if not expected_hash:
+            raise RuntimeError("Legal export authorization is not configured")
+
+        if not authorization_token:
+            raise PermissionError("Missing legal export authorization token")
+
+        provided_hash = hashlib.sha256(authorization_token.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(provided_hash, expected_hash):
+            raise PermissionError("Unauthorized legal export request")
+
+        authorized_authority = (requesting_authority or "").strip()
+        if not authorized_authority:
+            raise PermissionError("Missing requesting authority")
+
+        allowlist_raw = os.getenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "")
+        allowed_authorities = {
+            authority.strip().lower()
+            for authority in allowlist_raw.split(",")
+            if authority.strip()
+        }
+        if not allowed_authorities:
+            raise RuntimeError("Legal export authority allowlist is not configured")
+
+        if authorized_authority.lower() not in allowed_authorities:
+            raise PermissionError("Requesting authority is not authorized")
+
+        return authorized_authority
     
     def seal_evidence(
         self,
@@ -883,6 +946,11 @@ class BlockchainEvidenceManager:
                     'consensus_timestamp': block['timestamp'],
                     'finality_time_ms': consensus_time,
                     '_storage': 'memory',
+                }
+                self._transaction_block_index[transaction_hash] = {
+                    'block_number': block['block_number'],
+                    'tx_index': 0,
+                    'transaction_id': transaction_id,
                 }
                 self._journal.append(evidence)
                 self._redis.save_evidence(evidence)
@@ -1051,6 +1119,11 @@ class BlockchainEvidenceManager:
         Returns:
             Dictionary with evidence and verification proof
         """
+        authorized_authority = self._validate_legal_export_authorization(
+            requesting_authority=requesting_authority,
+            authorization_token=authorization_token,
+        )
+
         evidence = self._load_evidence_record(evidence_id)
         if not evidence:
             return {'error': 'Evidence not found'}
@@ -1091,7 +1164,7 @@ class BlockchainEvidenceManager:
             {
                 'event': 'legal_export_generated',
                 'timestamp': export_timestamp,
-                'actor': requesting_authority or 'authorized_requestor',
+                'actor': authorized_authority,
                 'details': f"Case {case_number}",
             }
         )
@@ -1111,7 +1184,7 @@ class BlockchainEvidenceManager:
             },
             'chain_verification': verification,
             'authorization': {
-                'requesting_authority': requesting_authority,
+                'requesting_authority': authorized_authority,
                 'authorization_token_hash': (
                     hashlib.sha256(authorization_token.encode()).hexdigest()[:16]
                     if authorization_token
@@ -1130,7 +1203,7 @@ class BlockchainEvidenceManager:
             'chain_of_custody': chain_of_custody,
             'attestations': attestations,
             'export_timestamp': export_timestamp,
-            'authorized_by': requesting_authority or 'UNKNOWN',
+            'authorized_by': authorized_authority,
         }
     
     def store_evidence(
@@ -1397,30 +1470,27 @@ class BlockchainEvidenceManager:
                 return False
             
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-            
-            # Find blocks containing this transaction
-            for node in self.nodes:
-                for i, block in enumerate(node.chain):
-                    for tx in block.get('transactions', []):
-                        if tx.get('transaction_id') == transaction_id or \
-                           tx.get('transaction_hash') == transaction_hash:
-                            # Verify block chain
-                            if i > 0:
-                                prev_block = node.chain[i-1]
-                                if block['previous_hash'] != prev_block['hash']:
-                                    return False
-                            
-                            # Verify block hash
-                            expected_hash = node._compute_hash(
-                                f"block_{block['block_number']}",
-                                block['previous_hash'],
-                                block.get('transactions', []),
-                                block['timestamp'],
-                            )
-                            if block['hash'] != expected_hash:
-                                return False
-            
-            return True
+            block_ref = self._transaction_block_index.get(transaction_hash)
+            if block_ref is None:
+                return False
+
+            block_number = block_ref['block_number']
+            block = self.nodes[0].get_block(block_number)
+            if not block:
+                return False
+
+            if block_number > 0:
+                prev_block = self.nodes[0].get_block(block_number - 1)
+                if not prev_block or block['previous_hash'] != prev_block['hash']:
+                    return False
+
+            expected_hash = self.nodes[0]._compute_hash(
+                f"block_{block['block_number']}",
+                block['previous_hash'],
+                block.get('transactions', []),
+                block['timestamp'],
+            )
+            return block['hash'] == expected_hash
             
         except Exception:
             return False

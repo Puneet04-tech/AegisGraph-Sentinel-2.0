@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import OrderedDict
 from typing import List, Optional, Tuple
@@ -25,20 +26,26 @@ class Neo4jGraphProvider:
     
     Provides thread-safe pool-based connections, Cypher transaction queries,
     and highly performant local subgraph extraction parsed directly into NetworkX.
+    
+    Credentials are resolved in the following order:
+      1. Explicit constructor arguments
+      2. Environment variables (AEGIS_NEO4J_URI / NEO4J_URI, etc.)
+      3. Raises ValueError if neither is provided
     """
 
     def __init__(
         self,
-        uri: str = "bolt://localhost:7687",
-        user: str = "neo4j",
-        password: str = "password",
+        uri: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
         enabled: bool = True,
         cache_ttl_seconds: int = 60,
         cache_max_entries: int = 1024,
     ) -> None:
-        self.uri = uri
-        self.user = user
-        self.password = password
+        self.uri = uri or os.getenv("AEGIS_NEO4J_URI") or os.getenv("NEO4J_URI")
+        self.user = user or os.getenv("AEGIS_NEO4J_USER") or os.getenv("NEO4J_USER")
+        self.password = password or os.getenv("AEGIS_NEO4J_PASSWORD") or os.getenv("NEO4J_PASSWORD")
+
         self.enabled = enabled and NEO4J_AVAILABLE
         self.cache_ttl_seconds = cache_ttl_seconds
         self.cache_max_entries = cache_max_entries
@@ -56,6 +63,14 @@ class Neo4jGraphProvider:
             self.enabled = False
 
         if self.enabled:
+            if not self.uri or not self.user or not self.password:
+                raise ValueError(
+                    "Neo4j credentials are required. Either pass them explicitly to "
+                    "Neo4jGraphProvider() or set the AEGIS_NEO4J_URI, AEGIS_NEO4J_USER, "
+                    "and AEGIS_NEO4J_PASSWORD environment variables "
+                    "(or NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD as fallback)."
+                )
+
             try:
                 self._driver = neo4j.GraphDatabase.driver(
                     self.uri,

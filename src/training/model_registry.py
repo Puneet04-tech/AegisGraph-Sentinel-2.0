@@ -25,6 +25,7 @@ class ModelRegistry:
         self,
         registry_dir: Union[str, Path],
         backend: Optional[StorageBackend] = None,
+        max_history: int = 50,
     ):
         """Initialise the registry directory and load its manifest."""
         self.registry_dir = Path(registry_dir)
@@ -32,6 +33,7 @@ class ModelRegistry:
         self.backend = backend or LocalBackend(self.registry_dir)
         self.manifest_path = self.registry_dir / "registry_manifest.json"
         self._manifest_lock = threading.RLock()
+        self._max_history = max_history
         self._manifest = self._load_manifest()
 
     def save_version(self, epoch: int, checkpoint: dict, metrics: dict) -> str:
@@ -54,9 +56,11 @@ class ModelRegistry:
             "artifact_path": artifact_name,
         }
         with self._manifest_lock:
-            manifest = self._load_manifest()
-            manifest["versions"].append(entry)
-            self._manifest = manifest
+            self._manifest = self._load_manifest()  # Refresh manifest to avoid overwriting concurrent updates
+            self._manifest["versions"].append(entry)
+            versions = self._manifest["versions"]
+            if len(versions) > self._max_history:
+                self._manifest["versions"] = versions[-self._max_history:]
             self._write_manifest()
         return version_id
 
@@ -97,7 +101,12 @@ class ModelRegistry:
             )
             return False
 
-        artifact_path = self.registry_dir / Path(entry["artifact_path"])
+        try:
+            artifact_path = self._resolve_registry_artifact_path(entry["artifact_path"])
+        except ValueError as exc:
+            logger.warning("Refusing champion artifact outside registry_dir: %s", exc)
+            return False
+
         if not artifact_path.exists():
             try:
                 self.backend.load(entry["artifact_path"], artifact_path)
@@ -184,3 +193,13 @@ class ModelRegistry:
             if isinstance(entry, dict) and entry.get("version_id") == version_id:
                 return entry
         return None
+
+    def _resolve_registry_artifact_path(self, artifact_name: str) -> Path:
+        """Resolve a manifest artifact path and ensure it stays inside the registry directory."""
+        registry_root = self.registry_dir.resolve()
+        artifact_path = (registry_root / Path(artifact_name)).resolve()
+        if not artifact_path.is_relative_to(registry_root):
+            raise ValueError(
+                f"Invalid artifact_path {artifact_name} outside of registry_dir {self.registry_dir}"
+            )
+        return artifact_path

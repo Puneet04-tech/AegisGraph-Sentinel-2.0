@@ -63,6 +63,35 @@ class TestKeystrokeDynamics:
         # Stressed typing should have higher stress score
         assert features['stress_score'] > 0.3
 
+    def test_analyze_does_not_reiterate_raw_events(self):
+        """Test analyze() reuses extracted interval metrics instead of rescanning input."""
+        analyzer = KeystrokeDynamicsAnalyzer()
+
+        class OneShotEvents:
+            def __init__(self, payload):
+                self._payload = payload
+                self._consumed = False
+
+            def __iter__(self):
+                if self._consumed:
+                    raise AssertionError("analyze() should not iterate raw events twice")
+                self._consumed = True
+                return iter(self._payload)
+
+        events = OneShotEvents([
+            {'key': 'a', 'timestamp': 0.0, 'event_type': 'keydown'},
+            {'key': 'a', 'timestamp': 0.1, 'event_type': 'keyup'},
+            {'key': 'b', 'timestamp': 0.15, 'event_type': 'keydown'},
+            {'key': 'b', 'timestamp': 0.25, 'event_type': 'keyup'},
+            {'key': 'c', 'timestamp': 0.3, 'event_type': 'keydown'},
+            {'key': 'c', 'timestamp': 0.4, 'event_type': 'keyup'},
+        ])
+
+        features = analyzer.analyze(events)
+
+        assert 'timestamp_interval_cv' in features
+        assert features['stress_score'] >= 0
+
 
 class TestVelocityCalculator:
     """Test transaction velocity calculator"""
@@ -194,6 +223,27 @@ class TestGraphEntropyCalculator:
         # Mule should have high entropy due to many diverse neighbors
         assert entropy > 0
 
+    def test_structural_entropy_counts_neighbor_edges_without_pairwise_scan(self):
+        """Test structural entropy uses induced neighbor edge counting."""
+        import networkx as nx
+
+        calculator = GraphEntropyCalculator()
+        graph = nx.Graph()
+        graph.add_edges_from([
+            ('A', 'B'),
+            ('A', 'C'),
+            ('A', 'D'),
+            ('B', 'C'),
+            ('C', 'D'),
+        ])
+
+        neighbor_set = {'B', 'C', 'D'}
+        assert calculator._count_edges_between_neighbors(graph, neighbor_set) == 2
+
+        structural = calculator.compute_structural_entropy('A', graph)
+        assert structural['clustering_coefficient'] > 0
+        assert structural['structural_entropy'] > 0
+
 
 class TestFeatureIntegration:
     """Test integration of multiple features"""
@@ -229,6 +279,24 @@ class TestFeatureIntegration:
         assert isinstance(biometrics, dict)
         assert isinstance(kinetic_energy, float)
         assert isinstance(entropy, float)
+
+    def test_k_hop_neighbors_avoids_revisiting_cycle_nodes(self):
+        """Test k-hop expansion stops revisiting nodes in a cycle."""
+        import networkx as nx
+
+        entropy_calculator = GraphEntropyCalculator()
+        graph = nx.Graph()
+        graph.add_edges_from([
+            ('A', 'B'),
+            ('B', 'C'),
+            ('C', 'A'),
+            ('C', 'D'),
+        ])
+
+        neighbors = entropy_calculator._get_k_hop_neighbors('A', graph, 3)
+
+        assert neighbors == {'B', 'C', 'D'}
+        assert len(neighbors) == 3
 
 
 class TestPredictiveMuleCache:

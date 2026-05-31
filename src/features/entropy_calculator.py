@@ -236,7 +236,7 @@ class GraphEntropyCalculator:
             Dictionary with structural entropy metrics
         """
         try:
-            neighbors = set(graph.neighbors(node))
+            neighbors = self._get_neighbors(graph, node)
             
             if len(neighbors) < 2:
                 return {
@@ -246,24 +246,26 @@ class GraphEntropyCalculator:
                 }
             
             # Clustering coefficient (how connected are neighbors)
-            clustering = nx.clustering(graph, node)
-            
+            clustering_fn = getattr(nx, "clustering", None)
+            if callable(clustering_fn):
+                clustering = clustering_fn(graph, node)
+            else:
+                clustering = self._estimate_clustering_from_edge_density(neighbors, graph)
+
             # Local efficiency
             subgraph = graph.subgraph([node] + list(neighbors))
-            try:
-                local_eff = nx.local_efficiency(subgraph)
-            except Exception as e:
-                logger.error(f"Error: {e}")
+            local_eff_fn = getattr(nx, "local_efficiency", None)
+            if callable(local_eff_fn):
+                try:
+                    local_eff = local_eff_fn(subgraph)
+                except Exception as e:
+                    logger.error(f"Error: {e}")
+                    local_eff = 0.0
+            else:
                 local_eff = 0.0
-            
+
             # Structural entropy based on edge distribution
-            # Count edges between neighbors
-            edges_between_neighbors = 0
-            for n1 in neighbors:
-                for n2 in neighbors:
-                    if n1 != n2 and graph.has_edge(n1, n2):
-                        edges_between_neighbors += 1
-            edges_between_neighbors //= 2  # Undirected graph
+            edges_between_neighbors = self._count_edges_between_neighbors(graph, neighbors)
             
             # Maximum possible edges
             max_edges = len(neighbors) * (len(neighbors) - 1) // 2
@@ -285,12 +287,48 @@ class GraphEntropyCalculator:
                 'structural_entropy': structural_entropy,
             }
         
-        except nx.NetworkXError:
+        except getattr(nx, "NetworkXError", Exception):
             return {
                 'clustering_coefficient': 0.0,
                 'local_efficiency': 0.0,
                 'structural_entropy': 0.0,
             }
+
+    def _count_edges_between_neighbors(
+        self,
+        graph: nx.Graph,
+        neighbors: Set[str],
+    ) -> int:
+        """Count unique edges inside the induced neighbor subgraph."""
+        if len(neighbors) < 2:
+            return 0
+
+        edge_pairs = set()
+        subgraph = graph.subgraph(list(neighbors))
+        for u, v in subgraph.edges():
+            if u == v:
+                continue
+            edge_pairs.add(tuple(sorted((u, v))))
+        return len(edge_pairs)
+
+    def _get_neighbors(self, graph: nx.Graph, node: str) -> Set[str]:
+        """Return neighbors for real NetworkX graphs and lightweight test stubs."""
+        if hasattr(graph, "neighbors"):
+            return set(graph.neighbors(node))
+        if hasattr(graph, "successors"):
+            return set(graph.successors(node))
+        return set()
+
+    def _estimate_clustering_from_edge_density(
+        self,
+        neighbors: Set[str],
+        graph: nx.Graph,
+    ) -> float:
+        """Fallback clustering estimate for lightweight graph stubs."""
+        max_edges = len(neighbors) * (len(neighbors) - 1) // 2
+        if max_edges <= 0:
+            return 0.0
+        return self._count_edges_between_neighbors(graph, neighbors) / max_edges
     
     def compute_transaction_amount_entropy(
         self,
@@ -396,15 +434,32 @@ class GraphEntropyCalculator:
             return {node}
         
         neighbors = set()
+        visited = {node}
         current_layer = {node}
         
         for _ in range(k):
             next_layer = set()
             for n in current_layer:
-                if graph.has_node(n):
-                    next_layer.update(graph.neighbors(n))
+                has_node = False
+                if hasattr(graph, "has_node"):
+                    has_node = graph.has_node(n)
+                else:
+                    has_node = n in graph.nodes()
+
+                if has_node:
+                    if hasattr(graph, "neighbors"):
+                        neighbor_iter = graph.neighbors(n)
+                    else:
+                        neighbor_iter = graph.successors(n)
+
+                    for neighbor in neighbor_iter:
+                        if neighbor not in visited:
+                            next_layer.add(neighbor)
+                            visited.add(neighbor)
             neighbors.update(next_layer)
             current_layer = next_layer
+            if not current_layer:
+                break
         
         return neighbors
 

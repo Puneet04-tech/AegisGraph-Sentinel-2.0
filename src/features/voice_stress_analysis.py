@@ -116,15 +116,17 @@ class VoiceStressAnalyzer:
 
         # Normalize
         audio = audio / (np.max(np.abs(audio)) + 1e-8)
-        
-        # Extract features
-        f0_mean, f0_std, f0_range = self._extract_pitch_features(audio, sr)
-        jitter = self._compute_jitter(audio, sr, f0_mean)
-        shimmer = self._compute_shimmer(audio, sr)
-        speech_rate = self._estimate_speech_rate(audio, sr)
-        prosody_entropy = self._compute_prosody_entropy(audio, sr)
-        snr = self._compute_snr(audio)
-        background_voices = self._detect_multiple_speakers(audio, sr)
+
+        audio_profile = self._prepare_audio_profile(audio, sr)
+
+        # Extract features from shared precomputed audio statistics.
+        f0_mean, f0_std, f0_range = self._extract_pitch_features(audio, sr, audio_profile)
+        jitter = self._compute_jitter(audio, sr, f0_mean, audio_profile)
+        shimmer = self._compute_shimmer(audio, sr, audio_profile)
+        speech_rate = self._estimate_speech_rate(audio, sr, audio_profile)
+        prosody_entropy = self._compute_prosody_entropy(audio, sr, audio_profile)
+        snr = self._compute_snr(audio, audio_profile)
+        background_voices = self._detect_multiple_speakers(audio, sr, audio_profile)
         
         return VoiceFeatures(
             f0_mean=f0_mean,
@@ -137,6 +139,53 @@ class VoiceStressAnalyzer:
             snr=snr,
             background_voices=background_voices,
         )
+
+    def _prepare_audio_profile(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+        """Precompute reusable clip statistics so feature extractors do one shared pass."""
+        frame_length = max(int(0.03 * sr), 1)
+        hop_length = max(frame_length // 2, 1)
+
+        frame_amplitudes = []
+        frame_energies = []
+        period_lengths = []
+
+        if len(audio) >= frame_length:
+            for start in range(0, len(audio) - frame_length + 1, hop_length):
+                frame = audio[start:start + frame_length]
+                frame_amplitudes.append(np.max(np.abs(frame)))
+                frame_energies.append(np.mean(frame ** 2))
+
+                crossings = np.where(np.diff(np.sign(frame)))[0]
+                if len(crossings) >= 2:
+                    period_lengths.append(crossings[1] - crossings[0])
+
+        envelope = np.abs(signal.hilbert(audio))
+        window_size = max(int(0.02 * sr), 1)
+        smooth_kernel = np.ones(window_size) / window_size
+        envelope_smooth = np.convolve(envelope, smooth_kernel, mode='same')
+        peaks, _ = signal.find_peaks(
+            envelope_smooth,
+            distance=max(int(0.1 * sr), 1),
+            prominence=0.1,
+        )
+
+        f0_contour = librosa.yin(
+            audio,
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7'),
+            sr=sr,
+        )
+        mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+
+        return {
+            "frame_amplitudes": np.asarray(frame_amplitudes),
+            "frame_energies": np.asarray(frame_energies),
+            "period_lengths": np.asarray(period_lengths),
+            "envelope_smooth": envelope_smooth,
+            "peaks": peaks,
+            "f0_contour": f0_contour,
+            "mfccs": mfccs,
+        }
     
     def detect_stress(
         self,
@@ -229,11 +278,12 @@ class VoiceStressAnalyzer:
         self,
         audio: np.ndarray,
         sr: int,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[float, float, float]:
         """Extract fundamental frequency (F0) statistics"""
         try:
-            # Use librosa for pitch tracking
-            f0 = librosa.yin(
+            # Reuse the shared F0 contour when available to avoid rescanning the clip.
+            f0 = audio_profile["f0_contour"] if audio_profile and "f0_contour" in audio_profile else librosa.yin(
                 audio,
                 fmin=librosa.note_to_hz('C2'),
                 fmax=librosa.note_to_hz('C7'),
@@ -260,25 +310,19 @@ class VoiceStressAnalyzer:
         audio: np.ndarray,
         sr: int,
         f0_mean: float,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> float:
         """
         Compute jitter (cycle-to-cycle pitch variation)
         Jitter > 1% indicates vocal tension
         """
         try:
-            # Estimate period length
-            period = int(sr / f0_mean)
-            
-            # Extract periods
-            periods_lengths = []
-            for i in range(0, len(audio) - 2 * period, period):
-                segment = audio[i:i + 2 * period]
-                # Find zero crossings
-                zc = np.where(np.diff(np.sign(segment)))[0]
-                if len(zc) >= 2:
-                    period_length = zc[1] - zc[0]
-                    periods_lengths.append(period_length)
-            
+            periods_lengths = (
+                audio_profile["period_lengths"]
+                if audio_profile and "period_lengths" in audio_profile
+                else np.asarray([])
+            )
+
             if len(periods_lengths) > 1:
                 # Jitter as mean absolute difference between consecutive periods
                 diffs = np.abs(np.diff(periods_lengths))
@@ -294,23 +338,18 @@ class VoiceStressAnalyzer:
         self,
         audio: np.ndarray,
         sr: int,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> float:
         """
         Compute shimmer (amplitude perturbation)
         Measures variability in peak amplitude
         """
         try:
-            # Frame-based amplitude extraction
-            frame_length = int(0.03 * sr)  # 30ms frames
-            hop_length = frame_length // 2
-            
-            amplitudes = []
-            for i in range(0, len(audio) - frame_length, hop_length):
-                frame = audio[i:i + frame_length]
-                amp = np.max(np.abs(frame))
-                amplitudes.append(amp)
-            
-            amplitudes = np.array(amplitudes)
+            amplitudes = (
+                audio_profile["frame_amplitudes"]
+                if audio_profile and "frame_amplitudes" in audio_profile
+                else np.asarray([])
+            )
             
             if len(amplitudes) > 1:
                 # Shimmer as mean absolute difference
@@ -327,25 +366,14 @@ class VoiceStressAnalyzer:
         self,
         audio: np.ndarray,
         sr: int,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> float:
         """
         Estimate speech rate (syllables per second)
         Uses envelope peaks as proxy for syllables
         """
         try:
-            # Compute envelope
-            envelope = np.abs(signal.hilbert(audio))
-            
-            # Smooth envelope
-            window_size = int(0.02 * sr)  # 20ms
-            envelope_smooth = np.convolve(envelope, np.ones(window_size)/window_size, mode='same')
-            
-            # Find peaks (syllable nuclei)
-            peaks, _ = signal.find_peaks(
-                envelope_smooth,
-                distance=int(0.1 * sr),  # Min 100ms between syllables
-                prominence=0.1,
-            )
+            peaks = audio_profile["peaks"] if audio_profile and "peaks" in audio_profile else np.asarray([])
             
             duration = len(audio) / sr
             syllables_per_sec = len(peaks) / duration
@@ -359,14 +387,15 @@ class VoiceStressAnalyzer:
         self,
         audio: np.ndarray,
         sr: int,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> float:
         """
         Compute prosody entropy (intonation variability)
         Low entropy = monotone/coached speech
         """
         try:
-            # Extract F0 contour
-            f0 = librosa.yin(audio, fmin=50, fmax=400, sr=sr)
+            # Reuse the shared F0 contour when available to avoid rescanning the clip.
+            f0 = audio_profile["f0_contour"] if audio_profile and "f0_contour" in audio_profile else librosa.yin(audio, fmin=50, fmax=400, sr=sr)
             f0_voiced = f0[~np.isnan(f0)]
             
             if len(f0_voiced) < 10:
@@ -385,23 +414,29 @@ class VoiceStressAnalyzer:
             logger.error(f"Error: {e}")
             return 3.0
     
-    def _compute_snr(self, audio: np.ndarray) -> float:
+    def _compute_snr(
+        self,
+        audio: np.ndarray,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
+    ) -> float:
         """
         Compute signal-to-noise ratio (dB)
         Low SNR suggests noisy environment
         """
         try:
-            # Simple energy-based SNR
             signal_power = np.mean(audio ** 2)
-            
-            # Estimate noise from quiet segments (bottom 10% energy)
-            frame_length = len(audio) // 100
-            frame_energies = []
-            for i in range(0, len(audio) - frame_length, frame_length):
-                frame = audio[i:i + frame_length]
-                energy = np.mean(frame ** 2)
-                frame_energies.append(energy)
-            
+            frame_energies = (
+                audio_profile["frame_energies"]
+                if audio_profile and "frame_energies" in audio_profile
+                else np.asarray([])
+            )
+            if len(frame_energies) == 0:
+                frame_length = max(len(audio) // 100, 1)
+                frame_energies = np.array([
+                    np.mean(audio[i:i + frame_length] ** 2)
+                    for i in range(0, len(audio) - frame_length + 1, frame_length)
+                ])
+
             noise_power = np.percentile(frame_energies, 10)
             
             snr = 10 * np.log10((signal_power / (noise_power + 1e-10)))
@@ -414,14 +449,14 @@ class VoiceStressAnalyzer:
         self,
         audio: np.ndarray,
         sr: int,
+        audio_profile: Optional[Dict[str, np.ndarray]] = None,
     ) -> int:
         """
         Detect multiple speakers (call center indicator)
         Uses spectral clustering on voice characteristics
         """
         try:
-            # Extract MFCCs for speaker characterization
-            mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+            mfccs = audio_profile["mfccs"] if audio_profile and "mfccs" in audio_profile else librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
             
             # Simple heuristic: check spectral variation
             spectral_variance = np.var(mfccs, axis=1)
