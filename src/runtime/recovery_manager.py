@@ -6,24 +6,32 @@ import inspect
 from typing import Any, Callable, Dict, Optional
 
 from ..observability import get_logger
+from .events.event_types import RecoveryTriggeredEvent
 from .health_monitor import RuntimeHealthMonitor
 
 _logger = get_logger("runtime.recovery")
 
 
 class RecoveryManager:
+    """Manages service recovery actions and prevents infinite restart loops."""
+
     def get_registered_names(self) -> list[str]:
         """Return a list of service names that have registered recovery callbacks.
         This provides a public way to discover registered services without exposing the private _callbacks dict.
         """
         return list(self._callbacks.keys())
-    """Manages service recovery actions and prevents infinite restart loops."""
 
-    def __init__(self, health_monitor: RuntimeHealthMonitor, logger: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        health_monitor: RuntimeHealthMonitor,
+        logger: Optional[Any] = None,
+        dispatcher: Optional[Any] = None,
+    ) -> None:
         self.health_monitor = health_monitor
         self._callbacks: Dict[str, Callable[[], Any]] = {}
         self._max_attempts: Dict[str, int] = {}
         self._logger = logger or _logger
+        self._dispatcher = dispatcher  # Optional[EventDispatcher]
 
     def register_recovery_callback(self, name: str, callback: Callable[[], Any], max_attempts: int = 3) -> None:
         """Register a recovery/restart callback for a service."""
@@ -85,6 +93,19 @@ class RecoveryManager:
             },
         )
 
+        # Emit RecoveryTriggeredEvent before spawning the callback task.
+        if self._dispatcher is not None:
+            self._dispatcher.dispatch(
+                RecoveryTriggeredEvent(
+                    source="recovery_manager",
+                    payload={
+                        "service": name,
+                        "attempt": new_attempt_count,
+                        "max_attempts": max_attempts,
+                    },
+                )
+            )
+
         import asyncio
 
         async def run_callback_safely():
@@ -105,11 +126,5 @@ class RecoveryManager:
                 )
                 self.health_monitor.mark_failed(name, error=f"Recovery failed: {exc}")
 
-       
-        asyncio.create_task(run_callback_safely())
+        await run_callback_safely()
         return True
-      
-
-
-
-        

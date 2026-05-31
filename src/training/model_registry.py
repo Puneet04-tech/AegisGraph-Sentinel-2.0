@@ -56,6 +56,7 @@ class ModelRegistry:
             "artifact_path": artifact_name,
         }
         with self._manifest_lock:
+            self._manifest = self._load_manifest()  # Refresh manifest to avoid overwriting concurrent updates
             self._manifest["versions"].append(entry)
             versions = self._manifest["versions"]
             if len(versions) > self._max_history:

@@ -7,6 +7,7 @@ import time
 from typing import Any, Optional
 
 from ..observability import get_logger
+from .events.event_types import WatchdogAlertEvent
 from .health_monitor import RuntimeHealthMonitor
 from .recovery_manager import RecoveryManager
 from .task_registry import TaskRegistry
@@ -24,6 +25,7 @@ class RuntimeWatchdog:
         recovery_manager: Optional[RecoveryManager] = None,
         heartbeat_timeout_seconds: float = 30.0,
         logger: Optional[Any] = None,
+        dispatcher: Optional[Any] = None,
     ) -> None:
         self.health_monitor = health_monitor
         self.task_registry = task_registry
@@ -31,6 +33,7 @@ class RuntimeWatchdog:
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self._logger = logger or _logger
         self._watchdog_task: Optional[asyncio.Task] = None
+        self._dispatcher = dispatcher  # Optional[EventDispatcher]
 
     async def start(self, interval_seconds: float = 10.0) -> None:
         """Start the periodic watchdog loop."""
@@ -93,6 +96,17 @@ class RuntimeWatchdog:
                         error=f"Stale heartbeat: no response in {elapsed:.1f} seconds"
                     )
                     failed_services.add(name)
+                    if self._dispatcher is not None:
+                        self._dispatcher.dispatch(
+                            WatchdogAlertEvent(
+                                source="watchdog",
+                                payload={
+                                    "alert_type": "stale_heartbeat",
+                                    "target": name,
+                                    "elapsed_seconds": elapsed,
+                                },
+                            )
+                        )
                     if self.recovery_manager:
                         stale_coros.append(self.recovery_manager.handle_failure(name))
         if stale_coros:
@@ -122,6 +136,16 @@ class RuntimeWatchdog:
                             name,
                             error="Dead task: background task has stopped running"
                         )
+                        if self._dispatcher is not None:
+                            self._dispatcher.dispatch(
+                                WatchdogAlertEvent(
+                                    source="watchdog",
+                                    payload={
+                                        "alert_type": "dead_task",
+                                        "target": name,
+                                    },
+                                )
+                            )
                         recovery_coros.append(self.recovery_manager.handle_failure(name))
         # Await all recovery callbacks concurrently
         if recovery_coros:

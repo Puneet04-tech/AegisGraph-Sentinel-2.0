@@ -152,11 +152,11 @@ class TestGraphOperationCache:
         """Test that weighted edge changes invalidate the graph hash."""
         G1 = nx.DiGraph()
         G1.add_weighted_edges_from([("A", "B", 1.0)])
-        G1._edge_attrs[("A", "B")]["timestamp"] = 100.0
+        G1["A"]["B"]["timestamp"] = 100.0
 
         G2 = nx.DiGraph()
         G2.add_weighted_edges_from([("A", "B", 2.0)])
-        G2._edge_attrs[("A", "B")]["timestamp"] = 100.0
+        G2["A"]["B"]["timestamp"] = 100.0
 
         hash1 = GraphOperationCache._hash_graph(G1)
         hash2 = GraphOperationCache._hash_graph(G2)
@@ -166,13 +166,13 @@ class TestGraphOperationCache:
         """Test that non-weight edge metadata also invalidates the graph hash."""
         G1 = nx.DiGraph()
         G1.add_weighted_edges_from([("A", "B", 1.0)])
-        G1._edge_attrs[("A", "B")]["timestamp"] = 100.0
-        G1._edge_attrs[("A", "B")]["channel"] = "card"
+        G1["A"]["B"]["timestamp"] = 100.0
+        G1["A"]["B"]["channel"] = "card"
 
         G2 = nx.DiGraph()
         G2.add_weighted_edges_from([("A", "B", 1.0)])
-        G2._edge_attrs[("A", "B")]["timestamp"] = 100.0
-        G2._edge_attrs[("A", "B")]["channel"] = "wire"
+        G2["A"]["B"]["timestamp"] = 100.0
+        G2["A"]["B"]["channel"] = "wire"
 
         hash1 = GraphOperationCache._hash_graph(G1)
         hash2 = GraphOperationCache._hash_graph(G2)
