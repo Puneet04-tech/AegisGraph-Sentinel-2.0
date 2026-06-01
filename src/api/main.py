@@ -2258,7 +2258,7 @@ if settings.runtime.debug:
         except Exception as e:
             _raise_internal_server_error("Debug honeypot activation", e)
 
-@app.websocket("/api/v1/fraud/stream/{client_id}")
+@app.websocket("/api/v1/fraud/stream/{client_id}", dependencies=[Depends(require_api_key)])
 async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     """
     Realtime fraud monitoring stream.
