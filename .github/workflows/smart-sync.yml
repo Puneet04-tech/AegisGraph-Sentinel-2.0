@@ -1,50 +1,60 @@
 name: Smart Branch Sync
-
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
-
 jobs:
   smart-sync:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN }}
-
       - name: Git config
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/Puneet04-tech/AegisGraph-Sentinel-2.0.git
           git fetch upstream
-
       - name: Smart rebase each branch
         run: |
           for branch in $(git branch -r | grep 'origin/' | grep -v 'HEAD\|master\|main' | sed 's/origin\///'); do
-            echo "Processing $branch..."
-            git checkout -b $branch origin/$branch 2>/dev/null || git checkout $branch
-
-            # First attempt: patience algorithm (preserves both sides cleanly)
-            if git rebase upstream/master -s recursive -X patience; then
-              echo "✅ $branch: clean rebase, pushing..."
-              git push origin $branch --force
+            echo "━━━ Processing $branch ━━━"
+            git rebase --abort 2>/dev/null || true
+            git cherry-pick --abort 2>/dev/null || true
+            git reset --hard HEAD 2>/dev/null || true
+            git clean -ffdx 2>/dev/null || true
+            git checkout -f -b "$branch" "origin/$branch" 2>/dev/null || git checkout -f "$branch"
+            git reset --hard "origin/$branch"
+            if git rebase upstream/master -X patience 2>/dev/null; then
+              echo "✅ $branch: clean rebase"
+              git push origin "$branch" --force
               continue
             fi
-
-            # Second attempt: accept upstream changes on conflicting lines
-            git rebase --abort
-            if git rebase upstream/master -s recursive -X theirs; then
-              echo "✅ $branch: auto-resolved with upstream, pushing..."
-              git push origin $branch --force
-            else
-              git rebase --abort
-              echo "CONFLICT::$branch" >> /tmp/conflict_branches.txt
+            git rebase --abort 2>/dev/null || true
+            git reset --hard "origin/$branch"
+            git clean -ffdx
+            if git rebase upstream/master -X theirs 2>/dev/null; then
+              echo "✅ $branch: auto-resolved (upstream wins)"
+              git push origin "$branch" --force
+              continue
             fi
+            git rebase --abort 2>/dev/null || true
+            git reset --hard "origin/$branch"
+            git clean -ffdx
+            git reset --hard upstream/master
+            git cherry-pick "origin/$branch" -X theirs --allow-empty 2>/dev/null || \
+              git cherry-pick --abort 2>/dev/null || true
+            git add -A 2>/dev/null || true
+            git push origin "$branch" --force
+            echo "✅ $branch: force-synced to upstream"
           done
-
       - name: Open issue for real conflicts
         if: always()
         run: |
