@@ -57,7 +57,6 @@ except ImportError as e:
         def limit(self, *args, **kwargs):
             def decorator(func):
                 return func
-
             return decorator
 
     class SlowAPIMiddleware:
@@ -67,7 +66,17 @@ except ImportError as e:
         async def __call__(self, scope, receive, send):
             await self.app(scope, receive, send)
 
-    def get_remote_address(request):
+    def get_remote_address(request) -> str:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            ips = [ip.strip() for ip in forwarded_for.split(",")]
+            if ips and ips[0]:
+                return ips[0]
+
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip and real_ip.strip():
+            return real_ip.strip()
+
         client = getattr(request, "client", None)
         return getattr(client, "host", "unknown")
 
@@ -75,6 +84,8 @@ except ImportError as e:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
     print(f"SlowAPI not available ({e}); rate limiting disabled")
+
+
 
 from ..config.settings import get_settings
 from ..config.validation import validate_environment
@@ -2232,7 +2243,7 @@ if settings.runtime.debug:
         except Exception as e:
             _raise_internal_server_error("Debug honeypot activation", e)
 
-@app.websocket("/api/v1/fraud/stream/{client_id}")
+@app.websocket("/api/v1/fraud/stream/{client_id}", dependencies=[Depends(require_api_key)])
 async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     """
     Realtime fraud monitoring stream.

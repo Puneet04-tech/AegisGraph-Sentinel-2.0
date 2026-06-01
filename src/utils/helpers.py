@@ -3,6 +3,8 @@ Helper utilities for AegisGraph Sentinel
 """
 # Working on utility functions for the project
 
+from logging import config
+
 import yaml
 import torch
 import numpy as np
@@ -12,6 +14,42 @@ import logging
 from datetime import datetime
 import functools
 
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails"""
+    pass
+
+
+def validate_dataset_splits(config: dict) -> list:
+    """
+    Validate dataset split configuration.
+    """
+    errors = []
+
+    data_config = config.get("data", {})
+
+    train_split = data_config.get("train_split")
+    val_split = data_config.get("val_split")
+    test_split = data_config.get("test_split")
+
+    if None not in (train_split, val_split, test_split):
+        total = train_split + val_split + test_split
+
+        if abs(total - 1.0) > 1e-6:
+            errors.append(
+                f"Dataset splits must sum to 1.0, got {total}"
+            )
+
+        for name, value in [
+            ("train_split", train_split),
+            ("val_split", val_split),
+            ("test_split", test_split),
+        ]:
+            if value < 0 or value > 1:
+                errors.append(
+                    f"{name} must be between 0 and 1"
+                )
+
+    return errors
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
     """
@@ -29,7 +67,15 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
-    
+
+    errors = validate_dataset_splits(config)
+
+    if errors:
+        raise ConfigValidationError(
+            "Dataset split validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
     return config
 
 
