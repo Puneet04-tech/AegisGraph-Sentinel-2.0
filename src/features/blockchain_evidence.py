@@ -36,9 +36,9 @@ import hmac
 import json
 import time
 import logging
-from typing import Dict, List, Optional
 from collections import OrderedDict
 from dataclasses import dataclass, asdict
+from fastapi import HTTPException
 from datetime import datetime
 from datetime import timezone
 import uuid
@@ -151,13 +151,16 @@ class BlockchainNode:
             timestamp: The block's creation timestamp (must be the same
                 value stored in the block so the hash is reproducible).
         """
-        data = {
-            'block_data': block_data,
-            'previous_hash': previous_hash,
-            'transactions': transactions,
-            'timestamp': timestamp,
-        }
-        return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+        try:
+            data = {
+                'block_data': block_data,
+                'previous_hash': previous_hash,
+                'transactions': transactions,
+                'timestamp': timestamp,
+            }
+            return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+        except TypeError as e:
+            raise HTTPException(status_code=422, detail=f"Cryptographic hash computation failed: {e}")
     
     def add_transaction(self, transaction: Dict) -> str:
         """Add transaction to pending pool"""
@@ -1232,17 +1235,18 @@ class BlockchainEvidenceManager:
         try:
             # Phase 1: Input Validation
             if not transaction_id or not isinstance(transaction_id, str):
-                raise ValueError("transaction_id must be non-empty string")
+                raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
             
             if not data or not isinstance(data, dict):
-                raise ValueError("data must be non-empty dict")
+                raise HTTPException(status_code=422, detail="data must be non-empty dict")
             
             # Validate required fields in data
             required_fields = ['risk_score', 'decision', 'amount']
             missing_fields = [f for f in required_fields if f not in data]
             if missing_fields:
-                raise ValueError(
-                    f"data missing required fields: {', '.join(missing_fields)}"
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"data missing required fields: {', '.join(missing_fields)}"
                 )
             
             # Phase 2: Store in journal
@@ -1338,9 +1342,10 @@ class BlockchainEvidenceManager:
             ValueError: If transaction_id is invalid
         """
         if not transaction_id or not isinstance(transaction_id, str):
-            raise ValueError("transaction_id must be non-empty string")
+            raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
 
-        transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+        try:
+            transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
         chain_data = {
             'transaction_id': transaction_id,
             'transaction_hash': transaction_hash,
