@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN }}
       - name: Install dependencies
-        run: pip install groq requests
+        run: python -m pip install groq requests
       - name: Run AI CI Fixer
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
