@@ -216,6 +216,29 @@ def test_gated_endpoint_accepts_valid_key(
     )
 
 
+def test_fraud_websocket_rejects_missing_api_key(
+    client_with_auth_configured: TestClient,
+) -> None:
+    """The fraud stream must reject unauthenticated WebSocket handshakes."""
+    with pytest.raises(Exception):
+        with client_with_auth_configured.websocket_connect(
+            "/api/v1/fraud/stream/client-unauthenticated"
+        ):
+            pass
+
+
+def test_fraud_websocket_accepts_valid_api_key(
+    client_with_auth_configured: TestClient,
+) -> None:
+    """The fraud stream must allow a WebSocket connection with a valid API key."""
+    with client_with_auth_configured.websocket_connect(
+        "/api/v1/fraud/stream/client-authenticated",
+        headers={"X-API-Key": _VALID_KEY},
+    ) as websocket:
+        websocket.send_text("ping")
+        assert websocket.receive_text() == "pong"
+
+
 # ────────────────────────────────────────────────────────────
 # Misconfigured server — must fail closed
 # ────────────────────────────────────────────────────────────
