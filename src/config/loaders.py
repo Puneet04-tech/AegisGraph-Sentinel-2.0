@@ -139,13 +139,21 @@ def _build_settings_dict(
             "api_url": env.api_url or api_config.get("api_url"),
             "rate_limit": api_config.get("rate_limit", defaults.DEFAULT_RATE_LIMIT),
         },
-        "graph": {
-            "graph_path": env.aegis_graph_path or graph_config.get("path") or defaults.DEFAULT_GRAPH_PATH,
-            "graph_sha256": env.aegis_graph_sha256 or graph_config.get("sha256"),
-            "k_hop_neighbors": graph_config.get("k_hop_neighbors", 3),
-            "max_subgraph_nodes": graph_config.get("max_subgraph_nodes", 1000),
-            "max_subgraph_edges": graph_config.get("max_subgraph_edges", 5000),
-        },
+              
+        k_hop_val = graph_config.get("k_hop_neighbors", 3)
+        if not isinstance(k_hop_val, int) or k_hop_val <= 0:
+            raise ValueError("Configuration Error: 'k_hop_neighbors' must be a positive integer greater than zero.")
+
+        raw_config = {
+            "graph": {
+                "graph_path": env.aegis_graph_path or graph_config.get("path") or defaults.DEFAULT_GRAPH_PATH,
+                "graph_sha256": env.aegis_graph_sha256 or graph_config.get("sha256"),
+                "k_hop_neighbors": k_hop_val,
+                "max_subgraph_nodes": graph_config.get("max_subgraph_nodes", 1000),
+                "max_subgraph_edges": graph_config.get("max_subgraph_edges", 5000),
+            },
+        }
+
         "observability": {
             "log_level": logging_config.get("level", defaults.DEFAULT_OBSERVABILITY_LOG_LEVEL),
             "log_format": logging_config.get("format", defaults.DEFAULT_OBSERVABILITY_LOG_FORMAT),
