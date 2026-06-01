@@ -1160,16 +1160,16 @@ def _load_runtime_configuration(startup_logger):
             metadata={"path": str(state.settings.runtime.config_path)},
         )
 
-
+def _read_file_bytes(path: Path) -> bytes:
+    with open(path, "rb") as file_handle:
+        return file_handle.read()
+    with open(path, "rb") as file_handle:
 def _compute_file_sha256(path: Path) -> str:
     hasher = hashlib.sha256()
     with open(path, "rb") as file_handle:
         for chunk in iter(lambda: file_handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def _read_json_file(path: Path):
     with open(path, "r") as file_handle:
         return json.load(file_handle)
 
@@ -1256,7 +1256,7 @@ async def _load_graph_runtime_data(startup_logger):
                 if graph_path.suffix.lower() != ".graphml":
                     raise ValueError(
                         f"Unsupported graph artifact format: {graph_path.suffix}. "
-                        "Only .graphml is accepted."
+                state.transaction_graph = nx.parse_graphml(await asyncio.to_thread(_read_file_bytes, graph_path))
                     )
                 state.transaction_graph = nx.read_graphml(graph_path)
                 startup_logger.info(
