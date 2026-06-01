@@ -89,22 +89,28 @@ class Neo4jGraphProvider:
                 self.enabled = False
                 self._driver = None
 
-    def _get_cached_subgraph(self, account_id: str, now: float) -> Optional[nx.DiGraph]:
-        cached_entry = self._subgraph_cache.get(account_id)
+    def _cache_key(self, account_id: str, max_hops: int) -> str:
+        """Build cache key that includes max_hops so different hop counts don't collide."""
+        return f"{account_id}:h{max_hops}"
+
+    def _get_cached_subgraph(self, account_id: str, max_hops: int, now: float) -> Optional[nx.DiGraph]:
+        key = self._cache_key(account_id, max_hops)
+        cached_entry = self._subgraph_cache.get(key)
         if not cached_entry:
             return None
 
         cache_time, cached_graph = cached_entry
         if now - cache_time >= self.cache_ttl_seconds:
-            self._subgraph_cache.pop(account_id, None)
+            self._subgraph_cache.pop(key, None)
             return None
 
-        self._subgraph_cache.move_to_end(account_id)
+        self._subgraph_cache.move_to_end(key)
         return cached_graph
 
-    def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
-        self._subgraph_cache[account_id] = (now, graph)
-        self._subgraph_cache.move_to_end(account_id)
+    def _store_cached_subgraph(self, account_id: str, max_hops: int, graph: nx.DiGraph, now: float) -> None:
+        key = self._cache_key(account_id, max_hops)
+        self._subgraph_cache[key] = (now, graph)
+        self._subgraph_cache.move_to_end(key)
 
         while len(self._subgraph_cache) > self.cache_max_entries:
             self._subgraph_cache.popitem(last=False)
@@ -192,8 +198,10 @@ class Neo4jGraphProvider:
                     timestamp=timestamp,
                 )
             # Invalidate any cached local subgraphs for the involved accounts
-            self._subgraph_cache.pop(src_account, None)
-            self._subgraph_cache.pop(dst_account, None)
+            self._subgraph_cache = OrderedDict(
+                (k, v) for k, v in self._subgraph_cache.items()
+                if not k.startswith(f"{src_account}:") and not k.startswith(f"{dst_account}:")
+            )
         except Exception as e:
             logger.error(f"Failed to record transaction {src_account} -> {dst_account} in Neo4j: {e}")
 
@@ -204,15 +212,16 @@ class Neo4jGraphProvider:
         Extract the k-hop local transaction network around an account ID from Neo4j,
         reconstructing it as a directed NetworkX DiGraph.
         """
+        if max_hops < 1:
+            max_hops = 1
         if not self.is_active:
-            # Return an empty graph if the provider is offline
             G = nx.DiGraph()
             G.add_node(account_id)
             return G
 
-        # Check in-memory TTL cache
+        # Check in-memory TTL cache (keyed by account_id + max_hops)
         now = time.time()
-        cached_graph = self._get_cached_subgraph(account_id, now)
+        cached_graph = self._get_cached_subgraph(account_id, max_hops, now)
         if cached_graph is not None:
             return cached_graph
 
@@ -222,8 +231,9 @@ class Neo4jGraphProvider:
         # Retrieve paths matching the k-hop undirected pattern with a hard limit
         # to prevent super-node DoS (issue #477).
         limit = self.DEFAULT_SUBGRAPH_LIMIT
+        hop_pattern = f"[r:TRANSFER*1..{max_hops}]"
         query = (
-            "MATCH path = (a:Account {id: $account_id})-[r:TRANSFER*1..2]-(b:Account)\n"
+            f"MATCH path = (a:Account {{id: $account_id}})-{hop_pattern}-(b:Account)\n"
             "RETURN path\n"
             "LIMIT $limit"
         )
@@ -243,7 +253,7 @@ class Neo4jGraphProvider:
                         timestamp = relationship.get("timestamp", 0.0)
 
                         G.add_edge(start_id, end_id, weight=amount, timestamp=timestamp)
-            self._store_cached_subgraph(account_id, G, now)
+            self._store_cached_subgraph(account_id, max_hops, G, now)
             return G
         except Exception as e:
             logger.error(f"Error extracting subgraph for account {account_id}: {e}")
