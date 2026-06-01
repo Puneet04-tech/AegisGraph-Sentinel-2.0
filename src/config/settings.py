@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .schemas import (
     APISettings,
@@ -30,6 +30,14 @@ class RuntimeSettings(BaseModel):
     runtime: RuntimeFlags = Field(default_factory=RuntimeFlags)
     raw_config: Dict[str, Any] = Field(default_factory=dict)
     raw_environment: EnvironmentVariablesSchema = Field(default_factory=EnvironmentVariablesSchema)
+
+    @model_validator(mode="after")
+    def validate_cors_configuration(self) -> "RuntimeSettings":
+        if any(origin.strip() == "*" for origin in self.api.allowed_origins):
+            raise RuntimeError(
+                "Unsafe CORS configuration: wildcard origins cannot be used with credentials enabled."
+            )
+        return self
 
     def to_runtime_dict(self) -> Dict[str, Any]:
         """Return a JSON-safe dict for service registration and tests."""

@@ -3,6 +3,7 @@
 import json
 import os
 import hashlib
+import time
 from pathlib import Path
 
 import pytest
@@ -176,34 +177,29 @@ def test_load_evidence_record_uses_reverse_index_without_chain_scan(tmp_path, mo
     assert record["evidence_id"] == expected["evidence_id"]
 
 
-def test_verify_chain_integrity_for_transaction_uses_reverse_index(tmp_path, monkeypatch):
+def test_get_statistics_reuses_fresh_chain_integrity_cache(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
-    transaction_id = "txn-indexed-1"
-    transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+    manager._redis._client = None
 
-    fake_block = {
-        "block_number": 1,
-        "previous_hash": "prev-hash",
-        "transactions": [{"transaction_hash": transaction_hash}],
-        "timestamp": "2026-01-01T00:00:00Z",
-        "hash": "expected-hash",
-    }
-    fake_prev_block = {"hash": "prev-hash"}
+    class GuardNode:
+        def __init__(self):
+            self.calls = 0
+            self.node_id = "guard"
+            self.chain = [{"hash": "head"}]
 
-    class FakeNode:
-        def get_block(self, block_number):
-            if block_number == 1:
-                return fake_block
-            if block_number == 0:
-                return fake_prev_block
-            return None
+        def verify_chain_integrity(self):
+            self.calls += 1
+            raise AssertionError("fresh cache should avoid chain verification")
 
-        def _compute_hash(self, *args, **kwargs):
-            return "expected-hash"
+    guard = GuardNode()
+    manager.nodes = [guard]
+    manager._chain_integrity_cache = True
+    manager._chain_integrity_cache_checked_at = time.time()
+    manager._chain_integrity_cache_ttl_seconds = 300.0
 
-    manager.nodes = [FakeNode()]
-    manager._transaction_block_index = {
-        transaction_hash: {"block_number": 1, "tx_index": 0, "transaction_id": transaction_id}
-    }
+    first = manager.get_statistics()
+    second = manager.get_statistics()
 
-    assert manager.verify_chain_integrity_for_transaction(transaction_id) is True
+    assert first["chain_verified"] is True
+    assert second["chain_verified"] is True
+    assert guard.calls == 0

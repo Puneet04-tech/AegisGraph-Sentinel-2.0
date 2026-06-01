@@ -579,6 +579,9 @@ class BlockchainEvidenceManager:
             'average_finality_ms': 0.0,
             'chain_verified': True,
         }
+        self._chain_integrity_cache: Optional[bool] = None
+        self._chain_integrity_cache_checked_at = 0.0
+        self._chain_integrity_cache_ttl_seconds = 300.0
 
         # Durable evidence journal - persists across restarts
         self._journal = EvidenceJournal(journal_path)
@@ -1505,7 +1508,22 @@ class BlockchainEvidenceManager:
         # Prefer Redis count (authoritative across workers) over in-process counter
         if self._redis.available:
             self.stats['total_sealed'] = self._redis.total_sealed()
-        self.stats['chain_verified'] = self.nodes[0].verify_chain_integrity()
+        now = time.time()
+        if (
+            self._chain_integrity_cache is None
+            or now - self._chain_integrity_cache_checked_at >= self._chain_integrity_cache_ttl_seconds
+        ):
+            try:
+                self._chain_integrity_cache = all(
+                    node.verify_chain_integrity() for node in self.nodes[:6]
+                )
+                self._chain_integrity_cache_checked_at = now
+            except Exception as exc:
+                logging.warning("Chain integrity refresh failed: %s", exc)
+                self._chain_integrity_cache_checked_at = now
+                self._chain_integrity_cache_checked_at = now
+
+        self.stats['chain_verified'] = bool(self._chain_integrity_cache)
         return {
             **self.stats,
             'total_nodes': len(self.nodes),
