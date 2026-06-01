@@ -205,7 +205,6 @@ class Neo4jGraphProvider:
         reconstructing it as a directed NetworkX DiGraph.
         """
         if not self.is_active:
-            # Return an empty graph if the provider is offline
             G = nx.DiGraph()
             G.add_node(account_id)
             return G
@@ -222,33 +221,74 @@ class Neo4jGraphProvider:
         # Retrieve paths matching the k-hop undirected pattern with a hard limit
         # to prevent super-node DoS (issue #477).
         limit = self.DEFAULT_SUBGRAPH_LIMIT
+
         query = (
             "MATCH path = (a:Account {id: $account_id})-[r:TRANSFER*1..2]-(b:Account)\n"
             "RETURN path\n"
             "LIMIT $limit"
         )
+
         try:
             with self._driver.session() as session:
-                result = session.run(query, account_id=account_id, limit=limit)
+                result = session.run(
+                    query,
+                    account_id=account_id,
+                    limit=limit
+                )
+
+                record_count = 0
+
                 for record in result:
+                    record_count += 1
+
                     path = record["path"]
+
                     for relationship in path.relationships:
                         start_node = relationship.nodes[0]
                         end_node = relationship.nodes[1]
-                        
+
                         start_id = start_node["id"]
                         end_id = end_node["id"]
 
                         amount = relationship.get("amount", 0.0)
                         timestamp = relationship.get("timestamp", 0.0)
 
-                        G.add_edge(start_id, end_id, weight=amount, timestamp=timestamp)
+                        G.add_edge(
+                            start_id,
+                            end_id,
+                            weight=amount,
+                            timestamp=timestamp
+                        )
+
+                if record_count >= limit:
+                    logger.warning(
+                        "Subgraph extraction reached the configured limit (%s records). "
+                        "Large fraud networks may be truncated and analysis may be incomplete.",
+                        limit,
+                    )
+
+                if len(G.nodes()) >= limit:
+                    logger.warning(
+                        "Extracted graph contains %s nodes and may have been truncated. "
+                        "Analysis accuracy may be affected.",
+                        len(G.nodes()),
+                    )
+
+                if len(G.edges()) >= limit:
+                    logger.warning(
+                        "Extracted graph contains %s edges and may have been truncated. "
+                        "Analysis accuracy may be affected.",
+                        len(G.edges()),
+                    )
+
             self._store_cached_subgraph(account_id, G, now)
             return G
-        except Exception as e:
-            logger.error(f"Error extracting subgraph for account {account_id}: {e}")
-            return G
 
+        except Exception as e:
+            logger.error(
+                f"Error extracting subgraph for account {account_id}: {e}"
+            )
+            return G
     def close(self) -> None:
         """Release connection pool handles."""
         if self._driver:

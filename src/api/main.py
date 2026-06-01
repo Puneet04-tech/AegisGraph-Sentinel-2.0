@@ -273,16 +273,16 @@ _API_DECISION_MAP = {
 
 
 def _normalize_decision(decision: object) -> str:
-    normalized_decision = str(decision).upper() if decision is not None else FraudDecision.ALLOW.value
+    normalized_decision = str(decision).upper() if decision is not None else None
     if normalized_decision in _DECISION_VALUES:
         return normalized_decision
 
     _api_logger.warning(
-        "Unexpected decision encountered; defaulting to ALLOW",
+        "Unexpected decision encountered; defaulting to REVIEW",
         event_type="decision_normalization_warning",
         metadata={"decision": str(decision)},
     )
-    return FraudDecision.ALLOW.value
+    return FraudDecision.REVIEW.value
 
 
 def _decision_to_api_value(decision: object) -> str:
@@ -2237,7 +2237,7 @@ if settings.runtime.debug:
         except Exception as e:
             _raise_internal_server_error("Debug honeypot activation", e)
 
-@app.websocket("/api/v1/fraud/stream/{client_id}")
+@app.websocket("/api/v1/fraud/stream/{client_id}", dependencies=[Depends(require_api_key)])
 async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     """
     Realtime fraud monitoring stream.
