@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any, Dict, Optional
 
 from ..observability import get_logger
+from .events.event_types import ServiceFailedEvent, ServiceHealthyEvent
 from .service_health import ServiceHealth
 
 _logger = get_logger("runtime.health_monitor")
@@ -15,11 +16,17 @@ _logger = get_logger("runtime.health_monitor")
 class RuntimeHealthMonitor:
     """In-memory thread-safe health monitor for services and background tasks."""
 
-    def __init__(self, unhealthy_threshold: int = 3, logger: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        unhealthy_threshold: int = 3,
+        logger: Optional[Any] = None,
+        dispatcher: Optional[Any] = None,
+    ) -> None:
         self._services: Dict[str, ServiceHealth] = {}
         self._lock = Lock()
         self._unhealthy_threshold = unhealthy_threshold
         self._logger = logger or _logger
+        self._dispatcher = dispatcher  # Optional[EventDispatcher]
 
     def register_service(self, name: str) -> None:
         """Register a service or background task for tracking."""
@@ -64,6 +71,14 @@ class RuntimeHealthMonitor:
                 metadata={"service": name},
             )
 
+        if self._dispatcher is not None:
+            self._dispatcher.dispatch(
+                ServiceHealthyEvent(
+                    source="health_monitor",
+                    payload={"service": name},
+                )
+            )
+
     def mark_failed(self, name: str, error: Optional[str] = None) -> None:
         """Mark a service as failed, incrementing failures and determining status."""
         with self._lock:
@@ -86,16 +101,32 @@ class RuntimeHealthMonitor:
             else:
                 service.status = "degraded"
 
+            current_status = service.status
+            current_failures = service.failures
+
             self._logger.warning(
                 f"Service marked failed: {name} "
-                f"(status: {service.status}, failures: {service.failures})",
+                f"(status: {current_status}, failures: {current_failures})",
                 event_type="health_service_failed",
                 metadata={
                     "service": name,
-                    "status": service.status,
-                    "failures": service.failures,
+                    "status": current_status,
+                    "failures": current_failures,
                     "error": error,
                 },
+            )
+
+        if self._dispatcher is not None:
+            self._dispatcher.dispatch(
+                ServiceFailedEvent(
+                    source="health_monitor",
+                    payload={
+                        "service": name,
+                        "status": current_status,
+                        "failures": current_failures,
+                        "error": error,
+                    },
+                )
             )
 
     def increment_restart_attempts(self, name: str) -> None:

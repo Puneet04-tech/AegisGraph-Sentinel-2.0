@@ -83,6 +83,7 @@ class KeystrokeDynamicsAnalyzer:
         
         # Extract timing features
         hold_times = [e.release_time - e.press_time for e in events]
+        press_times = [e.press_time for e in events]
         flight_times = [
             events[i+1].press_time - events[i].release_time
             for i in range(len(events) - 1)
@@ -92,6 +93,15 @@ class KeystrokeDynamicsAnalyzer:
         session_duration = keystroke_sequence.session_end - keystroke_sequence.session_start
         if session_duration <= 0:
             return self._empty_features()
+
+        if len(press_times) > 2:
+            press_deltas = np.diff(press_times)
+            if len(press_deltas) > 1 and np.mean(press_deltas) > 0:
+                interval_variability = variation(press_deltas)
+            else:
+                interval_variability = 0.0
+        else:
+            interval_variability = 0.0
 
         features = {
             # Hold time statistics (ms)
@@ -117,6 +127,7 @@ class KeystrokeDynamicsAnalyzer:
             
             # Rhythm consistency
             'rhythm_consistency': self._compute_rhythm_consistency(flight_times),
+            'timestamp_interval_cv': interval_variability,
             
             # Session metadata
             'total_events': len(events),
@@ -131,13 +142,13 @@ class KeystrokeDynamicsAnalyzer:
         features = self.extract_features(sequence)
         stress = self.detect_stress(features)
 
-        raw_timestamps = [float(event.get('timestamp', 0.0)) for event in events or [] if isinstance(event, dict) and 'timestamp' in event]
-        if len(raw_timestamps) > 2:
-            intervals = np.diff(raw_timestamps)
-            if len(intervals) > 1:
-                interval_cv = variation(intervals) if np.mean(intervals) > 0 else 0.0
-                stress['stress_score'] = min(stress['stress_score'] + max(interval_cv - 0.3, 0.0) * 0.5, 1.0)
-                stress['is_stressed'] = stress['stress_score'] > self.stress_threshold
+        interval_cv = features.get('timestamp_interval_cv', 0.0)
+        if interval_cv > 0:
+            stress['stress_score'] = min(
+                stress['stress_score'] + max(interval_cv - 0.3, 0.0) * 0.5,
+                1.0,
+            )
+            stress['is_stressed'] = stress['stress_score'] > self.stress_threshold
 
         return {**features, **stress}
     
@@ -252,6 +263,7 @@ class KeystrokeDynamicsAnalyzer:
             'backspace_count': 0,
             'backspace_ratio': 0.0,
             'rhythm_consistency': 0.5,
+            'timestamp_interval_cv': 0.0,
             'total_events': 0,
             'session_duration': 0.0,
         }

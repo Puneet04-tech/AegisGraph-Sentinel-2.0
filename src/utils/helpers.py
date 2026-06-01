@@ -3,6 +3,8 @@ Helper utilities for AegisGraph Sentinel
 """
 # Working on utility functions for the project
 
+from logging import config
+
 import yaml
 import torch
 import numpy as np
@@ -12,6 +14,42 @@ import logging
 from datetime import datetime
 import functools
 
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails"""
+    pass
+
+
+def validate_dataset_splits(config: dict) -> list:
+    """
+    Validate dataset split configuration.
+    """
+    errors = []
+
+    data_config = config.get("data", {})
+
+    train_split = data_config.get("train_split")
+    val_split = data_config.get("val_split")
+    test_split = data_config.get("test_split")
+
+    if None not in (train_split, val_split, test_split):
+        total = train_split + val_split + test_split
+
+        if abs(total - 1.0) > 1e-6:
+            errors.append(
+                f"Dataset splits must sum to 1.0, got {total}"
+            )
+
+        for name, value in [
+            ("train_split", train_split),
+            ("val_split", val_split),
+            ("test_split", test_split),
+        ]:
+            if value < 0 or value > 1:
+                errors.append(
+                    f"{name} must be between 0 and 1"
+                )
+
+    return errors
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
     """
@@ -29,7 +67,15 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
-    
+
+    errors = validate_dataset_splits(config)
+
+    if errors:
+        raise ConfigValidationError(
+            "Dataset split validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
     return config
 
 
@@ -62,22 +108,24 @@ def setup_logger(name: str, log_file: Optional[str] = None, level: int = logging
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-    
-    # File handler
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(level)
-        file_handler.setFormatter(console_formatter)
-        logger.addHandler(file_handler)
+
+    # Keep logger setup idempotent so repeated calls do not duplicate handlers.
+    if not logger.handlers:
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        # File handler is configured once alongside the console handler.
+        if log_file:
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setLevel(level)
+            file_handler.setFormatter(console_formatter)
+            logger.addHandler(file_handler)
     
     return logger
 
@@ -123,15 +171,34 @@ def get_device(device: Optional[str] = None) -> torch.device:
     Returns:
         torch.device
     """
-    if device is not None:
-        return torch.device(device)
-    
+    requested_device = device.strip().lower() if isinstance(device, str) else device
+
+    if requested_device == 'cpu':
+        return torch.device('cpu')
+
+    if requested_device == 'cuda' and torch.cuda.is_available():
+        return torch.device('cuda')
+
+    if (
+        requested_device == 'mps'
+        and hasattr(torch.backends, 'mps')
+        and torch.backends.mps.is_available()
+    ):
+        return torch.device('mps')
+
+    if requested_device in {'cuda', 'mps'}:
+        logging.getLogger(__name__).warning(
+            "Requested %s device is unavailable; falling back to best available device",
+            requested_device,
+        )
+    elif requested_device is not None:
+        raise ValueError(f"Unsupported torch device: {device!r}")
+
     if torch.cuda.is_available():
         return torch.device('cuda')
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         return torch.device('mps')
-    else:
-        return torch.device('cpu')
+    return torch.device('cpu')
 
 
 def format_time(seconds: float) -> str:

@@ -97,3 +97,9 @@ def _bypass_api_key_for_legacy_tests(
             app.dependency_overrides.pop(require_api_key, None)
         else:
             app.dependency_overrides[require_api_key] = saved
+
+@pytest.fixture(autouse=True)
+def _reset_global_rate_limiter():
+    """Reset rate limits before each test."""
+    from src.api.validators import reset_rate_limiter
+    reset_rate_limiter()

@@ -1133,17 +1133,17 @@ class FraudPatternDetector:
         transactions: List[Dict],
     ) -> List[Dict]:
         """Extract transactions forming a linear chain"""
+        # Build a (source, target) -> [txns] index for O(1) lookups
+        index: Dict[tuple, List[Dict]] = defaultdict(list)
+        for txn in transactions:
+            src = self._txn_value(txn, 'source_account')
+            tgt = self._txn_value(txn, 'target_account')
+            if src and tgt:
+                index[(src, tgt)].append(txn)
+
         chain_txns = []
-        
         for i in range(len(chain) - 1):
-            source = chain[i]
-            target = chain[i + 1]
-            
-            for txn in transactions:
-                if (self._txn_value(txn, 'source_account') == source and
-                    self._txn_value(txn, 'target_account') == target):
-                    chain_txns.append(txn)
-        
+            chain_txns.extend(index.get((chain[i], chain[i + 1]), []))
         return chain_txns
 
     def _get_clique_transactions(
@@ -1152,15 +1152,20 @@ class FraudPatternDetector:
         graph: nx.DiGraph,
         transactions: List[Dict],
     ) -> List[Dict]:
-        """Extract all transactions within a clique"""
+        """Extract all transactions within a clique using the graph's edge structure."""
         clique_set = set(clique)
-        clique_txns = []
-        
+        # Build a fast lookup from the already-loaded transactions
+        txn_map = {}
         for txn in transactions:
-            source = self._txn_value(txn, 'source_account')
-            target = self._txn_value(txn, 'target_account')
-            
-            if source in clique_set and target in clique_set:
-                clique_txns.append(txn)
+            src = self._txn_value(txn, 'source_account')
+            dst = self._txn_value(txn, 'target_account')
+            txn_map[(src, dst)] = txn
+
+        clique_txns = []
+        for u, v in graph.edges():
+            if u in clique_set and v in clique_set:
+                txn = txn_map.get((u, v))
+                if txn:
+                    clique_txns.append(txn)
         
         return clique_txns

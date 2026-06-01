@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Dict, Iterable, List, Optional, Union
 
 from ..observability import get_logger
+from .events.event_types import BackgroundTaskStartedEvent, BackgroundTaskStoppedEvent
 
 _logger = get_logger("runtime.task_registry")
 
@@ -29,10 +30,11 @@ class TaskInfo:
 class TaskRegistry:
     """Track background tasks so shutdown can cancel them deterministically."""
 
-    def __init__(self, logger: Any = None) -> None:
+    def __init__(self, logger: Any = None, dispatcher: Optional[Any] = None) -> None:
         self._tasks: Dict[asyncio.Task, TaskInfo] = {}
         self._lock = threading.RLock()
         self._logger = logger or _logger
+        self._dispatcher = dispatcher  # Optional[EventDispatcher]
 
     def register_task(
         self,
@@ -65,6 +67,13 @@ class TaskRegistry:
             event_type="runtime_task_registered",
             metadata={"task": name, "owner": owner, "active_tasks": active_tasks},
         )
+        if self._dispatcher is not None:
+            self._dispatcher.dispatch(
+                BackgroundTaskStartedEvent(
+                    source="task_registry",
+                    payload={"task": name, "owner": owner},
+                )
+            )
         return task
 
     def _on_task_done(self, task: asyncio.Task) -> None:
@@ -81,6 +90,13 @@ class TaskRegistry:
                 event_type="runtime_task_cancelled",
                 metadata=metadata,
             )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    BackgroundTaskStoppedEvent(
+                        source="task_registry",
+                        payload={"task": info.name, "owner": info.owner, "reason": "cancelled"},
+                    )
+                )
             return
 
         try:
@@ -91,6 +107,13 @@ class TaskRegistry:
                 event_type="runtime_task_cancelled",
                 metadata=metadata,
             )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    BackgroundTaskStoppedEvent(
+                        source="task_registry",
+                        payload={"task": info.name, "owner": info.owner, "reason": "cancelled"},
+                    )
+                )
             return
 
         if exc is not None:
@@ -103,12 +126,31 @@ class TaskRegistry:
                 event_type="runtime_task_failed",
                 metadata=metadata,
             )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    BackgroundTaskStoppedEvent(
+                        source="task_registry",
+                        payload={
+                            "task": info.name,
+                            "owner": info.owner,
+                            "reason": "failed",
+                            "error": repr(exc),
+                        },
+                    )
+                )
         else:
             self._logger.info(
                 "Background task completed",
                 event_type="runtime_task_completed",
                 metadata=metadata,
             )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    BackgroundTaskStoppedEvent(
+                        source="task_registry",
+                        payload={"task": info.name, "owner": info.owner, "reason": "completed"},
+                    )
+                )
 
     def unregister_task(self, task: asyncio.Task) -> None:
         """Remove a task from tracking without cancelling it."""

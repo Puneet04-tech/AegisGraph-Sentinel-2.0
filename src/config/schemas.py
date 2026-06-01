@@ -59,6 +59,16 @@ class APISettings(ConfigBaseModel):
             return [str(item).strip() for item in value if str(item).strip()]
         raise TypeError("allowed_origins must be a comma-separated string or list")
 
+    @field_validator("allowed_origins")
+    @classmethod
+    def reject_wildcard_origins(cls, value: List[str]) -> List[str]:
+        if "*" in value:
+            raise ValueError(
+                "Unsafe CORS configuration: wildcard origins cannot be used "
+                "while credentialed requests are enabled"
+            )
+        return value
+
 
 class GraphRuntimeSettings(ConfigBaseModel):
     graph_path: Path = Field(default=defaults.DEFAULT_GRAPH_PATH)

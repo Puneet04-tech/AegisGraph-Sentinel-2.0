@@ -16,6 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 import torch
 import numpy as np
+import weakref
 from typing import Dict, Optional, Tuple, List
 import networkx as nx  #models
 
@@ -23,12 +24,34 @@ from ..models.risk_model import FraudDetectionModel
 from ..features.velocity_calculator import VelocityCalculator, Transaction
 from ..features.behavioral_biometrics import analyze_keystroke_data
 from ..features.entropy_calculator import compute_entropy_risk_score
-from ..utils.helpers import load_thresholds
+from ..utils.helpers import get_device, load_thresholds
 from ..scoring import ThresholdConfig, RiskScorer as CentralRiskScorer
 from ..observability import get_logger
 from ..config import defaults as config_defaults
 
 _inference_logger = get_logger("inference.risk_scorer")
+_CENTRALITY_CACHE = weakref.WeakKeyDictionary()
+
+
+def _get_betweenness_centrality(graph: nx.Graph) -> Dict:
+    """Cache betweenness centrality per graph instance and topology snapshot."""
+    if graph is None:
+        return {}
+
+    try:
+        signature = (
+            graph.number_of_nodes() if hasattr(graph, "number_of_nodes") else 0,
+            graph.number_of_edges() if hasattr(graph, "number_of_edges") else 0,
+        )
+        cached = _CENTRALITY_CACHE.get(graph)
+        if cached and cached[0] == signature:
+            return cached[1]
+
+        centrality = nx.betweenness_centrality(graph, k=min(100, signature[0] or 1))
+        _CENTRALITY_CACHE[graph] = (signature, centrality)
+        return centrality
+    except TypeError:
+        return nx.betweenness_centrality(graph, k=min(100, graph.number_of_nodes()))
 
 
 class RiskScorer:
@@ -51,7 +74,8 @@ class RiskScorer:
     ):
         self.model = model
         self.config = config
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        configured_device = config.get('model', {}).get('device')
+        self.device = get_device(str(device) if device is not None else configured_device)
         
         self.model.to(self.device)
         self.model.eval()
@@ -376,6 +400,7 @@ def compute_risk_score(
     # 1. GRAPH-BASED RISK (50% weight)
     graph_risk = 0.0
     centrality = None
+    graph_view = None
     
     # Check mule accounts even without graph loaded (for demo mode)
     if state.graph_loaded:
@@ -403,16 +428,15 @@ def compute_risk_score(
         # them a second time, doubling graph_risk for every mule transaction
         # and masking all topology signals (fix for Issue #133).
 
-        # Check graph topology patterns
         if hasattr(state.transaction_graph, "is_active") and state.transaction_graph.is_active:
-            G = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+            graph_view = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
-            G = state.transaction_graph
-        
-        if source_account in G.nodes:
+            graph_view = state.transaction_graph
+
+        if source_account in graph_view.nodes:
             # Analyze source account patterns
-            out_degree = G.out_degree(source_account)
-            in_degree = G.in_degree(source_account)
+            out_degree = graph_view.out_degree(source_account)
+            in_degree = graph_view.in_degree(source_account)
             
             # STAR PATTERN: High out-degree (distribution hub)
             if out_degree > 20:
@@ -436,10 +460,10 @@ def compute_risk_score(
             
             # Check if part of a chain (linear path pattern)
             try:
-                descendants = nx.descendants(G, source_account)
+                descendants = nx.descendants(graph_view, source_account)
                 if len(descendants) >= 3:
                     # Check if forms a linear chain
-                    subgraph = G.subgraph([source_account] + list(descendants))
+                    subgraph = graph_view.subgraph([source_account] + list(descendants))
                     if nx.is_directed_acyclic_graph(subgraph):
                         graph_risk += 0.2
                         _inference_logger.warning(
@@ -453,7 +477,7 @@ def compute_risk_score(
             # Betweenness centrality (key intermediary in network)
             try:
                 if centrality is None:
-                    centrality = nx.betweenness_centrality(G, k=min(100, G.number_of_nodes()))
+                    centrality = _get_betweenness_centrality(graph_view)
                 if source_account in centrality and centrality[source_account] > 0.01:
                     graph_risk += 0.15
                     _inference_logger.warning(
@@ -472,17 +496,18 @@ def compute_risk_score(
     lateral_movement_reason = ""
     
     if state.graph_loaded and state.transaction_graph:
-        if hasattr(state.transaction_graph, "is_active") and state.transaction_graph.is_active:
-            G = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
-            has_node = G.has_node(source_account)
-        else:
-            G = state.transaction_graph
-            has_node = source_account in G.nodes if hasattr(G, "nodes") else False
+        G = graph_view
+        if G is None:
+            if hasattr(state.transaction_graph, "is_active") and state.transaction_graph.is_active:
+                G = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+            else:
+                G = state.transaction_graph
+        has_node = G.has_node(source_account) if hasattr(G, "has_node") else source_account in G.nodes if hasattr(G, "nodes") else False
 
         if has_node:
             try:
                 if centrality is None:
-                    centrality = nx.betweenness_centrality(G, k=min(100, G.number_of_nodes()))
+                    centrality = _get_betweenness_centrality(G)
                 if source_account in centrality:
                     current_score = centrality[source_account]
                     

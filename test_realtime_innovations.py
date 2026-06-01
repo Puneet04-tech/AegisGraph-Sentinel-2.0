@@ -2,15 +2,13 @@
 Test script for real-time innovation integration
 Tests honeypot, blockchain, and keystroke stress detection
 """
-# Working on innovation integration testing
-
 import requests
 import json
 from datetime import datetime, timezone
 
 API_BASE = "http://localhost:8000"
 
-def run_high_risk_transaction():
+def verify_high_risk_transaction():
     """Test transaction that should trigger honeypot and blockchain"""
     print("=" * 60)
     print("TEST 1: High-Risk Transaction (Mule-to-Mule Transfer)")
@@ -88,8 +86,7 @@ def run_high_risk_transaction():
         print(f"\n❌ ERROR: {e}")
         return None
 
-
-def run_normal_transaction():
+def verify_normal_transaction():
     """Test normal transaction that should not trigger innovations"""
     print("\n\n" + "=" * 60)
     print("TEST 2: Normal Transaction (Low Risk)")
@@ -137,8 +134,7 @@ def run_normal_transaction():
         print(f"\n❌ ERROR: {e}")
         return None
 
-
-def check_active_honeypots():
+def verify_active_honeypots():
     """Check if honeypots appear in the active list"""
     print("\n\n" + "=" * 60)
     print("TEST 3: Active Honeypots Check")
@@ -168,8 +164,7 @@ def check_active_honeypots():
         
     except requests.exceptions.RequestException as e:
         print(f"\n❌ ERROR: {e}")
-        None
-
+        return None
 
 def main():
     """Run all tests"""
@@ -177,13 +172,13 @@ def main():
     print("=" * 60)
     
     # Test 1: High-risk transaction
-    high_risk_result = run_high_risk_transaction()
+    high_risk_result = verify_high_risk_transaction()
     
     # Test 2: Normal transaction
-    normal_result = run_normal_transaction()
+    normal_result = verify_normal_transaction()
     
     # Test 3: Check active honeypots
-    honeypots = check_active_honeypots()
+    honeypots = verify_active_honeypots()
     
     # Summary
     print("\n\n" + "=" * 60)
@@ -212,9 +207,8 @@ def main():
         print(f"❌ Test 3 (Honeypots): FAILED")
     
     print("\n" + "=" * 60)
-    print("🎯 Real-time Innovation Integration: {'WORKING ✅' if high_risk_result and high_risk_result.get('honeypot_activated') else 'NEEDS REVIEW ⚠️'}")
+    print(f"🎯 Real-time Innovation Integration: {'WORKING ✅' if high_risk_result and high_risk_result.get('honeypot_activated') else 'NEEDS REVIEW ⚠️'}")
     print("=" * 60)
-
 
 if __name__ == "__main__":
     main()

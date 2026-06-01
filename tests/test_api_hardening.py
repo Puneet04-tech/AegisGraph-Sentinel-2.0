@@ -12,6 +12,7 @@ import types
 
 import networkx as nx
 import pytest
+from fastapi.testclient import TestClient
 
 from src.api import main as api_main
 from src.api.main import state
@@ -35,6 +36,39 @@ def _enable_real_api_key_gate(monkeypatch):
     api_main.app.dependency_overrides.pop(require_api_key, None)
 
 
+def _load_fresh_api_main(monkeypatch, *, environment: str, debug: str):
+    from src.config import settings as config_settings
+
+    for module_name in (
+        "src.features.voice_stress_analysis",
+        "src.features.predictive_mule_identification",
+        "src.features.honeypot_escrow",
+        "src.features.blockchain_evidence",
+        "src.features.aegis_oracle_explainer",
+        "src.features.lateral_movement",
+    ):
+        monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+
+    monkeypatch.setenv("AEGIS_ENV", environment)
+    monkeypatch.setenv("DEBUG", debug)
+
+    module_path = Path(api_main.__file__)
+    spec = importlib.util.spec_from_file_location(
+        "src.api.main",
+        module_path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    monkeypatch.setitem(sys.modules, "src.api.main", module)
+    previous_settings_cache = config_settings._settings_cache
+    config_settings.reset_settings_cache()
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        config_settings._settings_cache = previous_settings_cache
+    return module
+
+
 def test_health_smoke(api_client):
     response = api_client.get("/health")
     assert response.status_code == 200
@@ -46,6 +80,48 @@ def test_health_smoke(api_client):
     assert "innovations_available" not in body
     assert "requests_processed" not in body
     assert "uptime_seconds" not in body
+
+
+def test_debug_honeypot_route_is_not_registered_in_production(monkeypatch):
+    module = _load_fresh_api_main(monkeypatch, environment="production", debug="false")
+
+    assert not any(getattr(route, "path", None) == "/debug/activate_honeypot" for route in module.app.routes)
+
+
+def test_debug_honeypot_route_fails_closed_when_enabled_in_production(monkeypatch):
+    with pytest.raises(RuntimeError, match="debug honeypot routes cannot be enabled in production"):
+        _load_fresh_api_main(monkeypatch, environment="production", debug="true")
+
+
+def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
+    module = _load_fresh_api_main(monkeypatch, environment="development", debug="true")
+    fake_manager = Mock()
+    fake_manager.activate_honeypot.return_value = Mock(
+        honeypot_id="HP_TEST_001",
+        status=Mock(value="ACTIVE"),
+    )
+
+    monkeypatch.setenv("AEGIS_HONEYPOT_ADMIN_TOKEN_HASH", hashlib.sha256(b"debug-token").hexdigest())
+    monkeypatch.setattr(module.state.services, "optional_get", lambda name: fake_manager if name == "honeypot_manager" else None)
+
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/debug/activate_honeypot",
+            headers={"X-Honeypot-Admin-Token": "debug-token"},
+            json={
+                "transaction_id": "txn_debug_001",
+                "source_account": "acct_src",
+                "target_account": "acct_dst",
+                "amount": 100.0,
+                "currency": "INR",
+                "risk_score": 1.0,
+                "fraud_indicators": ["manual-test"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"honeypot_id": "HP_TEST_001", "status": "ACTIVE"}
+    fake_manager.activate_honeypot.assert_called_once()
 
 
 def test_stats_smoke(api_client, monkeypatch):
@@ -93,6 +169,54 @@ def test_missing_graph_artifact_does_not_crash(api_client):
     assert state.graph_loaded is False
 
 
+def test_health_helper_handles_uninitialized_runtime_state(monkeypatch):
+    monkeypatch.setattr(api_main, "state", None)
+    monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", False)
+
+    response = api_main._build_health_response(include_details=True)
+
+    assert response["status"] == "healthy"
+    assert response["service"] == "AegisGraph Sentinel"
+    assert response["model_loaded"] is False
+    assert response["graph_loaded"] is False
+    assert response["innovations_available"] is False
+    assert response["requests_processed"] == 0
+    assert response["uptime_seconds"] == 0.0
+
+
+def test_fallback_helpers_handle_partial_runtime_state(monkeypatch):
+    monkeypatch.setattr(
+        api_main,
+        "state",
+        types.SimpleNamespace(
+            graph_loaded=False,
+            transaction_graph=None,
+            account_profiles={},
+            mule_accounts=set(),
+        ),
+    )
+
+    result = api_main._fallback_compute_risk_score(
+        {
+            "source_account": "acct_src",
+            "target_account": "acct_dst",
+            "amount": 100.0,
+        },
+        biometrics={"hold_times": [120.0], "flight_times": [80.0]},
+    )
+
+    assert set(result) == {"risk_score", "decision", "confidence", "breakdown"}
+    assert set(result["breakdown"]) == {"graph", "velocity", "behavior", "entropy"}
+
+    explanation = api_main._fallback_generate_explanation(
+        transaction={"source_account": "acct_src", "target_account": "acct_dst"},
+        risk_result=result,
+    )
+
+    assert "explanation" in explanation
+    assert "recommended_action" in explanation
+
+
 def test_validation_error_payload_is_json_safe(api_client):
     payload = _transaction()
     payload["amount"] = -1
@@ -102,6 +226,43 @@ def test_validation_error_payload_is_json_safe(api_client):
     assert response.status_code == 422
     assert response.headers["content-type"].startswith("application/json")
     assert response.json()["error"]["details"]["validation_errors"]
+
+
+class _BrokenNeighborGraph:
+    nodes = {"acct_src"}
+
+    def out_degree(self, account):
+        return 1
+
+    def in_degree(self, account):
+        return 1
+
+    def neighbors(self, account):
+        raise nx.NetworkXError("neighbor lookup failed")
+
+
+class _InterruptingNeighborGraph(_BrokenNeighborGraph):
+    def neighbors(self, account):
+        raise KeyboardInterrupt()
+
+
+def test_fallback_graph_neighbor_error_does_not_raise_name_error(monkeypatch):
+    monkeypatch.setattr(api_main.state, "graph_loaded", True)
+    monkeypatch.setattr(api_main.state, "transaction_graph", _BrokenNeighborGraph())
+    monkeypatch.setattr(api_main.state, "mule_accounts", set())
+
+    result = api_main._fallback_compute_risk_score(_transaction())
+
+    assert result["breakdown"]["graph"] == 0.0
+
+
+def test_fallback_graph_analysis_does_not_swallow_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(api_main.state, "graph_loaded", True)
+    monkeypatch.setattr(api_main.state, "transaction_graph", _InterruptingNeighborGraph())
+    monkeypatch.setattr(api_main.state, "mule_accounts", set())
+
+    with pytest.raises(KeyboardInterrupt):
+        api_main._fallback_compute_risk_score(_transaction())
 
 
 def test_lateral_movement_initializes_even_when_other_innovations_are_unavailable(monkeypatch):

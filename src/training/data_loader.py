@@ -31,7 +31,7 @@ class AegisGraphLoader:
                 raise RuntimeError("Graph artifact hash mismatch; refusing to load")
 
             f.seek(0)
-            data = torch.load(f, weights_only=False)
+            data = torch.load(f, weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
         # If our synthetic graph didn't explicitly define node timestamps, we mock them sequentially.

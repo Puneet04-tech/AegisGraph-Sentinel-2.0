@@ -20,20 +20,23 @@ class AegisModelExplainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
         self.model.eval()
-        
-        # Initialize the PyTorch Geometric Explainer API
-        self.explainer = Explainer(
-            model=self.model,
-            algorithm=GNNExplainer(epochs=200),
-            explanation_type='model',
-            node_mask_type='attributes',
-            edge_mask_type='object',
-            model_config=dict(
-                mode='binary_classification',
-                task_level='node',
-                return_type='probs',
-            ),
-        )
+        self._explainer = None
+
+    def _get_explainer(self):
+        if self._explainer is None:
+            self._explainer = Explainer(
+                model=self.model,
+                algorithm=GNNExplainer(epochs=200),
+                explanation_type='model',
+                node_mask_type='attributes',
+                edge_mask_type='object',
+                model_config=dict(
+                    mode='binary_classification',
+                    task_level='node',
+                    return_type='probs',
+                ),
+            )
+        return self._explainer
 
     def extract_critical_topology(self, node_features, edge_index, target_node_idx):
         """Returns a list of the most suspicious connections."""
@@ -41,7 +44,7 @@ class AegisModelExplainer:
         edge_idx = edge_index.to(self.device)
 
         with torch.enable_grad():
-            explanation = self.explainer(x, edge_idx, index=target_node_idx)
+            explanation = self._get_explainer()(x, edge_idx, index=target_node_idx)
         
         edge_weights = explanation.edge_mask
         k = min(10, edge_weights.size(0))

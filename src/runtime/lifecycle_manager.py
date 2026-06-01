@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List
 
 from ..observability import get_logger
+from .events import RuntimeShutdownEvent, RuntimeStartedEvent
+from .events.subscriptions import register_default_subscriptions
 
 LifecycleCallable = Callable[[], Any]
 
@@ -44,6 +46,16 @@ class LifecycleManager:
                 self._logger.info("Startup already completed", event_type="runtime_startup_already_complete")
                 return
 
+            # Start the event dispatcher and register default subscriptions
+            # before running any startup steps so events emitted during
+            # startup are captured.
+            dispatcher = getattr(self.runtime_state, "dispatcher", None)
+            event_bus = getattr(self.runtime_state, "event_bus", None)
+            if dispatcher is not None:
+                await dispatcher.start()
+            if event_bus is not None:
+                await register_default_subscriptions(event_bus)
+
             self._logger.info(
                 "Runtime startup started",
                 event_type="runtime_startup_started",
@@ -57,6 +69,15 @@ class LifecycleManager:
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
             self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
 
+            # Emit RuntimeStartedEvent after all steps succeed.
+            if dispatcher is not None:
+                dispatcher.dispatch(
+                    RuntimeStartedEvent(
+                        source="lifecycle_manager",
+                        payload={"steps": len(self._startup_steps)},
+                    )
+                )
+
     async def shutdown(self) -> None:
         async with self._lock:
             if self._shutting_down:
@@ -64,6 +85,8 @@ class LifecycleManager:
                 return
             self._shutting_down = True
             self.runtime_state.shutting_down = True
+
+            dispatcher = getattr(self.runtime_state, "dispatcher", None)
 
             self._logger.info(
                 "Runtime shutdown started",
@@ -76,6 +99,17 @@ class LifecycleManager:
             self.runtime_state.started = False
             self.runtime_state.record_lifecycle_event("shutdown_complete", steps=len(self._shutdown_steps))
             self._logger.info("Runtime shutdown complete", event_type="runtime_shutdown_complete")
+
+            # Emit RuntimeShutdownEvent then stop the dispatcher so it
+            # drains any remaining queued events before exiting.
+            if dispatcher is not None:
+                dispatcher.dispatch(
+                    RuntimeShutdownEvent(
+                        source="lifecycle_manager",
+                        payload={"steps": len(self._shutdown_steps)},
+                    )
+                )
+                await dispatcher.stop()
 
     async def _run_step(self, step: LifecycleStep, *, phase: str) -> None:
         self._logger.info(

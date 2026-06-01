@@ -56,6 +56,43 @@ graph:
     assert settings.runtime.debug is True
 
 
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {"AEGIS_ENV": "test", "AEGIS_ALLOWED_ORIGINS": "*"},
+        {"AEGIS_ENV": "test", "AEGIS_ALLOWED_ORIGINS": "https://app.example,*"},
+        {"AEGIS_ENV": "test", "AEGIS_ALLOWED_ORIGINS": " * "},
+    ],
+)
+def test_wildcard_cors_origins_are_rejected_from_environment(tmp_path, environ):
+    with pytest.raises(ValueError, match="wildcard origins cannot be used"):
+        load_settings(
+            config_path=tmp_path / "missing-config.yaml",
+            thresholds_path=tmp_path / "missing-thresholds.yaml",
+            environ=environ,
+        )
+
+
+def test_wildcard_cors_origins_are_rejected_from_yaml(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  allowed_origins:
+    - https://app.example.test
+    - "*"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="wildcard origins cannot be used"):
+        load_settings(
+            config_path=config_path,
+            thresholds_path=tmp_path / "missing-thresholds.yaml",
+            environ={"AEGIS_ENV": "test"},
+        )
+
+
 def test_threshold_yaml_is_loaded_into_typed_settings(tmp_path):
     thresholds_path = tmp_path / "thresholds.yaml"
     thresholds_path.write_text(

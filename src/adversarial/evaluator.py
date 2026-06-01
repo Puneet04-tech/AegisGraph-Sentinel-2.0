@@ -43,7 +43,6 @@ def build_synthetic_graph(num_nodes=30, num_edges=60, feature_dim=32, seed=0) ->
 
 def predict(model: torch.nn.Module, graph: Graph) -> float:
     """Forward pass on one graph; return risk as a Python float."""
-    model.eval()
     with torch.no_grad():
         out = model(
             x=graph["x"],
@@ -78,6 +77,8 @@ def evaluate_attack(
     attacked_risks: List[float] = []
     deltas: List[float] = []
     flips = 0
+
+    model.eval()
 
     for i in range(n_graphs):
         g = graph_builder(seed=i)

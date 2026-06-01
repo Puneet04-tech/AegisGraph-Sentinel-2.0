@@ -32,14 +32,20 @@ class LocalBackend(StorageBackend):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_artifact_path(self, artifact_key: str) -> Path:
+        """Resolve an artifact path and ensure it stays under the storage root."""
+        base_dir = self.base_dir.resolve()
+        artifact_path = (base_dir / artifact_key).resolve()
+        if not artifact_path.is_relative_to(base_dir):
+            raise ValueError(
+                f"Invalid artifact_key leads outside storage base directory: {artifact_key}"
+            )
+        return artifact_path
+
     def save(self, local_path: Path, artifact_key: str) -> str:
         """Copy a local artifact into the backend, protecting against path traversal."""
         source = Path(local_path)
-        # Resolve destination and ensure it is within base_dir
-        destination = (self.base_dir / artifact_key).resolve()
-        self.base_dir.resolve()
-        if not destination.is_relative_to(self.base_dir.resolve()):
-            raise ValueError(f"Invalid artifact_key leads outside storage base directory: {artifact_key}")
+        destination = self._resolve_artifact_path(artifact_key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != destination:
             shutil.copy2(source, destination)
@@ -47,7 +53,7 @@ class LocalBackend(StorageBackend):
 
     def load(self, artifact_key: str, local_path: Path) -> None:
         """Copy an artifact from the backend into the local path."""
-        source = self.base_dir / artifact_key
+        source = self._resolve_artifact_path(artifact_key)
         destination = Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != destination.resolve():
@@ -55,7 +61,7 @@ class LocalBackend(StorageBackend):
 
     def exists(self, artifact_key: str) -> bool:
         """Return True when the local artifact exists."""
-        return (self.base_dir / artifact_key).exists()
+        return self._resolve_artifact_path(artifact_key).exists()
 
 
 class S3Backend(StorageBackend):

@@ -2,7 +2,10 @@
 
 import json
 import os
+import hashlib
 from pathlib import Path
+
+import pytest
 
 from src.features import blockchain_evidence as be
 from src.features.blockchain_evidence import BlockchainEvidenceManager
@@ -49,22 +52,43 @@ def test_verify_evidence_recovers_from_journal_after_restart(tmp_path):
     assert result["details"]["storage_backend"] == "journal"
 
 
-def test_export_legal_proceedings_uses_durable_record_after_restart(tmp_path):
+def test_export_legal_proceedings_uses_durable_record_after_restart(tmp_path, monkeypatch):
     first_manager = _manager(tmp_path)
     evidence = _seal(first_manager)
+    monkeypatch.setenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH", hashlib.sha256(b"legal-token").hexdigest())
+    monkeypatch.setenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "CBI,Police Dept")
 
     restarted_manager = _manager(tmp_path)
     export = restarted_manager.export_for_legal_proceedings(
         evidence_id=evidence.evidence_id,
         case_number="CASE-149",
         requesting_authority="CBI",
-        authorization_token="token-149",
+        authorization_token="legal-token",
     )
 
     assert export["authorized_by"] == "CBI"
     assert export["package"]["evidence"]["evidence_id"] == evidence.evidence_id
     assert export["package"]["chain_verification"]["verified"] is True
     assert export["chain_of_custody"][-1]["event"] == "legal_export_generated"
+
+
+def test_export_legal_proceedings_rejects_unauthorized_authority(tmp_path, monkeypatch):
+    first_manager = _manager(tmp_path)
+    evidence = _seal(first_manager)
+    monkeypatch.setenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH", hashlib.sha256(b"legal-token").hexdigest())
+    monkeypatch.setenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "CBI")
+
+    restarted_manager = _manager(tmp_path)
+
+    with pytest.raises(PermissionError) as exc_info:
+        restarted_manager.export_for_legal_proceedings(
+            evidence_id=evidence.evidence_id,
+            case_number="CASE-150",
+            requesting_authority="Police Dept",
+            authorization_token="legal-token",
+        )
+
+    assert "not authorized" in str(exc_info.value).lower()
 
 
 def test_journal_refresh_seeks_from_previous_offset(tmp_path, monkeypatch):
@@ -121,3 +145,65 @@ def test_journal_refresh_seeks_from_previous_offset(tmp_path, monkeypatch):
     assert seek_calls == [(starting_pos, 0)]
     assert journal.load_evidence("external_delta_record")["block_number"] == evidence.block_number + 1
     assert journal.count() == 2
+
+
+def test_load_evidence_record_uses_reverse_index_without_chain_scan(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    expected = {
+        "evidence_id": "evidence-lookup-1",
+        "block_number": 7,
+        "block_hash": "abc123",
+        "previous_block_hash": "def456",
+        "validator_signatures": [],
+        "consensus_timestamp": "2026-01-01T00:00:00Z",
+        "finality_time_ms": 0.0,
+        "_storage": "memory",
+    }
+
+    class ChainGuard:
+        def __iter__(self):
+            raise AssertionError("chain scan should not run for reverse-index lookup")
+
+    monkeypatch.setattr(manager._redis, "load_evidence", lambda evidence_id: None)
+    monkeypatch.setattr(manager._journal, "load_evidence", lambda evidence_id: None)
+    manager._evidence_index = {expected["evidence_id"]: expected}
+    manager.nodes[0].chain = ChainGuard()
+
+    record = manager._load_evidence_record(expected["evidence_id"])
+
+    assert record is not None
+    assert record["_storage"] == "memory"
+    assert record["evidence_id"] == expected["evidence_id"]
+
+
+def test_verify_chain_integrity_for_transaction_uses_reverse_index(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    transaction_id = "txn-indexed-1"
+    transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+
+    fake_block = {
+        "block_number": 1,
+        "previous_hash": "prev-hash",
+        "transactions": [{"transaction_hash": transaction_hash}],
+        "timestamp": "2026-01-01T00:00:00Z",
+        "hash": "expected-hash",
+    }
+    fake_prev_block = {"hash": "prev-hash"}
+
+    class FakeNode:
+        def get_block(self, block_number):
+            if block_number == 1:
+                return fake_block
+            if block_number == 0:
+                return fake_prev_block
+            return None
+
+        def _compute_hash(self, *args, **kwargs):
+            return "expected-hash"
+
+    manager.nodes = [FakeNode()]
+    manager._transaction_block_index = {
+        transaction_hash: {"block_number": 1, "tx_index": 0, "transaction_id": transaction_id}
+    }
+
+    assert manager.verify_chain_integrity_for_transaction(transaction_id) is True
