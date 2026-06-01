@@ -102,12 +102,20 @@ class Neo4jGraphProvider:
         self._subgraph_cache.move_to_end(account_id)
         return cached_graph
 
-    def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
+        def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
+        expired_keys = [
+            k for k, (cache_time, _) in self._subgraph_cache.items()
+            if now - cache_time >= self.cache_ttl_seconds
+        ]
+        for k in expired_keys:
+            self._subgraph_cache.pop(k, None)
+
         self._subgraph_cache[account_id] = (now, graph)
         self._subgraph_cache.move_to_end(account_id)
 
         while len(self._subgraph_cache) > self.cache_max_entries:
             self._subgraph_cache.popitem(last=False)
+
 
     @property
     def is_active(self) -> bool:
