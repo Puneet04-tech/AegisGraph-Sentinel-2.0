@@ -97,6 +97,14 @@ class FraudPatternDetector:
         # Build directed transfer graph
         graph = self._build_transfer_graph(transactions)
         
+        # Build (source, target) -> [txn] index once to avoid O(N) rescans per cycle
+        txn_index: Dict[tuple, List[Dict]] = defaultdict(list)
+        for txn in transactions:
+            src = self._txn_value(txn, 'source_account')
+            tgt = self._txn_value(txn, 'target_account')
+            if src and tgt:
+                txn_index[(src, tgt)].append(txn)
+        
         detected_rings = []
         
         # Search for cycles with bounded depth and lazy enumeration.
@@ -107,9 +115,9 @@ class FraudPatternDetector:
                 max_cycle_count=max_cycle_count,
             ):
                 if len(cycle) >= self.min_chain_length:
-                    # Extract transactions in this cycle
+                    # Extract transactions in this cycle using pre-built index
                     cycle_transactions = self._get_cycle_transactions(
-                        graph, cycle, transactions
+                        graph, cycle, txn_index
                     )
                     
                     # Check time constraints
@@ -450,20 +458,15 @@ class FraudPatternDetector:
         self,
         graph: nx.DiGraph,
         cycle: List,
-        transactions: List[Dict],
+        txn_index: Dict[tuple, List[Dict]],
     ) -> List[Dict]:
-        """Extract transactions forming a cycle"""
+        """Extract transactions forming a cycle using pre-built index."""
         cycle_txns = []
         
         for i in range(len(cycle)):
             source = cycle[i]
             target = cycle[(i + 1) % len(cycle)]
-            
-            # Find transactions between these accounts
-            for txn in transactions:
-                if (self._txn_value(txn, 'source_account') == source and
-                    self._txn_value(txn, 'target_account') == target):
-                    cycle_txns.append(txn)
+            cycle_txns.extend(txn_index.get((source, target), []))
         
         return cycle_txns
     
@@ -805,6 +808,14 @@ class FraudPatternDetector:
         if len(undirected_graph.nodes()) < min_clique_size:
             return []
         
+        # Build (source, target) -> txn index once to avoid O(N) rescans per clique
+        txn_map: Dict[tuple, Dict] = {}
+        for txn in transactions:
+            src = self._txn_value(txn, 'source_account')
+            dst = self._txn_value(txn, 'target_account')
+            if src and dst:
+                txn_map[(src, dst)] = txn
+        
         detected_rings = []
         
         try:
@@ -826,9 +837,9 @@ class FraudPatternDetector:
                     density = nx.density(clique_subgraph)
                     
                     if density >= density_threshold:
-                        # Get transactions within this clique
+                        # Get transactions within this clique using pre-built index
                         clique_txns = self._get_clique_transactions(
-                            clique, graph, transactions
+                            clique, graph, txn_map
                         )
                         
                         if clique_txns:
@@ -1150,17 +1161,10 @@ class FraudPatternDetector:
         self,
         clique: List[str],
         graph: nx.DiGraph,
-        transactions: List[Dict],
+        txn_map: Dict[tuple, Dict],
     ) -> List[Dict]:
-        """Extract all transactions within a clique using the graph's edge structure."""
+        """Extract all transactions within a clique using pre-built index."""
         clique_set = set(clique)
-        # Build a fast lookup from the already-loaded transactions
-        txn_map = {}
-        for txn in transactions:
-            src = self._txn_value(txn, 'source_account')
-            dst = self._txn_value(txn, 'target_account')
-            txn_map[(src, dst)] = txn
-
         clique_txns = []
         for u, v in graph.edges():
             if u in clique_set and v in clique_set:

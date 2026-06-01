@@ -336,6 +336,17 @@ Run the API server directly:
 python -m src.api.main
 ```
 
+---
+
+## 🤝 Thanks to Contributors
+
+Thank you to everyone who has contributed to making this project better 🚀 .
+
+<a href="https://github.com/Puneet04-tech/AegisGraph-Sentinel-2.0/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Puneet04-tech/AegisGraph-Sentinel-2.0" alt="Contributors Graph" />
+</a>
+
+---
 
 ## 📄 License
 

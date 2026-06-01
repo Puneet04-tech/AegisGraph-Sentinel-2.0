@@ -309,9 +309,10 @@ class GraphOperationCache:
     def _hash_graph(graph: nx.DiGraph) -> str:
         """
         Generate deterministic hash for graph structure.
-        
-        Uses sorted edge set and edge payloads to create a consistent hash
-        regardless of node order while still invalidating on attribute changes.
+
+        Includes edges, edge payloads, node count, isolated nodes, and
+        node degree sums to detect structural changes that edges alone
+        would miss (e.g. adding or removing isolated nodes).
         """
         def edge_payload(u, v):
             if hasattr(graph, "get_edge_data"):
@@ -328,8 +329,22 @@ class GraphOperationCache:
             )
             for u, v in graph.edges()
         )
-        edge_str = str(edges).encode()
-        return hashlib.sha256(edge_str).hexdigest()[:16]
+
+        isolated_nodes = sorted(
+            n for n in graph.nodes() if graph.degree(n) == 0
+        )
+        node_count = graph.number_of_nodes()
+        degree_sig = tuple(
+            sorted((n, d) for n, d in graph.degree())
+        )
+
+        payload = (
+            node_count,
+            tuple(isolated_nodes),
+            degree_sig,
+            edges,
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()[:16]
 
     @staticmethod
     def _hash_params(**params) -> str:

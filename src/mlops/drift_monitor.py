@@ -1,7 +1,9 @@
 import os
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict
 import numpy as np
 from scipy import stats
 
@@ -17,7 +19,7 @@ class AdversarialDriftMonitor:
     MLOps service to monitor continuous data distributions using the 
     Kolmogorov-Smirnov (K-S) test. Detects when attackers change their behavior.
     """
-    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4):
+    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4, alert_cooldown=300.0):
         self.p_value_threshold = p_value_threshold
         self.webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
         self._alert_workers = max(2, int(alert_workers))
@@ -26,7 +28,9 @@ class AdversarialDriftMonitor:
             thread_name_prefix="drift-alert",
         )
         self._closed = False
-        
+        self._last_alert_time: Dict[str, float] = {}
+        self._alert_cooldown = alert_cooldown
+
         # Load or simulate the baseline data (what the model was trained on)
         self.baselines = self._load_training_baselines()
 
@@ -70,6 +74,14 @@ class AdversarialDriftMonitor:
             f" Immediate model retraining recommended."
         )
         logging.warning(msg)
+
+        now = time.time()
+        last_time = self._last_alert_time.get(feature_name, 0.0)
+        if now - last_time < self._alert_cooldown:
+            logging.info(f"Suppressed duplicate webhook for {feature_name} (cooldown active)")
+            return
+
+        self._last_alert_time[feature_name] = now
 
         if self.webhook_url and not self._closed:
             self._alert_executor.submit(self._dispatch_webhook_alert, msg)

@@ -42,6 +42,7 @@ class WebSocketManager:
                 await self.evict_stale_disconnect_history()
 
         self._eviction_task = asyncio.create_task(_evict_loop())
+        self._eviction_task.set_name("ws-disconnect-eviction")
 
     async def stop_eviction(self):
         """Stop the background eviction task if it is running."""
@@ -84,6 +85,8 @@ class WebSocketManager:
         Accept a connection safely. Enforces exponential backoff/rate limiting 
         if a client disconnects and reconnects too rapidly.
         """
+        await self.start_eviction()
+
         async with self._lock:
             now = time.time()
             history = self.disconnect_history.get(client_id, [])
@@ -100,6 +103,12 @@ class WebSocketManager:
         await websocket.accept()
         
         async with self._lock:
+            old = self.active_connections.get(client_id)
+            if old is not None:
+                try:
+                    await old.websocket.close(code=1000, reason="Replaced by new connection")
+                except Exception:
+                    pass
             self.active_connections[client_id] = ConnectionState(websocket)
             logger.info(f"Client {client_id} connected via WebSocket")
             

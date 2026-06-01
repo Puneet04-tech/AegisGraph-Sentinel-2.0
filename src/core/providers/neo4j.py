@@ -19,18 +19,39 @@ try:
 except ImportError:
     NEO4J_AVAILABLE = False
 
+# Secure URI schemes for Neo4j
+_SECURE_SCHEMES = ("neo4j+s://", "neo4j+ssc://", "bolt+s://", "bolt+ssc://")
+
+
+def _upgrade_uri(uri: str) -> str:
+    if uri.startswith("bolt://"):
+        return uri.replace("bolt://", "bolt+ssc://", 1)
+    if uri.startswith("neo4j://"):
+        return uri.replace("neo4j://", "neo4j+ssc://", 1)
+    return uri
+
+
+def _is_secure(uri: str) -> bool:
+    return any(uri.startswith(s) for s in _SECURE_SCHEMES)
+
 
 class Neo4jGraphProvider:
     """
     Production-grade Neo4j implementation of the GraphService interface.
-    
+
     Provides thread-safe pool-based connections, Cypher transaction queries,
     and highly performant local subgraph extraction parsed directly into NetworkX.
-    
+
     Credentials are resolved in the following order:
       1. Explicit constructor arguments
       2. Environment variables (AEGIS_NEO4J_URI / NEO4J_URI, etc.)
       3. Raises ValueError if neither is provided
+
+    Transport encryption:
+      By default the provider upgrades unencrypted URIs (bolt://, neo4j://)
+      to encrypted variants (bolt+ssc://, neo4j+ssc://).
+      Set require_encryption=False or AEGIS_NEO4J_REQUIRE_ENCRYPTION=false
+      to allow plain-text connections (not recommended for production).
     """
 
     def __init__(
@@ -41,10 +62,17 @@ class Neo4jGraphProvider:
         enabled: bool = True,
         cache_ttl_seconds: int = 60,
         cache_max_entries: int = 1024,
+        require_encryption: Optional[bool] = None,
     ) -> None:
         self.uri = uri or os.getenv("AEGIS_NEO4J_URI") or os.getenv("NEO4J_URI")
         self.user = user or os.getenv("AEGIS_NEO4J_USER") or os.getenv("NEO4J_USER")
         self.password = password or os.getenv("AEGIS_NEO4J_PASSWORD") or os.getenv("NEO4J_PASSWORD")
+
+        # Resolve require_encryption: constructor arg > env var > default True
+        if require_encryption is None:
+            env_val = os.getenv("AEGIS_NEO4J_REQUIRE_ENCRYPTION", "true").strip().lower()
+            require_encryption = env_val not in ("false", "0", "no")
+        self.require_encryption = require_encryption
 
         self.enabled = enabled and NEO4J_AVAILABLE
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -71,6 +99,16 @@ class Neo4jGraphProvider:
                     "(or NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD as fallback)."
                 )
 
+            if self.require_encryption and not _is_secure(self.uri):
+                upgraded = _upgrade_uri(self.uri)
+                logger.warning(
+                    "Neo4j URI %s uses unencrypted transport; upgrading to %s. "
+                    "Set AEGIS_NEO4J_REQUIRE_ENCRYPTION=false to allow plain-text.",
+                    self.uri,
+                    upgraded,
+                )
+                self.uri = upgraded
+
             try:
                 self._driver = neo4j.GraphDatabase.driver(
                     self.uri,
@@ -80,10 +118,10 @@ class Neo4jGraphProvider:
                 )
                 # Verify connectivity immediately
                 self._driver.verify_connectivity()
-                logger.info(f"✓ Successfully connected to Neo4j database at {self.uri}")
+                logger.info(f"Successfully connected to Neo4j database at {self.uri}")
             except Exception as e:
                 logger.error(
-                    f"⚠ Failed to establish a connection pool to Neo4j: {e}. "
+                    f"Failed to establish a connection pool to Neo4j: {e}. "
                     "Operating in offline graceful fallback mode."
                 )
                 self.enabled = False
@@ -102,12 +140,20 @@ class Neo4jGraphProvider:
         self._subgraph_cache.move_to_end(account_id)
         return cached_graph
 
-    def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
+        def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
+        expired_keys = [
+            k for k, (cache_time, _) in self._subgraph_cache.items()
+            if now - cache_time >= self.cache_ttl_seconds
+        ]
+        for k in expired_keys:
+            self._subgraph_cache.pop(k, None)
+
         self._subgraph_cache[account_id] = (now, graph)
         self._subgraph_cache.move_to_end(account_id)
 
         while len(self._subgraph_cache) > self.cache_max_entries:
             self._subgraph_cache.popitem(last=False)
+
 
     @property
     def is_active(self) -> bool:

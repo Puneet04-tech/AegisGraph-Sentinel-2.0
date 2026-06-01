@@ -309,6 +309,7 @@ class VelocityCalculator:
             txn_id = txn.get('txn_id') or txn.get('transaction_id') or f'txn_{index}'
             normalized.append(Transaction(source=source, target=target, amount=amount, timestamp=timestamp, txn_id=txn_id))
 
+        normalized.sort(key=lambda t: t.timestamp)
         return normalized
 
     def _normalize_timestamp(self, value, fallback: float) -> float:

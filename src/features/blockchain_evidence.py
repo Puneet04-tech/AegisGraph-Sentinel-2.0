@@ -472,11 +472,13 @@ class RedisLedger:
             return
         try:
             key = f"{self.PREFIX}:evidence:{evidence.evidence_id}"
-            self._client.set(key, json.dumps(asdict(evidence), default=str))
             index_key = f"{self.PREFIX}:evidence:index"
-            self._client.rpush(index_key, evidence.evidence_id)
-            self._client.ltrim(index_key, -self.MAX_EVIDENCE_INDEX_SIZE, -1)
-            self._client.incr(f"{self.PREFIX}:stats:total_sealed")
+            pipe = self._client.pipeline()
+            pipe.set(key, json.dumps(asdict(evidence), default=str))
+            pipe.rpush(index_key, evidence.evidence_id)
+            pipe.ltrim(index_key, -self.MAX_EVIDENCE_INDEX_SIZE, -1)
+            pipe.incr(f"{self.PREFIX}:stats:total_sealed")
+            pipe.execute()
         except Exception:
             self._mark_unavailable()
 
@@ -1322,138 +1324,141 @@ class BlockchainEvidenceManager:
     def get_chain(self, transaction_id: str) -> Dict:
         """
         Get blockchain chain for a transaction
-        
+
         Args:
             transaction_id: Transaction ID to look up
-        
+
         Returns:
             Dictionary with chain data and verification
-            
+
         Raises:
             ValueError: If transaction_id is invalid
         """
+        if not transaction_id or not isinstance(transaction_id, str):
+            raise ValueError("transaction_id must be non-empty string")
+
+        transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+        chain_data = {
+            'transaction_id': transaction_id,
+            'transaction_hash': transaction_hash,
+            'chain': [],
+            'verified': False,
+        }
+
         try:
-            # Phase 1: Input Validation
-            if not transaction_id or not isinstance(transaction_id, str):
-                raise ValueError("transaction_id must be non-empty string")
-            
-            # Phase 2: Retrieve chain data
-            try:
-                transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-                chain_data = {
-                    'transaction_id': transaction_id,
-                    'transaction_hash': transaction_hash,
-                    'chain': [],
-                    'verified': False,
-                }
-                
-                # Search in all nodes
-                for node in self.nodes:
-                    for block in node.chain:
-                        for tx in block.get('transactions', []):
-                            if tx.get('transaction_id') == transaction_id or \
-                               hashlib.sha256(transaction_id.encode()).hexdigest() == tx.get('transaction_hash'):
-                                chain_data['chain'].append({
-                                    'block_number': block['block_number'],
-                                    'block_hash': block['hash'],
-                                    'block_timestamp': block['timestamp'],
-                                    'transaction_data': {
-                                        k: v for k, v in tx.items() 
-                                        if k not in ['_source', '_target']
-                                    },
-                                    'validator': block['validator'],
-                                })
-                
-                # Verify chain integrity
-                chain_data['verified'] = self.verify_chain_integrity_for_transaction(transaction_id)
-                
-                if not chain_data['chain']:
-                    chain_data['status'] = 'not_found'
-                    chain_data['message'] = 'No blockchain records found for this transaction'
-                    return chain_data
-                
-                chain_data['status'] = 'success'
-                chain_data['block_count'] = len(chain_data['chain'])
-                
+            block_ref = self._transaction_block_index.get(transaction_hash)
+            if block_ref is None:
+                chain_data['status'] = 'not_found'
+                chain_data['message'] = 'No blockchain records found for this transaction'
                 return chain_data
-                
-            except json.JSONDecodeError as json_err:
-                raise ValueError(f"Invalid blockchain data format: {str(json_err)}")
-                
-        except ValueError:
-            raise
+
+            block_number = block_ref['block_number']
+            block = self.nodes[0].get_block(block_number)
+            if not block:
+                chain_data['status'] = 'not_found'
+                chain_data['message'] = 'Block not found for this transaction'
+                return chain_data
+
+            matching_txns = [
+                tx for tx in block.get('transactions', [])
+                if tx.get('transaction_hash') == transaction_hash
+                   or tx.get('transaction_id') == transaction_id
+            ]
+
+            chain_data['chain'] = [
+                {
+                    'block_number': block['block_number'],
+                    'block_hash': block['hash'],
+                    'block_timestamp': block['timestamp'],
+                    'transaction_data': {
+                        k: v for k, v in tx.items()
+                        if k not in ['_source', '_target']
+                    },
+                    'validator': block['validator'],
+                }
+                for tx in matching_txns
+            ]
+
+            chain_data['verified'] = self.verify_chain_integrity_for_transaction(transaction_id)
+            chain_data['status'] = 'success'
+            chain_data['block_count'] = len(chain_data['chain'])
+            return chain_data
+
         except Exception:
             raise
     
     def verify_integrity(self) -> Dict:
         """
         Verify integrity of entire blockchain
-        
+
+        Uses indexed block metadata instead of full chain walks on every node.
+
         Returns:
             Dictionary with verification results
         """
+        verification_result = {
+            'verified': True,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'node_status': {},
+            'errors': [],
+            'warnings': [],
+        }
+
+        # Phase 1: Verify primary node's chain, then spot-check consenting nodes
+        primary_node = self.nodes[0]
         try:
-            verification_result = {
-                'verified': True,
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'node_status': {},
-                'errors': [],
-                'warnings': [],
+            primary_valid = primary_node.verify_chain_integrity()
+            verification_result['node_status'][primary_node.node_id] = {
+                'verified': primary_valid,
+                'chain_length': len(primary_node.chain),
+                'last_block_hash': primary_node.chain[-1]['hash'] if primary_node.chain else None,
             }
-            
-            # Phase 1: Verify each node's chain
-            for node in self.nodes:
-                try:
-                    is_valid = node.verify_chain_integrity()
-                    verification_result['node_status'][node.node_id] = {
-                        'verified': is_valid,
-                        'chain_length': len(node.chain),
-                        'last_block_hash': node.chain[-1]['hash'] if node.chain else None,
-                    }
-                    
-                    if not is_valid:
-                        verification_result['verified'] = False
-                        verification_result['errors'].append(
-                            f"Chain integrity failed for node {node.node_id}"
-                        )
-                        
-                except Exception as node_err:
-                    verification_result['verified'] = False
-                    verification_result['errors'].append(
-                        f"Error verifying node {node.node_id}: {str(node_err)}"
-                    )
-            
-            # Phase 2: Verify consensus across nodes
-            try:
-                node_hashes = {}
-                for node in self.nodes:
-                    if node.chain:
-                        last_hash = node.chain[-1]['hash']
-                        if last_hash not in node_hashes:
-                            node_hashes[last_hash] = []
-                        node_hashes[last_hash].append(node.node_id)
-                
-                if len(node_hashes) > 1:
-                    verification_result['warnings'].append(
-                        f"Consensus divergence: {len(node_hashes)} different chain heads detected"
-                    )
-                    
-            except Exception as consensus_err:
-                verification_result['warnings'].append(f"Consensus check failed: {str(consensus_err)}")
-            
-            # Phase 3: Verify evidence storage
-            try:
-                evidence_count = self._journal.count()
-                verification_result['evidence_records'] = evidence_count
-                verification_result['redis_available'] = self._redis.available
-                
-            except Exception as storage_err:
-                verification_result['warnings'].append(f"Storage verification failed: {str(storage_err)}")
-            
+            if not primary_valid:
+                verification_result['verified'] = False
+                verification_result['errors'].append(
+                    f"Chain integrity failed for primary node {primary_node.node_id}"
+                )
+        except Exception as e:
+            verification_result['verified'] = False
+            verification_result['errors'].append(f"Error verifying primary node: {e}")
             return verification_result
-            
-        except Exception:
-            raise
+
+        # Phase 2: Spot-check consenting nodes by comparing last block hashes
+        try:
+            primary_last_hash = (
+                primary_node.chain[-1]['hash'] if primary_node.chain else None
+            )
+            node_hashes = {}
+            node_hashes[primary_last_hash] = [primary_node.node_id]
+
+            for node in self.nodes[1:]:
+                if not node.chain:
+                    continue
+                last_hash = node.chain[-1]['hash']
+                if last_hash not in node_hashes:
+                    node_hashes[last_hash] = []
+                node_hashes[last_hash].append(node.node_id)
+
+            if len(node_hashes) > 1:
+                verification_result['warnings'].append(
+                    f"Consensus divergence: {len(node_hashes)} different chain heads detected"
+                )
+        except Exception as consensus_err:
+            verification_result['warnings'].append(
+                f"Consensus check failed: {str(consensus_err)}"
+            )
+
+        # Phase 3: Verify evidence storage
+        try:
+            evidence_count = self._journal.count()
+            verification_result['evidence_records'] = evidence_count
+            verification_result['redis_available'] = self._redis.available
+        except Exception as storage_err:
+            verification_result['warnings'].append(
+                f"Storage verification failed: {str(storage_err)}"
+            )
+
+        return verification_result
     
     def verify_chain_integrity_for_transaction(self, transaction_id: str) -> bool:
         """
@@ -1500,9 +1505,7 @@ class BlockchainEvidenceManager:
         # Prefer Redis count (authoritative across workers) over in-process counter
         if self._redis.available:
             self.stats['total_sealed'] = self._redis.total_sealed()
-        self.stats['chain_verified'] = all(
-            node.verify_chain_integrity() for node in self.nodes[:6]
-        )
+        self.stats['chain_verified'] = self.nodes[0].verify_chain_integrity()
         return {
             **self.stats,
             'total_nodes': len(self.nodes),

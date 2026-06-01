@@ -90,6 +90,7 @@ class ProductionRiskScorer:
         transaction: Dict,
         reference_time: Optional[datetime] = None,
         k_hops: int = 2,
+        _subgraph_cache: Optional[Dict[str, Dict]] = None,
     ) -> FraudScore:
         """
         Score a single transaction using HTGNN.
@@ -111,12 +112,18 @@ class ProductionRiskScorer:
         start_time = datetime.utcnow()
         
         try:
-            # Extract subgraph around source account
-            subgraph = self.graph_constructor.get_subgraph_around_node(
-                node_id=transaction['source_account'],
-                k_hops=k_hops,
-                reference_time=reference_time,
-            )
+            # Extract subgraph around source account (cached per batch)
+            source = transaction['source_account']
+            if _subgraph_cache is not None and source in _subgraph_cache:
+                subgraph = _subgraph_cache[source]
+            else:
+                subgraph = self.graph_constructor.get_subgraph_around_node(
+                    node_id=source,
+                    k_hops=k_hops,
+                    reference_time=reference_time,
+                )
+                if _subgraph_cache is not None:
+                    _subgraph_cache[source] = subgraph
             
             # Run inference
             with torch.no_grad():
@@ -225,10 +232,13 @@ class ProductionRiskScorer:
         max_workers = max(1, min(len(transactions), batch_size, os.cpu_count() or 1))
         scores: List[Optional[FraudScore]] = [None] * len(transactions)
 
+        # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
+        subgraph_cache: Dict[str, Dict] = {}
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
                 future_to_index = {
-                    executor.submit(self.score_transaction, txn, reference_time): idx
+                    executor.submit(self.score_transaction, txn, reference_time, 2, subgraph_cache): idx
                     for idx, txn in transaction_batch
                 }
 
