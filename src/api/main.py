@@ -1638,13 +1638,6 @@ async def check_transaction(
         processing_time_ms = (time.time() - start_time) * 1000
         
         internal_decision = _normalize_decision(risk_result['decision'])
-        async with _get_metrics_lock():
-            # Update statistics atomically to avoid interleaving concurrent request mutations.
-            state.requests_processed += 1
-            state.decisions[internal_decision] += 1
-            state.total_risk_score += risk_result['risk_score']
-            state.total_processing_time += processing_time_ms
-        
         # Prepare response with innovation fields
         decision = _decision_to_api_value(internal_decision)
 
@@ -1667,6 +1660,13 @@ async def check_transaction(
                 internal_decision = "ALLOW"
             decision = _decision_to_api_value(internal_decision)
         # --------------------------------------------------------
+        
+        async with _get_metrics_lock():
+            # Update statistics atomically to avoid interleaving concurrent request mutations.
+            state.requests_processed += 1
+            state.decisions[internal_decision] += 1
+            state.total_risk_score += risk_result['risk_score']
+            state.total_processing_time += processing_time_ms
 
         response = TransactionCheckResponse(
             transaction_id=request.transaction_id,
