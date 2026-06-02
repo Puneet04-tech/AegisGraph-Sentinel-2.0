@@ -166,4 +166,3 @@ class GraphEntropyCalculator:
         
         except nx.NetworkXError:
             return {"degree_entropy": 0.0}
-```
