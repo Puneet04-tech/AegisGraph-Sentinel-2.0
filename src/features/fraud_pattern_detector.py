@@ -453,15 +453,15 @@ class FraudPatternDetector:
         account_windows = defaultdict(list)
         
         normalized_txns = []
-        for txn in transactions:
+        normalized_txns.append((ts, txn))
             ts = self._normalize_timestamp(self._txn_value(txn, 'timestamp'))
             normalized_txns.append((ts, txn))
 
         sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
 
-        for txn in sorted_txns:
+        sorted_ts_txns = [pair for pair in sorted(normalized_txns, key=lambda item: item[0]) if pair[0] >= cutoff
             account = self._txn_value(txn, 'source_account')
-            if account:
+        for _, txn in sorted_ts_txns:
                 account_windows[account].append(txn)
         
         # Check each account's transaction history
