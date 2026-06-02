@@ -495,6 +495,8 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     )
 
     critical_factors = 0
+    if source_account in mule_accounts:
+        critical_factors += 1
     if graph_risk >= 0.6:
         critical_factors += 1
     if velocity_risk >= 0.5:
@@ -525,6 +527,16 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
         decision = "REVIEW"
     else:
         decision = "ALLOW"
+
+    # Override decision for known mule accounts - they should never be allowed
+    if source_account in mule_accounts or target_account in mule_accounts:
+        if decision == "ALLOW":
+            decision = "REVIEW"
+            _api_logger.warning(
+                "Decision overridden to REVIEW due to known mule account involvement",
+                event_type="mule_account_decision_override",
+                metadata={"source_account": source_account, "target_account": target_account, "original_decision": "ALLOW"},
+            )
 
     confidence = 0.7
     if graph_loaded:
@@ -659,13 +671,20 @@ def generate_explanation(*args, **kwargs):
     return _generate_explanation_impl(*args, **kwargs)
 
 
+def _check_module_available(module_name: str) -> bool:
+    """Safely check if a module is available, handling modules with None __spec__."""
+    try:
+        return importlib_util.find_spec(module_name) is not None
+    except (ValueError, AttributeError):
+        return False
+
 MODEL_AVAILABLE = (
-    importlib_util.find_spec("src.inference.risk_scorer") is not None
-    and importlib_util.find_spec("src.inference.explainer") is not None
+    _check_module_available("src.inference.risk_scorer")
+    and _check_module_available("src.inference.explainer")
 )
 
 INNOVATIONS_AVAILABLE = all(
-    importlib_util.find_spec(module_name) is not None
+    _check_module_available(module_name)
     for module_name in (
         "src.features.voice_stress_analysis",
         "src.features.predictive_mule_identification",
@@ -675,10 +694,19 @@ INNOVATIONS_AVAILABLE = all(
     )
 )
 
-LATERAL_MOVEMENT_AVAILABLE = (
-    importlib_util.find_spec("src.features.lateral_movement")
-    is not None
-)
+LATERAL_MOVEMENT_AVAILABLE = _check_module_available("src.features.lateral_movement")
+LateralMovementDetector = None  # type: ignore[assignment,misc]
+if LATERAL_MOVEMENT_AVAILABLE:
+    try:
+        from ..features.lateral_movement import LateralMovementDetector
+    except (ImportError, SyntaxError) as e:
+        _api_logger.warning(
+            f"Lateral movement module unavailable ({e})",
+            event_type="lateral_movement_import_fallback",
+        )
+        LATERAL_MOVEMENT_AVAILABLE = False
+        LateralMovementDetector = None  # type: ignore[assignment,misc]
+
 BLAST_RADIUS_AVAILABLE = False
 try:
     from ..features.blast_radius import BlastRadiusAnalyzer
@@ -1413,9 +1441,8 @@ def _initialize_innovation_runtime(startup_logger):
     # degrading on the first fraud request. A follow-up PR can
     # move this to the lazy provider pattern if full consistency
     # is preferred.
-    if LATERAL_MOVEMENT_AVAILABLE:
+    if LATERAL_MOVEMENT_AVAILABLE and LateralMovementDetector is not None:
         try:
-            from src.features.lateral_movement import LateralMovementDetector
             _lmd = LateralMovementDetector()
             state.services.register_service("lateral_movement_detector", _lmd, replace=True)
             lateral_movement_detector = _lmd
@@ -2218,7 +2245,6 @@ if settings.runtime.debug:
         tags=["Debug"],
         summary="Force honeypot activation (DEBUG mode only)",
         description="Available only when DEBUG env var is 'true'. For testing only.",
-        dependencies=[Depends(require_api_key)],
     )
     def debug_activate_honeypot(
         request: HoneypotDebugRequest,

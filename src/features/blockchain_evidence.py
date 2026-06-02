@@ -1346,6 +1346,9 @@ class BlockchainEvidenceManager:
 
         try:
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
+        except Exception:
+            transaction_hash = hashlib.sha256(transaction_id.encode('utf-8', errors='ignore')).hexdigest()
+
         chain_data = {
             'transaction_id': transaction_id,
             'transaction_hash': transaction_hash,
