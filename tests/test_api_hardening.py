@@ -548,7 +548,7 @@ def test_startup_disk_reads_use_thread_pool(monkeypatch, tmp_path):
     try:
         asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
 
-        assert call_names == ["_read_file_bytes", "_read_json_file", "_read_json_file"]
+        assert call_names == ["_compute_file_sha256", "_read_json_file", "_read_json_file"]
         assert state.graph_loaded is True
         assert state.fraud_chains[0]["accounts"] == ["mule_1", "mule_2"]
         assert state.account_profiles["acct_1"]["score"] == 0.5
@@ -770,3 +770,262 @@ def test_voice_analysis_rate_limit_enforced(api_client, monkeypatch):
         statuses.append(response.status_code)
 
     assert 429 in statuses
+
+
+class TestMuleAccountDynamicLoading:
+    """Regression tests for dynamic mule account intelligence loading."""
+
+    def test_appstate_initializes_with_empty_mule_accounts(self):
+        """AppState should initialize with empty mule_accounts set, not hard-coded values."""
+        from src.api.main import AppState
+
+        fresh_state = AppState()
+        assert fresh_state.mule_accounts == set(), (
+            "AppState should initialize with empty mule_accounts set, not hard-coded demo data"
+        )
+        assert "mule_acc_001" not in fresh_state.mule_accounts
+        assert "mule_acc_002" not in fresh_state.mule_accounts
+        assert "test_merchant" not in fresh_state.mule_accounts
+
+    def test_mule_accounts_load_from_environment_json(self, monkeypatch, tmp_path):
+        """Mule accounts should load from AEGIS_MULE_ACCOUNTS_JSON environment variable."""
+        import json
+
+        mule_json = json.dumps(["mule_env_1", "mule_env_2", "mule_env_3"])
+        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_JSON", mule_json)
+
+        # Reset state to empty
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+
+        class DummyLogger:
+            def info(self, *args, **kwargs):
+                pass
+
+            def warning(self, *args, **kwargs):
+                pass
+
+        try:
+            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
+
+            assert state.mule_accounts == {"mule_env_1", "mule_env_2", "mule_env_3"}
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
+
+    def test_mule_accounts_load_from_custom_file(self, monkeypatch, tmp_path):
+        """Mule accounts should load from AEGIS_MULE_ACCOUNTS_FILE environment variable."""
+        import json
+
+        custom_file = tmp_path / "custom_mules.json"
+        custom_file.write_text(json.dumps(["mule_file_1", "mule_file_2"]), encoding="utf-8")
+
+        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_FILE", str(custom_file))
+
+        # Reset state to empty
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+
+        class DummyLogger:
+            def info(self, *args, **kwargs):
+                pass
+
+            def warning(self, *args, **kwargs):
+                pass
+
+        try:
+            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
+
+            assert state.mule_accounts == {"mule_file_1", "mule_file_2"}
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_FILE", raising=False)
+
+    def test_mule_accounts_load_from_default_fraud_chains(self, monkeypatch, tmp_path):
+        """Mule accounts should load from default fraud_chains.json when no env vars set."""
+        import json
+
+        chains_file = tmp_path / "fraud_chains.json"
+        chains_file.write_text(
+            json.dumps([{"accounts": ["chain_mule_1", "chain_mule_2"]}]),
+            encoding="utf-8",
+        )
+
+        original_mule_accounts = set(state.mule_accounts)
+        original_fraud_chains = state.fraud_chains
+        state.mule_accounts.clear()
+
+        def fake_path(value):
+            if value == "data/synthetic/fraud_chains.json":
+                return chains_file
+            return Path(value)
+
+        original_path = api_main.Path
+        monkeypatch.setattr(api_main, "Path", fake_path)
+
+        class DummyLogger:
+            def info(self, *args, **kwargs):
+                pass
+
+            def warning(self, *args, **kwargs):
+                pass
+
+        try:
+            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
+
+            assert state.mule_accounts == {"chain_mule_1", "chain_mule_2"}
+            assert state.fraud_chains == [{"accounts": ["chain_mule_1", "chain_mule_2"]}]
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            state.fraud_chains = original_fraud_chains
+            monkeypatch.setattr(api_main, "Path", original_path)
+
+    def test_mule_accounts_empty_when_no_source_configured(self, monkeypatch):
+        """When no mule account source is configured, mule_accounts should remain empty."""
+        # Ensure no environment variables are set
+        monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
+        monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_FILE", raising=False)
+
+        # Ensure default file doesn't exist
+        def fake_path(value):
+            if value == "data/synthetic/fraud_chains.json":
+                return Path("nonexistent_path_fraud_chains.json")
+            return Path(value)
+
+        original_path = api_main.Path
+        monkeypatch.setattr(api_main, "Path", fake_path)
+
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+
+        class DummyLogger:
+            def info(self, *args, **kwargs):
+                pass
+
+            def warning(self, *args, **kwargs):
+                pass
+
+        try:
+            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
+
+            assert state.mule_accounts == set(), (
+                "mule_accounts should be empty when no source is configured"
+            )
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            monkeypatch.setattr(api_main, "Path", original_path)
+
+    def test_mule_accounts_invalid_json_handled_safely(self, monkeypatch):
+        """Invalid JSON in AEGIS_MULE_ACCOUNTS_JSON should be handled gracefully."""
+        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_JSON", "invalid json {{{")
+
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+
+        class DummyLogger:
+            def info(self, *args, **kwargs):
+                pass
+
+            def warning(self, *args, **kwargs):
+                pass
+
+        try:
+            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
+
+            # Should remain empty and not crash
+            assert state.mule_accounts == set()
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
+
+    def test_fraud_scoring_stable_with_empty_mule_accounts(self, monkeypatch):
+        """Fraud scoring should remain stable when mule_accounts is empty."""
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+
+        try:
+            result = api_main._fallback_compute_risk_score(
+                {
+                    "source_account": "acct_src",
+                    "target_account": "acct_dst",
+                    "amount": 100.0,
+                },
+                biometrics={"hold_times": [120.0], "flight_times": [80.0]},
+            )
+
+            # Should return a valid risk score without crashing
+            assert "risk_score" in result
+            assert "decision" in result
+            assert "confidence" in result
+            assert "breakdown" in result
+            assert 0.0 <= result["risk_score"] <= 1.0
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+
+    def test_fraud_scoring_uses_loaded_mule_accounts(self, monkeypatch):
+        """Fraud scoring should use dynamically loaded mule accounts."""
+        original_mule_accounts = set(state.mule_accounts)
+        original_graph_loaded = state.graph_loaded
+        original_transaction_graph = state.transaction_graph
+        
+        state.mule_accounts.clear()
+        state.mule_accounts.update({"known_mule_001", "known_mule_002"})
+        state.graph_loaded = True
+        
+        # Create a minimal graph with the mule account
+        import networkx as nx
+        state.transaction_graph = nx.DiGraph()
+        state.transaction_graph.add_node("known_mule_001")
+        state.transaction_graph.add_node("acct_dst")
+
+        try:
+            # Transaction with known mule as source
+            result = api_main._fallback_compute_risk_score(
+                {
+                    "source_account": "known_mule_001",
+                    "target_account": "acct_dst",
+                    "amount": 100.0,
+                },
+                biometrics=None,
+            )
+
+            # Should have elevated graph risk due to mule account
+            assert result["breakdown"]["graph"] > 0.5
+            assert result["decision"] in ["BLOCK", "REVIEW"]
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)
+            state.graph_loaded = original_graph_loaded
+            state.transaction_graph = original_transaction_graph
+
+    def test_explanation_uses_loaded_mule_accounts(self, monkeypatch):
+        """Explanation generation should use dynamically loaded mule accounts."""
+        original_mule_accounts = set(state.mule_accounts)
+        state.mule_accounts.clear()
+        state.mule_accounts.update({"known_mule_001"})
+
+        try:
+            result = api_main._fallback_generate_explanation(
+                transaction={
+                    "source_account": "known_mule_001",
+                    "target_account": "acct_dst",
+                },
+                risk_result={
+                    "risk_score": 0.8,
+                    "decision": "BLOCK",
+                    "breakdown": {"graph": 0.7, "velocity": 0.1, "behavior": 0.0, "entropy": 0.0},
+                },
+            )
+
+            # Should mention mule account in explanation
+            assert "known_mule_001" in result["explanation"]
+            assert "MULE ACCOUNT" in result["explanation"].upper()
+        finally:
+            state.mule_accounts.clear()
+            state.mule_accounts.update(original_mule_accounts)

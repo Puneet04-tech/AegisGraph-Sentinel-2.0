@@ -1031,7 +1031,7 @@ class AppState:
         # Graph-based fraud detection
         self.transaction_graph = None
         self.fraud_chains = []
-        self.mule_accounts = {'mule_acc_001', 'mule_acc_002', 'test_merchant', 'suspect_account_1', 'fraud_wallet_xyz'}
+        self.mule_accounts = set()  # Loaded dynamically from fraud_chains.json or config
         self.account_profiles = {}
         self.graph_loaded = False
         # Lateral movement detection - rolling betweenness centrality baseline
@@ -1155,13 +1155,17 @@ def _load_runtime_configuration(startup_logger):
 def _read_file_bytes(path: Path) -> bytes:
     with open(path, "rb") as file_handle:
         return file_handle.read()
-    with open(path, "rb") as file_handle:
+
+
 def _compute_file_sha256(path: Path) -> str:
     hasher = hashlib.sha256()
     with open(path, "rb") as file_handle:
         for chunk in iter(lambda: file_handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _read_json_file(path: Path):
     with open(path, "r") as file_handle:
         return json.load(file_handle)
 
@@ -1249,7 +1253,7 @@ async def _load_graph_runtime_data(startup_logger):
                 if graph_path.suffix.lower() != ".graphml":
                     raise ValueError(
                         f"Unsupported graph artifact format: {graph_path.suffix}. "
-                state.transaction_graph = nx.parse_graphml(await asyncio.to_thread(_read_file_bytes, graph_path))
+                        f"Only .graphml is supported."
                     )
                 state.transaction_graph = nx.read_graphml(graph_path)
                 startup_logger.info(
@@ -1274,9 +1278,62 @@ async def _load_graph_runtime_data(startup_logger):
             if not graph_path:
                 state.graph_loaded = False
 
-        # Load fraud chains
+        # Load fraud chains and mule accounts
+        # Priority: 1. Environment variable AEGIS_MULE_ACCOUNTS_JSON (direct JSON)
+        #           2. Environment variable AEGIS_MULE_ACCOUNTS_FILE (file path)
+        #           3. Default fraud_chains.json file
+        mule_accounts_loaded = False
+        
+        # Check for direct JSON from environment variable
+        mule_accounts_json = os.getenv("AEGIS_MULE_ACCOUNTS_JSON")
+        if mule_accounts_json:
+            try:
+                mule_data = json.loads(mule_accounts_json)
+                if isinstance(mule_data, list):
+                    state.mule_accounts.update(mule_data)
+                elif isinstance(mule_data, dict) and 'accounts' in mule_data:
+                    state.mule_accounts.update(mule_data['accounts'])
+                else:
+                    state.mule_accounts.update([mule_data])
+                mule_accounts_loaded = True
+                startup_logger.info(
+                    "Loaded mule accounts from environment variable",
+                    event_type="mule_accounts_loaded_from_env",
+                    metadata={"count": len(state.mule_accounts)},
+                )
+            except (json.JSONDecodeError, TypeError) as e:
+                startup_logger.warning(
+                    f"Failed to parse AEGIS_MULE_ACCOUNTS_JSON: {e}",
+                    event_type="mule_accounts_env_parse_error",
+                )
+        
+        # Check for custom file path from environment variable
+        if not mule_accounts_loaded:
+            mule_accounts_file = os.getenv("AEGIS_MULE_ACCOUNTS_FILE")
+            if mule_accounts_file:
+                custom_path = Path(mule_accounts_file)
+                if custom_path.exists():
+                    try:
+                        mule_data = await asyncio.to_thread(_read_json_file, custom_path)
+                        if isinstance(mule_data, list):
+                            state.mule_accounts.update(mule_data)
+                        elif isinstance(mule_data, dict) and 'accounts' in mule_data:
+                            state.mule_accounts.update(mule_data['accounts'])
+                        mule_accounts_loaded = True
+                        startup_logger.info(
+                            "Loaded mule accounts from custom file",
+                            event_type="mule_accounts_loaded_from_file",
+                            metadata={"file": str(custom_path), "count": len(state.mule_accounts)},
+                        )
+                    except Exception as e:
+                        startup_logger.warning(
+                            f"Failed to load mule accounts from {custom_path}: {e}",
+                            event_type="mule_accounts_file_load_error",
+                        )
+        
+        # Default: load from fraud_chains.json
         chains_path = Path("data/synthetic/fraud_chains.json")
-        if chains_path.exists():
+        if not mule_accounts_loaded and chains_path.exists():
             state.fraud_chains = await asyncio.to_thread(_read_json_file, chains_path)
             for chain in state.fraud_chains:
                 state.mule_accounts.update(chain.get('accounts', []))
@@ -1288,8 +1345,11 @@ async def _load_graph_runtime_data(startup_logger):
                     "mule_accounts": len(state.mule_accounts),
                 },
             )
-        else:
-            startup_logger.warning("Fraud chains file not found", event_type="fraud_chains_missing")
+        elif not mule_accounts_loaded:
+            startup_logger.info(
+                "No mule account intelligence source configured - using empty set",
+                event_type="mule_accounts_empty",
+            )
         
         # Load account profiles
         accounts_path = Path("data/synthetic/accounts.json")
