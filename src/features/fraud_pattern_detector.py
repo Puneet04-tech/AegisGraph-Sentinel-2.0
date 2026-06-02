@@ -455,8 +455,8 @@ class FraudPatternDetector:
         normalized_txns = []
         for txn in transactions:
             ts = self._normalize_timestamp(self._txn_value(txn, 'timestamp'))
-            if ts is not None:
-                normalized_txns.append((ts, txn))
+            normalized_txns.append((ts, txn))
+
         sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
 
         for txn in sorted_txns:
