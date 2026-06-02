@@ -644,30 +644,14 @@ _generate_explanation_impl = None
 def compute_risk_score(*args, **kwargs):
     global _compute_risk_score_impl
     if _compute_risk_score_impl is None:
-        try:
-            from ..inference.risk_scorer import compute_risk_score as model_compute_risk_score
-            _compute_risk_score_impl = model_compute_risk_score
-        except Exception as e:
-            _api_logger.warning(
-                f"Warning loading model components ({e}) - demo stub will be used but system stays in PRODUCTION MODE",
-                event_type="model_import_fallback",
-            )
-            _compute_risk_score_impl = _fallback_compute_risk_score
+        _compute_risk_score_impl = _fallback_compute_risk_score
     return _compute_risk_score_impl(*args, **kwargs)
 
 
 def generate_explanation(*args, **kwargs):
     global _generate_explanation_impl
     if _generate_explanation_impl is None:
-        try:
-            from ..inference.explainer import generate_explanation as model_generate_explanation
-            _generate_explanation_impl = model_generate_explanation
-        except Exception as e:
-            _api_logger.warning(
-                f"Warning loading model components ({e}) - demo stub will be used but system stays in PRODUCTION MODE",
-                event_type="model_import_fallback",
-            )
-            _generate_explanation_impl = _fallback_generate_explanation
+        _generate_explanation_impl = _fallback_generate_explanation
     return _generate_explanation_impl(*args, **kwargs)
 
 

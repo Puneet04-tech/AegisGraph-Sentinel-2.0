@@ -166,3 +166,43 @@ class GraphEntropyCalculator:
         
         except nx.NetworkXError:
             return {"degree_entropy": 0.0}
+
+
+def compute_entropy_risk_score(
+    account: str,
+    graph: nx.Graph,
+    node_attributes: Dict[str, Dict],
+    edge_timestamps: Dict[str, float],
+    edge_amounts: Dict[str, float],
+    current_time: Optional[float] = None,
+) -> float:
+    """
+    Compute entropy-based risk score for an account.
+    
+    This standalone function provides a simple entropy-based risk assessment
+    based on the diversity of an account's connections and transaction patterns.
+    
+    Args:
+        account: Account identifier to analyze
+        graph: NetworkX graph structure
+        node_attributes: Dictionary mapping nodes to their attributes
+        edge_timestamps: Dictionary mapping edges to timestamps
+        edge_amounts: Dictionary mapping edges to transaction amounts
+        current_time: Current timestamp for temporal analysis
+    
+    Returns:
+        Risk score between 0.0 (low risk) and 1.0 (high risk)
+    """
+    if graph is None or account not in graph:
+        return 0.0
+    
+    calculator = GraphEntropyCalculator(neighborhood_size=2)
+    
+    # Compute neighbor entropy
+    neighbor_entropy = calculator.calculate_neighbor_entropy(graph, account)
+    
+    # Normalize entropy to risk score (higher entropy = higher risk)
+    # Typical entropy values range from 0 to ~3-4 for realistic graphs
+    risk_score = min(neighbor_entropy / 3.0, 1.0)
+    
+    return float(risk_score)
