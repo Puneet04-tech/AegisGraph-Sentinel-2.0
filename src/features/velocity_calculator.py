@@ -61,8 +61,8 @@ class VelocityCalculator:
             if len(normalized) < 2:
                 return 0.0
             total_time = normalized[-1].timestamp - normalized[0].timestamp
-            if total_time <= 0:
-                return float(len(normalized) - 1)
+            if total_time == 0:
+                return float('inf')
             return float((len(normalized) - 1) / total_time)
 
         chain_features = self.compute_chain_velocity(normalized, graph)
@@ -143,12 +143,12 @@ class VelocityCalculator:
             
             total_distance += distance
         
-        # Compute total time
+        if total_time == 0:
         total_time = transactions[-1].timestamp - transactions[0].timestamp
         
-        if total_time == 0:
+        if total_time <= 0:
             return {
-                'chain_velocity': float('inf'),
+                'chain_velocity': 0.0,
                 'total_distance': total_distance,
                 'total_time': 0.0,
                 'avg_hop_time': 0.0,
