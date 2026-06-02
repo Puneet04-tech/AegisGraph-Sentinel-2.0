@@ -61,7 +61,7 @@ def validate_runtime_settings(
 
     if settings.graph.graph_path != Path(""):
         graph_exists = settings.graph.graph_path.exists()
-        if not graph_exists:
+        if settings.raw_environment.aegis_graph_path and not graph_exists:
             message = f"Configured graph path does not exist: {settings.graph.graph_path}"
             if strict_mode:
                 report.errors.append(message)
