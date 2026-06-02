@@ -366,25 +366,33 @@ class RiskScorer:
 
 def compute_risk_score(
     transaction: dict,
-    graph_data: Optional[dict] = None,
     biometrics: Optional[dict] = None,
-    **kwargs
+    *,
+    graph_loaded: bool,
+    transaction_graph,
+    mule_accounts: set[str],
+    centrality_baseline: dict[str, list[float]],
+    centrality_window_size: int,
+    account_profiles: dict[str, dict],
+    config: dict,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
     
     Args:
         transaction: Transaction data
-        graph_data: Graph representation
         biometrics: Behavioral biometrics
-        **kwargs: Additional parameters (state, etc.)
+        graph_loaded: Whether graph-backed detection is enabled
+        transaction_graph: Graph object or provider
+        mule_accounts: Known mule account identifiers
+        centrality_baseline: Rolling centrality history by account
+        centrality_window_size: Rolling baseline size
+        account_profiles: Account profile lookup
+        config: Runtime configuration
     
     Returns:
         Risk score dictionary with mule detection
     """
-    # Import state from the API module
-    from ..api.main import state
-    
     risk_score = 0.0
     breakdown = {
         'graph': 0.0,
@@ -403,37 +411,38 @@ def compute_risk_score(
     graph_view = None
     
     # Check mule accounts even without graph loaded (for demo mode)
-    if state.graph_loaded:
+    if graph_loaded:
         # Check if accounts are in known fraud chains (mule accounts)
-        if source_account in state.mule_accounts:
+        if source_account in mule_accounts:
             graph_risk += 0.6
             _inference_logger.warning(
                 f"Source account {source_account} is a known mule account",
                 event_type="mule_account_detected",
                 metadata={"account": source_account, "role": "source"},
             )
-        if target_account in state.mule_accounts:
+        if target_account in mule_accounts:
             graph_risk += 0.4
             _inference_logger.warning(
                 f"Target account {target_account} is a known mule account",
                 event_type="mule_account_detected",
                 metadata={"account": target_account, "role": "target"},
             )
-        if source_account in state.mule_accounts and target_account in state.mule_accounts:
+        if source_account in mule_accounts and target_account in mule_accounts:
             graph_risk += 0.3
 
-    if state.graph_loaded and state.transaction_graph:
+    if graph_loaded and transaction_graph:
         # Mule-account penalties are applied in the block above.
         # They are intentionally NOT repeated here — the original code added
         # them a second time, doubling graph_risk for every mule transaction
         # and masking all topology signals (fix for Issue #133).
 
-        if hasattr(state.transaction_graph, "is_active") and state.transaction_graph.is_active:
-            graph_view = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+        # Check graph topology patterns
+        if hasattr(transaction_graph, "is_active") and transaction_graph.is_active:
+            G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
-            graph_view = state.transaction_graph
-
-        if source_account in graph_view.nodes:
+            G = transaction_graph
+        
+        if source_account in G.nodes:
             # Analyze source account patterns
             out_degree = graph_view.out_degree(source_account)
             in_degree = graph_view.in_degree(source_account)
@@ -495,14 +504,13 @@ def compute_risk_score(
     lateral_movement_detected = False
     lateral_movement_reason = ""
     
-    if state.graph_loaded and state.transaction_graph:
-        G = graph_view
-        if G is None:
-            if hasattr(state.transaction_graph, "is_active") and state.transaction_graph.is_active:
-                G = state.transaction_graph.get_approx_subgraph(source_account, max_hops=2)
-            else:
-                G = state.transaction_graph
-        has_node = G.has_node(source_account) if hasattr(G, "has_node") else source_account in G.nodes if hasattr(G, "nodes") else False
+    if graph_loaded and transaction_graph:
+        if hasattr(transaction_graph, "is_active") and transaction_graph.is_active:
+            G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+            has_node = G.has_node(source_account)
+        else:
+            G = transaction_graph
+            has_node = source_account in G.nodes if hasattr(G, "nodes") else False
 
         if has_node:
             try:
@@ -512,10 +520,10 @@ def compute_risk_score(
                     current_score = centrality[source_account]
                     
                     # Get or initialize baseline
-                    if source_account not in state.centrality_baseline:
-                        state.centrality_baseline[source_account] = []
+                    if source_account not in centrality_baseline:
+                        centrality_baseline[source_account] = []
                     
-                    baseline_history = state.centrality_baseline[source_account]
+                    baseline_history = centrality_baseline[source_account]
                     
                     if len(baseline_history) >= 3:
                         baseline_avg = np.mean(baseline_history)
@@ -542,7 +550,7 @@ def compute_risk_score(
                     
                     # Update baseline (rolling window)
                     baseline_history.append(current_score)
-                    if len(baseline_history) > state.centrality_window_size:
+                    if len(baseline_history) > centrality_window_size:
                         baseline_history.pop(0)
                         
             except Exception as e:
@@ -562,8 +570,8 @@ def compute_risk_score(
         velocity_risk += 0.1
     
     # Check against account history if available
-    if state.account_profiles and source_account in state.account_profiles:
-        profile = state.account_profiles[source_account]
+    if account_profiles and source_account in account_profiles:
+        profile = account_profiles[source_account]
         avg_amount = profile.get('avg_transaction_amount', 0)
         if avg_amount > 0 and amount > 3 * avg_amount:
             velocity_risk += 0.3
@@ -645,7 +653,7 @@ def compute_risk_score(
         }
     except Exception as e:
         logger.error(f"Error: {e}")
-        thresholds = state.config.get('risk_scoring', {}).get('thresholds', {
+        thresholds = config.get('risk_scoring', {}).get('thresholds', {
             'allow': config_defaults.DEFAULT_RISK_THRESHOLDS["allow"],
             'review': config_defaults.DEFAULT_RISK_THRESHOLDS["review"],
             'block': config_defaults.DEFAULT_RISK_THRESHOLDS["block"],

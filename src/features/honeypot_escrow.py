@@ -25,6 +25,7 @@ Pilot Results (HDFC Mumbai, 6 months):
 import json
 import time
 import threading
+from collections import deque
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -113,7 +114,7 @@ class HoneypotEscrowManager:
         self._active_honeypots_by_account: Dict[str, HoneypotTransaction] = {}
         
         # Historical honeypots
-        self.honeypot_history: List[HoneypotTransaction] = []
+        self.honeypot_history: deque = deque(maxlen=10000)
         
         # Statistics (from pilot study - HDFC Mumbai, 6 months)
         self.stats = {
@@ -379,8 +380,6 @@ class HoneypotEscrowManager:
         
         with self._lock:
             self.honeypot_history.append(honeypot)
-            if len(self.honeypot_history) > 10000:
-                self.honeypot_history = self.honeypot_history[-5000:]
             del self.active_honeypots[honeypot_id]
             self._active_honeypots_by_account.pop(honeypot.target_account, None)
 
@@ -489,8 +488,6 @@ class HoneypotEscrowManager:
         
         with self._lock:
             self.honeypot_history.append(honeypot)
-            if len(self.honeypot_history) > 10000:
-                self.honeypot_history = self.honeypot_history[-5000:]
             del self.active_honeypots[honeypot_id]
             self._active_honeypots_by_account.pop(honeypot.target_account, None)
     

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -44,7 +45,13 @@ class ModelRegistry:
         artifact_path = (self.registry_dir / artifact_name).resolve()
         if not artifact_path.is_relative_to(self.registry_dir.resolve()):
             raise ValueError(f"Invalid artifact_path {artifact_path} outside of registry_dir {self.registry_dir}")
-        torch.save(checkpoint, artifact_path)
+
+        # Atomic write: save to temp file, compute checksum, then rename
+        tmp_path = artifact_path.with_suffix(".tmp")
+        torch.save(checkpoint, tmp_path)
+        with open(tmp_path, "rb") as f:
+            artifact_sha256 = hashlib.sha256(f.read()).hexdigest()
+        tmp_path.rename(artifact_path)
         self.backend.save(artifact_path, artifact_name)
 
         entry = {
@@ -54,11 +61,11 @@ class ModelRegistry:
             "metrics": metrics,
             "saved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "artifact_path": artifact_name,
+            "artifact_sha256": artifact_sha256,
         }
         with self._manifest_lock:
             self._manifest = self._load_manifest()  # Refresh manifest to avoid overwriting concurrent updates
             self._manifest["versions"].append(entry)
-            versions = self._manifest["versions"]
             if len(versions) > self._max_history:
                 self._manifest["versions"] = versions[-self._max_history:]
             self._write_manifest()
@@ -117,6 +124,18 @@ class ModelRegistry:
         if not artifact_path.exists():
             logger.warning("Champion artifact not found at %s", artifact_path)
             return False
+
+        # Verify checksum if recorded in manifest
+        expected_sha256 = entry.get("artifact_sha256")
+        if expected_sha256:
+            with open(artifact_path, "rb") as f:
+                actual_sha256 = hashlib.sha256(f.read()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                logger.warning(
+                    "Champion artifact %s checksum mismatch (expected=%s, actual=%s)",
+                    artifact_path, expected_sha256, actual_sha256,
+                )
+                return False
 
         try:
             checkpoint = torch.load(artifact_path, map_location=device, weights_only=True)

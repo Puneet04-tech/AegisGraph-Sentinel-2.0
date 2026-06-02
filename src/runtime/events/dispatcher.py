@@ -1,171 +1,100 @@
-"""Async background event dispatcher for AegisGraph Sentinel 2.0."""
+"""Bounded async event dispatcher with backpressure and critical-event preservation."""
 
 from __future__ import annotations
 
 import asyncio
-import traceback
+import logging
+from collections import deque
 from typing import Optional
 
-from ...observability import get_logger
 from .event_bus import RuntimeEventBus
-from .event_types import RuntimeEvent
+from .event_types import RuntimeEvent, RuntimeShutdownEvent
 
-_logger = get_logger("runtime.events.dispatcher")
+logger = logging.getLogger(__name__)
 
-_SENTINEL = object()  # signals the dispatch loop to stop
+_CRITICAL_EVENT_TYPES = (RuntimeShutdownEvent,)
 
 
 class EventDispatcher:
-    """
-    Bounded in-memory async dispatcher that decouples event producers
-    from the event bus.
+    """Dispatches RuntimeEvent objects from a bounded queue to the bus.
 
-    * dispatch(event)  – non-blocking; safe to call from sync or async code.
-    * start()          – launches the background processing loop.
-    * stop()           – gracefully drains the queue and stops the loop.
-
-    If the queue is full the event is dropped and a warning is logged so
-    that a slow consumer never blocks runtime-critical paths.
+    * ``start()`` / ``stop()`` manage an internal processing task.
+    * ``dispatch(event)`` enqueues an event (thread-safe, non-blocking).
+    * When the bounded queue fills, overflow is held in an unbounded deque
+      so that critical events (e.g. ``RuntimeShutdownEvent``) are never dropped.
+    * Shutdown uses a flag, not a sentinel item, so queue-full during teardown
+      does not lose events.
     """
 
-    def __init__(self, bus: RuntimeEventBus, maxsize: int = 1000) -> None:
+    def __init__(self, bus: RuntimeEventBus, maxsize: int = 256) -> None:
         self._bus = bus
         self._maxsize = maxsize
-        self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
+        self._queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=maxsize)
+        self._overflow: deque[RuntimeEvent] = deque()
+        self._started = False
+        self._stop_requested = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
-        self._running = False
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+    @property
+    def started(self) -> bool:
+        return self._started
 
     async def start(self) -> None:
-        """Start the background dispatch loop."""
-        if self._running:
+        if self._started:
             return
-        self._running = True
-        # Recreate the queue each time start() is called so stale
-        # items from a previous run do not leak through.
-        self._queue = asyncio.Queue(maxsize=self._maxsize)
-        self._task = asyncio.create_task(self._loop(), name="runtime_event_dispatcher")
-        _logger.info(
-            "Event dispatcher started",
-            event_type="event_dispatcher_started",
-            metadata={"maxsize": self._maxsize},
-        )
-
-    async def stop(self) -> None:
-        """
-        Gracefully stop the dispatcher.
-
-        Sends a sentinel value so the loop processes all already-queued
-        events before exiting.
-        """
-        if not self._running:
-            return
-        self._running = False
-        try:
-            # Put sentinel without blocking; if full, force it by making room.
-            self._queue.put_nowait(_SENTINEL)
-        except asyncio.QueueFull:
-            # Drain one item to make room for the sentinel.
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                self._queue.put_nowait(_SENTINEL)
-            except asyncio.QueueFull:
-                pass
-
-        if self._task is not None and not self._task.done():
-            try:
-                await self._task
-            except Exception:
-                pass
-            self._task = None
-
-        _logger.info("Event dispatcher stopped", event_type="event_dispatcher_stopped")
-
-    # ------------------------------------------------------------------
-    # Dispatching
-    # ------------------------------------------------------------------
+        self._started = True
+        self._stop_requested.clear()
+        self._task = asyncio.create_task(self._process_loop())
 
     def dispatch(self, event: RuntimeEvent) -> None:
-        """
-        Enqueue *event* for async processing.  Non-blocking and thread-safe.
-
-        If the queue is at capacity the event is silently dropped after
-        logging a warning – this guarantees that runtime-critical code
-        paths are never blocked.
-        """
-        if not self._running:
-            # Dispatcher not yet started or already stopped – ignore.
+        """Enqueue *event* for delivery. Thread-safe, non-blocking."""
+        if not self._started:
             return
-
         try:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            _logger.warning(
-                f"Event dispatcher queue is full (maxsize={self._maxsize}); "
-                f"dropping event {type(event).__name__} (id={event.event_id})",
-                event_type="event_dispatcher_queue_full",
-                metadata={
-                    "event_type": type(event).__name__,
-                    "event_id": event.event_id,
-                    "source": event.source,
-                },
-            )
+            if isinstance(event, _CRITICAL_EVENT_TYPES):
+                self._overflow.appendleft(event)
+            else:
+                self._overflow.append(event)
 
-    # ------------------------------------------------------------------
-    # Internal loop
-    # ------------------------------------------------------------------
+    async def stop(self) -> None:
+        if not self._started:
+            return
+        self._started = False
+        self._stop_requested.set()
+        if self._task is not None:
+            await self._task
 
-    async def _loop(self) -> None:
-        """Background dispatch loop – runs until a sentinel is received."""
-        _logger.info("Event dispatcher loop running", event_type="event_dispatcher_loop_started")
+    async def _process_loop(self) -> None:
+        while not self._stop_requested.is_set() or not self._queue.empty() or self._overflow:
+            event = await self._fetch_next_event()
+            if event is None:
+                continue
+            try:
+                await self._bus.publish(event)
+            except Exception:
+                logger.exception("Event dispatch failed for %s", type(event).__name__)
+            self._drain_overflow()
+
+            while self._overflow and not self._queue.full():
         try:
-            while True:
-                item = await self._queue.get()
-                if item is _SENTINEL:
-                    # Drain any remaining real events before exiting.
-                    while not self._queue.empty():
-                        remaining = self._queue.get_nowait()
-                        if remaining is not _SENTINEL:
-                            await self._publish_safe(remaining)
-                    self._queue.task_done()
-                    break
-                await self._publish_safe(item)
-                self._queue.task_done()
-        except asyncio.CancelledError:
-            _logger.info(
-                "Event dispatcher loop cancelled",
-                event_type="event_dispatcher_loop_cancelled",
-            )
-            raise
-        except Exception as exc:
-            _logger.error(
-                f"Event dispatcher loop crashed: {exc}",
-                event_type="event_dispatcher_loop_crashed",
-                metadata={
-                    "error": str(exc),
-                    "traceback": "".join(
-                        traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    ),
-                },
-            )
+            return await asyncio.wait_for(self._queue.get(), timeout=0.2)
+        except asyncio.TimeoutError:
+            return None
 
-    async def _publish_safe(self, event: RuntimeEvent) -> None:
-        """Publish a single event through the bus with isolated error handling."""
-        try:
-            await self._bus.publish(event)
-        except Exception as exc:
-            _logger.error(
-                f"Event dispatcher failed to publish {type(event).__name__}: {exc}",
-                event_type="event_dispatcher_publish_error",
-                metadata={
-                    "event_type": type(event).__name__,
-                    "event_id": event.event_id,
-                    "error": str(exc),
-                },
-            )
+    def _drain_overflow(self) -> None:
+        while self._overflow and not self._queue.full():
+            event = self._overflow.popleft()
+            try:
+                self._queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._overflow.appendleft(event)
+                break
+
+    def __repr__(self) -> str:
+        return (
+            f"EventDispatcher(started={self._started}, "
+            f"queue_size={self._queue.qsize()}, "
+            f"overflow={len(self._overflow)})"
+        )

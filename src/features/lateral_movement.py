@@ -1,5 +1,6 @@
 import time
 import threading
+import time as _time
 from collections import OrderedDict, defaultdict, deque
 from typing import Any, Optional
 
@@ -47,6 +48,11 @@ class LateralMovementDetector:
             # Dynamically check if active
             self.use_neo4j = getattr(self.graph_service, "is_active", False)
 
+        self._centrality_cache: OrderedDict[str, Tuple[float, float]] = OrderedDict()
+        self._centrality_cache_ttl = 60
+        self._centrality_cache_max = 1024
+        self._centrality_cache_version = 0
+
         if self.use_neo4j:
             print("LateralMovementDetector: Using active Neo4j Graph Database Backend.")
         elif self.use_redis:
@@ -68,9 +74,12 @@ class LateralMovementDetector:
 
     def update_graph(self, src_account, dst_account, amount: float = 1.0, timestamp: Optional[float] = None):
         """Updates the network topology dynamically across all workers."""
+        self._centrality_cache.clear()
+        self._centrality_cache_version += 1
+
         if self.graph_service is not None and getattr(self.graph_service, "is_active", False):
             # Neo4j Active Provider execution
-            t = timestamp or time.time()
+            t = timestamp or _time.time()
             self.graph_service.add_transaction(src_account, dst_account, amount, t)
             return
 
@@ -165,7 +174,15 @@ class LateralMovementDetector:
         return G
 
     def _calculate_approx_centrality(self, account_id):
-        """Calculates localized betweenness centrality safely."""
+        """Calculates localized betweenness centrality safely with caching."""
+        now = _time.time()
+        cached = self._centrality_cache.get(account_id)
+        if cached is not None:
+            value, ts = cached
+            if now - ts < self._centrality_cache_ttl:
+                self._centrality_cache.move_to_end(account_id)
+                return value
+
         if self.use_neo4j or self.use_redis:
             G = self._get_approx_graph(account_id)
         else:
@@ -174,6 +191,7 @@ class LateralMovementDetector:
 
         num_nodes = G.number_of_nodes()
         if num_nodes < 3:
+            self._centrality_cache[account_id] = (0.0, now)
             return 0.0
 
         k_approx = min(50, num_nodes)
@@ -183,7 +201,12 @@ class LateralMovementDetector:
             normalized=True,
             weight='weight'
         )
-        return centralities.get(account_id, 0.0)
+        result = centralities.get(account_id, 0.0)
+        self._centrality_cache[account_id] = (result, now)
+        self._centrality_cache.move_to_end(account_id)
+        while len(self._centrality_cache) > self._centrality_cache_max:
+            self._centrality_cache.popitem(last=False)
+        return result
 
     def analyze_account(self, account_id):
         """Evaluates the account against its historical baseline across workers."""

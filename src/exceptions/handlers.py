@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from typing import Any, Dict, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
@@ -130,17 +131,27 @@ async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     request_id = _request_id_for_error(request)
+    
+    # --- UPGRADE: Unpack nested Pydantic errors into a scannable message string ---
+    error_details = []
+    for error in exc.errors():
+        loc = " -> ".join(str(loc_item) for loc_item in error.get("loc", []))
+        msg = error.get("msg", "Invalid value")
+        error_details.append(f"[{loc}]: {msg}")
+    readable_message = "Request validation failed: " + " | ".join(error_details)
+    # ------------------------------------------------------------------------------
+
     audit = get_audit_logger()
     audit.log_exception_trace(
         exc_type="ValidationException",
-        message="Request validation failed",
+        message=readable_message,
         status_code=422,
         metadata={"errors": jsonable_encoder(exc.errors()), "path": request.url.path},
     )
     content = build_error_payload(
         code=ErrorCode.VALIDATION_ERROR,
         type_name="ValidationException",
-        message="Request validation failed",
+        message=readable_message,
         request_id=request_id,
         details={"validation_errors": jsonable_encoder(exc.errors())},
     )
@@ -153,12 +164,21 @@ async def validation_exception_handler(
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     request_id = _request_id_for_error(request)
+    
+    # --- UPGRADE: Extract full Python execution traceback for server analytics ---
+    error_trace = traceback.format_exc()
+    # ------------------------------------------------------------------------------
+
     audit = get_audit_logger()
     audit.log_exception_trace(
         exc_type=type(exc).__name__,
         message="Unhandled internal error",
         status_code=500,
-        metadata={"path": request.url.path, "error": str(exc)},
+        metadata={
+            "path": request.url.path, 
+            "error": str(exc),
+            "traceback": error_trace  # Full file and line number matrix preserved safely inside internal logs
+        },
     )
     content = build_error_payload(
         code=ErrorCode.INTERNAL_ERROR,

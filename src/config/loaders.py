@@ -29,12 +29,23 @@ ENV_ALIASES = {
     "environment": "ENVIRONMENT",
     "api_url": "API_URL",
     "aegis_allowed_origins": "AEGIS_ALLOWED_ORIGINS",
+    "cors_origins": "CORS_ORIGINS",
     "debug": "DEBUG",
     "aegis_graph_path": "AEGIS_GRAPH_PATH",
     "aegis_graph_sha256": "AEGIS_GRAPH_SHA256",
     "redis_url": "REDIS_URL",
     "aegis_config_path": "AEGIS_CONFIG_PATH",
     "aegis_thresholds_path": "AEGIS_THRESHOLDS_PATH",
+    "api_host": "API_HOST",
+    "api_port": "API_PORT",
+    "api_reload": "API_RELOAD",
+    "api_log_level": "API_LOG_LEVEL",
+    "rate_limit": "RATE_LIMIT",
+    "max_batch_size": "MAX_BATCH_SIZE",
+    "log_level": "LOG_LEVEL",
+    "log_format": "LOG_FORMAT",
+    "log_output_dir": "LOG_OUTPUT_DIR",
+    "prometheus_port": "PROMETHEUS_PORT",
 }
 
 
@@ -61,9 +72,12 @@ def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
 
 def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:
     """Load recognized environment variables into a typed raw schema."""
-    load_dotenv()
-    source = os.environ if environ is None else environ
-    values = {field: source.get(env_name) for field, env_name in ENV_ALIASES.items()}
+        load_dotenv()
+        load_dotenv()
+        source = os.environ
+    else:
+        source = environ
+        source = os.environ
     return EnvironmentVariablesSchema(**values)
 
 
