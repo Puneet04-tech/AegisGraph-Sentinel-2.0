@@ -1509,11 +1509,11 @@ class BlockchainEvidenceManager:
     
     def get_statistics(self) -> Dict:
         """Get blockchain statistics"""
-        # Prefer Redis count (authoritative across workers) over in-process counter
+            self.stats['total_sealed'] = self._redis.total_sealed()
         if self._redis.available:
             try:
-                self.stats['total_sealed'] = self._redis.total_sealed()
-            except Exception as exc:
+        else:
+            self.stats['total_sealed'] = 0
                 self.logger.warning("Redis statistics fetch failed: %s", exc)
         now = time.time()
         if (
