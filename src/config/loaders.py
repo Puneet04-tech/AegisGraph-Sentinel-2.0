@@ -77,19 +77,7 @@ def load_environment(environ: Optional[Mapping[str, str]] = None) -> Environment
         source = os.environ
     else:
         source = environ
-
-    mapped = {}
-    # First, copy any existing lowercase keys directly passed (e.g. from tests)
-    for k, v in source.items():
-        if k in EnvironmentVariablesSchema.model_fields:
-            mapped[k] = v
-
-    # Then overlay mapped uppercase environment keys
-    for field_name, env_var in ENV_ALIASES.items():
-        if env_var in source:
-            mapped[field_name] = source[env_var]
-
-    return EnvironmentVariablesSchema(**mapped)
+    return EnvironmentVariablesSchema(**source)
 
 
 def load_runtime_yaml(config_path: Optional[str | Path] = None) -> Dict[str, Any]:
