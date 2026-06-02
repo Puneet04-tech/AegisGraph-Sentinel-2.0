@@ -355,9 +355,9 @@ def validate_thresholds(thresholds: dict) -> list:
             errors.append("graph_analysis.lateral_movement_threshold_multiplier must be >= 1")
     
     return errors
-
-
 @functools.lru_cache(maxsize=1)
+
+@functools.lru_cache(maxsize=None)
 def load_thresholds(config_path: str = "config/thresholds.yaml", 
                     validate: bool = True) -> dict:
     """

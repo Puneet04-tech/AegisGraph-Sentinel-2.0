@@ -46,31 +46,39 @@ class LifecycleManager:
                 self._logger.info("Startup already completed", event_type="runtime_startup_already_complete")
                 return
 
-            # Start the event dispatcher and register default subscriptions
-            # before running any startup steps so events emitted during
-            # startup are captured.
-            dispatcher = getattr(self.runtime_state, "dispatcher", None)
-            event_bus = getattr(self.runtime_state, "event_bus", None)
-            if dispatcher is not None:
-                await dispatcher.start()
-            if event_bus is not None:
-                await register_default_subscriptions(event_bus)
-
             self._logger.info(
                 "Runtime startup started",
                 event_type="runtime_startup_started",
                 metadata={"steps": [step.name for step in self._startup_steps]},
             )
             self.runtime_state.shutting_down = False
-            for step in self._startup_steps:
-                await self._run_step(step, phase="startup")
+
+            dispatcher = getattr(self.runtime_state, "dispatcher", None)
+            if dispatcher is not None:
+                if not dispatcher.started:
+            dispatcher = getattr(self.runtime_state, 'dispatcher', None)
+            event_bus = getattr(self.runtime_state, 'event_bus', None)
+            if dispatcher is not None:
+                await dispatcher.start()
+            if event_bus is not None:
+                await register_default_subscriptions(event_bus)
+                    await self._run_step(step, phase="startup")
+                    completed_steps.append(step.name)
+            except Exception as exc:
+            self._logger.error(
+                    f"Startup failed at step '{step.name}': {exc}",
+                    event_type="runtime_startup_failed",
+                    metadata={"failed_step": step.name, "completed_steps": completed_steps},
+                )
+                await self._rollback_startup(completed_steps)
+                raise
             self._started = True
             self.runtime_state.started = True
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
             self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
 
             # Emit RuntimeStartedEvent after all steps succeed.
-            if dispatcher is not None:
+            # Start the event dispatcher and register default subscriptions
                 dispatcher.dispatch(
                     RuntimeStartedEvent(
                         source="lifecycle_manager",
@@ -110,6 +118,35 @@ class LifecycleManager:
                     )
                 )
                 await dispatcher.stop()
+
+    async def _rollback_startup(self, completed_steps: List[str]) -> None:
+        """Tear down steps that already ran after a startup failure."""
+        self._logger.warning(
+            f"Rolling back {len(completed_steps)} completed startup steps",
+            event_type="runtime_startup_rollback",
+            metadata={"completed_steps": completed_steps},
+        )
+        for step in reversed(self._startup_steps):
+            if step.name in completed_steps:
+                try:
+                    await self._run_step(step, phase="shutdown")
+                except Exception as exc:
+                    self._logger.error(
+                        f"Rollback of step '{step.name}' failed: {exc}",
+                        event_type="runtime_startup_rollback_error",
+                        metadata={"step": step.name},
+                    )
+        dispatcher = getattr(self.runtime_state, "dispatcher", None)
+        if dispatcher is not None and dispatcher.started:
+            try:
+                await dispatcher.stop()
+            except Exception as exc:
+                self._logger.error(
+                    f"Dispatcher stop during rollback failed: {exc}",
+                    event_type="runtime_startup_rollback_dispatcher_error",
+                )
+        self.runtime_state.started = False
+        self._started = False
 
     async def _run_step(self, step: LifecycleStep, *, phase: str) -> None:
         self._logger.info(
