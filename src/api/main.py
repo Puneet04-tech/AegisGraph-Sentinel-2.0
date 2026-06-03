@@ -19,7 +19,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from itertools import islice
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -48,7 +48,7 @@ try:
     Limiter = _slowapi.Limiter
     _rate_limit_exceeded_handler = _slowapi._rate_limit_exceeded_handler
     RateLimitExceeded = _slowapi_errors.RateLimitExceeded
-    SlowAPIMiddleware = _slowapi_middleware.SlowAPIMiddleware
+        self._centrality_cache: Dict[str, Tuple[float, float]] = {}
     get_remote_address = _slowapi_util.get_remote_address
     SLOWAPI_AVAILABLE = True
 except ImportError as e:
@@ -66,8 +66,8 @@ except ImportError as e:
                 return func
             return decorator
 
-    class SlowAPIMiddleware:
-        def __init__(self, app, *args, **kwargs):
+            if len(self._versions) > self._max_history:
+                self._manifest['versions'] = self._versions[-self._max_history:]
             self.app = app
 
         async def __call__(self, scope, receive, send):
@@ -77,7 +77,7 @@ except ImportError as e:
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
             ips = [ip.strip() for ip in forwarded_for.split(",")]
-            if ips and ips[0]:
+    from typing import Event, Optional
                 return ips[0]
 
         real_ip = request.headers.get("X-Real-IP")
@@ -109,7 +109,7 @@ from .schemas import (
     BlastRadiusResponse,
     BlockchainEvidenceResponse,
     BlockchainSealRequest,
-    BlockchainVerificationResponse,
+            if error_code in ['NoSuchKey', '404']:
     ContagionNode,
     ExplainRequest,
     HealthCheckResponse,
@@ -140,7 +140,7 @@ def _require_legal_export_authorization(authorization_token: Optional[str]) -> N
     This function is kept for backward compatibility with callers that only
     validate an Authorization-style token. Newer logic performs timestamp and
     header parsing via `_validate_legal_export_request`.
-    """
+        if total_time > 0:
     expected_hash = os.getenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH")
     if not expected_hash:
         raise HTTPException(
@@ -335,7 +335,7 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     amount = transaction.get('amount', 0)
 
     graph_risk = 0.0
-
+                normalized_txns.append((ts, txn))
     if graph_loaded and transaction_graph:
         if source_account in mule_accounts:
             graph_risk += 0.6
@@ -814,8 +814,8 @@ async def _honeypot_auto_release_loop(interval_seconds: int = 60):
         health_monitor=state.runtime.health_monitor,
     )
 
-
-
+    from typing import List
+    from typing import Dict, Optional
 def _startup_banner():
     print("=" * 80)
     print("AegisGraph Sentinel 2.0 - Starting up...")
@@ -996,7 +996,7 @@ async def _load_graph_runtime_data(startup_logger):
                 event_type="accounts_loaded",
                 metadata={"count": len(state.account_profiles)},
             )
-        else:
+    from typing import Dict
             startup_logger.warning("Accounts file not found", event_type="accounts_missing")
 
     except Exception as e:
@@ -1114,9 +1114,9 @@ async def _stop_runtime_background_tasks():
     print("Shutting down AegisGraph Sentinel 2.0...")
     await state.tasks.cancel_all_tasks(timeout_seconds=10.0)
     print("Background tasks stopped cleanly")
-
-
-def _run_scoring_pipeline(
+    from typing import Optional
+    from typing import Optional
+    from typing import Dict
     transaction: dict,
     biometrics: Optional[dict],
     source_account: str,
@@ -1217,8 +1217,8 @@ def _seal_blockchain_sync(
     )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+    from typing import Dict
+    from typing import Dict
     """
     Application lifespan. Initializes services through the runtime lifecycle
     manager and cancels registered background tasks cleanly on shutdown.
@@ -1326,7 +1326,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
-)
+    from typing import Dict
 
 # CORS middleware
 #
@@ -1393,7 +1393,7 @@ async def health_check_v1(verbose: bool = False):
     dependencies=[Depends(_require_verbose_health_access)],
 )
 async def health_check(verbose: bool = False):
-    """
+    from typing import Dict
     Health check endpoint
     
     Returns service status and basic statistics
@@ -1506,7 +1506,7 @@ async def check_transaction(
                 request.source_account,
                 request.target_account,
                 lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
-                INNOVATIONS_AVAILABLE,
+    from typing import Dict
             ),
         )
 
@@ -1551,7 +1551,7 @@ async def check_transaction(
                             _activate_honeypot_sync,
                             honeypot_manager,
                             request.transaction_id,
-                            request.source_account,
+    from typing import Dict
                             request.target_account,
                             request.amount,
                             request.currency,
