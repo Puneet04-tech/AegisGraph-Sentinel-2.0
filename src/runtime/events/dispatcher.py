@@ -121,9 +121,18 @@ class EventDispatcher:
     # Internal loop
     # ------------------------------------------------------------------
 
-    async def _loop(self) -> None:
-        """Background dispatch loop – runs until a sentinel is received."""
-        _logger.info("Event dispatcher loop running", event_type="event_dispatcher_loop_started")
+    async def _process_loop(self) -> None:
+        while not self._stop_requested.is_set() or not self._queue.empty() or self._overflow:
+            event = await self._fetch_next_event()
+            if event is None:
+                continue
+            try:
+                await self._bus.publish(event)
+            except Exception:
+                logger.exception("Event dispatch failed for %s", type(event).__name__)
+            self._drain_overflow()
+
+    async def _fetch_next_event(self) -> Optional[Event]:
         try:
             while True:
                 item = await self._queue.get()

@@ -39,7 +39,7 @@ class AdversarialDriftMonitor:
         if self._closed:
             return
         self._closed = True
-        self._alert_executor.shutdown(wait=False, cancel_futures=True)
+        self._alert_executor.shutdown(wait=True)
 
     def __enter__(self):
         return self
@@ -51,8 +51,8 @@ class AdversarialDriftMonitor:
     def __del__(self):
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.error("AdversarialDriftMonitor cleanup failed: %s", exc)
 
     def _load_training_baselines(self):
         """Loads baseline distributions. Mocked here for CI/CD testing."""
@@ -86,15 +86,19 @@ class AdversarialDriftMonitor:
         if self.webhook_url and not self._closed:
             self._alert_executor.submit(self._dispatch_webhook_alert, msg)
 
-    def _dispatch_webhook_alert(self, msg):
+    def _dispatch_webhook_alert(self, msg, retries=3):
         if requests is None:
             logging.warning("requests is unavailable; skipping webhook dispatch")
             return
 
-        try:
-            requests.post(self.webhook_url, json={"text": msg}, timeout=2)
-        except Exception as e:
-            logging.error(f"Failed to dispatch webhook alert: {e}")
+        for attempt in range(retries):
+            try:
+                requests.post(self.webhook_url, json={"text": msg}, timeout=2)
+                return
+            except Exception as e:
+                logging.error("Webhook alert dispatch attempt %d/%d failed: %s", attempt + 1, retries, e)
+                if attempt < retries - 1:
+                    time.sleep(1 * (attempt + 1))
 
     def evaluate_batch(self, feature_name, live_data_batch):
         """

@@ -140,7 +140,7 @@ class VelocityCalculator:
             distance = shortest_path_cache[source].get(target)
             if distance is None:
                 distance = len(transactions)  # Use chain length as proxy
-            
+        if total_time == 0:
             total_distance += distance
         
         # Compute total time

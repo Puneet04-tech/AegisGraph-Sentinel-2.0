@@ -3,16 +3,16 @@ Helper utilities for AegisGraph Sentinel
 """
 # Working on utility functions for the project
 
-from logging import config
-
 import yaml
 import torch
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import functools
+
+logger = logging.getLogger(__name__)
 
 class ConfigValidationError(Exception):
     """Raised when configuration validation fails"""
@@ -187,7 +187,7 @@ def get_device(device: Optional[str] = None) -> torch.device:
         return torch.device('mps')
 
     if requested_device in {'cuda', 'mps'}:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Requested %s device is unavailable; falling back to best available device",
             requested_device,
         )
@@ -274,7 +274,7 @@ def get_timestamp() -> str:
     Returns:
         ISO format timestamp
     """
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 # ==============================================================================
@@ -355,9 +355,7 @@ def validate_thresholds(thresholds: dict) -> list:
             errors.append("graph_analysis.lateral_movement_threshold_multiplier must be >= 1")
     
     return errors
-
-
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=None)
 def load_thresholds(config_path: str = "config/thresholds.yaml", 
                     validate: bool = True) -> dict:
     """
@@ -388,7 +386,7 @@ def load_thresholds(config_path: str = "config/thresholds.yaml",
                 f"Threshold validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
             )
     
-    logging.getLogger(__name__).info(f"Loaded thresholds from {config_path}")
+    logger.info(f"Loaded thresholds from {config_path}")
     return thresholds
 
 
