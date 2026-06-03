@@ -220,26 +220,29 @@ class AegisOracleExplainer:
         target = transaction.get('target_account', 'Unknown')
         amount = transaction.get('amount', 0)
         
+        parts = []
+        
         # Build narrative based on decision
         if decision == 'BLOCK':
-            narrative = f"Transaction BLOCKED: ₹{amount:,.0f} from {source} to {target}\n\n"
-            narrative += f"**Reason:** High-risk fraud pattern detected (Risk Score: {risk_score:.1%})\n\n"
+            parts.append(f"Transaction BLOCKED: ₹{amount:,.0f} from {source} to {target}")
+            parts.append(f"**Reason:** High-risk fraud pattern detected (Risk Score: {risk_score:.1%})")
         elif decision == 'REVIEW':
-            narrative = f"Transaction FLAGGED FOR REVIEW: ₹{amount:,.0f} from {source} to {target}\n\n"
-            narrative += f"**Reason:** Moderate fraud indicators detected (Risk Score: {risk_score:.1%})\n\n"
+            parts.append(f"Transaction FLAGGED FOR REVIEW: ₹{amount:,.0f} from {source} to {target}")
+            parts.append(f"**Reason:** Moderate fraud indicators detected (Risk Score: {risk_score:.1%})")
         else:
-            narrative = f"Transaction APPROVED: ₹{amount:,.0f} from {source} to {target}\n\n"
-            narrative += f"**Risk Assessment:** Low risk (Risk Score: {risk_score:.1%})\n\n"
+            parts.append(f"Transaction APPROVED: ₹{amount:,.0f} from {source} to {target}")
+            parts.append(f"**Risk Assessment:** Low risk (Risk Score: {risk_score:.1%})")
         
         # Add factor summary
         if causal_factors:
-            narrative += "**Contributing Factors:**\n"
+            parts.append("**Contributing Factors:**")
             for i, factor in enumerate(causal_factors[:5], 1):  # Top 5 factors
-                narrative += f"{i}. {factor['description']} (Impact: {factor['impact']})\n"
+                line = f"{i}. {factor['description']} (Impact: {factor['impact']})"
                 if factor['evidence']:
-                    narrative += f"   Evidence: {factor['evidence']}\n"
+                    line += f"\n   Evidence: {factor['evidence']}"
+                parts.append(line)
         
-        return narrative
+        return "\n\n".join(parts) + "\n\n"
     
     def _generate_detailed_reasoning(
         self,
@@ -250,32 +253,31 @@ class AegisOracleExplainer:
     ) -> str:
         """Generate detailed technical reasoning"""
         
-        reasoning = "**Technical Analysis:**\n\n"
+        parts = ["**Technical Analysis:**"]
         
         # Risk breakdown
-        reasoning += "Risk Component Breakdown:\n"
-        reasoning += f"- Graph-based risk: {breakdown.get('graph', 0):.1%}\n"
-        reasoning += f"- Velocity-based risk: {breakdown.get('velocity', 0):.1%}\n"
-        reasoning += f"- Behavioral risk: {breakdown.get('behavior', 0):.1%}\n"
-        reasoning += f"- Entropy-based risk: {breakdown.get('entropy', 0):.1%}\n\n"
+        parts.append("Risk Component Breakdown:")
+        parts.append(f"- Graph-based risk: {breakdown.get('graph', 0):.1%}")
+        parts.append(f"- Velocity-based risk: {breakdown.get('velocity', 0):.1%}")
+        parts.append(f"- Behavioral risk: {breakdown.get('behavior', 0):.1%}")
+        parts.append(f"- Entropy-based risk: {breakdown.get('entropy', 0):.1%}")
         
         # Innovations triggered
         if innovations:
-            reasoning += "Innovations Activated:\n"
+            parts.append("Innovations Activated:")
             for innovation in innovations:
-                reasoning += f"- {innovation.replace('_', ' ').title()}\n"
-            reasoning += "\n"
+                parts.append(f"- {innovation.replace('_', ' ').title()}")
         
         # Causal analysis
-        reasoning += "Causal Factor Analysis:\n"
+        parts.append("Causal Factor Analysis:")
         for factor in causal_factors[:3]:  # Top 3 causal factors
-            reasoning += f"\n**{factor['type']}**\n"
-            reasoning += f"Weight: {factor['weight']:.1%}\n"
-            reasoning += f"Description: {factor['description']}\n"
+            parts.append(f"\n**{factor['type']}**")
+            parts.append(f"Weight: {factor['weight']:.1%}")
+            parts.append(f"Description: {factor['description']}")
             if factor['evidence']:
-                reasoning += f"Evidence: {factor['evidence']}\n"
+                parts.append(f"Evidence: {factor['evidence']}")
         
-        return reasoning
+        return "\n".join(parts)
     
     def _recommend_action(
         self,
