@@ -14,16 +14,14 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.10"]
+        include:
+          - python-version: "3.9"
+            run_coverage: false
+          - python-version: "3.10"
+            run_coverage: true
 
     steps:
     - name: Checkout Repository Source
-
-    # Coverage is enabled only for one matrix leg to keep CI time bounded.
-    - name: Set run_coverage flag
-      id: coverage_flag
-      run: |
-        echo "run_coverage: true"
-        echo "RUN_COVERAGE=true"
       uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
@@ -37,7 +35,7 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         # Ensure all required runtime and testing libraries are present
-        pip install fastapi uvicorn networkx numpy pyyaml python-dotenv httpx slowapi pytest pytest-asyncio pydantic flake8
+        pip install fastapi uvicorn networkx numpy pyyaml python-dotenv httpx slowapi pytest pytest-asyncio pytest-cov pydantic flake8
 
     - name: Lint Codebase with Flake8 (Static Analysis)
       run: |
@@ -50,12 +48,13 @@ jobs:
       env:
         AEGIS_API_KEY_HASHES: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         AEGIS_GRAPH_SHA256: "dummy_hash_for_headless_ci_runner_nodes"
+        RUN_COVERAGE: ${{ matrix.run_coverage }}
       run: |
         # Run full suite with optional coverage (only enabled on one matrix leg).
         if [ "${RUN_COVERAGE:-false}" = "true" ]; then
           python -m pytest tests/ --cov=src --cov-report=term-missing
         else
-          python -m pytest
+          python -m pytest tests/
         fi
 
     - name: Verify API Entry Point Compilation Surface

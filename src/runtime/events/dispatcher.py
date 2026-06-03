@@ -77,7 +77,7 @@ class EventDispatcher:
                 logger.exception("Event dispatch failed for %s", type(event).__name__)
             self._drain_overflow()
 
-            while self._overflow and not self._queue.full():
+    async def _fetch_next_event(self) -> Optional[Event]:
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=0.2)
         except asyncio.TimeoutError:

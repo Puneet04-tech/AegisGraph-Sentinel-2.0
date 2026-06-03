@@ -586,5 +586,15 @@ def score_new_account(
         existing_customer_connections=0,
     )
     
-    scorer = PredictiveMuleScorer()
+    scorer = _get_mule_scorer()
     return scorer.score_account_opening(account_data)
+
+
+_mule_scorer_instance: Optional[PredictiveMuleScorer] = None
+
+
+def _get_mule_scorer() -> PredictiveMuleScorer:
+    global _mule_scorer_instance
+    if _mule_scorer_instance is None:
+        _mule_scorer_instance = PredictiveMuleScorer()
+    return _mule_scorer_instance

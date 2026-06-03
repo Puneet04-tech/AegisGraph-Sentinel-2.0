@@ -2,7 +2,7 @@ name: Duplicate Issue Detector
 
 on:
   issues:
-    types: [opened]
+    types: [opened, edited]
 
 permissions:
   issues: write
@@ -11,20 +11,25 @@ jobs:
   check-duplicate:
     runs-on: ubuntu-latest
     steps:
-      - name: Find Duplicate Issues
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: 'find-issues'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          issue-title: ${{ github.event.issue.title }}
-          issue-state: 'all'
-
-      - name: Mark as Duplicate
-        if: env.find-number != ''
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: 'create-label, create-comment'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          issue-number: ${{ github.event.issue.number }}
-          labels: 'duplicate'
-          body: 'Hello! This issue appears to be a duplicate of #${{ env.find-number }}. Please check the original thread for updates. 🤖'
+      - name: Check for Duplicates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Search for issues with similar titles (case-insensitive)
+          SIMILAR_ISSUES=$(gh issue list \
+            --repo "$REPO" \
+            --search "\"$ISSUE_TITLE\" in:title" \
+            --state all \
+            --limit 10 \
+            --json number,title \
+            --jq '.[] | select(.number != env.ISSUE_NUMBER) | .number')
+          
+          if [ -n "$SIMILAR_ISSUES" ]; then
+            FIRST_DUPLICATE=$(echo "$SIMILAR_ISSUES" | head -1)
+            gh issue comment "$ISSUE_NUMBER" \
+              --body "🤖 This appears to be a duplicate of #$FIRST_DUPLICATE. Please check the original thread."
+            gh issue edit "$ISSUE_NUMBER" --add-label "duplicate"
+          fi

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+from typing import Optional
 
 import torch
 from torch_geometric.loader import NeighborLoader
@@ -12,26 +13,36 @@ class AegisGraphLoader:
     Prevents Out-Of-Memory (OOM) errors and data leakage (future peeking).
     """
     
-    def __init__(self, graph_path='synthetic_aegis_graph.pt', batch_size=128):
-        self.graph_path = graph_path
+    def __init__(self, graph_path: Optional[str] = None, batch_size: int = 128):
+        self.graph_path = graph_path or os.getenv("AEGIS_GRAPH_PATH", 'synthetic_aegis_graph.pt')
         self.batch_size = batch_size
         self.data = self._load_and_prep_graph()
 
     def _load_and_prep_graph(self) -> HeteroData:
         """Loads the HeteroData object and injects temporal attributes if missing."""
-        if not os.path.exists(self.graph_path):
-            raise FileNotFoundError(f"Graph file not found at {self.graph_path}. Run synthetic generator first.")
-
         expected_hash = os.getenv("AEGIS_GRAPH_SHA256")
         if not expected_hash:
-            raise RuntimeError("AEGIS_GRAPH_SHA256 is unset; refusing to load graph artifact")
+            raise RuntimeError(
+                "AEGIS_GRAPH_SHA256 is unset; refusing to load graph artifact. "
+                "Set AEGIS_GRAPH_SHA256 to the SHA-256 hex digest of your graph file."
+            )
+
+        if not os.path.exists(self.graph_path):
+            raise FileNotFoundError(
+                f"Graph file not found at {self.graph_path}. "
+                "Set AEGIS_GRAPH_PATH env var or pass graph_path to AegisGraphLoader."
+            )
 
         with open(self.graph_path, "rb") as f:
             buf = f.read()
 
         actual_hash = hashlib.sha256(buf).hexdigest()
         if actual_hash != expected_hash:
-            raise RuntimeError("Graph artifact hash mismatch; refusing to load")
+            raise RuntimeError(
+                f"Graph artifact hash mismatch at {self.graph_path}. "
+                f"Expected {expected_hash}, got {actual_hash}. "
+                "Ensure AEGIS_GRAPH_SHA256 matches the actual file."
+            )
 
         data = torch.load(io.BytesIO(buf), weights_only=True)
         
