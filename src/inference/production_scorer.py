@@ -248,8 +248,8 @@ class ProductionRiskScorer:
         max_workers = max(1, min(len(transactions), batch_size, os.cpu_count() or 1))
         scores: List[Optional[FraudScore]] = [None] * len(transactions)
 
-            # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
-            subgraph_cache = _ThreadSafeCache()
+        # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
+        subgraph_cache = _ThreadSafeCache()
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
