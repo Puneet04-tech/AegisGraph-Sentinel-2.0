@@ -53,6 +53,15 @@ class LifecycleManager:
             )
             self.runtime_state.shutting_down = False
 
+            dispatcher = getattr(self.runtime_state, "dispatcher", None)
+            event_bus = getattr(self.runtime_state, "event_bus", None)
+
+            if dispatcher is not None and not dispatcher.started:
+                await dispatcher.start()
+
+            if event_bus is not None:
+                await register_default_subscriptions(event_bus)
+
             completed_steps = []
             for step in self._startup_steps:
                 try:
@@ -73,7 +82,6 @@ class LifecycleManager:
             self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
 
             # Emit RuntimeStartedEvent after all steps succeed
-            dispatcher = getattr(self.runtime_state, "dispatcher", None)
             if dispatcher is not None and dispatcher.started:
                 dispatcher.dispatch(
                     RuntimeStartedEvent(
@@ -106,7 +114,7 @@ class LifecycleManager:
 
             # Emit RuntimeShutdownEvent then stop the dispatcher so it
             # drains any remaining queued events before exiting.
-            if dispatcher is not None:
+            if dispatcher is not None and dispatcher.started:
                 dispatcher.dispatch(
                     RuntimeShutdownEvent(
                         source="lifecycle_manager",

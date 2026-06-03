@@ -39,6 +39,10 @@ class EventDispatcher:
     def started(self) -> bool:
         return self._started
 
+    @property
+    def _running(self) -> bool:
+        return self._started
+
     async def start(self) -> None:
         if self._started:
             return
@@ -55,8 +59,7 @@ class EventDispatcher:
         except asyncio.QueueFull:
             if isinstance(event, _CRITICAL_EVENT_TYPES):
                 self._overflow.appendleft(event)
-            else:
-                self._overflow.append(event)
+            # Non-critical events are dropped when queue is full
 
     async def stop(self) -> None:
         if not self._started:
