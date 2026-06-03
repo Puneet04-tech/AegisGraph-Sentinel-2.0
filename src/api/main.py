@@ -1635,12 +1635,12 @@ async def check_transaction(
                 )
         
         # Processing time
-        processing_time_ms = (time.time() - start_time) * 1000
-        
-        internal_decision = _normalize_decision(risk_result['decision'])
-        # Prepare response with innovation fields
-        decision = _decision_to_api_value(internal_decision)
-
+        async with _get_metrics_lock():
+            # Update statistics atomically to avoid interleaving concurrent request mutations.
+            state.requests_processed += 1
+            state.decisions[internal_decision] += 1
+            state.total_risk_score += risk_result['risk_score']
+            state.total_processing_time += processing_time_ms
         # --- FIX #559: Amount-Scaling Logic Fallback Override ---
         # Agar production ML model available nahi hai aur fallback base score (0.22) aa raha hai,
         # toh transaction amount ke hisab se risk_score aur decision ko scale karo.
