@@ -316,6 +316,127 @@ class FraudPatternDetector:
     ) -> List[Dict]:
         """
         Detect sudden spikes in transaction velocity.
+
+        Red flags:
+        - Account normally inactive suddenly has many transactions
+        - Transaction amounts suddenly much larger than historical avg
+        - Multiple rapid transactions in short time window
+
+        Returns:
+            List of anomalies with scores
+        """
+        anomalies: List[Dict] = []
+
+        # Build a list of (timestamp, transaction) tuples
+        normalized_txns: List[tuple] = []
+        for txn in transactions:
+            ts = self._normalize_timestamp(self._txn_value(txn, "timestamp"))
+            if ts is not None:
+                normalized_txns.append((ts, txn))
+
+        # Sort chronologically
+        sorted_txns = sorted(normalized_txns, key=lambda item: item[0])
+
+        if not sorted_txns:
+            return []
+
+        # Apply time‑window filter (only keep transactions within the last window)
+        latest_ts = sorted_txns[-1][0]
+        cutoff = latest_ts - timedelta(hours=time_window_hours)
+        filtered = [(ts, txn) for ts, txn in sorted_txns if ts >= cutoff]
+
+        # Group transactions by source account within the filtered window
+        account_windows: Dict[str, List[Dict]] = defaultdict(list)
+        for ts, txn in filtered:
+            account = self._txn_value(txn, "source_account")
+            if account:
+                account_windows[account].append(txn)
+
+        # Evaluate each account for velocity anomalies
+        for account, txns in account_windows.items():
+            if len(txns) >= transaction_count_threshold:
+                amounts = [self._txn_value(t, "amount", 0) for t in txns]
+                avg_amount = np.mean(amounts)
+                recent_txns = txns[-5:]  # last 5 transactions
+                recent_avg = np.mean([self._txn_value(t, "amount", 0) for t in recent_txns])
+                if recent_avg > avg_amount * amount_multiplier:
+                    anomaly_score = min((recent_avg / avg_amount) / (amount_multiplier * 2), 1.0)
+                    anomalies.append({
+                        "type": "VELOCITY_ANOMALY",
+                        "account": account,
+                        "transaction_count_24h": len(txns),
+                        "historical_avg_amount": avg_amount,
+                        "recent_avg_amount": recent_avg,
+                        "spike_multiplier": recent_avg / (avg_amount + 1e-6),
+                        "risk_score": anomaly_score,
+                    })
+
+        return sorted(anomalies, key=lambda x: x["risk_score"], reverse=True)
+        """
+        Detect sudden spikes in transaction velocity.
+
+        Red flags:
+        - Account normally inactive suddenly has many transactions
+        - Transaction amounts suddenly much larger than historical avg
+        - Multiple rapid transactions in short time window
+
+        Returns:
+            List of anomalies with scores
+        """
+        anomalies: List[Dict] = []
+
+        # Group by account within the time window
+        time_window = timedelta(hours=time_window_hours)
+        account_windows: Dict[str, List[Dict]] = defaultdict(list)
+
+        # Normalize timestamps and collect transactions
+        normalized_txns: List[tuple] = []
+        for txn in transactions:
+            ts = self._normalize_timestamp(self._txn_value(txn, "timestamp"))
+            if ts is not None:
+                normalized_txns.append((ts, txn))
+
+        # Sort transactions chronologically
+        sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
+
+        # Apply time window filtering
+        if sorted_txns:
+            latest_ts = normalized_txns[-1][0]
+            cutoff = latest_ts - time_window
+            filtered = [(ts, txn) for ts, txn in normalized_txns if ts >= cutoff]
+            # Re‑group by account using filtered list
+            for ts, txn in filtered:
+                account = self._txn_value(txn, "source_account")
+                if account:
+                    account_windows[account].append(txn)
+        else:
+            # No transactions
+            filtered = []
+
+        # Evaluate each account's transaction history
+        for account, txns in account_windows.items():
+            if len(txns) >= transaction_count_threshold:
+                amounts = [self._txn_value(t, "amount", 0) for t in txns]
+                avg_amount = np.mean(amounts)
+                # Recent activity (last 5 transactions)
+                recent_txns = txns[-5:]
+                recent_avg = np.mean([self._txn_value(t, "amount", 0) for t in recent_txns])
+                if recent_avg > avg_amount * amount_multiplier:
+                    anomaly_score = min((recent_avg / avg_amount) / (amount_multiplier * 2), 1.0)
+                    anomalies.append({
+                        "type": "VELOCITY_ANOMALY",
+                        "account": account,
+                        "transaction_count_24h": len(txns),
+                        "historical_avg_amount": avg_amount,
+                        "recent_avg_amount": recent_avg,
+                        "spike_multiplier": recent_avg / (avg_amount + 1e-6),
+                        "risk_score": anomaly_score,
+                    })
+
+        return sorted(anomalies, key=lambda x: x["risk_score"], reverse=True)
+
+        """
+        Detect sudden spikes in transaction velocity.
         
         Red flags:
         - Account normally inactive suddenly has many transactions
@@ -334,18 +455,11 @@ class FraudPatternDetector:
         normalized_txns = []
         for txn in transactions:
             ts = self._normalize_timestamp(self._txn_value(txn, 'timestamp'))
-        sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
+            if ts is not None:
                 normalized_txns.append((ts, txn))
+        sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
 
-        # Remove the new lines below
-        # Bound transactions to the requested time window
-        # if sorted_ts_txns:
-        #     latest_ts = sorted_ts_txns[-1][0]
-        #     cutoff = latest_ts - time_window.total_seconds()
-        #     sorted_ts_txns = [pair for pair in sorted_ts_txns if pair[0] >= cutoff]
         for txn in sorted_txns:
-        
-        for _, txn in sorted_ts_txns:
             account = self._txn_value(txn, 'source_account')
             if account:
                 account_windows[account].append(txn)

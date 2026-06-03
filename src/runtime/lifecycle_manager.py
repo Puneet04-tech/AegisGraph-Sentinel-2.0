@@ -104,7 +104,8 @@ class LifecycleManager:
                 event_type="runtime_startup_complete",
             )
 
-            if dispatcher is not None:
+            # Emit RuntimeStartedEvent after all steps succeed
+            if dispatcher is not None and dispatcher.started:
                 dispatcher.dispatch(
                     RuntimeStartedEvent(
                         source="lifecycle_manager",

@@ -64,8 +64,14 @@ def get_voice_analyzer():
 
 
 def get_aegis_oracle():
-    """Return the live AegisOracleExplainer, constructing on first use."""
+    """Return the live AegisOracleExplainer, constructing on first use.
+    If the service has been explicitly registered as None, return None.
+    """
     from src.api.main import state
+    # Check if the service key exists in the container (may be None)
+    if "aegis_oracle" in state.services._services:
+        return state.services._services["aegis_oracle"]
+    # Otherwise, use optional_get which returns None if not present
     service = state.services.optional_get("aegis_oracle")
     if service is None:
         from src.features.aegis_oracle_explainer import AegisOracleExplainer

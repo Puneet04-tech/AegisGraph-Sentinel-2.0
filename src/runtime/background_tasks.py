@@ -27,9 +27,8 @@ async def honeypot_auto_release_loop(
 
             if health_monitor is not None:
                 health_monitor.mark_healthy("honeypot_auto_release")
-
             try:
-                manager.check_auto_release()
+                await asyncio.to_thread(manager.check_auto_release)
             except Exception as exc:
                 task_logger.warning(
                     f"Honeypot auto-release check failed: {exc}",
