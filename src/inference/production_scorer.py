@@ -18,6 +18,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 from collections import deque
+from threading import Lock
 from typing import Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -45,6 +46,22 @@ class FraudScore:
     
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), default=str)
+
+
+class _ThreadSafeCache:
+    """Thread-safe dict wrapper for concurrent subgraph caching."""
+
+    def __init__(self):
+        self._data: Dict[str, Dict] = {}
+        self._lock = Lock()
+
+    def get(self, key: str) -> Optional[Dict]:
+        with self._lock:
+            return self._data.get(key)
+
+    def set(self, key: str, value: Dict) -> None:
+        with self._lock:
+            self._data[key] = value
 
 
 class ProductionRiskScorer:
@@ -90,7 +107,7 @@ class ProductionRiskScorer:
         transaction: Dict,
         reference_time: Optional[datetime] = None,
         k_hops: int = 2,
-        _subgraph_cache: Optional[Dict[str, Dict]] = None,
+        _subgraph_cache: Optional["_ThreadSafeCache"] = None,
     ) -> FraudScore:
         """
         Score a single transaction using HTGNN.
@@ -114,16 +131,15 @@ class ProductionRiskScorer:
         try:
             # Extract subgraph around source account (cached per batch)
             source = transaction['source_account']
-            if _subgraph_cache is not None and source in _subgraph_cache:
-                subgraph = _subgraph_cache[source]
-            else:
+            subgraph = _subgraph_cache.get(source) if _subgraph_cache is not None else None
+            if subgraph is None:
                 subgraph = self.graph_constructor.get_subgraph_around_node(
                     node_id=source,
                     k_hops=k_hops,
                     reference_time=reference_time,
                 )
                 if _subgraph_cache is not None:
-                    _subgraph_cache[source] = subgraph
+                    _subgraph_cache.set(source, subgraph)
             
             # Run inference
             with torch.no_grad():
@@ -232,8 +248,8 @@ class ProductionRiskScorer:
         max_workers = max(1, min(len(transactions), batch_size, os.cpu_count() or 1))
         scores: List[Optional[FraudScore]] = [None] * len(transactions)
 
-        # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
-        subgraph_cache: Dict[str, Dict] = {}
+            # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
+            subgraph_cache = _ThreadSafeCache()
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for transaction_batch in self._iter_transaction_batches(transactions, max_workers):

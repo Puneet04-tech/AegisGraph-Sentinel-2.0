@@ -189,13 +189,11 @@ class TaskRegistry:
         """Cancel managed tasks and wait for completion up to a timeout."""
         owner_filter = set(owners) if owners is not None else None
         with self._lock:
-            tasks_snapshot = tuple(self._tasks.items())
-
-        tasks = [
-            task
-            for task, info in tasks_snapshot
-            if not task.done() and (owner_filter is None or info.owner in owner_filter)
-        ]
+            tasks = [
+                task
+                for task, info in self._tasks.items()
+                if not task.done() and (owner_filter is None or info.owner in owner_filter)
+            ]
         if not tasks:
             self._logger.info(
                 "No background tasks to cancel",
