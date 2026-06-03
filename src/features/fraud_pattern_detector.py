@@ -460,18 +460,18 @@ class FraudPatternDetector:
 
         sorted_ts_txns = [pair for pair in sorted(normalized_txns, key=lambda item: item[0]) if pair[0] >= cutoff]
         sorted_ts_txns = [pair for pair in sorted(normalized_txns, key=lambda item: item[0]) if pair[0] >= cutoff
+        for txn in transactions:
             ts = self._normalize_timestamp(self._txn_value(txn, 'timestamp'))
-        for _, txn in sorted_ts_txns:
+            if ts is not None:
+                normalized_txns.append((ts, txn))
+        sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
+        for txn in sorted_txns:
+            account = self._txn_value(txn, 'source_account')
+            if account:
                 account_windows[account].append(txn)
-        
-        # Check each account's transaction history
-        for account, txns in account_windows.items():
-            if len(txns) >= transaction_count_threshold:
-                # Calculate metrics
-                amounts = [self._txn_value(t, 'amount', 0) for t in txns]
-                avg_amount = np.mean(amounts)
-                max_amount = np.max(amounts)
-                
+
+        sorted_ts_txns = [pair for pair in sorted(normalized_txns, key=lambda item: item[0]) if pair[0] >= cutoff]
+        for _, txn in sorted_ts_txns:
                 # Detect if recent spike
                 recent_txns = txns[-5:]  # Last 5 transactions
                 recent_avg = np.mean([self._txn_value(t, 'amount', 0) for t in recent_txns])
