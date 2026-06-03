@@ -82,7 +82,7 @@ class ProductionRiskScorer:
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
         max_workers: Optional[int] = None,
-    ):
+max_workers: Optional[int] = None
         """
         Args:
             model: Trained HTGNN model
@@ -99,7 +99,7 @@ class ProductionRiskScorer:
         self.model_version = model_version
         self.enable_heuristic_fallback = enable_heuristic_fallback
         self._max_workers = max_workers or (os.cpu_count() or 4)
-        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         
         logger.info(
             f"Initialized ProductionRiskScorer "
