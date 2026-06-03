@@ -1933,9 +1933,9 @@ async def check_batch_transactions(request: BatchTransactionRequest):
     start_time = time.time()
     max_concurrent_tasks = 8
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
-    txns = request.transactions
-
-    lm_detector = get_lateral_movement_detector()
+    lm_detector = await get_lateral_movement_detector()
+    hp_manager = await get_honeypot_manager()
+    bc_manager = await get_blockchain_manager()
     hp_manager = await get_honeypot_manager()
     bc_manager = await get_blockchain_manager()
 
