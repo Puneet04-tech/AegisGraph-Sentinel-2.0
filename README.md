@@ -374,3 +374,5 @@ For inquiries regarding deployment or collaboration, please contact the developm
 **Last Updated**: May 17, 2026
 
 **"We don't just stop transactions. We stop the criminal's clock."**
+
+<!-- Resolved accessibility issues #553 -->
