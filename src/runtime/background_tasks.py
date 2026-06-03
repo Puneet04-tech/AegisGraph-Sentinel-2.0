@@ -53,7 +53,3 @@ async def honeypot_auto_release_loop(
         if health_monitor is not None:
             health_monitor.mark_failed("honeypot_auto_release", error=str(exc))
         raise
-<<<<<<< HEAD
-
-=======
->>>>>>> upstream/master
