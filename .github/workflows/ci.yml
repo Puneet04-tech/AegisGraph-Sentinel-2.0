@@ -43,11 +43,31 @@ jobs:
         # exit-zero treats all other style warnings as non-blocking
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
+    - name: Generate CI credentials
+      id: ci_creds
+      run: |
+        # If AEGIS_API_KEY_HASHES secret is not set, generate a random one.
+        # This prevents the previous hardcoded empty-string hash from being
+        # exposed in plaintext. Maintainers should set the secret via
+        # Settings > Secrets and variables > Actions.
+        if [ -z "$AEGIS_API_KEY_HASHES" ]; then
+          echo "api_key_hash=$(openssl rand -hex 32 | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        else
+          echo "api_key_hash=$AEGIS_API_KEY_HASHES" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -z "$AEGIS_GRAPH_SHA256" ]; then
+          echo "graph_sha256=$(openssl rand -hex 64)" >> "$GITHUB_OUTPUT"
+        else
+          echo "graph_sha256=$AEGIS_GRAPH_SHA256" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        AEGIS_API_KEY_HASHES: ${{ secrets.AEGIS_API_KEY_HASHES }}
+        AEGIS_GRAPH_SHA256: ${{ secrets.AEGIS_GRAPH_SHA256 }}
+
     - name: Run Forensic Core & Test Suite Verification
       env:
-        AEGIS_API_KEY_HASHES: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        AEGIS_GRAPH_SHA256: "dummy_hash_for_headless_ci_runner_nodes"
-        RUN_COVERAGE: ${{ matrix.run_coverage }}
+        AEGIS_API_KEY_HASHES: ${{ steps.ci_creds.outputs.api_key_hash }}
+        AEGIS_GRAPH_SHA256: ${{ steps.ci_creds.outputs.graph_sha256 }}
       run: |
         # Run full suite with optional coverage (only enabled on one matrix leg).
         if [ "${RUN_COVERAGE:-false}" = "true" ]; then
@@ -58,8 +78,8 @@ jobs:
 
     - name: Verify API Entry Point Compilation Surface
       env:
-        AEGIS_API_KEY_HASHES: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        AEGIS_GRAPH_SHA256: "dummy_hash_for_headless_ci_runner_nodes"
+        AEGIS_API_KEY_HASHES: ${{ steps.ci_creds.outputs.api_key_hash }}
+        AEGIS_GRAPH_SHA256: ${{ steps.ci_creds.outputs.graph_sha256 }}
       run: |
         # Ensure the main route entry definitions can compile flawlessly in production
         python -m py_compile src/api/main.py
