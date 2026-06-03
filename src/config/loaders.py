@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
@@ -58,6 +59,26 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
     return base
 
 
+def _resolve_env_vars(value: Any) -> Any:
+    """Recursively resolve ${VAR} or ${VAR:-default} patterns in string values."""
+    if isinstance(value, str):
+        def _replace(match: re.Match) -> str:
+            var = match.group(1)
+            default = match.group(2)
+            resolved = os.getenv(var)
+            if resolved is not None:
+                return resolved
+            if default is not None:
+                return default
+            return match.group(0)
+        return re.sub(r"\$\{([^}:-]+)(?::-(.*?))?\}", _replace, value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_vars(item) for item in value]
+    return value
+
+
 def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
     if not path.exists():
         if optional:
@@ -67,7 +88,7 @@ def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Configuration file must contain a mapping: {path}")
-    return data
+    return _resolve_env_vars(data)
 
 
 def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:

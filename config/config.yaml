@@ -140,8 +140,8 @@ database:
     enabled: false
     uri: "neo4j+ssc://localhost:7687"
     require_encryption: true
-  user: ${AEGIS_NEO4J_USER}
-  password: ${AEGIS_NEO4J_PASSWORD}
+    user: ${AEGIS_NEO4J_USER}
+    password: ${AEGIS_NEO4J_PASSWORD}
   
   # Redis Cache
   redis:
