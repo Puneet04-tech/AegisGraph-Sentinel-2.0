@@ -217,24 +217,24 @@ class AegisOracleExplainer:
         """Generate human-readable main narrative"""
         
         source = transaction.get('source_account', 'Unknown')
-        target = transaction.get('target_account', 'Unknown')
+        narrative = f"Transaction BLOCKED: ₹{amount:,.0f} from {source} to {target}\n\n"
         amount = transaction.get('amount', 0)
         
-        parts = []
+        narrative += f"**Reason:** High-risk fraud pattern detected (Risk Score: {risk_score:.1%})\n\n"
         
         # Build narrative based on decision
         if decision == 'BLOCK':
-            parts.append(f"Transaction BLOCKED: ₹{amount:,.0f} from {source} to {target}")
-            parts.append(f"**Reason:** High-risk fraud pattern detected (Risk Score: {risk_score:.1%})")
-        elif decision == 'REVIEW':
+    elif decision == 'REVIEW:'
+        narrative = f"Transaction FLAGGED FOR REVIEW: ₹{amount:,.0f} from {source} to {target}\n\n"
+        narrative += f"**Reason:** Moderate fraud indicators detected (Risk Score: {risk_score:.1%})\n\n"
             parts.append(f"Transaction FLAGGED FOR REVIEW: ₹{amount:,.0f} from {source} to {target}")
             parts.append(f"**Reason:** Moderate fraud indicators detected (Risk Score: {risk_score:.1%})")
         else:
             parts.append(f"Transaction APPROVED: ₹{amount:,.0f} from {source} to {target}")
             parts.append(f"**Risk Assessment:** Low risk (Risk Score: {risk_score:.1%})")
-        
-        # Add factor summary
-        if causal_factors:
+    else:
+        narrative = f"Transaction APPROVED: ₹{amount:,.0f} from {source} to {target}\n\n"
+        narrative += f"**Risk Assessment:** Low risk (Risk Score: {risk_score:.1%})\n\n"
             parts.append("**Contributing Factors:**")
             for i, factor in enumerate(causal_factors[:5], 1):  # Top 5 factors
                 line = f"{i}. {factor['description']} (Impact: {factor['impact']})"
@@ -247,21 +247,21 @@ class AegisOracleExplainer:
     def _generate_detailed_reasoning(
         self,
         decision: str,
-        causal_factors: List[Dict],
-        breakdown: Dict,
-        innovations: List[str]
-    ) -> str:
-        """Generate detailed technical reasoning"""
-        
+    def _generate_detailed_reasoning(
+        self, 
+        decision: str, 
+        causal_factors: List[Dict[str, Any]], 
+        breakdown: Optional[Dict[str, float]] = None, 
+        innovations: Optional[List[str]] = None, 
         parts = ["**Technical Analysis:**"]
         
+        reasoning = "**Technical Analysis:**\n\n"
         # Risk breakdown
-        parts.append("Risk Component Breakdown:")
-        parts.append(f"- Graph-based risk: {breakdown.get('graph', 0):.1%}")
-        parts.append(f"- Velocity-based risk: {breakdown.get('velocity', 0):.1%}")
-        parts.append(f"- Behavioral risk: {breakdown.get('behavior', 0):.1%}")
-        parts.append(f"- Entropy-based risk: {breakdown.get('entropy', 0):.1%}")
-        
+        reasoning += "Risk Component Breakdown:\n"
+        reasoning += f"- Graph-based risk: {breakdown.get('graph', 0):.1%}\n"
+        reasoning += f"- Velocity-based risk: {breakdown.get('velocity', 0):.1%}\n"
+        reasoning += f"- Behavioral risk: {breakdown.get('behavior', 0):.1%}\n"
+        reasoning += f"- Entropy-based risk: {breakdown.get('entropy', 0):.1%}\n\n"
         # Innovations triggered
         if innovations:
             parts.append("Innovations Activated:")
