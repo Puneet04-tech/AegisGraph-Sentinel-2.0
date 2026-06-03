@@ -30,9 +30,14 @@ class EventDispatcher:
         self._bus = bus
         self._maxsize = maxsize
         self._queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=maxsize)
+        # Non-critical events are dropped on overflow; only critical events are preserved.
         self._overflow: deque[RuntimeEvent] = deque()
+
+        # Backward-compatible state flag expected by tests.
+        self._running = False
         self._started = False
         self._stop_requested = asyncio.Event()
+
         self._task: Optional[asyncio.Task] = None
 
     @property
@@ -43,8 +48,10 @@ class EventDispatcher:
         if self._started:
             return
         self._started = True
+        self._running = True
         self._stop_requested.clear()
         self._task = asyncio.create_task(self._process_loop())
+
 
     def dispatch(self, event: RuntimeEvent) -> None:
         """Enqueue *event* for delivery. Thread-safe, non-blocking."""
@@ -54,15 +61,24 @@ class EventDispatcher:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
             if isinstance(event, _CRITICAL_EVENT_TYPES):
+                # Preserve critical events until shutdown processing can drain them.
                 self._overflow.appendleft(event)
             else:
-                self._overflow.append(event)
+                # Drop non-critical overflow events.
+                logger.warning(
+                    "Runtime event dropped due to bounded dispatcher queue overflow: %s",
+                    type(event).__name__,
+                )
+                return
+
 
     async def stop(self) -> None:
         if not self._started:
             return
         self._started = False
+        self._running = False
         self._stop_requested.set()
+
         if self._task is not None:
             await self._task
 
@@ -84,6 +100,7 @@ class EventDispatcher:
             return None
 
     def _drain_overflow(self) -> None:
+        # Drain only critical events (stored in _overflow) when there is capacity.
         while self._overflow and not self._queue.full():
             event = self._overflow.popleft()
             try:
@@ -91,6 +108,7 @@ class EventDispatcher:
             except asyncio.QueueFull:
                 self._overflow.appendleft(event)
                 break
+
 
     def __repr__(self) -> str:
         return (
