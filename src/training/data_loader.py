@@ -1,5 +1,4 @@
 import hashlib
-import io
 import os
 from typing import Optional
 
@@ -33,18 +32,27 @@ class AegisGraphLoader:
                 "Set AEGIS_GRAPH_PATH env var or pass graph_path to AegisGraphLoader."
             )
 
+        # Stream-hash the file in 64 KB chunks to avoid loading the entire
+        # artifact into memory before hashing. For a 2 GB file this halves
+        # peak RSS compared to f.read() + hashlib.sha256(buf).
+        sha256 = hashlib.sha256()
         with open(self.graph_path, "rb") as f:
-            buf = f.read()
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                sha256.update(chunk)
+            actual_hash = sha256.hexdigest()
 
-        actual_hash = hashlib.sha256(buf).hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
-                f"Graph artifact hash mismatch at {self.graph_path}. "
-                f"Expected {expected_hash}, got {actual_hash}. "
-                "Ensure AEGIS_GRAPH_SHA256 matches the actual file."
-            )
+            if actual_hash != expected_hash:
+                raise RuntimeError(
+                    f"Graph artifact hash mismatch at {self.graph_path}. "
+                    f"Expected {expected_hash}, got {actual_hash}."
+                )
 
-        data = torch.load(io.BytesIO(buf), weights_only=True)
+            # Reuse the same file handle; torch.load accepts a seekable stream.
+            f.seek(0)
+            data = torch.load(f, weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
         # If our synthetic graph didn't explicitly define node timestamps, we mock them sequentially.
