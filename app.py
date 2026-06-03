@@ -45,6 +45,7 @@ MAX_BATCH_UPLOAD_BYTES = int(os.getenv("MAX_BATCH_UPLOAD_BYTES", 5 * 1024 * 1024
 BATCH_PREVIEW_ROWS = int(os.getenv("BATCH_PREVIEW_ROWS", 10))
 BATCH_CHUNK_SIZE = int(os.getenv("BATCH_CHUNK_SIZE", 50))
 BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", 500))
+REQUIRED_CSV_COLUMNS = {"transaction_id", "source_account", "target_account", "amount"}
 COMMAND_CENTER_REFRESH_KEY = "command_center_live_refresh"
 COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("COMMAND_CENTER_WORKERS", 2)))
 
@@ -74,6 +75,12 @@ def _escape_network_tooltip_value(value) -> str:
 def _json_for_inline_script(value) -> str:
     """Serialize Python values safely for direct insertion into inline JavaScript."""
     return json.dumps(value, ensure_ascii=False)
+
+
+def _validate_csv_columns(df: pd.DataFrame) -> list:
+    """Return a list of required columns missing from the uploaded CSV."""
+    uploaded_cols = {col.strip().lower() for col in df.columns}
+    return [col for col in REQUIRED_CSV_COLUMNS if col not in uploaded_cols]
 
 
 def _build_batch_transaction(row, index: int) -> dict:
@@ -989,6 +996,16 @@ elif page == "📁 Batch Triage":
             uploaded_file.seek(0)
             preview_df = pd.read_csv(uploaded_file, nrows=BATCH_PREVIEW_ROWS)
             uploaded_file.seek(0)
+
+            missing_cols = _validate_csv_columns(preview_df)
+            if missing_cols:
+                st.error(
+                    f"❌ Invalid CSV: Missing required column(s): **{', '.join(sorted(missing_cols))}**\n\n"
+                    f"Required columns are: `{', '.join(sorted(REQUIRED_CSV_COLUMNS))}`\n\n"
+                    "Please fix your file and re-upload."
+                )
+                st.stop()
+
             estimated_rows = _estimate_csv_rows(uploaded_file)
             uploaded_file.seek(0)
 
