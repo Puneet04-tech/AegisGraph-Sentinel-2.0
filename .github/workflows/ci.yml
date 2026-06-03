@@ -50,17 +50,12 @@ jobs:
         AEGIS_GRAPH_SHA256: "dummy_hash_for_headless_ci_runner_nodes"
         RUN_COVERAGE: ${{ matrix.run_coverage }}
       run: |
-<<<<<<< HEAD
-        # Run pytest if test components are initialized, otherwise run syntax verification
-        python -m pytest || echo "Explicit test directory structure not found; continuing with micro-module verification."
-=======
         # Run full suite with optional coverage (only enabled on one matrix leg).
         if [ "${RUN_COVERAGE:-false}" = "true" ]; then
           python -m pytest tests/ --cov=src --cov-report=term-missing
         else
           python -m pytest tests/
         fi
->>>>>>> upstream/master
 
     - name: Verify API Entry Point Compilation Surface
       env:
