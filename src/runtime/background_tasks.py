@@ -1,3 +1,6 @@
+import asyncio
+from typing import Callable, Optional, Any
+
 async def honeypot_auto_release_loop(
     get_honeypot_manager: Callable[[], Optional[Any]],
     *,
