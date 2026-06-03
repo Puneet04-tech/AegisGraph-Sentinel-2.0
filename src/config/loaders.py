@@ -93,7 +93,7 @@ def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
 
 def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:
     """Load recognized environment variables into a typed raw schema."""
-    if environ is None:
+    load_dotenv()
         load_dotenv()
         source = os.environ
     else:
