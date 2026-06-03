@@ -1,7 +1,6 @@
 import hashlib
+import io
 import os
-from typing import Optional
-
 import torch
 from torch_geometric.loader import NeighborLoader
 from torch_geometric.data import HeteroData
