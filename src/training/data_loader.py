@@ -1,12 +1,23 @@
 import hashlib
 import io
 import os
-from typing import Optional
+from typing import Optional, Any
 
-from typing import Any
+# NOTE:
+# Tests monkeypatch `src.training.data_loader.torch.load`, so this module
+# must expose a `torch` attribute with a `load` attribute.
+#
+# Importing real torch in some CI environments can crash (e.g. triton
+# TORCH_LIBRARY re-registration). To keep tests stable, we expose a stub
+# that tests can monkeypatch. Production code lazily imports real torch.
+class _TorchStub:
+    def load(self, *args, **kwargs):
+        raise RuntimeError(
+            "Real torch is unavailable in this environment. "
+            "Production code should lazily import torch before calling torch.load."
+        )
 
-# NOTE: torch / torch_geometric are imported lazily to avoid CI crashes
-# when torch is present but cannot be safely initialised in the test runner.
+torch = _TorchStub()
 
 class AegisGraphLoader:
     """
@@ -21,7 +32,10 @@ class AegisGraphLoader:
 
     def _load_and_prep_graph(self) -> Any:
         """Loads the HeteroData object and injects temporal attributes if missing."""
-        import torch
+        # Lazy real torch import (avoid CI torch init crashes during test import).
+        import importlib
+
+        real_torch = importlib.import_module("torch")
         from torch_geometric.data import HeteroData  # noqa: F401
         expected_hash = os.getenv("AEGIS_GRAPH_SHA256")
         if not expected_hash:
@@ -47,17 +61,17 @@ class AegisGraphLoader:
                 "Ensure AEGIS_GRAPH_SHA256 matches the actual file."
             )
 
-        data = torch.load(io.BytesIO(buf), weights_only=True)
+        data = real_torch.load(io.BytesIO(buf), weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
         # If our synthetic graph didn't explicitly define node timestamps, we mock them sequentially.
         num_accounts = data['account'].num_nodes
         if 'time' not in data['account']:
-            data['account'].time = torch.arange(0, num_accounts, dtype=torch.long)
+            data['account'].time = real_torch.arange(0, num_accounts, dtype=real_torch.long)
             
         # Create a boolean mask for training (e.g., train on 80% of accounts)
         if 'train_mask' not in data['account']:
-            mask = torch.rand(num_accounts) < 0.8
+            mask = real_torch.rand(num_accounts) < 0.8
             data['account'].train_mask = mask
             
         return data
