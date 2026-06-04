@@ -133,6 +133,10 @@ class BlastRadiusAnalyzer:
         """
         max_depth = min(max_depth, HARD_MAX_DEPTH)
 
+        if hasattr(graph, "is_active") and graph.is_active:
+            if hasattr(graph, "compute_blast_radius") and callable(graph.compute_blast_radius):
+                return graph.compute_blast_radius(source_node, max_depth)
+
         if source_node not in graph:
             raise ValueError(
                 f"Source node {source_node!r} not found in graph "

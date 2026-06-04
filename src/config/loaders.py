@@ -80,7 +80,6 @@ def load_environment(
         source = os.environ
     else:
         source = environ
-
     mapped = {}
 
     # First, copy any existing lowercase keys directly passed

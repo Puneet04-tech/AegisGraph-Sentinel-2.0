@@ -101,3 +101,8 @@ def _reset_global_rate_limiter():
     """Reset rate limits before each test."""
     from src.api.validators import reset_rate_limiter
     reset_rate_limiter()
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
