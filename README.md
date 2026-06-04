@@ -319,6 +319,17 @@ print(f"Verified: {response.json()['verified']}")
 - [Model Training Guide](docs/training.md)
 - [Deployment Guide](docs/deployment.md)
 
+Detailed project documentation is available in the `docs/` directory.
+
+| Document | Description |
+|-----------|-------------|
+| `system_architecture.md` | Explains overall system architecture, component responsibilities, and transaction lifecycle |
+| `api_cookbook.md` | API examples, request/response samples, and integration guides |
+| `contributor_handbook.md` | Contributor workflow, repository structure, and contribution guidelines |
+| `training_workflow.md` | End-to-end machine learning and HTGNN training pipeline |
+| `testing_guide.md` | Testing procedures, coverage reporting, and debugging guidance |
+
+These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
 ## 🧪 Testing
 
 ```bash

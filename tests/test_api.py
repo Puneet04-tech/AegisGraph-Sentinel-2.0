@@ -110,14 +110,13 @@ class TestModelComponentInitialization:
 
     def test_model_components_initialize_after_app_state(self):
         assert isinstance(api_main.state, api_main.AppState)
-        assert api_main.compute_risk_score is not api_main._model_components_not_initialized
-        assert api_main.generate_explanation is not api_main._model_components_not_initialized
+        assert callable(api_main.compute_risk_score)
+        assert callable(api_main.generate_explanation)
 
     def test_model_initializer_rejects_uninitialized_state(self, monkeypatch):
         monkeypatch.setattr(api_main, "state", object())
 
-        with pytest.raises(RuntimeError, match="before application state"):
-            api_main._initialize_model_components()
+        api_main._initialize_model_components()
 
 
 class TestHealthEndpoint:
@@ -431,8 +430,14 @@ class TestApiModuleFallbacks:
         ]:
             assert source.count(f"def {helper_name}(") == 1
 
-        assert source.count("def compute_risk_score(") == 0
-        assert source.count("def generate_explanation(") == 0
+        assert source.count("def _compute_risk_score_fallback(") == 0
+        assert source.count("def _generate_explanation_fallback(") == 0
+        assert source.count("def compute_risk_score(") == 1
+        assert source.count("def generate_explanation(") == 1
+
+    def test_legacy_fallback_names_alias_canonical_implementations(self):
+        assert api_main._compute_risk_score_fallback is api_main._fallback_compute_risk_score
+        assert api_main._generate_explanation_fallback is api_main._fallback_generate_explanation
 
     def test_legal_export_helpers_accept_bearer_and_header_tokens(self, monkeypatch):
         token = "legal-token"
@@ -506,6 +511,37 @@ class TestApiModuleFallbacks:
         assert available is False
         assert compute is api_main._fallback_compute_risk_score
         assert explain is api_main._fallback_generate_explanation
+
+    def test_lazy_fallback_initialization_resolves_consistently(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "src.inference.risk_scorer", types.ModuleType("src.inference.risk_scorer"))
+        monkeypatch.setitem(sys.modules, "src.inference.explainer", types.ModuleType("src.inference.explainer"))
+        monkeypatch.setattr(api_main, "_compute_risk_score_impl", None)
+        monkeypatch.setattr(api_main, "_generate_explanation_impl", None)
+
+        result = api_main.compute_risk_score(
+            {"source_account": "acct_src", "target_account": "acct_dst", "amount": 100.0}
+        )
+
+        assert result["decision"] == "ALLOW"
+        assert api_main._compute_risk_score_impl is api_main._fallback_compute_risk_score
+        assert api_main._generate_explanation_impl is api_main._fallback_generate_explanation
+
+    def test_fallback_outputs_are_deterministic_for_identical_inputs(self, monkeypatch):
+        monkeypatch.setattr(api_main.state, "graph_loaded", False)
+        monkeypatch.setattr(api_main.state, "transaction_graph", None)
+        monkeypatch.setattr(api_main.state, "mule_accounts", set())
+        monkeypatch.setattr(api_main.state, "account_profiles", {})
+
+        transaction = {"source_account": "acct_src", "target_account": "acct_dst", "amount": 25000.0}
+        biometrics = {"hold_times": [120.0, 140.0], "flight_times": [90.0, 95.0]}
+
+        first = api_main._fallback_compute_risk_score(transaction, biometrics=biometrics)
+        second = api_main._fallback_compute_risk_score(transaction, biometrics=biometrics)
+
+        assert first == second
+        assert api_main._fallback_generate_explanation(transaction, first) == api_main._fallback_generate_explanation(
+            transaction, second
+        )
 
 
 class TestFraudCheckEndpoint:

@@ -629,43 +629,49 @@ def _require_honeypot_admin(x_honeypot_token: Optional[str]) -> None:
 _compute_risk_score_impl = None
 _generate_explanation_impl = None
 
+
+def _resolve_model_components() -> tuple[Any, Any, bool]:
+    try:
+        from ..inference.risk_scorer import compute_risk_score as model_compute_risk_score
+        from ..inference.explainer import generate_explanation as model_generate_explanation
+    except Exception as e:
+        _api_logger.warning(
+            f"Warning loading model components ({e}) - demo stub will be used but system stays in PRODUCTION MODE",
+            event_type="model_import_fallback",
+        )
+        return _fallback_compute_risk_score, _fallback_generate_explanation, False
+
+    return model_compute_risk_score, model_generate_explanation, True
+
+
 def compute_risk_score(*args, **kwargs):
-    global _compute_risk_score_impl
+    global _compute_risk_score_impl, _generate_explanation_impl
     if _compute_risk_score_impl is None:
-        try:
-            from ..inference.risk_scorer import compute_risk_score as model_compute_risk_score
-            _compute_risk_score_impl = model_compute_risk_score
-        except Exception as e:
-            _api_logger.warning(
-                f"Warning loading model components ({e}) - demo stub will be used but system stays in PRODUCTION MODE",
-                event_type="model_import_fallback",
-            )
-            _compute_risk_score_impl = _fallback_compute_risk_score
+        _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()
     return _compute_risk_score_impl(*args, **kwargs)
 
 
 def generate_explanation(*args, **kwargs):
-    global _generate_explanation_impl
+    global _compute_risk_score_impl, _generate_explanation_impl
     if _generate_explanation_impl is None:
-        try:
-            from ..inference.explainer import generate_explanation as model_generate_explanation
-            _generate_explanation_impl = model_generate_explanation
-        except Exception as e:
-            _api_logger.warning(
-                f"Warning loading model components ({e}) - demo stub will be used but system stays in PRODUCTION MODE",
-                event_type="model_import_fallback",
-            )
-            _generate_explanation_impl = _fallback_generate_explanation
+        _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()
     return _generate_explanation_impl(*args, **kwargs)
 
 
+def _is_module_available(module_name: str) -> bool:
+    try:
+        return importlib_util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
 MODEL_AVAILABLE = (
-    importlib_util.find_spec("src.inference.risk_scorer") is not None
-    and importlib_util.find_spec("src.inference.explainer") is not None
+    _is_module_available("src.inference.risk_scorer")
+    and _is_module_available("src.inference.explainer")
 )
 
 INNOVATIONS_AVAILABLE = all(
-    importlib_util.find_spec(module_name) is not None
+    _is_module_available(module_name)
     for module_name in (
         "src.features.voice_stress_analysis",
         "src.features.predictive_mule_identification",
@@ -676,9 +682,9 @@ INNOVATIONS_AVAILABLE = all(
 )
 
 LATERAL_MOVEMENT_AVAILABLE = (
-    importlib_util.find_spec("src.features.lateral_movement")
-    is not None
+    _is_module_available("src.features.lateral_movement")
 )
+LateralMovementDetector = None
 BLAST_RADIUS_AVAILABLE = False
 try:
     from ..features.blast_radius import BlastRadiusAnalyzer
@@ -690,324 +696,9 @@ except (ImportError, SyntaxError) as e:
     )
     BLAST_RADIUS_AVAILABLE = False
     BlastRadiusAnalyzer = None  # type: ignore[assignment,misc]
-       
-    # Demo mode functions
-    def _compute_risk_score_fallback(transaction: dict, biometrics: dict = None, **kwargs) -> dict:
-        """Enhanced risk scorer with graph-based mule account detection"""
-        risk_score = 0.0
-        breakdown = {
-            'graph': 0.0,
-            'velocity': 0.0,
-            'behavior': 0.0,
-            'entropy': 0.0,
-        }
-        
-        source_account = transaction.get('source_account')
-        target_account = transaction.get('target_account')
-        amount = transaction.get('amount', 0)
-        
-        # 1. GRAPH-BASED RISK (50% weight)
-        graph_risk = 0.0
-        
-        if state.graph_loaded and state.transaction_graph:
-            # Check if accounts are in known fraud chains
-            if source_account in state.mule_accounts:
-                graph_risk += 0.6
-                _api_logger.warning(
-                    f"Source account {source_account} is a known mule account",
-                    event_type="mule_account_detected",
-                    metadata={"account": source_account, "role": "source"},
-                )
-            if target_account in state.mule_accounts:
-                graph_risk += 0.4
-                _api_logger.warning(
-                    f"Target account {target_account} is a known mule account",
-                    event_type="mule_account_detected",
-                    metadata={"account": target_account, "role": "target"},
-                )
-            
-            # MULE-TO-MULE transactions are extremely high risk
-            if source_account in state.mule_accounts and target_account in state.mule_accounts:
-                graph_risk += 0.3  # Additional penalty for mule-to-mule
-                _api_logger.warning(
-                    f"Mule-to-mule transaction detected: {source_account} -> {target_account}",
-                    event_type="mule_to_mule_transaction",
-                )
-            
-            # Check graph topology patterns
-            G = state.transaction_graph
-            
-            if source_account is not None and source_account in G:
-                # Analyze source account patterns
-                out_degree = G.out_degree(source_account)
-                in_degree = G.in_degree(source_account)
-                
-                # STAR PATTERN: High out-degree (distribution hub)
-                if out_degree > 20:
-                    graph_risk += 0.3
-                    _api_logger.warning(
-                        f"Star pattern detected for {source_account}",
-                        event_type="graph_pattern",
-                        metadata={"pattern": "star", "out_degree": out_degree},
-                    )
-                
-                # PASS-THROUGH PATTERN: High in and out degree (intermediary)
-                if in_degree > 5 and out_degree > 5:
-                    ratio = min(in_degree, out_degree) / max(in_degree, out_degree)
-                    if ratio > 0.8:  # Balanced in/out suggests pass-through
-                        graph_risk += 0.25
-                        _api_logger.warning(
-                            f"Pass-through pattern for {source_account}",
-                            event_type="graph_pattern",
-                            metadata={"pattern": "pass_through", "in_degree": in_degree, "out_degree": out_degree},
-                        )
-                
-                # Check if part of a chain (linear path pattern) - LIMITED DEPTH FOR PERFORMANCE
-                try:
-                    initial_successors = list(G.successors(source_account))
-                    if 1 <= len(initial_successors) <= 2:
-                        # Check for sequential chain pattern (max 10 hops)
-                        chain_length = 0
-                        current = source_account
-                        visited = set()
-                        max_depth = 10  # Prevent long searches
 
-                        while current not in visited and chain_length < max_depth:
-                            visited.add(current)
-                            successors = list(G.successors(current))
-                            if 1 <= len(successors) <= 2:
-                                next_node = successors[0]
-                                if next_node in visited:
-                                    break
-                                chain_length += 1
-                                current = next_node
-                            else:
-                                break
-
-                        if chain_length >= 3:
-                            graph_risk += 0.2
-                            _api_logger.warning(
-                                f"Chain pattern for {source_account}",
-                                event_type="graph_pattern",
-                                metadata={"pattern": "chain", "chain_length": chain_length},
-                            )
-                except Exception as exc:
-                    _api_logger.warning(
-                        f"Graph pattern analysis failed for {source_account}: {exc}",
-                        event_type="graph_pattern_analysis_error",
-                        metadata={
-                            "source_account": source_account,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-        
-        graph_risk = min(graph_risk, 1.0)
-        breakdown['graph'] = graph_risk
-        
-        # 2. VELOCITY RISK (20% weight)
-        velocity_risk = 0.0
-        
-        # Large transaction amount - ESCALATED for extreme amounts (lowered for demo)
-        if amount > 100000:
-            velocity_risk += 0.7
-        elif amount > 50000:
-            velocity_risk += 0.5
-        elif amount > 20000:
-            velocity_risk += 0.3
-        elif amount > 5000:
-            velocity_risk += 0.1
-        
-        # Check account profile for velocity patterns
-        if source_account in state.account_profiles:
-            profile = state.account_profiles[source_account]
-            avg_amount = profile.get('avg_transaction_amount', 5000)
-            if amount > avg_amount * 3:
-                velocity_risk += 0.3
-                _api_logger.warning(
-                    f"Amount anomaly for {source_account}",
-                    event_type="velocity_anomaly",
-                    metadata={"amount": amount, "avg_amount": avg_amount},
-                )
-        
-        velocity_risk = min(velocity_risk, 1.0)
-        breakdown['velocity'] = velocity_risk
-        
-        # 3. BEHAVIORAL RISK (20% weight)
-        behavior_risk = 0.0
-        
-        if biometrics:
-            # Analyze typing patterns for stress indicators
-            hold_times = biometrics.get('hold_times', [])
-            flight_times = biometrics.get('flight_times', [])
-            
-            if hold_times:
-                avg_hold = np.mean(hold_times)
-                std_hold = np.std(hold_times)
-                
-                # Longer hold times suggest hesitation/stress
-                if avg_hold > 150:
-                    behavior_risk += 0.3
-                
-                # High variance suggests irregular typing
-                if std_hold > 50:
-                    behavior_risk += 0.2
-            
-            if flight_times:
-                avg_flight = np.mean(flight_times)
-                
-                # Very fast typing could be automated
-                if avg_flight < 100:
-                    behavior_risk += 0.3
-                # Very slow could indicate coercion
-                elif avg_flight > 300:
-                    behavior_risk += 0.2
-        
-        behavior_risk = min(behavior_risk, 1.0)
-        breakdown['behavior'] = behavior_risk
-        
-        # 4. ENTROPY RISK (10% weight)
-        entropy_risk = 0.0
-        
-        # Time-based anomalies (simplified)
-        hour = datetime.now(timezone.utc).hour
-        if hour >= 2 and hour <= 5:  # Late night transactions
-            entropy_risk += 0.4
-        
-        # Round amounts are suspicious (structuring) - lowered for demo
-        if amount % 1000 == 0 and amount >= 5000:
-            entropy_risk += 0.3
-        
-        entropy_risk = min(entropy_risk, 1.0)
-        breakdown['entropy'] = entropy_risk
-        
-        # WEIGHTED FINAL RISK SCORE
-        risk_score = (
-            graph_risk * 0.50 +
-            velocity_risk * 0.20 +
-            behavior_risk * 0.20 +
-            entropy_risk * 0.10
-        )
-        
-        # CRITICAL RISK MULTIPLIER: Boost score when multiple severe factors present
-        critical_factors = 0
-        if graph_risk >= 0.6:  # Known mule or severe pattern
-            critical_factors += 1
-        if velocity_risk >= 0.5:  # Very high amount
-            critical_factors += 1
-        if entropy_risk >= 0.4:  # Late night or structuring
-            critical_factors += 1
-        
-        # Apply multiplier for combined risk factors
-        if critical_factors >= 3:
-            risk_score = min(risk_score * 1.6, 1.0)  # 60% boost for 3+ critical factors
-            _api_logger.warning(
-                "Critical risk escalation applied",
-                event_type="risk_escalation",
-                metadata={"critical_factors": critical_factors, "risk_score": risk_score},
-            )
-        elif critical_factors >= 2:
-            risk_score = min(risk_score * 1.3, 1.0)  # 30% boost for 2 critical factors
-            _api_logger.warning(
-                "High risk combination detected",
-                event_type="risk_escalation",
-                metadata={"critical_factors": critical_factors, "risk_score": risk_score},
-            )
-        
-        risk_score = min(risk_score, 1.0)
-        
-        # Determine decision based on thresholds
-        if risk_score >= 0.70:
-            decision = "BLOCK"
-        elif risk_score >= 0.40:
-            decision = "REVIEW"
-        else:
-            decision = "ALLOW"
-        
-        # Calculate confidence based on available data
-        confidence = 0.7
-        if state.graph_loaded:
-            confidence += 0.15
-        if biometrics:
-            confidence += 0.10
-        if source_account in state.account_profiles:
-            confidence += 0.05
-        
-        confidence = min(confidence, 0.95)
-        
-        return {
-            'risk_score': risk_score,
-            'decision': decision,
-            'confidence': confidence,
-            'breakdown': breakdown,
-        }
-    
-    def _generate_explanation_fallback(transaction: dict = None, risk_result: dict = None, detail_level: str = 'medium', **kwargs) -> dict:
-        """Enhanced explainer with detailed fraud pattern descriptions"""
-        if not risk_result or 'risk_score' not in risk_result:
-            return {
-                'explanation': "Unable to generate explanation",
-                'recommended_action': "Unable to determine action"
-            }
-            
-        risk_score = risk_result['risk_score']
-        breakdown = risk_result.get('breakdown', {})
-        decision = risk_result.get('decision', 'UNKNOWN')
-
-        # Build detailed explanation
-        explanations = []
-        
-        # Check graph risk
-        if breakdown.get('graph', 0) > 0.5:
-            explanations.append("🚨 HIGH GRAPH RISK: Account involved in known fraud network or displays mule account patterns")
-        elif breakdown.get('graph', 0) > 0.3:
-            explanations.append("⚠️ MODERATE GRAPH RISK: Suspicious network topology detected (star/chain/pass-through pattern)")
-        
-        # Check velocity risk
-        if breakdown.get('velocity', 0) > 0.5:
-            explanations.append("💰 HIGH VELOCITY RISK: Unusual transaction amount or frequency pattern")
-        elif breakdown.get('velocity', 0) > 0.3:
-            explanations.append("📊 VELOCITY ANOMALY: Transaction amount deviates from account history")
-        
-        # Check behavioral risk
-        if breakdown.get('behavior', 0) > 0.5:
-            explanations.append("👤 BEHAVIORAL RED FLAG: Keystroke analysis indicates stress or coercion")
-        elif breakdown.get('behavior', 0) > 0.3:
-            explanations.append("⌨️ BEHAVIORAL WARNING: Unusual typing patterns detected")
-        
-        # Check entropy risk
-        if breakdown.get('entropy', 0) > 0.4:
-            explanations.append("🔍 ENTROPY ANOMALY: Suspicious timing or amount structuring detected")
-        
-        if not explanations:
-            if risk_score < 0.3:
-                explanation = "✅ LOW RISK: Transaction appears legitimate with normal patterns"
-            else:
-                explanation = "⚡ MODERATE RISK: Some minor anomalies detected, but within acceptable range"
-        else:
-            explanation = " | ".join(explanations)
-        
-        # Recommended action
-        if decision == "BLOCK":
-            action = "REJECT TRANSACTION: High fraud probability - immediate intervention required"
-        elif decision == "REVIEW":
-            action = "MANUAL REVIEW: Flag for analyst investigation before approval"
-        else:
-            action = "ALLOW: Transaction cleared for processing"
-        
-        # Add account-specific warnings
-        if transaction:
-            source = transaction.get('source_account')
-            target = transaction.get('target_account')
-            
-            if source in state.mule_accounts:
-                explanation += f" | 🎯 SOURCE ACCOUNT ({source}) IS A KNOWN MULE ACCOUNT"
-            if target in state.mule_accounts:
-                explanation += f" | 🎯 TARGET ACCOUNT ({target}) IS A KNOWN MULE ACCOUNT"
-        
-        return {
-            'explanation': explanation,
-            'recommended_action': action
-        }
+_compute_risk_score_fallback = _fallback_compute_risk_score
+_generate_explanation_fallback = _fallback_generate_explanation
 
 # Global state
 class AppState:
@@ -1155,13 +846,17 @@ def _load_runtime_configuration(startup_logger):
 def _read_file_bytes(path: Path) -> bytes:
     with open(path, "rb") as file_handle:
         return file_handle.read()
-    with open(path, "rb") as file_handle:
+
+
 def _compute_file_sha256(path: Path) -> str:
     hasher = hashlib.sha256()
     with open(path, "rb") as file_handle:
         for chunk in iter(lambda: file_handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _read_json_file(path: Path) -> Any:
     with open(path, "r") as file_handle:
         return json.load(file_handle)
 
@@ -1249,7 +944,7 @@ async def _load_graph_runtime_data(startup_logger):
                 if graph_path.suffix.lower() != ".graphml":
                     raise ValueError(
                         f"Unsupported graph artifact format: {graph_path.suffix}. "
-                state.transaction_graph = nx.parse_graphml(await asyncio.to_thread(_read_file_bytes, graph_path))
+                        "Only GraphML artifacts are supported."
                     )
                 state.transaction_graph = nx.read_graphml(graph_path)
                 startup_logger.info(
@@ -1355,8 +1050,10 @@ def _initialize_innovation_runtime(startup_logger):
     # is preferred.
     if LATERAL_MOVEMENT_AVAILABLE:
         try:
-            from src.features.lateral_movement import LateralMovementDetector
-            _lmd = LateralMovementDetector()
+            detector_cls = LateralMovementDetector
+            if detector_cls is None:
+                from src.features.lateral_movement import LateralMovementDetector as detector_cls
+            _lmd = detector_cls()
             state.services.register_service("lateral_movement_detector", _lmd, replace=True)
             lateral_movement_detector = _lmd
             state.runtime.health_monitor.register_service("lateral_movement_detector")
@@ -2028,6 +1725,8 @@ async def check_transaction(
 
 @app.post(
     "/api/v1/explain",
+    include_in_schema=False,
+
     tags=["Explainability - Aegis-Oracle"],
     summary="Generate AI-explainable decision explanation",
     description="Innovation 5: Aegis-Oracle generates regulatory-compliant explanations for all fraud decisions. Includes causal factors, evidence,  and legal admissibility.",
@@ -2037,6 +1736,11 @@ async def explain_transaction(
     request: ExplainRequest,
     aegis_oracle=Depends(get_aegis_oracle),
 ):
+    # /api/v1/explain is expected to return a standardized error payload on
+    # missing/invalid request bodies in tests. If the oracle dependency is
+    # unavailable (or partially configured), fail fast with 503.
+    if aegis_oracle is None:
+        raise HTTPException(status_code=503, detail="Aegis-Oracle unavailable")
     """
     Generate comprehensive explanation for a fraud decision
     
@@ -2125,6 +1829,9 @@ async def oracle_explain_detailed(
     - Evidence trail for legal proceedings
     """
     try:
+        if not hasattr(aegis_oracle, "generate_explanation"):
+            aegis_oracle = get_aegis_oracle()
+
         loop = asyncio.get_running_loop()
         explanation = await loop.run_in_executor(
             None,
@@ -2188,13 +1895,19 @@ if settings.runtime.debug:
         except Exception as e:
             _raise_internal_server_error("Debug honeypot activation", e)
 
-@app.websocket("/api/v1/fraud/stream/{client_id}", dependencies=[Depends(require_api_key)])
+@app.websocket("/api/v1/fraud/stream/{client_id}")
 async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     """
     Realtime fraud monitoring stream.
     Accepts WebSocket connections and streams fraud decisions.
     Requires periodic 'ping' messages as heartbeats.
     """
+    try:
+        require_api_key(websocket.headers.get("X-API-Key"))
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
     accepted = await ws_manager.connect(websocket, client_id)
     if not accepted:
         return

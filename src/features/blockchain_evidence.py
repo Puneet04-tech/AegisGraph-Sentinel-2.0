@@ -38,6 +38,7 @@ import time
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, asdict
+from typing import List, Dict, Optional
 from fastapi import HTTPException
 from datetime import datetime
 from datetime import timezone
@@ -1234,20 +1235,18 @@ class BlockchainEvidenceManager:
         """
         try:
             # Phase 1: Input Validation
-            if not transaction_id or not isinstance(transaction_id, str):
-                raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
-            
-            if not data or not isinstance(data, dict):
-                raise HTTPException(status_code=422, detail="data must be non-empty dict")
-            
+            if transaction_id is None or not isinstance(transaction_id, str) or not transaction_id.strip():
+                raise ValueError("transaction_id must be non-empty string")
+
+            if data is None or not isinstance(data, dict) or not data:
+                raise ValueError("data must be non-empty dict")
+
             # Validate required fields in data
             required_fields = ['risk_score', 'decision', 'amount']
             missing_fields = [f for f in required_fields if f not in data]
             if missing_fields:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"data missing required fields: {', '.join(missing_fields)}"
-                )
+                raise ValueError(f"data missing required fields: {', '.join(missing_fields)}")
+
             
             # Phase 2: Store in journal
             try:
@@ -1341,19 +1340,19 @@ class BlockchainEvidenceManager:
         Raises:
             ValueError: If transaction_id is invalid
         """
-        if not transaction_id or not isinstance(transaction_id, str):
-            raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
+        if transaction_id is None or not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError("transaction_id must be non-empty string")
+
 
         try:
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-        chain_data = {
-            'transaction_id': transaction_id,
-            'transaction_hash': transaction_hash,
-            'chain': [],
-            'verified': False,
-        }
+            chain_data = {
+                'transaction_id': transaction_id,
+                'transaction_hash': transaction_hash,
+                'chain': [],
+                'verified': False,
+            }
 
-        try:
             block_ref = self._transaction_block_index.get(transaction_hash)
             if block_ref is None:
                 chain_data['status'] = 'not_found'

@@ -94,6 +94,8 @@ def test_debug_honeypot_route_fails_closed_when_enabled_in_production(monkeypatc
 
 
 def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
+    api_key = "debug-api-key"
+    monkeypatch.setenv("AEGIS_API_KEY_HASHES", hashlib.sha256(api_key.encode("utf-8")).hexdigest())
     module = _load_fresh_api_main(monkeypatch, environment="development", debug="true")
     fake_manager = Mock()
     fake_manager.activate_honeypot.return_value = Mock(
@@ -107,7 +109,7 @@ def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
     with TestClient(module.app) as client:
         response = client.post(
             "/debug/activate_honeypot",
-            headers={"X-Honeypot-Admin-Token": "debug-token"},
+            headers={"X-API-Key": api_key, "X-Honeypot-Admin-Token": "debug-token"},
             json={
                 "transaction_id": "txn_debug_001",
                 "source_account": "acct_src",
@@ -548,7 +550,7 @@ def test_startup_disk_reads_use_thread_pool(monkeypatch, tmp_path):
     try:
         asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
 
-        assert call_names == ["_read_file_bytes", "_read_json_file", "_read_json_file"]
+        assert call_names == ["_compute_file_sha256", "_read_json_file", "_read_json_file"]
         assert state.graph_loaded is True
         assert state.fraud_chains[0]["accounts"] == ["mule_1", "mule_2"]
         assert state.account_profiles["acct_1"]["score"] == 0.5

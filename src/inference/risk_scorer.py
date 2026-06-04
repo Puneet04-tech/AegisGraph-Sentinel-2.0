@@ -367,14 +367,15 @@ class RiskScorer:
 def compute_risk_score(
     transaction: dict,
     biometrics: Optional[dict] = None,
+    graph_data: Optional[dict] = None,
     *,
-    graph_loaded: bool,
-    transaction_graph,
-    mule_accounts: set[str],
-    centrality_baseline: dict[str, list[float]],
-    centrality_window_size: int,
-    account_profiles: dict[str, dict],
-    config: dict,
+    graph_loaded: Optional[bool] = None,
+    transaction_graph=None,
+    mule_accounts: Optional[set[str]] = None,
+    centrality_baseline: Optional[dict[str, list[float]]] = None,
+    centrality_window_size: Optional[int] = None,
+    account_profiles: Optional[dict[str, dict]] = None,
+    config: Optional[dict] = None,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
@@ -393,6 +394,40 @@ def compute_risk_score(
     Returns:
         Risk score dictionary with mule detection
     """
+    if graph_data is None:
+        graph_data = {}
+
+    if graph_loaded is None:
+        try:
+            from src.api.main import state as api_state
+            graph_loaded = getattr(api_state, "graph_loaded", False)
+            transaction_graph = transaction_graph or getattr(api_state, "transaction_graph", None)
+            mule_accounts = mule_accounts if mule_accounts is not None else getattr(api_state, "mule_accounts", set())
+            centrality_baseline = (
+                centrality_baseline
+                if centrality_baseline is not None
+                else getattr(api_state, "centrality_baseline", {})
+            )
+            centrality_window_size = (
+                centrality_window_size
+                if centrality_window_size is not None
+                else getattr(api_state, "centrality_window_size", 10)
+            )
+            account_profiles = (
+                account_profiles
+                if account_profiles is not None
+                else getattr(api_state, "account_profiles", {})
+            )
+            config = config if config is not None else getattr(api_state, "config", {})
+        except Exception:
+            graph_loaded = False
+
+    mule_accounts = mule_accounts or set()
+    centrality_baseline = centrality_baseline if centrality_baseline is not None else {}
+    centrality_window_size = centrality_window_size or 10
+    account_profiles = account_profiles or {}
+    config = config or {}
+
     risk_score = 0.0
     breakdown = {
         'graph': 0.0,
@@ -441,6 +476,7 @@ def compute_risk_score(
             G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
             G = transaction_graph
+        graph_view = G
         
         if source_account in G.nodes:
             # Analyze source account patterns

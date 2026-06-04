@@ -503,11 +503,13 @@ class VoiceStressAnalyzer:
                 logger.warning("Audio libraries not available, returning mock features")
                 audio = None
                 sr = sample_rate
-
-            if audio is not None:
                 features = self.extract_features(audio, sr)
-            else:
-                features = self._mock_features()
+                if self.user_baseline is None:
+                    self.user_baseline = {'f0_mean': features.f0_mean, 'speech_rate': features.speech_rate}
+                else:
+                    alpha = 0.3
+                    self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
+                    self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
 
             result = self.detect_stress(features, self.user_baseline)
             
