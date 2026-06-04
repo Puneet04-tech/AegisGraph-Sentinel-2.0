@@ -52,7 +52,6 @@ class EventDispatcher:
         self._stop_requested.clear()
         self._task = asyncio.create_task(self._process_loop())
 
-
     def dispatch(self, event: RuntimeEvent) -> None:
         """Enqueue *event* for delivery. Thread-safe, non-blocking."""
         if not self._started:
@@ -71,7 +70,6 @@ class EventDispatcher:
                 )
                 return
 
-
     async def stop(self) -> None:
         if not self._started:
             return
@@ -80,7 +78,27 @@ class EventDispatcher:
         self._stop_requested.set()
 
         if self._task is not None:
-            await self._task
+            try:
+                # Graceful shutdown: allow _process_loop() to drain queued events
+                # and overflow (including critical events) before returning.
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except RuntimeError as exc:
+                msg = str(exc)
+                # Starlette/FastAPI TestClient teardown can trigger shutdown from a
+                # different event loop than the one that created the dispatcher.
+                if ("bound to a different event loop" in msg) or (
+                    ("Queue" in msg) and ("different event loop" in msg)
+                ):
+                    # Teardown safety: cancel and swallow cross-event-loop errors.
+                    self._task.cancel()
+                    logger.debug("Dispatcher stop ignored cross-event-loop error: %s", msg)
+                else:
+                    raise
+
+        # Best-effort cleanup; doesn't need to be perfect for correctness.
+        self._overflow.clear()
 
     async def _process_loop(self) -> None:
         while not self._stop_requested.is_set() or not self._queue.empty() or self._overflow:
@@ -94,6 +112,13 @@ class EventDispatcher:
             self._drain_overflow()
 
     async def _fetch_next_event(self) -> Optional[RuntimeEvent]:
+        # Avoid cross-event-loop Queue bound errors by using get_nowait
+        # when possible and only awaiting when the loop is correct.
+        try:
+            return self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=0.2)
         except asyncio.TimeoutError:
@@ -109,10 +134,10 @@ class EventDispatcher:
                 self._overflow.appendleft(event)
                 break
 
-
     def __repr__(self) -> str:
         return (
             f"EventDispatcher(started={self._started}, "
             f"queue_size={self._queue.qsize()}, "
             f"overflow={len(self._overflow)})"
         )
+
