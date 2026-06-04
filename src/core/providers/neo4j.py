@@ -6,7 +6,10 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from src.features.blast_radius import BlastRadiusReport
 
 import networkx as nx
 
