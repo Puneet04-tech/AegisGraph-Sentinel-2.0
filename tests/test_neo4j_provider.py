@@ -44,7 +44,7 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertTrue(provider.enabled)
             self.assertTrue(provider.is_active)
             mock_neo4j_lib.GraphDatabase.driver.assert_called_once_with(
-                self.mock_uri,
+                "bolt+ssc://localhost:7687",
                 auth=(self.mock_user, self.mock_password),
                 max_connection_lifetime=3600,
                 keep_alive=True,
@@ -145,12 +145,12 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             provider = Neo4jGraphProvider(enabled=True)
             
             # Seed cache
-            provider._subgraph_cache["ACC1"] = (time.time(), nx.DiGraph())
+            provider._subgraph_cache[provider._cache_key("ACC1", 2)] = (time.time(), nx.DiGraph())
             
             provider.add_transaction("ACC1", "ACC2", 500.0, 12345.6)
             
             # Cache for involved nodes must be cleared
-            self.assertNotIn("ACC1", provider._subgraph_cache)
+            self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
 
             # Query verification
             mock_session.run.assert_called_once()
@@ -257,6 +257,6 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             provider.get_approx_subgraph("ACC1", max_hops=2)
             provider.get_approx_subgraph("ACC3", max_hops=2)
 
-            self.assertEqual(list(provider._subgraph_cache.keys()), ["ACC3"])
-            self.assertNotIn("ACC1", provider._subgraph_cache)
+            self.assertEqual(list(provider._subgraph_cache.keys()), [provider._cache_key("ACC3", 2)])
+            self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
             self.assertEqual(mock_session.run.call_count, 2)
