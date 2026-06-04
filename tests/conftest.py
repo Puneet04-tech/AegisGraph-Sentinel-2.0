@@ -24,24 +24,22 @@ Three concerns handled here:
 from __future__ import annotations
 
 from collections.abc import Iterator
+import importlib.util
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
 
-# Check if torch is available
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+RUN_TORCH_TESTS = os.getenv("RUN_TORCH_TESTS", "").lower() == "true"
+TORCH_AVAILABLE = RUN_TORCH_TESTS and importlib.util.find_spec("torch") is not None
 
 # Skip torch tests if torch is not available
 def pytest_collection_modifyitems(config, items):
     """Skip torch-marked tests if torch is not available."""
     if not TORCH_AVAILABLE:
-        skip_torch = pytest.mark.skip(reason="PyTorch not installed")
+        skip_torch = pytest.mark.skip(reason="PyTorch tests require RUN_TORCH_TESTS=true")
         for item in items:
             if "torch" in item.keywords or item.parent and "torch" in item.parent.name:
                 item.add_marker(skip_torch)

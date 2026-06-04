@@ -1890,13 +1890,19 @@ if settings.runtime.debug:
         except Exception as e:
             _raise_internal_server_error("Debug honeypot activation", e)
 
-@app.websocket("/api/v1/fraud/stream/{client_id}", dependencies=[Depends(require_api_key)])
+@app.websocket("/api/v1/fraud/stream/{client_id}")
 async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     """
     Realtime fraud monitoring stream.
     Accepts WebSocket connections and streams fraud decisions.
     Requires periodic 'ping' messages as heartbeats.
     """
+    try:
+        require_api_key(websocket.headers.get("X-API-Key"))
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
     accepted = await ws_manager.connect(websocket, client_id)
     if not accepted:
         return
