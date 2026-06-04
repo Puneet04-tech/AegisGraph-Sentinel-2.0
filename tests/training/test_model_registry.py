@@ -5,9 +5,14 @@ pytest --noconftest tests/training/test_model_registry.py -v
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+if os.getenv("RUN_TORCH_TESTS", "false").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
+
 torch = pytest.importorskip("torch", reason="torch not installed")
 
 import src.training.model_registry as model_registry_module
