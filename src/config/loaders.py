@@ -70,7 +70,10 @@ def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
     return data
 
 
-def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:
+
+def load_environment(
+    environ: Optional[Mapping[str, str]] = None,
+) -> EnvironmentVariablesSchema:
     """Load recognized environment variables into a typed raw schema."""
     if environ is None:
         load_dotenv()
@@ -79,7 +82,9 @@ def load_environment(environ: Optional[Mapping[str, str]] = None) -> Environment
         source = environ
 
     mapped = {}
-    # First, copy any existing lowercase keys directly passed (e.g. from tests)
+
+    # First, copy any existing lowercase keys directly passed
+    # (e.g. from tests)
     for k, v in source.items():
         if k in EnvironmentVariablesSchema.model_fields:
             mapped[k] = v
