@@ -291,9 +291,8 @@ def test_lateral_movement_deferred_to_lazy_provider(monkeypatch):
     ) is None
 
     # Health monitor slot must be registered
-    assert api_main.state.runtime.health_monitor.is_registered(
-        "lateral_movement_detector"
-    )
+    snapshot = api_main.state.runtime.health_monitor.get_health_snapshot()
+    assert "lateral_movement_detector" in snapshot
 
 
 @pytest.mark.parametrize(
