@@ -510,18 +510,6 @@ class VoiceStressAnalyzer:
                     alpha = 0.3
                     self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
                     self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
-                        'speech_rate': features.speech_rate,
-                    }
-                else:
-                    alpha = 0.3
-                    self.user_baseline['f0_mean'] = (
-                        alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean']
-                    )
-                    self.user_baseline['speech_rate'] = (
-                        alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate']
-                    )
-            else:
-                features = self._mock_features()
 
             result = self.detect_stress(features, self.user_baseline)
             

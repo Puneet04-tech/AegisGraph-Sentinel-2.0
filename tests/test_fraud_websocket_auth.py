@@ -6,6 +6,7 @@ import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from src.api.main import app
 from src.api.security import require_api_key
@@ -33,11 +34,12 @@ def test_fraud_websocket_rejects_missing_api_key(
     auth_enabled_client: TestClient,
 ) -> None:
     """The fraud websocket must fail closed without an API key."""
-    with pytest.raises(Exception):
+    with pytest.raises(WebSocketDisconnect) as exc_info:
         with auth_enabled_client.websocket_connect(
             "/api/v1/fraud/stream/test-client"
         ):
             pass
+    assert exc_info.value.code == 1008
 
 
 def test_fraud_websocket_accepts_valid_api_key(

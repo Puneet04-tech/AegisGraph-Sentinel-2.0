@@ -8,7 +8,11 @@ Each attack class is tested for:
     - Edge cases (zero budget, max budget) behave correctly
 """
 from __future__ import annotations
+import os
 import pytest
+
+if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
 
 # Handle optional torch dependency
 try:

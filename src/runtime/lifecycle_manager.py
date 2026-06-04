@@ -72,15 +72,19 @@ class LifecycleManager:
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
             self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
 
-            # Emit RuntimeStartedEvent after all steps succeed
+            # Emit RuntimeStartedEvent after all steps succeed.
+            # Ensure dispatcher is running so subscribers receive the event.
             dispatcher = getattr(self.runtime_state, "dispatcher", None)
-            if dispatcher is not None and dispatcher.started:
+            if dispatcher is not None:
+                if not dispatcher.started:
+                    await dispatcher.start()
                 dispatcher.dispatch(
                     RuntimeStartedEvent(
                         source="lifecycle_manager",
                         payload={"steps": len(self._startup_steps)},
                     )
                 )
+
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -107,6 +111,8 @@ class LifecycleManager:
             # Emit RuntimeShutdownEvent then stop the dispatcher so it
             # drains any remaining queued events before exiting.
             if dispatcher is not None:
+                if not dispatcher.started:
+                    await dispatcher.start()
                 dispatcher.dispatch(
                     RuntimeShutdownEvent(
                         source="lifecycle_manager",
@@ -114,6 +120,7 @@ class LifecycleManager:
                     )
                 )
                 await dispatcher.stop()
+
 
     async def _rollback_startup(self, completed_steps: List[str]) -> None:
         """Tear down steps that already ran after a startup failure."""
