@@ -39,7 +39,6 @@ class TestNeo4jGraphProvider(unittest.TestCase):
                 user=self.mock_user,
                 password=self.mock_password,
                 enabled=True,
-                require_encryption=False,
             )
 
             self.assertTrue(provider.enabled)
