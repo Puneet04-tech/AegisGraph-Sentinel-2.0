@@ -1,5 +1,4 @@
 import hashlib
-import io
 import os
 from typing import Optional, Any
 
@@ -51,19 +50,16 @@ class AegisGraphLoader:
                 "Set AEGIS_GRAPH_PATH env var or pass graph_path to AegisGraphLoader."
             )
 
+        hasher = hashlib.sha256()
         with open(self.graph_path, "rb") as f:
-            buf = f.read()
-
-        actual_hash = hashlib.sha256(buf).hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
-                f"Graph artifact hash mismatch at {self.graph_path}. "
-                f"Expected {expected_hash}, got {actual_hash}. "
-                "Ensure AEGIS_GRAPH_SHA256 matches the actual file."
-            )
-
-        data = torch.load(io.BytesIO(buf), weights_only=True)
-
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+            actual_hash = hasher.hexdigest()
+            if actual_hash != expected_hash:
+                raise RuntimeError("Graph artifact hash mismatch; refusing to load")
+            f.seek(0)
+            data = torch.load(f, weights_only=True)
+        
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
         # In CI/unit tests we may only have a stubbed torch (no arange/rand),
         # so stop here to avoid any torch-dependent tensor ops.
