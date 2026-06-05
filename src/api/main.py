@@ -1379,6 +1379,19 @@ async def health_check_v1(verbose: bool = False):
     return _build_health_response(include_details=verbose)
 
 @app.get(
+    "/health/liveness",
+    tags=["General"],
+    summary="Lightweight liveness probe",
+)
+async def liveness():
+    """
+    Lightweight health check endpoint for Kubernetes liveness probes.
+    Returns immediately to ensure responsiveness.
+    """
+    return {"status": "ok", "service": "AegisGraph Sentinel 2.0"}
+
+
+@app.get(
     "/health",
     response_model=HealthCheckResponse,
     response_model_exclude_none=True,
@@ -1387,9 +1400,9 @@ async def health_check_v1(verbose: bool = False):
 )
 async def health_check(verbose: bool = False):
     """
-    Health check endpoint
+    Health check endpoint (readiness/detailed)
     
-    Returns service status and basic statistics
+    Returns detailed service status and diagnostics
     """
     return _build_health_response(include_details=verbose)
 
