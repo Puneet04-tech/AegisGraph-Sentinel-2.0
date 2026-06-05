@@ -185,19 +185,45 @@ def _extract_legal_export_token(
 
 
 def _parse_request_timestamp(raw_timestamp: Optional[str]) -> Optional[datetime]:
+    """Parse a request timestamp from a string.
+
+    Accepts either a Unix epoch integer (seconds) or an ISO 8601 / RFC 3339
+    string.  Returns ``None`` for any value that cannot be parsed or that
+    falls outside the accepted epoch range, which prevents ``OSError`` /
+    ``OverflowError`` crashes on extreme platform-specific boundary values
+    (confirmed on macOS/Linux where ``datetime.fromtimestamp`` raises
+    ``OSError`` for values beyond the platform ``time_t`` range instead of
+    ``ValueError``).
+
+    Negative timestamps and pre-2001 epochs are explicitly rejected because
+    no legitimate request to this system can originate before the service
+    existed.
+    """
     if not raw_timestamp:
         return None
 
+    # Epoch seconds — only non-negative integers within a sensible range.
+    # Lower bound: 2001-09-09 (epoch 1_000_000_000) — no valid request
+    #              can originate before this service was conceived.
+    # Upper bound: 2100-01-01 (epoch 4_102_444_800) — rejects far-future
+    #              values that cause ValueError or OverflowError on some
+    #              platforms without relying on exception handling alone.
+    _MIN_VALID_EPOCH: int = 1_000_000_000   # 2001-09-09
+    _MAX_VALID_EPOCH: int = 4_102_444_800   # 2100-01-01
+
     candidate = raw_timestamp.strip()
     try:
-        if candidate.isdigit() or (candidate.startswith("-") and candidate[1:].isdigit()):
-            return datetime.fromtimestamp(int(candidate), tz=timezone.utc)
+        if candidate.isdigit():
+            ts_int = int(candidate)
+            if not (_MIN_VALID_EPOCH <= ts_int <= _MAX_VALID_EPOCH):
+                return None
+            return datetime.fromtimestamp(ts_int, tz=timezone.utc)
 
         parsed_timestamp = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
         if parsed_timestamp.tzinfo is None:
             parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
         return parsed_timestamp.astimezone(timezone.utc)
-    except ValueError:
+    except (ValueError, OSError, OverflowError):
         return None
 
 
