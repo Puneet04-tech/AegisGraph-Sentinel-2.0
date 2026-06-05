@@ -71,17 +71,6 @@ class TransactionCheckRequest(BaseModel):
     biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
     ip_address: Optional[str] = Field(default=None, description="IP address")
     location: Optional[str] = Field(default=None, description="Transaction location")
-    
-    @field_validator('amount')
-    @classmethod
-    def validate_amount(cls, v):
-        """Validate transaction amount."""
-        try:
-            TransactionValidator.validate_amount(v)
-        except ValidationError as e:
-            raise ValueError(e.suggestion) from e
-        return v
-    
     @field_validator('timestamp')
     @classmethod
     def validate_timestamp(cls, v):

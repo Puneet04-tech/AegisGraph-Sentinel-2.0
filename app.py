@@ -113,9 +113,7 @@ def _build_batch_transaction(row, index: int) -> dict:
         "amount": float(row.get("amount", 0)),
         "currency": str(row.get("currency", "INR")),
         "mode": str(row.get("mode", "UPI")),
-
         "timestamp": str(row.get("timestamp", _get_timestamp())),
-
     }
 
 
@@ -673,9 +671,7 @@ if page == "🧭 Command Center":
                 "amount": float(random.choice([500, 2500, 50000, 150000, 300000])),
                 "currency": "INR",
                 "mode": random.choice(["UPI", "IMPS"]),
-
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                "timestamp": _get_timestamp()
             }
             st.session_state.live_event_txn = txn
             st.session_state.live_event_future = COMMAND_CENTER_IO_EXECUTOR.submit(
@@ -2737,7 +2733,7 @@ elif page == "🧪 Innovation Lab":
                     "amount": 1,
                     "currency": "INR",
                     "mode": "UPI",
-                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                    "timestamp": _get_timestamp(),
                     "biometrics": {
                         "hold_times": hold_times,
                         "flight_times": flight_times,

@@ -28,9 +28,10 @@ async def honeypot_auto_release_loop(
                 if health_monitor is not None:
                     health_monitor.mark_failed("honeypot_auto_release", error="Manager not available")
                 continue
-
+            
             if health_monitor is not None:
                 health_monitor.mark_healthy("honeypot_auto_release")
+                
             try:
                 await asyncio.to_thread(manager.check_auto_release)
             except Exception as exc:
