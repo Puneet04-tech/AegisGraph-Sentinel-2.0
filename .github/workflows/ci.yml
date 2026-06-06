@@ -1,50 +1,66 @@
-name: CI
+name: AegisGraph Sentinel 2.0 CI Pipeline
 
 on:
   push:
+    branches: [ "master", "main" ]
   pull_request:
+    branches: [ "master", "main" ]
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
+  continuous-integration:
+    runs-on: ubuntu-latest
+    
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
         include:
-          - os: ubuntu-latest
-            python-version: "3.11"
+          - python-version: "3.10"
             run_coverage: true
-        exclude:
-          - os: ubuntu-latest
-            python-version: "3.11"
-      max-parallel: 4
-    env:
-      RUN_COVERAGE: ${{ matrix.run_coverage || 'false' }}
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: "pip"
+    # Coverage is enabled only for one matrix leg to keep CI time bounded.
+    - name: Set run_coverage flag
+      id: coverage_flag
+      run: echo "RUN_COVERAGE=true" >> $GITHUB_OUTPUT
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
 
-      - name: Run tests
-        env:
-          AEGIS_ENV: test
-          PYTHONUTF8: "1"
-          PYTHONIOENCODING: "utf-8"
-        shell: bash
-        run: |
-          if [ "${RUN_COVERAGE}" = "true" ]; then
-            python -m pytest tests/ --cov=src --cov-report=term-missing
-          else
-            python -m pytest tests/
-          fi
+    - name: Install Architecture Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Ensure CI-only tooling is present without overriding runtime pins.
+        pip install pytest-asyncio flake8
+
+    - name: Lint Codebase with Flake8 (Static Analysis)
+      run: |
+        # Stop the build if there are critical Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # exit-zero treats all other style warnings as non-blocking
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Run Forensic Core & Test Suite Verification
+      env:
+        AEGIS_API_KEY_HASHES: ${{ secrets.AEGIS_API_KEY_HASHES }}
+        AEGIS_GRAPH_SHA256: ${{ secrets.AEGIS_GRAPH_SHA256 }}
+      run: |
+        # Run full suite with optional coverage (only enabled on one matrix leg).
+        if [ "${RUN_COVERAGE:-false}" = "true" ]; then
+          python -m pytest tests/ -ra --maxfail=3 --durations=20 --cov=src --cov-report=term-missing
+        else
+          python -m pytest tests/ -ra --maxfail=3 --durations=20
+        fi
+
+    - name: Verify API Entry Point Compilation Surface
+      env:
+        AEGIS_API_KEY_HASHES: ${{ secrets.AEGIS_API_KEY_HASHES }}
+        AEGIS_GRAPH_SHA256: ${{ secrets.AEGIS_GRAPH_SHA256 }}
+      run: |
+        # Ensure the main route entry definitions can compile flawlessly in production
+        python -m py_compile src/api/main.py

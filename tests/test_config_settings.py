@@ -54,8 +54,6 @@ graph:
     assert settings.api.allowed_origins == ["http://env.example", "http://second.example"]
     assert settings.graph.graph_path == Path("data/from-env.graphml")
     assert settings.runtime.debug is True
-
-
 @pytest.mark.parametrize(
     "environ",
     [
@@ -93,6 +91,25 @@ api:
         )
 
 
+def test_explicit_origin_list_still_loads(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  allowed_origins:
+    - http://localhost:3000
+    - https://dashboard.example.com
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(
+        config_path=config_path,
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={"AEGIS_ENV": "test"},
+    )
+
+    assert settings.api.allowed_origins == ["http://localhost:3000", "https://dashboard.example.com"]
 def test_threshold_yaml_is_loaded_into_typed_settings(tmp_path):
     thresholds_path = tmp_path / "thresholds.yaml"
     thresholds_path.write_text(
@@ -165,7 +182,7 @@ def test_development_validation_warns_for_missing_required_env(tmp_path):
     assert report.ok
     assert report.warnings
     assert "API_URL" in report.warnings[0]
-    assert "AEGIS_ALLOWED_ORIGINS" in report.warnings[0]
+    assert "CORS_ORIGINS" in report.warnings[0]
 
 
 def test_production_validation_raises_for_missing_required_env(tmp_path):
@@ -186,7 +203,7 @@ def test_production_validation_accepts_required_env(tmp_path):
         environ={
             "AEGIS_ENV": "production",
             "API_URL": "https://api.example.test",
-            "AEGIS_ALLOWED_ORIGINS": "https://app.example.test",
+                "CORS_ORIGINS": "https://app.example.test",
         },
     )
 
@@ -195,3 +212,20 @@ def test_production_validation_accepts_required_env(tmp_path):
     assert report.ok
     assert report.warnings == []
     assert settings.to_runtime_dict()["api"]["api_url"] == "https://api.example.test"
+
+
+def test_cors_origins_env_var_populates_allowed_origins(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "test",
+            "API_URL": "https://api.example.test",
+            "CORS_ORIGINS": "https://app.example.test,https://admin.example.test",
+        },
+    )
+
+    assert settings.api.allowed_origins == [
+        "https://app.example.test",
+        "https://admin.example.test",
+    ]

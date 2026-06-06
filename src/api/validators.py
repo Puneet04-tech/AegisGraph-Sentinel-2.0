@@ -11,8 +11,12 @@ Comprehensive validation for:
 - Rate limiting (per account, API key, IP)
 """
 
+from collections import OrderedDict
+
+
+from collections import OrderedDict, defaultdict
+
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
 from typing import Tuple, Optional, List, Dict, Any
 import threading
 import logging
@@ -329,7 +333,6 @@ class RateLimiter:
         self.max_entries = max_entries
 
         # Use OrderedDict to preserve insertion order for LRU eviction
-        from collections import OrderedDict
         self.account_requests: "OrderedDict[str, Tuple[int, datetime]]" = OrderedDict()
         self.apikey_requests: "OrderedDict[str, Tuple[int, datetime]]" = OrderedDict()
         self.ip_requests: "OrderedDict[str, Tuple[int, datetime]]" = OrderedDict()
@@ -458,7 +461,9 @@ def get_rate_limiter() -> RateLimiter:
 
 def reset_rate_limiter():
     """Reset the global rate limiter (for testing)."""
-    global _rate_limiter
+
+
+
     if _rate_limiter is not None:
         _rate_limiter.reset()
 

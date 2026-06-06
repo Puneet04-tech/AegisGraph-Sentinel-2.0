@@ -25,6 +25,7 @@ Pilot Results (HDFC Mumbai, 6 months):
 import json
 import time
 import threading
+from collections import deque
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -113,7 +114,7 @@ class HoneypotEscrowManager:
         self._active_honeypots_by_account: Dict[str, HoneypotTransaction] = {}
         
         # Historical honeypots
-        self.honeypot_history: List[HoneypotTransaction] = []
+        self.honeypot_history: deque = deque(maxlen=10000)
         
         # Statistics (from pilot study - HDFC Mumbai, 6 months)
         self.stats = {
@@ -266,8 +267,10 @@ class HoneypotEscrowManager:
             honeypot.withdrawal_attempts.append(attempt)
             honeypot.status = HoneypotStatus.WITHDRAWAL_ATTEMPTED
 
-            # Generate police alert
-            alert = self._generate_police_alert(honeypot, attempt)
+        # Generate police alert outside lock
+        alert = self._generate_police_alert(honeypot, attempt)
+        
+        with self._lock:
             honeypot.alerts_sent.append(alert)
             honeypot.status = HoneypotStatus.ALERT_SENT
         
@@ -362,11 +365,13 @@ class HoneypotEscrowManager:
 
             # Calculate response time
             first_withdrawal = honeypot.withdrawal_attempts[0] if honeypot.withdrawal_attempts else None
-            if first_withdrawal:
-                withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
-                arrest_time = datetime.fromisoformat(arrest_details['arrest_time'])
-                response_minutes = (arrest_time - withdrawal_time).total_seconds() / 60
-                
+            
+        if first_withdrawal:
+            withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
+            arrest_time = datetime.fromisoformat(arrest_details['arrest_time'])
+            response_minutes = (arrest_time - withdrawal_time).total_seconds() / 60
+            
+            with self._lock:
                 # Update average response time
                 total_arrests = self.stats['total_arrests']
                 old_avg = self.stats['average_response_time_minutes']
@@ -379,8 +384,6 @@ class HoneypotEscrowManager:
         
         with self._lock:
             self.honeypot_history.append(honeypot)
-            if len(self.honeypot_history) > 10000:
-                self.honeypot_history = self.honeypot_history[-5000:]
             del self.active_honeypots[honeypot_id]
             self._active_honeypots_by_account.pop(honeypot.target_account, None)
 
@@ -436,12 +439,13 @@ class HoneypotEscrowManager:
             successors = list(transaction_graph.successors(mule_account))
             network_members.update(successors)
         
-            honeypot.network_members = list(network_members)
-            honeypot.status = HoneypotStatus.NETWORK_TRACED
+            with self._lock:
+                honeypot.network_members = list(network_members)
+                honeypot.status = HoneypotStatus.NETWORK_TRACED
 
-            # Count as network dismantled if >5 accounts
-            if len(network_members) > 5:
-                self.stats['total_networks_dismantled'] += 1
+                # Count as network dismantled if >5 accounts
+                if len(network_members) > 5:
+                    self.stats['total_networks_dismantled'] += 1
         
         print(f"🔍 NETWORK TRACED: {honeypot_id}")
         print(f"   Network Size: {len(network_members)} accounts")
@@ -489,8 +493,6 @@ class HoneypotEscrowManager:
         
         with self._lock:
             self.honeypot_history.append(honeypot)
-            if len(self.honeypot_history) > 10000:
-                self.honeypot_history = self.honeypot_history[-5000:]
             del self.active_honeypots[honeypot_id]
             self._active_honeypots_by_account.pop(honeypot.target_account, None)
     

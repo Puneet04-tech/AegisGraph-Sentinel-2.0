@@ -92,7 +92,12 @@ class S3Backend(StorageBackend):
         s3.download_file(self.bucket, object_key, str(local_path))
 
     def exists(self, artifact_key: str) -> bool:
-        """Return True when the S3 artifact exists."""
+        """Return True when the S3 artifact exists.
+
+        Raises ``ClientError`` for non-404 failures so credential,
+        access-denied, and network problems are surfaced to callers
+        instead of being silently treated as \"missing\".
+        """
         import boto3
         from botocore.exceptions import ClientError
 
@@ -101,5 +106,8 @@ class S3Backend(StorageBackend):
         try:
             s3.head_object(Bucket=self.bucket, Key=object_key)
             return True
-        except ClientError:
-            return False
+        except ClientError as exc:
+            error_code = exc.response.get('Error', {}).get('Code')
+            if error_code in ['NoSuchKey', '404']:
+                return False
+            raise

@@ -26,12 +26,18 @@ class RecoveryManager:
         health_monitor: RuntimeHealthMonitor,
         logger: Optional[Any] = None,
         dispatcher: Optional[Any] = None,
+        resource_manager: Optional[Any] = None,
     ) -> None:
         self.health_monitor = health_monitor
         self._callbacks: Dict[str, Callable[[], Any]] = {}
         self._max_attempts: Dict[str, int] = {}
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
+        self._resource_manager = resource_manager
+
+    def set_resource_manager(self, resource_manager: Any) -> None:
+        """Attach optional recovery throttling without changing construction API."""
+        self._resource_manager = resource_manager
 
     def register_recovery_callback(self, name: str, callback: Callable[[], Any], max_attempts: int = 3) -> None:
         """Register a recovery/restart callback for a service."""
@@ -77,6 +83,14 @@ class RecoveryManager:
                     "restart_attempts": health.restart_attempts,
                     "max_attempts": max_attempts,
                 },
+            )
+            return False
+
+        if self._resource_manager is not None and not self._resource_manager.can_start_recovery():
+            self._logger.warning(
+                f"Recovery throttled for service: {name}",
+                event_type="recovery_throttled",
+                metadata={"service": name},
             )
             return False
 
