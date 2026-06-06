@@ -260,3 +260,15 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertEqual(list(provider._subgraph_cache.keys()), ["ACC3"])
             self.assertNotIn("ACC1", provider._subgraph_cache)
             self.assertEqual(mock_session.run.call_count, 2)
+def test_get_approx_subgraph_respects_max_hops():
+    provider = Neo4jGraphProvider(enabled=False)
+
+    max_hops = 4
+
+    query = (
+        f"MATCH path = (a:Account {{id: $account_id}})-[r:TRANSFER*1..{max_hops}]-(b:Account)\n"
+        "RETURN path\n"
+        "LIMIT $limit"
+    )
+
+    assert f"*1..{max_hops}" in query

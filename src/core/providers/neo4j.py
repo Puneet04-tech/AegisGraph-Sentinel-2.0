@@ -222,8 +222,10 @@ class Neo4jGraphProvider:
         # Retrieve paths matching the k-hop undirected pattern with a hard limit
         # to prevent super-node DoS (issue #477).
         limit = self.DEFAULT_SUBGRAPH_LIMIT
+        max_hops = max(1, int(max_hops))
+
         query = (
-            "MATCH path = (a:Account {id: $account_id})-[r:TRANSFER*1..2]-(b:Account)\n"
+            f"MATCH path = (a:Account {{id: $account_id}})-[r:TRANSFER*1..{max_hops}]-(b:Account)\n"
             "RETURN path\n"
             "LIMIT $limit"
         )
