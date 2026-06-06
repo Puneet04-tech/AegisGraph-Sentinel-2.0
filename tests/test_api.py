@@ -747,7 +747,7 @@ class TestBatchFraudCheck:
     def test_batch_aggregates_canonical_decisions(self, monkeypatch):
         """Batch totals should count API decision values correctly."""
 
-        async def fake_check_transaction(txn_request):
+        async def fake_check_transaction(txn_request, **kwargs):
             decision_by_transaction = {
                 "batch_allow": "approve",
                 "batch_review": "review",
@@ -844,7 +844,7 @@ class TestBatchFraudCheck:
     def test_batch_processing_is_chunked(self, monkeypatch):
         """Batch processing should return all results through the streaming response."""
 
-        async def fake_check_transaction(txn_request):
+        async def fake_check_transaction(txn_request, **kwargs):
             return TransactionCheckResponse(
                 transaction_id=txn_request.transaction_id,
                 risk_score=0.25,

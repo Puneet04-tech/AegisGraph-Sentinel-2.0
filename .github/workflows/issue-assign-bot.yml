@@ -1,0 +1,77 @@
+name: Issue Assignment Bot
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  welcome-message:
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Post Welcome Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"body": "👋 Welcome! If you would like to work on this issue, comment `/assign` and it will be assigned to you automatically."}' \
+            "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments"
+        shell: bash
+
+  assign-issue:
+    if: github.event_name == 'issue_comment' && github.event.action == 'created' && contains(github.event.comment.body, '/assign')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Handle Assignment Request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          import json, urllib.request, os
+
+          token = os.getenv('GITHUB_TOKEN')
+          repo = os.getenv('REPO')
+          issue_number = os.getenv('ISSUE_NUMBER')
+          commenter = os.getenv('COMMENTER')
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json"
+          }
+
+          # Get current assignees
+          url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
+          req = urllib.request.Request(url, headers=headers)
+          with urllib.request.urlopen(req) as resp:
+              issue = json.loads(resp.read().decode())
+
+          assignees = [a['login'] for a in issue.get('assignees', [])]
+
+          if assignees:
+              body = f"❌ Sorry @{commenter}, this issue is already assigned to @{assignees[0]}. Please look for another issue to work on!"
+          else:
+              # Assign the commenter
+              assign_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/assignees"
+              data = json.dumps({"assignees": [commenter]}).encode()
+              req = urllib.request.Request(assign_url, data=data, headers=headers, method="POST")
+              urllib.request.urlopen(req)
+              body = f"✅ @{commenter} has been assigned to this issue. Good luck! 🚀"
+
+          # Post comment
+          comment_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+          data = json.dumps({"body": body}).encode()
+          req = urllib.request.Request(comment_url, data=data, headers=headers, method="POST")
+          urllib.request.urlopen(req)
+        shell: python

@@ -1767,13 +1767,7 @@ async def check_transaction(
         processing_time_ms = (time.time() - start_time) * 1000
         
         internal_decision = _normalize_decision(risk_result['decision'])
-        async with _get_metrics_lock():
-            # Update statistics atomically to avoid interleaving concurrent request mutations.
-            state.requests_processed += 1
-            state.decisions[internal_decision] += 1
-            state.total_risk_score += risk_result['risk_score']
-            state.total_processing_time += processing_time_ms
-        
+
         # Prepare response with innovation fields
         decision = _decision_to_api_value(internal_decision)
 
@@ -1816,6 +1810,14 @@ async def check_transaction(
                     "fallback_risk_score": risk_result['risk_score'],
                 },
             )
+
+        async with _get_metrics_lock():
+            # Update statistics AFTER amount-scaling override so stats
+            # always reflect the final decision returned to the caller.
+            state.requests_processed += 1
+            state.decisions[internal_decision] += 1
+            state.total_risk_score += risk_result['risk_score']
+            state.total_processing_time += processing_time_ms
 
         response = TransactionCheckResponse(
             transaction_id=request.transaction_id,
@@ -2121,7 +2123,12 @@ async def check_batch_transactions(request: BatchTransactionRequest):
 
     async def _process_transaction(txn_request):
         async with semaphore:
-            return await check_transaction(txn_request)
+            return await check_transaction(
+                txn_request,
+                lateral_movement_detector=await get_lateral_movement_detector(),
+                honeypot_manager=await get_honeypot_manager(),
+                blockchain_manager=await get_blockchain_manager(),
+            )
 
     async def _stream_batch_response_impl():
         api_to_internal = {
