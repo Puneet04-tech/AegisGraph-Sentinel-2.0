@@ -678,7 +678,7 @@ class TestFraudCheckEndpoint:
         state.decisions = original_decisions
 
     def test_honeypot_activation_preserves_block_decision_and_explanation(self, monkeypatch):
-        """Honeypot activation must keep the real fraud decision and explanation."""
+        """Honeypot activation must keep the real fraud decision and explanation without exposing defensive state."""
         honeypot_manager = Mock()
         blockchain_manager = Mock()
         activate_mock = Mock(return_value=Mock(honeypot_id="HP_TEST_001"))
@@ -718,15 +718,96 @@ class TestFraudCheckEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["decision"] == "block"
-        assert data["honeypot_activated"] is True
-        assert data["deceptive_success_response"] is True
+        # SECURITY: Honeypot state must NOT be exposed to clients
+        assert "honeypot_activated" not in data
+        assert "honeypot_id" not in data
+        assert "deceptive_success_response" not in data
         assert "Known mule chain pattern detected" in data["explanation"]
         assert "Honeypot containment activated" in data["explanation"]
         assert "Transaction allowed" not in data["explanation"]
         assert data["recommended_action"] == "BLOCK_AND_ALERT_LAW_ENFORCEMENT"
+        # Verify honeypot was actually activated internally
         assert activate_mock.called
         assert seal_mock.called
         assert seal_mock.call_args.args[6] == "BLOCK"
+
+    def test_honeypot_state_not_leaked_in_allow_decision(self, monkeypatch):
+        """Honeypot state must not be leaked even when transaction is allowed."""
+        honeypot_manager = Mock()
+        honeypot_manager.should_activate_honeypot.return_value = False
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "honeypot_manager", honeypot_manager, raising=False)
+        monkeypatch.setattr(api_main, "compute_risk_score", lambda transaction, biometrics=None, **kwargs: {
+            "risk_score": 0.15,
+            "decision": "ALLOW",
+            "confidence": 0.95,
+            "breakdown": {"graph": 0.1, "velocity": 0.2, "behavior": 0.1, "entropy": 0.2},
+        })
+        monkeypatch.setattr(api_main, "generate_explanation", lambda transaction=None, risk_result=None, detail_level='medium', **kwargs: {
+            "explanation": "Low risk transaction",
+            "recommended_action": "APPROVE_TRANSACTION",
+            "risk_factors": [],
+        })
+
+        transaction = {
+            "transaction_id": "test_allow_no_honeypot",
+            "amount": 100.0,
+            "timestamp": 1779883200.0,
+            "source_account": "user_src",
+            "target_account": "merchant_dst",
+            "currency": "INR",
+            "mode": "UPI",
+        }
+
+        response = client.post("/api/v1/fraud/check", json=transaction)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "approve"
+        # SECURITY: Honeypot state must NOT be exposed to clients
+        assert "honeypot_activated" not in data
+        assert "honeypot_id" not in data
+        assert "deceptive_success_response" not in data
+
+    def test_honeypot_state_not_leaked_in_review_decision(self, monkeypatch):
+        """Honeypot state must not be leaked even when transaction is flagged for review."""
+        honeypot_manager = Mock()
+        honeypot_manager.should_activate_honeypot.return_value = False
+
+        monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "honeypot_manager", honeypot_manager, raising=False)
+        monkeypatch.setattr(api_main, "compute_risk_score", lambda transaction, biometrics=None, **kwargs: {
+            "risk_score": 0.55,
+            "decision": "REVIEW",
+            "confidence": 0.88,
+            "breakdown": {"graph": 0.5, "velocity": 0.6, "behavior": 0.4, "entropy": 0.7},
+        })
+        monkeypatch.setattr(api_main, "generate_explanation", lambda transaction=None, risk_result=None, detail_level='medium', **kwargs: {
+            "explanation": "Medium risk pattern detected",
+            "recommended_action": "MANUAL_REVIEW_REQUIRED",
+            "risk_factors": [],
+        })
+
+        transaction = {
+            "transaction_id": "test_review_no_honeypot",
+            "amount": 5000.0,
+            "timestamp": 1779883200.0,
+            "source_account": "user_src",
+            "target_account": "merchant_dst",
+            "currency": "INR",
+            "mode": "UPI",
+        }
+
+        response = client.post("/api/v1/fraud/check", json=transaction)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "review"
+        # SECURITY: Honeypot state must NOT be exposed to clients
+        assert "honeypot_activated" not in data
+        assert "honeypot_id" not in data
+        assert "deceptive_success_response" not in data
 
     def test_invalid_transaction(self):
         """Test with invalid transaction data"""
@@ -747,7 +828,7 @@ class TestBatchFraudCheck:
     def test_batch_aggregates_canonical_decisions(self, monkeypatch):
         """Batch totals should count API decision values correctly."""
 
-        async def fake_check_transaction(txn_request):
+        async def fake_check_transaction(txn_request, **kwargs):
             decision_by_transaction = {
                 "batch_allow": "approve",
                 "batch_review": "review",
@@ -844,7 +925,7 @@ class TestBatchFraudCheck:
     def test_batch_processing_is_chunked(self, monkeypatch):
         """Batch processing should return all results through the streaming response."""
 
-        async def fake_check_transaction(txn_request):
+        async def fake_check_transaction(txn_request, **kwargs):
             return TransactionCheckResponse(
                 transaction_id=txn_request.transaction_id,
                 risk_score=0.25,

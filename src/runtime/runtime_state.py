@@ -12,6 +12,7 @@ from .service_container import ServiceContainer
 from .task_registry import TaskRegistry
 from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
+from ..security import sanitize_metadata
 
 
 @dataclass
@@ -60,7 +61,7 @@ class RuntimeState:
             {
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "event_type": event_type,
-                "metadata": metadata,
+                "metadata": sanitize_metadata(metadata),
             }
         )
 

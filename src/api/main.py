@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+from contextvars import ContextVar
 from importlib import import_module, util as importlib_util
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from itertools import islice
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import networkx as nx
@@ -111,6 +113,7 @@ from ..exceptions import (
 from ..observability import get_audit_logger, get_logger
 from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWatchdog
 from ..runtime.background_tasks import honeypot_auto_release_loop
+from ..security import sanitize_payload
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -282,7 +285,7 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
     response["uptime_seconds"] = uptime
 
     if not include_details:
-        return response
+        return sanitize_payload(response)
 
     response.update(
         {
@@ -307,7 +310,7 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
             for name, sh in snapshot.items()
         }
 
-    return response
+    return sanitize_payload(response)
 from ..exceptions import register_exception_handlers, register_observability_middleware
 from ..observability import get_audit_logger, get_logger
 from ..core import register_core_services, register_graph_services, register_innovation_services
@@ -321,6 +324,15 @@ settings = get_settings()
 # with a maximum length of 64 characters, to prevent log injection and
 # memory exhaustion via crafted path values.
 _WS_CLIENT_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+# Context variables for batch-scoped subgraph cache (shared across concurrent scorers)
+# Type annotations use Any to avoid Pydantic/FastAPI trying to validate Lock type
+_batch_subgraph_cache: ContextVar[Any] = ContextVar(
+    '_batch_subgraph_cache', default=None
+)
+_batch_subgraph_lock: ContextVar[Any] = ContextVar(
+    '_batch_subgraph_lock', default=None
+)
 
 
 class FraudDecision(str, Enum):
@@ -1202,10 +1214,17 @@ def _run_scoring_pipeline(
     target_account: str,
     lateral_detector,
     innovations_available: bool,
+    subgraph_cache: Optional[dict] = None,
+    subgraph_cache_lock=None,
 ) -> dict:
     """
     Pure synchronous scoring work safe to run in a thread pool executor.
     Returns the final risk_result dict.
+
+    subgraph_cache and subgraph_cache_lock are optional. When provided
+    (typically by the batch endpoint), subgraph extractions for the same
+    source account are shared across concurrent scorer calls, reducing
+    redundant graph traversals from O(N) to O(unique source accounts).
     """
     risk_result = compute_risk_score(
         transaction=transaction,
@@ -1217,6 +1236,8 @@ def _run_scoring_pipeline(
         centrality_window_size=state.centrality_window_size,
         account_profiles=state.account_profiles,
         config=state.config,
+        subgraph_cache=subgraph_cache,
+        subgraph_cache_lock=subgraph_cache_lock,
     )
 
     if lateral_detector is not None:
@@ -1594,8 +1615,15 @@ async def check_transaction(
                         event_type="keystroke_analysis_error",
                     )
         
-        # Offload CPU-bound scoring + graph analysis to thread pool
+        # Offload CPU-bound scoring + graph analysis to thread pool.
+        # When called from the batch endpoint, _batch_subgraph_cache and
+        # _batch_subgraph_lock are set via context variables so that subgraph
+        # extractions for the same source account are shared across concurrent
+        # tasks within the same batch, reducing graph traversals from O(N) to
+        # O(unique source accounts).
         loop = asyncio.get_running_loop()
+        subgraph_cache = _batch_subgraph_cache.get()
+        subgraph_lock = _batch_subgraph_lock.get()
         risk_result = await loop.run_in_executor(
             None,
             partial(
@@ -1606,6 +1634,8 @@ async def check_transaction(
                 request.target_account,
                 lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
                 INNOVATIONS_AVAILABLE,
+                subgraph_cache,
+                subgraph_lock,
             ),
         )
 
@@ -1737,13 +1767,7 @@ async def check_transaction(
         processing_time_ms = (time.time() - start_time) * 1000
         
         internal_decision = _normalize_decision(risk_result['decision'])
-        async with _get_metrics_lock():
-            # Update statistics atomically to avoid interleaving concurrent request mutations.
-            state.requests_processed += 1
-            state.decisions[internal_decision] += 1
-            state.total_risk_score += risk_result['risk_score']
-            state.total_processing_time += processing_time_ms
-        
+
         # Prepare response with innovation fields
         decision = _decision_to_api_value(internal_decision)
 
@@ -1787,6 +1811,14 @@ async def check_transaction(
                 },
             )
 
+        async with _get_metrics_lock():
+            # Update statistics AFTER amount-scaling override so stats
+            # always reflect the final decision returned to the caller.
+            state.requests_processed += 1
+            state.decisions[internal_decision] += 1
+            state.total_risk_score += risk_result['risk_score']
+            state.total_processing_time += processing_time_ms
+
         response = TransactionCheckResponse(
             transaction_id=request.transaction_id,
             risk_score=risk_result['risk_score'],
@@ -1798,9 +1830,6 @@ async def check_transaction(
             recommended_action=explanation_result['recommended_action'],
             processing_time_ms=processing_time_ms,
             timestamp=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            honeypot_activated=honeypot_activated,
-            honeypot_id=honeypot_id,
-            deceptive_success_response=honeypot_activated,
             blockchain_evidence_id=blockchain_evidence_id,
             behavioral_stress_detected=behavioral_stress_detected,
             lateral_movement_detected=risk_result.get('lateral_movement_detected', False),
@@ -2068,20 +2097,37 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
 async def check_batch_transactions(request: BatchTransactionRequest):
     """
     Check multiple transactions in batch
-    
+
     Processes multiple transactions and returns results for each.
     Maximum batch size: 100 transactions.
+
+    Performance note: a shared subgraph cache (dict + Lock) is created
+    once per batch and made available to every check_transaction() call
+    via context variables. When the same source account appears in
+    multiple transactions, the graph neighbourhood is extracted only once.
+    This reduces get_approx_subgraph() calls from O(N) to O(unique source
+    accounts), cutting batch latency significantly for real-world fraud
+    workloads where a mule account may appear dozens of times per batch.
     """
     start_time = time.time()
     max_concurrent_tasks = 8
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
     txns = request.transactions
 
+    # Per-batch subgraph cache shared across all concurrent scorer calls
+    batch_subgraph_cache: Dict = {}
+    batch_subgraph_lock: Lock = Lock()
+
     async def _process_transaction(txn_request):
         async with semaphore:
-            return await check_transaction(txn_request)
+            return await check_transaction(
+                txn_request,
+                lateral_movement_detector=await get_lateral_movement_detector(),
+                honeypot_manager=await get_honeypot_manager(),
+                blockchain_manager=await get_blockchain_manager(),
+            )
 
-    async def _stream_batch_response():
+    async def _stream_batch_response_impl():
         api_to_internal = {
             "approve": FraudDecision.ALLOW.value,
             "review": FraudDecision.REVIEW.value,
@@ -2128,6 +2174,23 @@ async def check_batch_transactions(request: BatchTransactionRequest):
             f"\"processing_time_ms\":{processing_time_ms}"
             "}"
         )
+
+    async def _stream_batch_response():
+        # Set the context variables inside the streaming generator so that
+        # the set and the matching reset both run in the same context. A
+        # StreamingResponse body iterator executes in a context copied by
+        # Starlette, so a token created in the endpoint context cannot be
+        # reset here. Child tasks created during iteration copy this context
+        # after the values are set, so the shared cache stays visible to
+        # every check_transaction() call.
+        token_cache = _batch_subgraph_cache.set(batch_subgraph_cache)
+        token_lock = _batch_subgraph_lock.set(batch_subgraph_lock)
+        try:
+            async for chunk in _stream_batch_response_impl():
+                yield chunk
+        finally:
+            _batch_subgraph_cache.reset(token_cache)
+            _batch_subgraph_lock.reset(token_lock)
 
     return StreamingResponse(_stream_batch_response(), media_type="application/json")
 

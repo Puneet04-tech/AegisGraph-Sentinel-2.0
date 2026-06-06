@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from ...security import sanitize_payload
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -24,6 +26,9 @@ class RuntimeEvent:
     event_id: str = field(default_factory=_new_event_id)
     timestamp: str = field(default_factory=_utcnow)
     payload: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.payload = sanitize_payload(self.payload)
 
 
 @dataclass
