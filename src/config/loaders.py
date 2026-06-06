@@ -58,33 +58,51 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
     return base
 
 
+def _substitute_env_vars(raw: str) -> str:
+    """Replace ${VAR_NAME} placeholders with os.environ values."""
+    import re as _re
+
+    def _replace(match: "_re.Match[str]") -> str:
+        return os.environ.get(match.group(1), "")
+
+    return _re.sub(r"\$\{([^}]+)\}", _replace, raw)
+
+
 def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
     if not path.exists():
         if optional:
             return {}
         raise FileNotFoundError(f"Configuration file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+        raw = handle.read()
+    raw = _substitute_env_vars(raw)
+    data = yaml.safe_load(raw) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Configuration file must contain a mapping: {path}")
     return data
 
 
-def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:
+
+def load_environment(
+    environ: Optional[Mapping[str, str]] = None,
+) -> EnvironmentVariablesSchema:
     """Load recognized environment variables into a typed raw schema."""
+def load_environment(
+    environ: Optional[Mapping[str, str]] = None,
+) -> EnvironmentVariablesSchema:
+    """Load recognized environment variables into a typed raw schema."""
+    load_dotenv()
     if environ is None:
-        load_dotenv()
         source = os.environ
     else:
         source = environ
-
+    
     mapped = {}
-    # First, copy any existing lowercase keys directly passed (e.g. from tests)
-    for k, v in source.items():
-        if k in EnvironmentVariablesSchema.model_fields:
-            mapped[k] = v
 
-    # Then overlay mapped uppercase environment keys
+    for key, value in source.items():
+        if key in EnvironmentVariablesSchema.model_fields:
+            mapped[key] = value
+
     for field_name, env_var in ENV_ALIASES.items():
         if env_var in source:
             mapped[field_name] = source[env_var]

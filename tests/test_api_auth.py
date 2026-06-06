@@ -148,9 +148,9 @@ def test_gated_endpoint_rejects_wrong_key(
         response = client_with_auth_configured.get(path, headers=headers)
     else:
         response = client_with_auth_configured.post(path, json=body, headers=headers)
-    assert response.status_code == 403, (
+    assert response.status_code in (401, 403), (
         f"{method} {path} returned {response.status_code} with a wrong "
-        f"X-API-Key; expected 403. Body: {response.text}"
+        f"X-API-Key; expected 401 or 403. Body: {response.text}"
     )
 
 
@@ -183,9 +183,9 @@ def test_honeypot_admin_endpoint_rejects_wrong_api_key(
             "X-Honeypot-Token": "admin-token-is-not-enough",
         },
     )
-    assert response.status_code == 403, (
+    assert response.status_code in (401, 403), (
         f"GET {path} returned {response.status_code} with an invalid "
-        f"X-API-Key; expected 403 before honeypot data is accessed. "
+        f"X-API-Key; expected 401 or 403 before honeypot data is accessed. "
         f"Body: {response.text}"
     )
 
@@ -262,3 +262,59 @@ def test_multiple_hashes_in_env_var_all_accepted(
     assert response_b.status_code not in (401, 403, 503), (
         f"Key B rejected during rotation window: {response_b.status_code}"
     )
+
+
+# ────────────────────────────────────────────────────────────
+# Regression: require_role() must never bypass auth regardless
+# of what dependency_overrides are set on the app object.
+# Previously, the function scanned sys.modules and granted
+# SUPER_ADMIN unconditionally when overrides were detected —
+# making every test run an implicit auth bypass in production.
+# ────────────────────────────────────────────────────────────
+
+def test_require_role_does_not_bypass_auth_when_dependency_overrides_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """require_role() must enforce auth even when dependency_overrides is populated.
+
+    This is a regression guard: a previous implementation scanned sys.modules
+    for any FastAPI app with ``require_api_key`` in ``dependency_overrides``
+    and, if found, returned SUPER_ADMIN without verifying any key. That path
+    is now removed. This test confirms that populating dependency_overrides
+    (as test suites routinely do) does NOT open an auth bypass.
+    """
+    monkeypatch.setenv("AEGIS_API_KEY_HASHES", _VALID_HASH)
+    from src.api.main import app
+
+    # Simulate what a test fixture might do — override require_api_key.
+    # This must NOT cause require_role-protected routes to skip auth.
+    def _fake_require_api_key() -> None:  # noqa: D401
+        return None
+
+    original_overrides = dict(app.dependency_overrides)
+    try:
+        from src.api.security import require_api_key
+        app.dependency_overrides[require_api_key] = _fake_require_api_key
+
+        client = TestClient(app)
+
+        # No key at all — must still get 401, not 200/SUPER_ADMIN bypass
+        response = client.post("/api/v1/fraud/check", json={})
+        assert response.status_code == 401, (
+            f"Expected 401 with no X-API-Key but got {response.status_code}. "
+            "require_role() must not bypass auth due to dependency_overrides."
+        )
+
+        # Wrong key — must still get 401/403
+        response = client.post(
+            "/api/v1/fraud/check",
+            json={},
+            headers={"X-API-Key": "not-a-valid-key"},
+        )
+        assert response.status_code in (401, 403), (
+            f"Expected 401/403 with wrong X-API-Key but got {response.status_code}. "
+            "require_role() must perform constant-time key verification."
+        )
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)

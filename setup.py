@@ -41,6 +41,7 @@ def check_dependencies():
         ('httpx', 'httpx'),
         ('pytest', 'pytest'),
         ('pytest-cov', 'pytest_cov'),
+        ('google-generativeai', 'google.generativeai'),
     ]
     
     missing = []

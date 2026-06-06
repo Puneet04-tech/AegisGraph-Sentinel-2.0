@@ -43,8 +43,8 @@ def validate_runtime_settings(
     missing_required_env = []
     if not settings.raw_environment.api_url:
         missing_required_env.append("API_URL")
-    if not settings.raw_environment.aegis_allowed_origins:
-        missing_required_env.append("AEGIS_ALLOWED_ORIGINS")
+    if not (settings.raw_environment.cors_origins or settings.raw_environment.aegis_allowed_origins):
+        missing_required_env.append("CORS_ORIGINS (or legacy AEGIS_ALLOWED_ORIGINS)")
 
     if missing_required_env:
         message = f"Missing environment variables: {', '.join(missing_required_env)}"

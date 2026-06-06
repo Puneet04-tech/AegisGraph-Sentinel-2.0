@@ -163,8 +163,94 @@ class BlockchainNode:
         except TypeError as e:
             raise HTTPException(status_code=422, detail=f"Cryptographic hash computation failed: {e}")
     
+    # Required fields for every blockchain transaction record
+    _REQUIRED_FIELDS: tuple = (
+        "evidence_id",
+        "transaction_hash",
+        "risk_score",
+        "decision",
+        "confidence",
+    )
+
+    # Allowed decision values (must match FraudDecision enum in API layer)
+    _VALID_DECISIONS: frozenset = frozenset({"ALLOW", "REVIEW", "BLOCK"})
+
+    def _validate_transaction(self, transaction: Dict) -> None:
+        """Validate a transaction record before it enters the pending pool.
+
+        Raises HTTPException(422) on any validation failure so callers
+        receive a structured error rather than a silent no-op or a later
+        crash inside create_block().
+
+        Args:
+            transaction: Raw transaction dict to validate.
+        """
+        # 1. Presence check
+        missing = [f for f in self._REQUIRED_FIELDS if f not in transaction]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Transaction missing required fields: {', '.join(missing)}",
+            )
+
+        # 2. risk_score must be a float in [0.0, 1.0]
+        risk = transaction["risk_score"]
+        if not isinstance(risk, (int, float)) or not (0.0 <= float(risk) <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"risk_score must be a numeric value in [0.0, 1.0]; "
+                    f"got {risk!r}"
+                ),
+            )
+
+        # 3. confidence must be a float in [0.0, 1.0]
+        conf = transaction["confidence"]
+        if not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"confidence must be a numeric value in [0.0, 1.0]; "
+                    f"got {conf!r}"
+                ),
+            )
+
+        # 4. decision must be one of the allowed values
+        decision = transaction.get("decision", "")
+        if str(decision).upper() not in self._VALID_DECISIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"decision must be one of {sorted(self._VALID_DECISIONS)}; "
+                    f"got {decision!r}"
+                ),
+            )
+
+        # 5. evidence_id must be a non-empty string
+        eid = transaction.get("evidence_id", "")
+        if not isinstance(eid, str) or not eid.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="evidence_id must be a non-empty string",
+            )
+
+        # 6. transaction_hash must look like a hex digest (non-empty string)
+        tx_hash_val = transaction.get("transaction_hash", "")
+        if not isinstance(tx_hash_val, str) or not tx_hash_val.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="transaction_hash must be a non-empty string",
+            )
+
     def add_transaction(self, transaction: Dict) -> str:
-        """Add transaction to pending pool"""
+        """Validate and add a transaction to the pending pool.
+
+        Validates all required fields and value constraints before
+        computing the content hash and appending to the pending list.
+        Raises HTTPException(422) if validation fails so callers are
+        informed instead of silently receiving a corrupt chain entry.
+        """
+        self._validate_transaction(transaction)
         tx_hash = hashlib.sha256(json.dumps(transaction, sort_keys=True).encode()).hexdigest()
         transaction['tx_hash'] = tx_hash
         transaction['timestamp'] = datetime.now(timezone.utc).isoformat()

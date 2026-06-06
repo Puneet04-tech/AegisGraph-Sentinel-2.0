@@ -233,11 +233,12 @@ class AegisOracleExplainer:
         
         # Add factor summary
         if causal_factors:
-            narrative += "**Contributing Factors:**\n"
+            parts = ["**Contributing Factors:**\n"]
             for i, factor in enumerate(causal_factors[:5], 1):  # Top 5 factors
-                narrative += f"{i}. {factor['description']} (Impact: {factor['impact']})\n"
+                parts.append(f"{i}. {factor['description']} (Impact: {factor['impact']})\n")
                 if factor['evidence']:
-                    narrative += f"   Evidence: {factor['evidence']}\n"
+                    parts.append(f"   Evidence: {factor['evidence']}\n")
+            narrative += "".join(parts)
         
         return narrative
     
@@ -267,13 +268,14 @@ class AegisOracleExplainer:
             reasoning += "\n"
         
         # Causal analysis
-        reasoning += "Causal Factor Analysis:\n"
+        parts = ["Causal Factor Analysis:\n"]
         for factor in causal_factors[:3]:  # Top 3 causal factors
-            reasoning += f"\n**{factor['type']}**\n"
-            reasoning += f"Weight: {factor['weight']:.1%}\n"
-            reasoning += f"Description: {factor['description']}\n"
+            parts.append(f"\n**{factor['type']}**\n")
+            parts.append(f"Weight: {factor['weight']:.1%}\n")
+            parts.append(f"Description: {factor['description']}\n")
             if factor['evidence']:
-                reasoning += f"Evidence: {factor['evidence']}\n"
+                parts.append(f"Evidence: {factor['evidence']}\n")
+        reasoning += "".join(parts)
         
         return reasoning
     

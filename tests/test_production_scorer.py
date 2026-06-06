@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
 
 # Handle optional torch dependency
 try:
@@ -100,7 +105,7 @@ def test_score_batch_processes_transactions_in_bounded_chunks(monkeypatch):
     monkeypatch.setattr("src.inference.production_scorer.as_completed", fake_as_completed)
 
     scorer = ProductionRiskScorer(model=_DummyModel(), graph_constructor=object())
-    scorer.score_transaction = lambda transaction, reference_time=None, k_hops=2: _make_score(
+    scorer.score_transaction = lambda transaction, reference_time=None, k_hops=2, _subgraph_cache=None: _make_score(
         transaction["transaction_id"]
     )
 

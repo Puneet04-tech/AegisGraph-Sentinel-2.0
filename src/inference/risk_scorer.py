@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 import torch
 import numpy as np
 import weakref
+from threading import Lock
 from typing import Dict, Optional, Tuple, List
 import networkx as nx  #models
 
@@ -368,13 +369,15 @@ def compute_risk_score(
     transaction: dict,
     biometrics: Optional[dict] = None,
     *,
-    graph_loaded: bool,
-    transaction_graph,
-    mule_accounts: set[str],
-    centrality_baseline: dict[str, list[float]],
-    centrality_window_size: int,
-    account_profiles: dict[str, dict],
-    config: dict,
+    graph_loaded: Optional[bool] = None,
+    transaction_graph=None,
+    mule_accounts: Optional[set[str]] = None,
+    centrality_baseline: Optional[dict[str, list[float]]] = None,
+    centrality_window_size: Optional[int] = None,
+    account_profiles: Optional[dict[str, dict]] = None,
+    config: Optional[dict] = None,
+    subgraph_cache: Optional[Dict] = None,
+    subgraph_cache_lock: Optional[Lock] = None,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
@@ -436,9 +439,22 @@ def compute_risk_score(
         # them a second time, doubling graph_risk for every mule transaction
         # and masking all topology signals (fix for Issue #133).
 
-        # Check graph topology patterns
+        # Check graph topology patterns.
+        # When a batch-level subgraph_cache dict is provided (with an
+        # accompanying lock), reuse the extracted subgraph for any
+        # additional transactions from the same source account within
+        # the same batch, avoiding redundant graph traversals.
         if hasattr(transaction_graph, "is_active") and transaction_graph.is_active:
-            G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+            if subgraph_cache is not None and source_account is not None:
+                lock = subgraph_cache_lock or Lock()
+                with lock:
+                    G = subgraph_cache.get(source_account)
+                if G is None:
+                    G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+                    with lock:
+                        subgraph_cache[source_account] = G
+            else:
+                G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
             G = transaction_graph
         

@@ -9,7 +9,9 @@ for regulatory compliance and transparency.
 from typing import Dict, List, Optional
 import numpy as np
 import torch
-from torch_geometric.explain import Explainer, GNNExplainer
+
+Explainer = None
+GNNExplainer = None
 
 class AegisModelExplainer:
     """
@@ -23,7 +25,14 @@ class AegisModelExplainer:
         self._explainer = None
 
     def _get_explainer(self):
+        global Explainer, GNNExplainer
         if self._explainer is None:
+            if Explainer is None or GNNExplainer is None:
+                from torch_geometric.explain import Explainer as TGExplainer, GNNExplainer as TGGNNExplainer
+                if Explainer is None:
+                    Explainer = TGExplainer
+                if GNNExplainer is None:
+                    GNNExplainer = TGGNNExplainer
             self._explainer = Explainer(
                 model=self.model,
                 algorithm=GNNExplainer(epochs=200),

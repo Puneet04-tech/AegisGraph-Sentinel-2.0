@@ -12,7 +12,10 @@ try:
 except ImportError:
     requests = None
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Module-level logger — configuration is the responsibility of the
+# application entry point, not of library modules.
+logger = logging.getLogger(__name__)
+
 
 class AdversarialDriftMonitor:
     """
@@ -52,11 +55,11 @@ class AdversarialDriftMonitor:
         try:
             self.close()
         except Exception as exc:
-            logging.error("AdversarialDriftMonitor cleanup failed: %s", exc)
+            logger.error("AdversarialDriftMonitor cleanup failed: %s", exc)
 
     def _load_training_baselines(self):
         """Loads baseline distributions. Mocked here for CI/CD testing."""
-        logging.info("Loading training baselines for drift monitoring...")
+        logger.info("Loading training baselines for drift monitoring...")
         return {
             # E.g., Humans type with an average flight time of ~120ms with some variance
             "keystroke_flight_time": np.random.normal(loc=120.0, scale=15.0, size=1000),
@@ -73,12 +76,12 @@ class AdversarialDriftMonitor:
             f"Diagnosis: {drift_type}. The incoming live data no longer matches the training distribution."
             f" Immediate model retraining recommended."
         )
-        logging.warning(msg)
+        logger.warning(msg)
 
         now = time.time()
         last_time = self._last_alert_time.get(feature_name, 0.0)
         if now - last_time < self._alert_cooldown:
-            logging.info(f"Suppressed duplicate webhook for {feature_name} (cooldown active)")
+            logger.info("Suppressed duplicate webhook for %s (cooldown active)", feature_name)
             return
 
         self._last_alert_time[feature_name] = now
@@ -88,7 +91,7 @@ class AdversarialDriftMonitor:
 
     def _dispatch_webhook_alert(self, msg, retries=3):
         if requests is None:
-            logging.warning("requests is unavailable; skipping webhook dispatch")
+            logger.warning("requests is unavailable; skipping webhook dispatch")
             return
 
         for attempt in range(retries):
@@ -96,7 +99,7 @@ class AdversarialDriftMonitor:
                 requests.post(self.webhook_url, json={"text": msg}, timeout=2)
                 return
             except Exception as e:
-                logging.error("Webhook alert dispatch attempt %d/%d failed: %s", attempt + 1, retries, e)
+                logger.error("Webhook alert dispatch attempt %d/%d failed: %s", attempt + 1, retries, e)
                 if attempt < retries - 1:
                     time.sleep(1 * (attempt + 1))
 
@@ -105,7 +108,7 @@ class AdversarialDriftMonitor:
         Compares a batch of live incoming data against the training baseline.
         """
         if feature_name not in self.baselines:
-            logging.error(f"Feature {feature_name} not found in baselines.")
+            logger.error("Feature '%s' not found in baselines.", feature_name)
             return
 
         baseline_data = self.baselines[feature_name]
@@ -118,7 +121,7 @@ class AdversarialDriftMonitor:
             self.trigger_alert(feature_name, p_value, stat)
             return True # Drift detected
             
-        logging.info(f"✅ {feature_name} distribution is stable (p={p_value:.4f}).")
+        logger.info("✅ %s distribution is stable (p=%.4f).", feature_name, p_value)
         return False # No drift
 
 

@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
 from .data_loader import AegisGraphLoader
@@ -23,23 +24,37 @@ except ImportError:
             num_accounts = x_dict['account'].size(0)
             return torch.randn((num_accounts, 1), requires_grad=True).to(x_dict['account'].device)
 
-def train_epoch(model, loader, optimizer, device):
-    """Executes one full pass over the training data."""
+def train_epoch(model, loader, optimizer, device, max_grad_norm=1.0, scaler=None):
+    """
+    Executes one full pass over the training data with numerical stability measures.
+
+    Args:
+        model: The GNN model to train
+        loader: DataLoader for training batches
+        optimizer: Optimizer (AdamW recommended)
+        device: CPU or GPU device
+        max_grad_norm: Maximum L2 norm for gradient clipping (default: 1.0)
+        scaler: Optional GradScaler for mixed precision training
+
+    Returns:
+        Tuple of (average_loss, accuracy)
+    """
     model.train()
     total_loss = 0
     correct = 0
     total_samples = 0
+    batch_count = 0
 
     # Wrap the loader in a progress bar
     pbar = tqdm(loader, desc="Training Batches", leave=False)
-    
+
     for batch in pbar:
         batch = batch.to(device)
         optimizer.zero_grad()
 
         # 1. Forward Pass (Feed node features and edge indices)
         out = model(batch.x_dict, batch.edge_index_dict)
-        
+
         # 2. Label Preparation
         # If the synthetic graph doesn't have 'y' labels yet, mock them for the test
         if 'y' not in batch['account']:
@@ -48,32 +63,47 @@ def train_epoch(model, loader, optimizer, device):
             ).to(device)
 
         labels = batch['account'].y.float()
-        
+
         # 3. Calculate Loss (Binary Cross Entropy for Fraud/Not-Fraud)
         loss = F.binary_cross_entropy_with_logits(out, labels)
-        
-        # 4. Backward Pass
-        loss.backward()
-        
+
+        # 4. Backward Pass (with optional mixed precision)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
         # 5. Gradient Clipping (CRITICAL for stabilizing Graph Neural Networks)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        # 6. Optimize Weights
-        optimizer.step()
-        
+        # Prevents exploding gradients on large graphs
+        # max_norm=1.0 is effective for most GNN architectures
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+
+        # 6. Optimize Weights (with optional mixed precision)
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+
         # Metrics Calculation
         total_loss += float(loss) * batch['account'].num_nodes
         preds = (torch.sigmoid(out) > 0.5).float()
         correct += int((preds == labels).sum())
         total_samples += batch['account'].num_nodes
-        
+        batch_count += 1
+
         pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
-    return total_loss / total_samples, correct / total_samples
+    avg_loss = total_loss / total_samples if total_samples > 0 else 0
+    avg_acc = correct / total_samples if total_samples > 0 else 0
+
+    return avg_loss, avg_acc
 
 def main():
-    print("Initializing HTGNN Training Pipeline...")
-    
+    print("Initializing HTGNN Training Pipeline with Stability Enhancements...")
+
     # Auto-detect GPU acceleration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Hardware utilized: {device}")
@@ -86,18 +116,55 @@ def main():
         print("Error: Synthetic graph not found. Run graph generation first.")
         return
 
-    # 2. Initialize Model and Optimizer
+    # 2. Initialize Model and Optimizer with stability parameters
     model = AegisHTGNN().to(device)
-    optimizer = AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
-    # 3. Execute Training Loop
+    # AdamW with proper hyperparameters for GNNs on large graphs
+    # - lower learning rate for stability
+    # - weight decay for regularization
+    # - eps for numerical stability
+    optimizer = AdamW(
+        model.parameters(),
+        lr=0.001,
+        weight_decay=1e-4,
+        eps=1e-8,
+        amsgrad=True  # Use AMSGrad variant for more stable updates
+    )
+
+    # 3. Learning Rate Scheduler (CosineAnnealing for smooth decay)
+    # Helps prevent divergence by gradually reducing learning rate
     epochs = 3
-    for epoch in range(1, epochs + 1):
-        print(f"\n--- Epoch {epoch}/{epochs} ---")
-        loss, acc = train_epoch(model, train_loader, optimizer, device)
-        print(f"Epoch {epoch} Summary -> Loss: {loss:.4f} | Accuracy: {acc:.4f}")
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
-    # 4. Save the compiled artifact
+    # 4. Optional: Mixed Precision Training (for larger graphs)
+    # Uncomment to enable for improved stability on very large graphs
+    # from torch.cuda.amp import GradScaler
+    # scaler = GradScaler() if device.type == 'cuda' else None
+
+    # 5. Execute Training Loop
+    print(f"\nStarting training for {epochs} epochs...")
+    print(f"Gradient clipping: enabled (max_norm=1.0)")
+    print(f"Learning rate scheduler: CosineAnnealing")
+    print(f"Optimizer: AdamW with AMSGrad variant\n")
+
+    for epoch in range(1, epochs + 1):
+        print(f"--- Epoch {epoch}/{epochs} ---")
+
+        # Train with gradient clipping
+        loss, acc = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            max_grad_norm=1.0,
+            scaler=None  # Set to scaler object if using mixed precision
+        )
+        print(f"Loss: {loss:.4f} | Accuracy: {acc:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+        # Step the scheduler to decay learning rate
+        scheduler.step()
+
+    # 6. Save the compiled artifact
     print("\nTraining Complete! Saving model weights...")
     os.makedirs("models", exist_ok=True)
     torch.save(model.state_dict(), "models/htgnn_v1.pt")

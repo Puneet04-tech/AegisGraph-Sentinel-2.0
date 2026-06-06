@@ -101,5 +101,8 @@ class S3Backend(StorageBackend):
         try:
             s3.head_object(Bucket=self.bucket, Key=object_key)
             return True
-        except ClientError:
-            return False
+        except ClientError as exc:
+            error_code = exc.response.get('Error', {}).get('Code')
+            if error_code in ['NoSuchKey', '404']:
+                return False
+            raise

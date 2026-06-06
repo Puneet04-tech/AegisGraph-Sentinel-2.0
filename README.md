@@ -7,6 +7,31 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red)
 ![Innovations](https://img.shields.io/badge/innovations-6-gold)
 
+## 📄 Table of Contents
+
+- [Overview](#-overview)
+- [Key Achievements](#-key-achievements)
+- [Six Breakthrough Innovations](#-six-breakthrough-innovations)
+- [Core Technologies](#-core-technologies)
+- [Architecture](#-architecture)
+- [Quick Start](#-quick-start)
+  - [Installation](#installation)
+  - [Environment Configuration](#environment-configuration)
+  - [Running the API Server](#running-the-api-server)
+  - [Training the Model](#training-the-model)
+- [Project Structure](#-project-structure)
+- [Key Features](#-key-features)
+- [API Usage](#-api-usage)
+- [Performance Metrics](#-performance-metrics)
+- [Security & Privacy](#-security--privacy)
+- [Economic Impact](#-economic-impact)
+- [Technology Stack](#-technology-stack)
+- [Documentation](#-documentation)
+- [Testing](#-testing)
+- [Deployment](#-deployment)
+- [License](#-license)
+- [Contact](#-contact)
+
 ## 🎯 Overview
 
 AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses **Heterogeneous Temporal Graph Neural Networks (HTGNN)** to detect mule account networks in real-time—within the critical **200-500ms** transaction authorization window.
@@ -93,7 +118,10 @@ Edit `.env` with your configuration:
 API_URL=http://localhost:8000
 
 # CORS Configuration (comma-separated origins)
-AEGIS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
+CORS_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
+
+# Backward compatibility alias for CORS_ORIGINS
+# AEGIS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
 
 # Debug Mode (set to 'true' to enable debug endpoints)
 DEBUG=false
@@ -113,7 +141,10 @@ CUDA_VISIBLE_DEVICES=0
 
 **Required Environment Variables:**
 - `API_URL`: Backend API URL for the Streamlit frontend
-- `AEGIS_ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins
+- `CORS_ORIGINS`: Comma-separated list of allowed CORS origins
+
+**Backward Compatibility:**
+- `AEGIS_ALLOWED_ORIGINS`: Legacy alias for `CORS_ORIGINS` if you are updating an older deployment
 
 **Optional Environment Variables:**
 - `DEBUG`: Enable debug endpoints (default: false)
@@ -184,10 +215,10 @@ Fixed risk scoring to properly scale with transaction amount.
 ### 3. **Hesitation Monitor**
 Analyzes keystroke dynamics to detect stress patterns indicating social engineering attacks.
 
-### 3. **Honeypot Virtual Escrow**
+### 4. **Honeypot Virtual Escrow**
 Deception-based fund containment that prevents fraudster adaptation while buying investigation time.
 
-### 4. **Aegis-Oracle**
+### 5. **Aegis-Oracle**
 Explainable AI engine that generates human-readable explanations for regulatory compliance.
 
 ## 💻 API Usage
