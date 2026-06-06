@@ -111,6 +111,7 @@ from ..exceptions import (
 from ..observability import get_audit_logger, get_logger
 from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWatchdog
 from ..runtime.background_tasks import honeypot_auto_release_loop
+from ..security import sanitize_payload
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -282,7 +283,7 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
     response["uptime_seconds"] = uptime
 
     if not include_details:
-        return response
+        return sanitize_payload(response)
 
     response.update(
         {
@@ -307,7 +308,7 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
             for name, sh in snapshot.items()
         }
 
-    return response
+    return sanitize_payload(response)
 from ..exceptions import register_exception_handlers, register_observability_middleware
 from ..observability import get_audit_logger, get_logger
 from ..core import register_core_services, register_graph_services, register_innovation_services

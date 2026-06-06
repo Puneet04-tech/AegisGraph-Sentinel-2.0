@@ -10,6 +10,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from ..security import safe_log_metadata
+
 _request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 _correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
 
@@ -69,7 +71,7 @@ class StructuredLogger:
             "event_type": event_type,
             "severity": severity,
             "message": message,
-            "metadata": metadata or {},
+            "metadata": safe_log_metadata(metadata),
         }
         line = json.dumps(record, default=str)
         level = getattr(logging, severity.upper(), logging.INFO)
