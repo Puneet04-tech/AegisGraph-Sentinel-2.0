@@ -193,6 +193,15 @@ class TransactionCheckResponse(BaseModel):
     blockchain_evidence_id: Optional[str] = Field(default=None, description="Blockchain evidence ID (Innovation 6)")
     behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
     lateral_movement_detected: bool = Field(default=False, description="Lateral movement pattern detected (MITRE ATT&CK TA0008)")
+    model_degraded: bool = Field(
+        default=False,
+        description=(
+            "True when the ML model was unavailable and the response was produced "
+            "by the amount-based fallback heuristic instead of the GNN pipeline. "
+            "Downstream consumers should treat degraded-mode decisions with lower "
+            "confidence and flag them in audit trails accordingly."
+        ),
+    )
     
 
 

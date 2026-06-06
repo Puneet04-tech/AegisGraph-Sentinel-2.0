@@ -759,6 +759,23 @@ except (ImportError, SyntaxError) as e:
 _compute_risk_score_fallback = _fallback_compute_risk_score
 _generate_explanation_fallback = _fallback_generate_explanation
 
+# ---------------------------------------------------------------------------
+# Fallback scoring configuration — loaded from config/thresholds.yaml so that
+# thresholds can be tuned without a code change or redeployment.
+# Used only when MODEL_AVAILABLE is False and the heuristic pipeline returns a
+# score at or below fallback_trigger_score.
+# ---------------------------------------------------------------------------
+def _load_fallback_scoring_config() -> dict:
+    """Return the fallback_scoring section from thresholds.yaml with safe defaults."""
+    try:
+        from ..utils.helpers import load_thresholds
+        thresholds = load_thresholds("config/thresholds.yaml")
+        return thresholds.get("fallback_scoring", {})
+    except Exception:
+        return {}
+
+_FALLBACK_SCORING = _load_fallback_scoring_config()
+
 # Global state
 class AppState:
     """Application state"""
@@ -1730,25 +1747,45 @@ async def check_transaction(
         # Prepare response with innovation fields
         decision = _decision_to_api_value(internal_decision)
 
-        # --- FIX #559: Amount-Scaling Logic Fallback Override ---
-        # Agar production ML model available nahi hai aur fallback base score (0.22) aa raha hai,
-        # toh transaction amount ke hisab se risk_score aur decision ko scale karo.
-        if not MODEL_AVAILABLE and risk_result.get('risk_score', 0) <= 0.25:
+        # When the ML model is unavailable, the heuristic pipeline produces a
+        # conservative base score (~0.22). Apply an amount-based override so that
+        # high-value transactions are still flagged appropriately in degraded mode.
+        # Thresholds are read from config/thresholds.yaml (fallback_scoring section)
+        # so they can be tuned without a code change.
+        _model_degraded = False
+        _trigger = _FALLBACK_SCORING.get("fallback_trigger_score", 0.25)
+        if not MODEL_AVAILABLE and risk_result.get('risk_score', 0) <= _trigger:
             amount = request.amount
-            if amount > 200000:
-                risk_result['risk_score'] = 0.85
+            _block_above = _FALLBACK_SCORING.get("block_above", 200000)
+            _block_med_above = _FALLBACK_SCORING.get("block_medium_above", 100000)
+            _review_above = _FALLBACK_SCORING.get("review_above", 50000)
+            _allow_above = _FALLBACK_SCORING.get("allow_above", 10000)
+
+            if amount > _block_above:
+                risk_result['risk_score'] = _FALLBACK_SCORING.get("block_score", 0.85)
                 internal_decision = "BLOCK"
-            elif amount > 100000:
-                risk_result['risk_score'] = 0.72
+            elif amount > _block_med_above:
+                risk_result['risk_score'] = _FALLBACK_SCORING.get("block_medium_score", 0.72)
                 internal_decision = "BLOCK"
-            elif amount > 50000:
-                risk_result['risk_score'] = 0.48
+            elif amount > _review_above:
+                risk_result['risk_score'] = _FALLBACK_SCORING.get("review_score", 0.48)
                 internal_decision = "REVIEW"
-            elif amount > 10000:
-                risk_result['risk_score'] = 0.35
+            elif amount > _allow_above:
+                risk_result['risk_score'] = _FALLBACK_SCORING.get("allow_score", 0.35)
                 internal_decision = "ALLOW"
+
             decision = _decision_to_api_value(internal_decision)
-        # --------------------------------------------------------
+            _model_degraded = True
+            _api_logger.warning(
+                "ML model unavailable; using amount-based fallback scoring",
+                event_type="fallback_scoring_active",
+                metadata={
+                    "transaction_id": request.transaction_id,
+                    "amount": amount,
+                    "fallback_decision": internal_decision,
+                    "fallback_risk_score": risk_result['risk_score'],
+                },
+            )
 
         response = TransactionCheckResponse(
             transaction_id=request.transaction_id,
@@ -1767,6 +1804,7 @@ async def check_transaction(
             blockchain_evidence_id=blockchain_evidence_id,
             behavioral_stress_detected=behavioral_stress_detected,
             lateral_movement_detected=risk_result.get('lateral_movement_detected', False),
+            model_degraded=_model_degraded,
         )
         
         # Add lateral movement info to explanation if detected
