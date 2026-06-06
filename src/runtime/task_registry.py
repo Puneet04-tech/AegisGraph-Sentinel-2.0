@@ -195,6 +195,11 @@ class TaskRegistry:
                 )
         return active
 
+    def find_tasks_by_name(self, name: str) -> List[asyncio.Task]:
+        """Return a snapshot of active tasks matching the given name."""
+        with self._lock:
+            return [t for t, info in list(self._tasks.items()) if info.name == name]
+
     @property
     def active_count(self) -> int:
         return len(self.get_active_tasks())
