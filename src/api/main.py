@@ -22,7 +22,27 @@ from functools import partial
 from pathlib import Path
 from itertools import islice
 from threading import Lock
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
+
+class LRUCache(OrderedDict):
+    """A simple LRU cache to prevent memory leaks in global dictionaries."""
+    def __init__(self, maxsize=10000, *args, **kwds):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwds)
+        
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+        
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            oldest = next(iter(self))
+            del self[oldest]
 
 import networkx as nx
 import numpy as np
@@ -130,7 +150,21 @@ from .schemas import (
     HoneypotStatus,
     AlertSummaryRequest,
     AlertSummaryResponse,
+    # Case Management (Phase 4)
+    AddCommentRequest,
+    AddEvidenceRequest,
+    CaseAuditEventResponse,
+    CaseCommentResponse,
+    CaseDashboardResponse,
+    CaseEvidenceResponse,
+    CaseListResponse,
+    CaseTimelineResponse,
+    CreateCaseRequest,
+    FraudCaseResponse,
+    UpdateCaseRequest,
 )
+from ..case_management import get_case_store
+from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
 from .security import require_api_key, Role, require_role
 from .validators import StrictRateLimit
 
@@ -802,7 +836,7 @@ class AppState:
         self.account_profiles = {}
         self.graph_loaded = False
         # Lateral movement detection - rolling betweenness centrality baseline
-        self.centrality_baseline = {}  # {account_id: [centrality_history]}
+        self.centrality_baseline = LRUCache(maxsize=10000)  # {account_id: [centrality_history]}
         self.centrality_window_size = 10  # Track last 10 measurements
         # Innovation managers (dynamically registered in services container via properties)
 
@@ -1458,7 +1492,15 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-Legal-Export-Token",
+        "X-Request-Timestamp",
+        "X-Honeypot-Token",
+        "X-Honeypot-Admin-Token",
+    ],
     max_age=600,
 )
 
@@ -2093,7 +2135,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
     txns = request.transactions
 
     # Per-batch subgraph cache shared across all concurrent scorer calls
-    batch_subgraph_cache: Dict = {}
+    batch_subgraph_cache: Dict = LRUCache(maxsize=1000)
     batch_subgraph_lock: Lock = Lock()
 
     async def _process_transaction(txn_request):
@@ -2773,6 +2815,303 @@ async def summarize_alert(request: AlertSummaryRequest):
             metadata={"operation": "Alert summary", "error_type": type(e).__name__},
         )
         raise HTTPException(status_code=500, detail="Failed to generate AI summary")
+
+
+@app.get("/api/v1/monitoring/memory", tags=["Monitoring"], dependencies=[Depends(require_role(Role.ADMIN))])
+async def get_memory_diagnostics():
+    """Diagnostic endpoint to inspect memory usage and cache sizes."""
+    import sys
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        rss_mb = memory_info.rss / 1024 / 1024
+        vms_mb = memory_info.vms / 1024 / 1024
+    except ImportError:
+        rss_mb = -1
+        vms_mb = -1
+
+    return {
+        "status": "ok",
+        "memory": {
+            "rss_mb": round(rss_mb, 2) if rss_mb > 0 else "psutil not installed",
+            "vms_mb": round(vms_mb, 2) if vms_mb > 0 else "psutil not installed"
+        },
+        "caches": {
+            "centrality_baseline_size": len(state.centrality_baseline),
+            "centrality_baseline_maxsize": getattr(state.centrality_baseline, "maxsize", None),
+            "account_profiles_size": len(state.account_profiles),
+            "fraud_chains_size": len(state.fraud_chains)
+        },
+        "globals": {
+            "mule_accounts_size": len(state.mule_accounts)
+        }
+    }
+
+
+# ==============================================================================
+# CASE MANAGEMENT ENDPOINTS (Phase 4)
+# ==============================================================================
+
+def _serialise_case(case) -> FraudCaseResponse:
+    """Convert a FraudCase dataclass to its API response schema."""
+    return FraudCaseResponse(
+        case_id=case.case_id,
+        transaction_id=case.transaction_id,
+        risk_score=case.risk_score,
+        decision=case.decision,
+        status=case.status.value,
+        priority=case.priority.value,
+        assigned_analyst=case.assigned_analyst,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        tags=case.tags,
+        comment_count=len(case.comment_ids),
+        evidence_count=len(case.evidence_ids),
+    )
+
+
+@app.post(
+    "/api/v1/cases",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create a new fraud investigation case",
+)
+async def create_case(
+    request: CreateCaseRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Open a new fraud investigation case from a detected alert."""
+    store = get_case_store()
+    priority = CasePriority(request.priority or "MEDIUM")
+    case = store.create_case(
+        transaction_id=request.transaction_id,
+        risk_score=request.risk_score,
+        decision=request.decision,
+        analyst_id=x_analyst_id or "system",
+        priority=priority,
+        tags=request.tags or [],
+    )
+    return _serialise_case(case)
+
+
+@app.get(
+    "/api/v1/cases",
+    response_model=CaseListResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List all fraud investigation cases with filters and pagination",
+)
+async def list_cases(
+    status: Optional[str] = Query(default=None, description="Filter by status"),
+    priority: Optional[str] = Query(default=None, description="Filter by priority"),
+    assigned_analyst: Optional[str] = Query(default=None, description="Filter by analyst ID"),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Page size"),
+):
+    """Return a paginated, filterable list of all fraud cases."""
+    store = get_case_store()
+    status_filter = CaseStatus(status) if status else None
+    priority_filter = CasePriority(priority) if priority else None
+    cases, total = store.list_cases(
+        status=status_filter,
+        priority=priority_filter,
+        assigned_analyst=assigned_analyst,
+        page=page,
+        page_size=page_size,
+    )
+    import math
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
+    return CaseListResponse(
+        cases=[_serialise_case(c) for c in cases],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@app.get(
+    "/api/v1/cases/dashboard",
+    response_model=CaseDashboardResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Aggregated case management dashboard statistics",
+)
+async def get_case_dashboard():
+    """Return aggregated counts of cases by status and priority."""
+    store = get_case_store()
+    stats = store.get_dashboard_stats()
+    return CaseDashboardResponse(**stats)
+
+
+@app.get(
+    "/api/v1/cases/{case_id}",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get full details of a fraud case",
+)
+async def get_case(case_id: str):
+    """Return full details of a specific fraud case."""
+    store = get_case_store()
+    case = store.get_case(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
+    return _serialise_case(case)
+
+
+@app.patch(
+    "/api/v1/cases/{case_id}",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Update status, assignment, or priority of a case",
+)
+async def update_case(
+    case_id: str,
+    request: UpdateCaseRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Partially update a fraud case (status, assigned analyst, or priority)."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        case = store.get_case(case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
+        if request.status:
+            store.update_status(case_id, CaseStatus(request.status), analyst)
+        if request.assigned_analyst:
+            store.assign_analyst(case_id, request.assigned_analyst, analyst)
+        if request.priority:
+            store.update_priority(case_id, CasePriority(request.priority), analyst)
+        case = store.get_case(case_id)
+        return _serialise_case(case)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/claim",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Claim an unassigned case",
+)
+async def claim_case(
+    case_id: str,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Analyst claims an unassigned case to begin investigation."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        case = store.claim_case(case_id, analyst)
+        return _serialise_case(case)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/comments",
+    response_model=CaseCommentResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Add an investigation note to a case",
+)
+async def add_case_comment(
+    case_id: str,
+    request: AddCommentRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Attach an investigation note or comment to a fraud case."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        comment = store.add_comment(case_id, analyst, request.text)
+        return CaseCommentResponse(
+            comment_id=comment.comment_id,
+            case_id=comment.case_id,
+            analyst_id=comment.analyst_id,
+            text=comment.text,
+            created_at=comment.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/evidence",
+    response_model=CaseEvidenceResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Attach evidence to a fraud case",
+)
+async def add_case_evidence(
+    case_id: str,
+    request: AddEvidenceRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Attach a piece of evidence (transaction link, graph snapshot, etc.) to a case."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        evidence = store.add_evidence(
+            case_id=case_id,
+            analyst_id=analyst,
+            evidence_type=EvidenceType(request.evidence_type),
+            description=request.description,
+            reference_id=request.reference_id,
+        )
+        return CaseEvidenceResponse(
+            evidence_id=evidence.evidence_id,
+            case_id=evidence.case_id,
+            analyst_id=evidence.analyst_id,
+            evidence_type=evidence.evidence_type.value,
+            description=evidence.description,
+            reference_id=evidence.reference_id,
+            created_at=evidence.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/v1/cases/{case_id}/timeline",
+    response_model=CaseTimelineResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
+    summary="Get the immutable audit trail for a case",
+)
+async def get_case_timeline(case_id: str):
+    """Return the full chronological audit trail for a fraud case."""
+    store = get_case_store()
+    try:
+        events = store.get_timeline(case_id)
+        return CaseTimelineResponse(
+            case_id=case_id,
+            events=[
+                CaseAuditEventResponse(
+                    event_id=e.event_id,
+                    case_id=e.case_id,
+                    analyst_id=e.analyst_id,
+                    action=e.action,
+                    old_value=e.old_value,
+                    new_value=e.new_value,
+                    timestamp=e.timestamp,
+                )
+                for e in events
+            ],
+            total_events=len(events),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def main():

@@ -235,13 +235,13 @@ def register_observability_middleware(app: FastAPI) -> None:
     async def request_tracing_middleware(request: Request, call_next):
         request_id = _resolve_request_id(request)
         correlation_id = _resolve_correlation_id(request, request_id)
-        set_request_context(request_id=request_id, correlation_id=correlation_id)
+        tokens = set_request_context(request_id=request_id, correlation_id=correlation_id)
         request.state.request_id = request_id
         request.state.correlation_id = correlation_id
         try:
             response = await call_next(request)
         finally:
-            clear_request_context()
+            clear_request_context(tokens)
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Correlation-ID"] = correlation_id
         return response

@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable, Dict, Optional
 
+from ..audit import log_audit_event
 from ..observability import get_logger
 from .events.event_types import RecoveryTriggeredEvent
 from .health_monitor import RuntimeHealthMonitor
@@ -34,6 +35,17 @@ class RecoveryManager:
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
         self._resource_manager = resource_manager
+
+    def _audit(self, event_type: str, severity: str = "info", **metadata: Any) -> None:
+        try:
+            log_audit_event(
+                event_type=event_type,
+                severity=severity,
+                source="recovery_manager",
+                metadata=metadata,
+            )
+        except Exception:
+            self._logger.debug("Recovery audit recording failed", exc_info=True)
 
     def set_resource_manager(self, resource_manager: Any) -> None:
         """Attach optional recovery throttling without changing construction API."""
@@ -84,6 +96,13 @@ class RecoveryManager:
                     "max_attempts": max_attempts,
                 },
             )
+            self._audit(
+                "recovery_max_attempts_exceeded",
+                "error",
+                service=name,
+                restart_attempts=health.restart_attempts,
+                max_attempts=max_attempts,
+            )
             return False
 
         if self._resource_manager is not None and not self._resource_manager.can_start_recovery():
@@ -92,6 +111,7 @@ class RecoveryManager:
                 event_type="recovery_throttled",
                 metadata={"service": name},
             )
+            self._audit("recovery_throttled", "warning", service=name)
             return False
 
         self.health_monitor.increment_restart_attempts(name)
@@ -105,6 +125,12 @@ class RecoveryManager:
                 "attempt": new_attempt_count,
                 "max_attempts": max_attempts,
             },
+        )
+        self._audit(
+            "recovery_attempt_started",
+            service=name,
+            attempt=new_attempt_count,
+            max_attempts=max_attempts,
         )
 
         # Emit RecoveryTriggeredEvent before spawning the callback task.
@@ -132,12 +158,14 @@ class RecoveryManager:
                     event_type="recovery_attempt_success",
                     metadata={"service": name},
                 )
+                self._audit("recovery_attempt_success", service=name)
             except Exception as exc:
                 self._logger.error(
                     f"Recovery callback failed for service: {name}: {exc}",
                     event_type="recovery_attempt_failed",
                     metadata={"service": name, "error": str(exc)},
                 )
+                self._audit("recovery_attempt_failed", "error", service=name, error=str(exc))
                 self.health_monitor.mark_failed(name, error=f"Recovery failed: {exc}")
 
         await run_callback_safely()
