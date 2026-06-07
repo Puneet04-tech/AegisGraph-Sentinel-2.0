@@ -27,7 +27,7 @@ from ..features.behavioral_biometrics import analyze_keystroke_data
 from ..features.entropy_calculator import compute_entropy_risk_score
 from ..utils.helpers import get_device, load_thresholds
 from ..scoring import ThresholdConfig, RiskScorer as CentralRiskScorer
-from ..observability import get_logger
+from ..observability import get_logger, trace_operation, model_inference_latency_seconds, graph_traversal_latency_seconds
 from ..config import defaults as config_defaults
 
 _inference_logger = get_logger("inference.risk_scorer")
@@ -141,6 +141,7 @@ class RiskScorer:
         self.velocity_calculator = VelocityCalculator()
     
     @torch.no_grad()
+    @trace_operation("risk_scoring.compute_risk_score")
     def compute_risk_score(
         self,
         transaction_data: dict,
@@ -215,6 +216,7 @@ class RiskScorer:
             'breakdown': {k: float(v) for k, v in risk_components.items()},
         }
     
+    @trace_operation("risk_scoring.graph_inference")
     def _compute_graph_risk(self, graph_data: dict) -> float:
         """Compute risk using HTGNN model"""
         # Move data to device
@@ -225,13 +227,14 @@ class RiskScorer:
         edge_timestamp = torch.tensor(graph_data['edge_timestamp'], dtype=torch.float32).to(self.device)
         
         # Forward pass
-        outputs = self.model(
-            x=x,
-            edge_index=edge_index,
-            node_type=node_type,
-            edge_type=edge_type,
-            edge_timestamp=edge_timestamp,
-        )
+        with model_inference_latency_seconds.time():
+            outputs = self.model(
+                x=x,
+                edge_index=edge_index,
+                node_type=node_type,
+                edge_type=edge_type,
+                edge_timestamp=edge_timestamp,
+            )
         
         risk = outputs['risk'].item()
         return risk

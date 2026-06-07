@@ -168,6 +168,9 @@ from ..case_management.models import CasePriority, CaseStatus, EvidenceType, val
 from .security import require_api_key, Role, require_role
 from .validators import StrictRateLimit
 
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from src.observability.telemetry import init_telemetry, get_metrics_app
+from src.api.middleware.observability import MetricsMiddleware
 
 INNOVATIONS_AVAILABLE = False
 state: Any = None
@@ -1478,6 +1481,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Initialize observability
+init_telemetry()
+app.add_middleware(MetricsMiddleware)
+app.mount("/metrics", get_metrics_app())
+FastAPIInstrumentor.instrument_app(app)
 # CORS middleware
 #
 # CWE-942 prevention: `allow_origins=["*"]` combined with
