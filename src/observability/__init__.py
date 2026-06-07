@@ -1,4 +1,4 @@
-"""Structured logging and audit framework for AegisGraph Sentinel."""
+"""Structured logging, audit, and telemetry framework for AegisGraph Sentinel."""
 
 from .audit_logger import AuditLogger, get_audit_logger
 from .metrics_logger import MetricsLogger
@@ -10,6 +10,15 @@ from .structured_logger import (
     get_logger,
     get_request_id,
     set_request_context,
+)
+from .telemetry import (
+    trace_operation,
+    model_inference_latency_seconds,
+    graph_traversal_latency_seconds,
+    neo4j_query_latency_seconds,
+    get_tracer,
+    init_telemetry,
+    get_metrics_app,
 )
 
 __all__ = [
@@ -23,4 +32,11 @@ __all__ = [
     "get_logger",
     "get_request_id",
     "set_request_context",
+    "trace_operation",
+    "model_inference_latency_seconds",
+    "graph_traversal_latency_seconds",
+    "neo4j_query_latency_seconds",
+    "get_tracer",
+    "init_telemetry",
+    "get_metrics_app",
 ]
