@@ -1556,6 +1556,29 @@ async def get_stats():
     )
 
 
+
+def _analyze_keystrokes_sync(biometrics: dict) -> bool:
+    import numpy as np
+    behavioral_stress_detected = False
+    try:
+        hold_times = biometrics.get('hold_times', [])
+        flight_times = biometrics.get('flight_times', [])
+        
+        if hold_times and len(hold_times) > 1:
+            hold_times_arr = np.array(hold_times)
+            hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
+            if hold_cv > 0.30:
+                behavioral_stress_detected = True
+        
+        if flight_times and len(flight_times) > 1:
+            flight_times_arr = np.array(flight_times)
+            flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
+            if flight_cv > 0.35:
+                behavioral_stress_detected = True
+    except Exception:
+        pass
+    return behavioral_stress_detected
+
 @app.post(
     "/api/v1/fraud/check",
     response_model=TransactionCheckResponse,
@@ -1598,26 +1621,7 @@ async def check_transaction(
             # Innovation 1: Simple keystroke stress detection
             if INNOVATIONS_AVAILABLE:
                 try:
-                    # Detect stress via typing variance, not absolute timing
-                    hold_times = biometrics['hold_times']
-                    flight_times = biometrics['flight_times']
-                    
-                    if hold_times and len(hold_times) > 1:
-                        # Calculate coefficient of variation (std/mean)
-                        hold_times_arr = np.array(hold_times)
-                        hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
-                        
-                        # High variance (CV > 0.30) indicates stress/coercion
-                        if hold_cv > 0.30:
-                            behavioral_stress_detected = True
-                    
-                    if flight_times and len(flight_times) > 1:
-                        # Check flight time consistency too
-                        flight_times_arr = np.array(flight_times)
-                        flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
-                        if flight_cv > 0.35:
-                            behavioral_stress_detected = True
-                            
+                    behavioral_stress_detected = await asyncio.to_thread(_analyze_keystrokes_sync, biometrics)
                 except Exception as e:
                     _api_logger.warning(
                         f"Keystroke analysis failed: {e}",
@@ -1633,31 +1637,19 @@ async def check_transaction(
         loop = asyncio.get_running_loop()
         subgraph_cache = _batch_subgraph_cache.get()
         subgraph_lock = _batch_subgraph_lock.get()
-        risk_result = await loop.run_in_executor(
-            None,
-            partial(
-                _run_scoring_pipeline,
-                transaction,
+        risk_result = await asyncio.to_thread(_run_scoring_pipeline, transaction,
                 biometrics,
                 request.source_account,
                 request.target_account,
                 lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
                 INNOVATIONS_AVAILABLE,
                 subgraph_cache,
-                subgraph_lock,
-            ),
-        )
+                subgraph_lock,)
 
         # Generate explanation off the event loop to keep the request thread responsive.
-        explanation_result = await loop.run_in_executor(
-            None,
-            partial(
-                generate_explanation,
-                transaction=transaction,
+        explanation_result = await asyncio.to_thread(generate_explanation, transaction=transaction,
                 risk_result=risk_result,
-                detail_level='high',
-            ),
-        )
+                detail_level='high',)
         
         # Innovation 2: Check if honeypot should be activated
         honeypot_activated = False
@@ -1683,20 +1675,14 @@ async def check_transaction(
                 logic_decision = _normalize_decision(risk_result['decision'])
                 if should_activate and logic_decision == FraudDecision.BLOCK.value:
                     # Activate honeypot
-                    honeypot = await loop.run_in_executor(
-                        None,
-                        partial(
-                            _activate_honeypot_sync,
-                            honeypot_manager,
+                    honeypot = await asyncio.to_thread(_activate_honeypot_sync, honeypot_manager,
                             request.transaction_id,
                             request.source_account,
                             request.target_account,
                             request.amount,
                             request.currency,
                             risk_result['risk_score'],
-                            fraud_indicators,
-                        ),
-                    )
+                            fraud_indicators,)
                     honeypot_activated = True
                     honeypot_id = honeypot.honeypot_id
 
@@ -1740,11 +1726,7 @@ async def check_transaction(
                     if 'circular' in explanation_result['explanation'].lower():
                         fraud_patterns.append('circular_flow')
                     
-                    evidence = await loop.run_in_executor(
-                        None,
-                        partial(
-                            _seal_blockchain_sync,
-                            blockchain_manager,
+                    evidence = await asyncio.to_thread(_seal_blockchain_sync, blockchain_manager,
                             request.transaction_id,
                             request.source_account,
                             request.target_account,
@@ -1754,9 +1736,7 @@ async def check_transaction(
                             risk_result['confidence'],
                             risk_result['breakdown'],
                             explanation_result['explanation'],
-                            fraud_patterns,
-                        ),
-                    )
+                            fraud_patterns,)
                     blockchain_evidence_id = evidence.evidence_id
                     _audit_logger.log_security_action(
                         "blockchain_evidence_sealed",
@@ -1939,16 +1919,10 @@ async def explain_transaction(
         
         # Use Aegis-Oracle to generate explanation
         loop = asyncio.get_running_loop()
-        explanation = await loop.run_in_executor(
-            None,
-            partial(
-                aegis_oracle.generate_explanation,
-                transaction=transaction,
+        explanation = await asyncio.to_thread(aegis_oracle.generate_explanation, transaction=transaction,
                 risk_assessment=risk_assessment,
                 break_down=breakdown,
-                innovations_triggered=innovations_triggered,
-            ),
-        )
+                innovations_triggered=innovations_triggered,)
         
         return explanation
         
@@ -1991,17 +1965,11 @@ async def oracle_explain_detailed(
             aegis_oracle = get_aegis_oracle()
 
         loop = asyncio.get_running_loop()
-        explanation = await loop.run_in_executor(
-            None,
-            partial(
-                aegis_oracle.generate_explanation,
-                transaction=request.transaction,
+        explanation = await asyncio.to_thread(aegis_oracle.generate_explanation, transaction=request.transaction,
                 risk_assessment=request.risk_assessment,
                 attention_weights=request.attention_weights,
                 break_down=request.risk_breakdown,
-                innovations_triggered=request.innovations_triggered,
-            ),
-        )
+                innovations_triggered=request.innovations_triggered,)
         
         return {
             'oracle_reasoning': explanation,
@@ -2283,14 +2251,8 @@ async def analyze_voice(
         # Offload CPU-heavy analysis so a few voice requests do not monopolize
         # the request worker thread.
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                voice_analyzer.analyze_voice,
-                audio_file=tmp_path,
-                sample_rate=request_body.sample_rate,
-            ),
-        )
+        result = await asyncio.to_thread(voice_analyzer.analyze_voice, audio_file=tmp_path,
+                sample_rate=request_body.sample_rate,)
         
         processing_time_ms = (time.time() - start_time) * 1000
         
@@ -2502,18 +2464,12 @@ async def seal_evidence(
     """
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                blockchain_manager.seal_evidence,
-                transaction_id=request.transaction_id,
+        result = await asyncio.to_thread(blockchain_manager.seal_evidence, transaction_id=request.transaction_id,
                 source_account=request.source_account,
                 target_account=request.target_account,
                 amount=request.amount,
                 risk_result=request.risk_result.model_dump(),
-                explanation=request.explanation,
-            ),
-        )
+                explanation=request.explanation,)
         
         return BlockchainEvidenceResponse(
             evidence_id=result.evidence_id,
@@ -2550,10 +2506,7 @@ async def verify_evidence(
     """
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(blockchain_manager.verify_evidence, evidence_id, block_number),
-        )
+        result = await asyncio.to_thread(blockchain_manager.verify_evidence, evidence_id, block_number)
         
         return BlockchainVerificationResponse(
             evidence_id=evidence_id,
@@ -2601,16 +2554,10 @@ async def export_legal_evidence(
 
         loop = asyncio.get_running_loop()
         token = _extract_legal_export_token(authorization, x_legal_export_token)
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                blockchain_manager.export_for_legal_proceedings,
-                evidence_id=export_request.evidence_id,
+        result = await asyncio.to_thread(blockchain_manager.export_for_legal_proceedings, evidence_id=export_request.evidence_id,
                 case_number=export_request.case_number,
                 requesting_authority=export_request.requesting_authority,
-                authorization_token=token,
-            ),
-        )
+                authorization_token=token,)
         if 'error' in result:
             raise HTTPException(status_code=404, detail=result['error'])
         
@@ -2720,15 +2667,9 @@ async def blast_radius_analysis(request: BlastRadiusRequest):
     # ------------------------------------------------------------------
     try:
         loop = asyncio.get_running_loop()
-        report = await loop.run_in_executor(
-            None,
-            partial(
-                _run_blast_radius,
-                request.node_id,
+        report = await asyncio.to_thread(_run_blast_radius, request.node_id,
                 graph,
-                request.max_depth,
-            ),
-        )
+                request.max_depth,)
     except ValueError as exc:
         # BlastRadiusAnalyzer raises ValueError when the node is absent;
         # translate to 404 in case there was a race between the guard and
