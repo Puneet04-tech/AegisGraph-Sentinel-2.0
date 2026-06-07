@@ -63,7 +63,9 @@ def validate_runtime_settings(
         graph_exists = settings.graph.graph_path.exists()
         if not graph_exists:
             message = f"Graph artifact does not exist: {settings.graph.graph_path}"
-            if strict_mode:
+            # Only raise an error if a custom path was explicitly configured.
+            # A missing default graph is a warning — the app degrades gracefully.
+            if strict_mode and settings.raw_environment.aegis_graph_path:
                 report.errors.append(message)
             else:
                 report.warnings.append(message)
