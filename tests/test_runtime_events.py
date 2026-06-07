@@ -370,6 +370,100 @@ class TestDispatcherBoundedQueue:
         assert "overflow" not in sources, "overflow event should have been dropped by bounded queue"
         assert "first" in sources, "first event should have been delivered"
         # Dispatcher completed stop() without error — bounded queue did not crash it
+def test_concurrent_dispatch_respects_bounded_queue():
+    async def _run():
+        bus = EventBus()
+        dispatcher = EventDispatcher(bus, maxsize=5)
+
+        received = []
+
+        async def handler(event):
+            await asyncio.sleep(0.01)
+            received.append(event)
+
+        await bus.subscribe(RuntimeStartedEvent, handler)
+
+        await dispatcher.start()
+
+        async def publish_event(index):
+            dispatcher.dispatch(
+                RuntimeStartedEvent(source=f"concurrent-{index}")
+            )
+
+        await asyncio.gather(
+            *[publish_event(i) for i in range(50)]
+        )
+
+        await asyncio.sleep(0.5)
+        await dispatcher.stop()
+
+        assert len(received) <= 50
+
+    run_async(_run())
+
+def test_parallel_dispatch_is_stable_under_load():
+    async def _run():
+        bus = EventBus()
+        dispatcher = EventDispatcher(bus)
+
+        received = []
+
+        async def handler(event):
+            received.append(event)
+
+        await bus.subscribe(RuntimeStartedEvent, handler)
+
+        await dispatcher.start()
+
+        await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    dispatcher.dispatch,
+                    RuntimeStartedEvent(source=f"worker-{i}")
+                )
+                for i in range(100)
+            ]
+        )
+
+        await asyncio.sleep(0.2)
+
+        assert len(received) > 0
+
+        await dispatcher.stop()
+
+    run_async(_run())
+def test_concurrent_dispatch_does_not_bypass_resource_limits():
+    async def _run():
+        bus = EventBus()
+        dispatcher = EventDispatcher(bus, maxsize=1)
+
+        received = []
+
+        async def slow_handler(event):
+            await asyncio.sleep(0.05)
+            received.append(event)
+
+        await bus.subscribe(RuntimeStartedEvent, slow_handler)
+
+        await dispatcher.start()
+
+        await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    dispatcher.dispatch,
+                    RuntimeStartedEvent(source=f"burst-{i}")
+                )
+                for i in range(25)
+            ]
+        )
+
+        await asyncio.sleep(0.5)
+
+        await dispatcher.stop()
+
+        assert len(received) < 25
+
+    run_async(_run())
 
 
 class TestDispatcherThreadSafety:
