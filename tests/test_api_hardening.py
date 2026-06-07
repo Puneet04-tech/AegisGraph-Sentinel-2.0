@@ -34,6 +34,16 @@ def _transaction(transaction_id="txn_001", amount=100.0):
 def _enable_real_api_key_gate(monkeypatch):
     monkeypatch.setenv("AEGIS_API_KEY_HASHES", hashlib.sha256(b"hardening-test-key").hexdigest())
     api_main.app.dependency_overrides.pop(require_api_key, None)
+    # Also remove any require_role() bypasses installed by the conftest fixture
+    # so that RBAC-gated endpoints perform real authentication in these tests.
+    from fastapi.routing import APIRoute
+    for route in api_main.app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for dep in route.dependencies:
+            fn = getattr(dep, "dependency", None)
+            if fn and getattr(fn, "__qualname__", "").startswith("require_role.<locals>.dependency"):
+                api_main.app.dependency_overrides.pop(fn, None)
 
 
 def _load_fresh_api_main(monkeypatch, *, environment: str, debug: str):
@@ -79,7 +89,8 @@ def test_health_smoke(api_client):
     assert "graph_loaded" not in body
     assert "innovations_available" not in body
     assert "requests_processed" not in body
-    assert "uptime_seconds" not in body
+    assert "uptime_seconds" in body
+    assert "version" in body
 
 
 def test_debug_honeypot_route_is_not_registered_in_production(monkeypatch):
@@ -94,6 +105,8 @@ def test_debug_honeypot_route_fails_closed_when_enabled_in_production(monkeypatc
 
 
 def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
+    api_key = "debug-api-key"
+    monkeypatch.setenv("AEGIS_API_KEY_HASHES", hashlib.sha256(api_key.encode("utf-8")).hexdigest())
     module = _load_fresh_api_main(monkeypatch, environment="development", debug="true")
     fake_manager = Mock()
     fake_manager.activate_honeypot.return_value = Mock(
@@ -107,7 +120,7 @@ def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
     with TestClient(module.app) as client:
         response = client.post(
             "/debug/activate_honeypot",
-            headers={"X-Honeypot-Admin-Token": "debug-token"},
+            headers={"X-API-Key": api_key, "X-Honeypot-Admin-Token": "debug-token"},
             json={
                 "transaction_id": "txn_debug_001",
                 "source_account": "acct_src",
@@ -265,21 +278,32 @@ def test_fallback_graph_analysis_does_not_swallow_keyboard_interrupt(monkeypatch
         api_main._fallback_compute_risk_score(_transaction())
 
 
-def test_lateral_movement_initializes_even_when_other_innovations_are_unavailable(monkeypatch):
-    dummy_detector = object()
+def test_lateral_movement_deferred_to_lazy_provider(monkeypatch):
+    """LateralMovementDetector is no longer constructed at startup.
+    _initialize_innovation_runtime() only registers the health monitor
+    slot. Actual construction is deferred to get_lateral_movement_detector()
+    in src/api/dependencies/subsystems.py on first request."""
     startup_logger = Mock()
-    register_service = Mock()
 
     monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", False)
     monkeypatch.setattr(api_main, "LATERAL_MOVEMENT_AVAILABLE", True)
-    monkeypatch.setattr(api_main, "LateralMovementDetector", lambda: dummy_detector)
-    monkeypatch.setattr(api_main.state.services, "register_service", register_service)
-    monkeypatch.setattr(api_main.state, "lateral_movement_detector", None, raising=False)
+
+    # Clear any previously constructed instance from shared state
+    with api_main.state.services._lock:
+        api_main.state.services._services.pop(
+            "lateral_movement_detector", None
+        )
 
     api_main._initialize_innovation_runtime(startup_logger)
 
-    assert api_main.state.lateral_movement_detector is dummy_detector
-    register_service.assert_called_once_with("lateral_movement_detector", dummy_detector, replace=True)
+    # Service slot must NOT be constructed at startup
+    assert api_main.state.services.optional_get(
+        "lateral_movement_detector"
+    ) is None
+
+    # Health monitor slot must be registered
+    snapshot = api_main.state.runtime.health_monitor.get_health_snapshot()
+    assert "lateral_movement_detector" in snapshot
 
 
 @pytest.mark.parametrize(
@@ -548,7 +572,7 @@ def test_startup_disk_reads_use_thread_pool(monkeypatch, tmp_path):
     try:
         asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
 
-        assert call_names == ["_read_file_bytes", "_read_json_file", "_read_json_file"]
+        assert call_names == ["_compute_file_sha256", "_read_json_file", "_read_json_file"]
         assert state.graph_loaded is True
         assert state.fraud_chains[0]["accounts"] == ["mule_1", "mule_2"]
         assert state.account_profiles["acct_1"]["score"] == 0.5
@@ -770,3 +794,51 @@ def test_voice_analysis_rate_limit_enforced(api_client, monkeypatch):
         statuses.append(response.status_code)
 
     assert 429 in statuses
+
+
+# ---------------------------------------------------------------------------
+# CORS preflight regression tests (issue #909)
+# ---------------------------------------------------------------------------
+
+_CORS_ALLOWED_ORIGIN = "http://localhost:8501"
+
+
+def _cors_preflight(client: TestClient, request_headers: str, origin: str = _CORS_ALLOWED_ORIGIN):
+    """Send an OPTIONS preflight for /api/v1/transaction/check."""
+    return client.options(
+        "/api/v1/transaction/check",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": request_headers,
+        },
+    )
+
+
+def test_cors_preflight_allows_x_api_key(api_client):
+    """OPTIONS preflight must advertise X-API-Key in Access-Control-Allow-Headers."""
+    response = _cors_preflight(api_client, "X-API-Key")
+    allow = response.headers.get("access-control-allow-headers", "")
+    assert "X-API-Key" in allow, (
+        f"X-API-Key missing from CORS allow_headers. Got: {allow!r}"
+    )
+
+
+def test_cors_preflight_allows_legacy_headers(api_client):
+    """Pre-existing auth headers must still be advertised after the X-API-Key addition."""
+    for header in ("Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers after patch. Got: {allow!r}"
+        )
+
+
+def test_cors_preflight_allows_honeypot_admin_headers(api_client):
+    """Honeypot admin headers must be advertised so admin tooling can reach those endpoints."""
+    for header in ("X-Honeypot-Token", "X-Honeypot-Admin-Token"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers. Got: {allow!r}"
+        )

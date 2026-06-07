@@ -1,0 +1,38 @@
+name: "Semantic PR Title Enforcer"
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate-pr-title:
+    name: Validate PR Title Against Conventional Commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      statuses: write
+
+    steps:
+      # Enforces Conventional Commits standard on every PR title
+      # Fails the check if title does not start with a valid type prefix
+      # Valid prefixes: feat, fix, chore, docs, refactor, perf, test, ci, build, revert
+      - name: Check PR Title Follows Conventional Commits Standard
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            chore
+            docs
+            refactor
+            perf
+            test
+            ci
+            build
+            revert
+          requireScope: false
+          wip: true
+          

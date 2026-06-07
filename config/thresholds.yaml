@@ -144,3 +144,30 @@ training:
 rate_limiting:
   requests_per_minute: 60
   burst_limit: 10
+
+# ==============================================================================
+# FALLBACK SCORING (used when the ML model is unavailable)
+# These thresholds are only applied when MODEL_AVAILABLE is False and the
+# computed risk_score is at or below the fallback_trigger_score ceiling.
+# All amounts are in the same currency unit as the transaction amount field.
+# ==============================================================================
+fallback_scoring:
+  # Maximum score produced by the heuristic pipeline that triggers the override.
+  fallback_trigger_score: 0.25
+
+  # Amount bands (inclusive lower bound, exclusive upper bound).
+  # Evaluated top-down; first matching band wins.
+  block_above: 200000        # amounts above this → BLOCK
+  block_score: 0.85
+
+  block_medium_above: 100000 # amounts above this but ≤ block_above → BLOCK
+  block_medium_score: 0.72
+
+  review_above: 50000        # amounts above this but ≤ block_medium_above → REVIEW
+  review_score: 0.48
+
+  allow_above: 10000         # amounts above this but ≤ review_above → ALLOW
+  allow_score: 0.35
+  # Rationale: When the GNN model is unavailable, high-value transactions carry
+  # inherently higher risk. These bands are conservative starting points and
+  # should be tuned once real-world data is available.

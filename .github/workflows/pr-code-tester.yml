@@ -19,7 +19,8 @@ jobs:
       - name: Checkout PR Codebase
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetches full history so we can diff files accurately
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python Environment
         uses: actions/setup-python@v5
@@ -37,7 +38,17 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prBody = context.payload.pull_request.body || "";
+            let prBody = "";
+            if (context.eventName === 'pull_request') {
+              prBody = context.payload.pull_request.body || "";
+            } else if (context.eventName === 'issue_comment') {
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number
+              });
+              prBody = pr.data.body || "";
+            }
             const match = prBody.match(/Fixes\s*#\s*(\d+)/i);
             
             let issueLabels = [];
@@ -59,9 +70,10 @@ jobs:
               core.info("No linked issue found in PR description. Relying entirely on file diff analysis.");
             }
             
-            // Export data to environment variables for Python execution
             core.exportVariable('PR_LABELS', issueLabels.join(','));
-            core.exportVariable('BASE_REF', context.payload.pull_request.base.ref);
+            core.exportVariable('BASE_REF', context.eventName === 'pull_request' ? context.payload.pull_request.base.ref : 'master');
+            core.exportVariable('HEAD_SHA', context.eventName === 'pull_request' ? context.payload.pull_request.head.sha : 'HEAD');
+            core.exportVariable('BASE_SHA', context.eventName === 'pull_request' ? context.payload.pull_request.base.sha : '');
 
       - name: Smart Test Discovery & Execution
         run: |
@@ -69,12 +81,17 @@ jobs:
           
           labels = os.getenv('PR_LABELS', '').split(',')
           base_ref = os.getenv('BASE_REF', 'master')
+          head_sha = os.getenv('HEAD_SHA', 'HEAD')
+          base_sha = os.getenv('BASE_SHA', '')
           
-          print(f"Analyzing modified files against base branch: origin/{base_ref}")
+          print(f"Analyzing modified files: PR head={head_sha} vs base={base_sha or base_ref}")
           
-          # 1. Universally discover what files the developer actually changed in this PR
+          # 1. Use explicit SHAs to always diff the correct commits
           try:
-              diff_cmd = ["git", "diff", f"origin/{base_ref}...HEAD", "--name-only"]
+              if base_sha:
+                  diff_cmd = ["git", "diff", f"{base_sha}...{head_sha}", "--name-only"]
+              else:
+                  diff_cmd = ["git", "diff", f"origin/{base_ref}...{head_sha}", "--name-only"]
               changed_files = subprocess.check_output(diff_cmd).decode('utf-8').splitlines()
           except Exception as e:
               print(f"Warning: Falling back to local diff check due to history constraint: {e}")

@@ -71,17 +71,6 @@ class TransactionCheckRequest(BaseModel):
     biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
     ip_address: Optional[str] = Field(default=None, description="IP address")
     location: Optional[str] = Field(default=None, description="Transaction location")
-    
-    @field_validator('amount')
-    @classmethod
-    def validate_amount(cls, v):
-        """Validate transaction amount."""
-        try:
-            TransactionValidator.validate_amount(v)
-        except ValidationError as e:
-            raise ValueError(e.suggestion) from e
-        return v
-    
     @field_validator('timestamp')
     @classmethod
     def validate_timestamp(cls, v):
@@ -177,9 +166,6 @@ class TransactionCheckResponse(BaseModel):
                     "recommended_action": "BLOCK_AND_ALERT_LAW_ENFORCEMENT",
                     "processing_time_ms": 142.5,
                     "timestamp": "2026-02-26T14:30:00.142Z",
-                    "honeypot_activated": True,
-                    "honeypot_id": "HP_ABC123",
-                    "deceptive_success_response": True,
                     "blockchain_evidence_id": "EVID_XYZ789",
                     "behavioral_stress_detected": True,
                     "lateral_movement_detected": False
@@ -198,17 +184,43 @@ class TransactionCheckResponse(BaseModel):
     timestamp: str = Field(description="Response timestamp")
     
     # Innovation fields (real-time integration)
-    honeypot_activated: bool = Field(default=False, description="Honeypot escrow activated (Innovation 2)")
-    honeypot_id: Optional[str] = Field(default=None, description="Honeypot trap ID if activated")
-    deceptive_success_response: bool = Field(default=False, description="Deceptive monitoring response enabled while preserving the real fraud decision")
+    # Note: Honeypot activation state is intentionally excluded from client responses
+    # to prevent information disclosure about defensive mechanisms.
+    # Internal logging captures honeypot activity for monitoring/audit.
     blockchain_evidence_id: Optional[str] = Field(default=None, description="Blockchain evidence ID (Innovation 6)")
     behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
     lateral_movement_detected: bool = Field(default=False, description="Lateral movement pattern detected (MITRE ATT&CK TA0008)")
+    model_degraded: bool = Field(
+        default=False,
+        description=(
+            "True when the ML model was unavailable and the response was produced "
+            "by the amount-based fallback heuristic instead of the GNN pipeline. "
+            "Downstream consumers should treat degraded-mode decisions with lower "
+            "confidence and flag them in audit trails accordingly."
+        ),
+    )
     
 
 
 class BatchTransactionRequest(BaseModel):
     """Request schema for batch transaction checking"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "transactions": [
+                    {
+                        "transaction_id": "TXN123456789",
+                        "source_account": "ACC987654321",
+                        "target_account": "ACC123456789",
+                        "amount": 50000.00,
+                        "currency": "INR",
+                        "mode": "UPI",
+                        "timestamp": "2026-02-26T14:30:00Z"
+                    }
+                ]
+            }
+        }
+    )
     transactions: List[TransactionCheckRequest] = Field(description="List of transactions to check")
     
     @field_validator('transactions')
@@ -221,6 +233,18 @@ class BatchTransactionRequest(BaseModel):
 
 class BatchTransactionResponse(BaseModel):
     """Response schema for batch transaction checking"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "results": [],
+                "total_processed": 1,
+                "total_blocked": 0,
+                "total_review": 0,
+                "total_allowed": 1,
+                "processing_time_ms": 45.2
+            }
+        }
+    )
     results: List[TransactionCheckResponse]
     total_processed: int
     total_blocked: int
@@ -231,6 +255,21 @@ class BatchTransactionResponse(BaseModel):
 
 class HealthCheckResponse(BaseModel):
     """Health check response"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "status": "operational",
+                "service": "AegisGraph Sentinel 2.0",
+                "version": "2.0.0",
+                "model_loaded": True,
+                "graph_loaded": True,
+                "innovations_available": True,
+                "uptime_seconds": 3600.5,
+                "requests_processed": 1500,
+                "timestamp": "2026-06-06T12:00:00Z"
+            }
+        }
+    )
     status: str = Field(description="Service status")
     service: str = Field(default="AegisGraph Sentinel", description="Service name")
     version: Optional[str] = Field(default=None, description="API version")
@@ -245,6 +284,22 @@ class HealthCheckResponse(BaseModel):
 
 class ModelInfo(BaseModel):
     """Model information"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "model_name": "HTGNN-Fraud-Detector",
+                "version": "v1.2",
+                "architecture": "Heterogeneous Temporal Graph Attention Network",
+                "parameters": 5000000,
+                "trained_on": "2026-01-15T00:00:00Z",
+                "performance_metrics": {
+                    "precision": 0.968,
+                    "recall": 0.942,
+                    "f1_score": 0.955
+                }
+            }
+        }
+    )
     model_name: str
     version: str
     architecture: str
@@ -255,6 +310,24 @@ class ModelInfo(BaseModel):
 
 class StatsResponse(BaseModel):
     """Statistics response"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "total_requests": 1500,
+                "decisions": {
+                    "ALLOW": 1400,
+                    "REVIEW": 80,
+                    "BLOCK": 20
+                },
+                "avg_risk_score": 0.15,
+                "avg_processing_time_ms": 112.5,
+                "uptime_seconds": 3600.5,
+                "total_checks": 1500,
+                "flagged_transactions": 100,
+                "average_response_time": 112.5
+            }
+        }
+    )
     total_requests: int
     decisions: Dict[str, int]
     avg_risk_score: float
@@ -267,6 +340,15 @@ class StatsResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     """Error response schema"""
+    model_config = ConfigDict(
+        json_schema_extra = {
+            "example": {
+                "error": "Authentication Failed",
+                "detail": "Invalid API Key provided",
+                "timestamp": "2026-06-06T12:00:00Z"
+            }
+        }
+    )
     error: str = Field(description="Error message")
     detail: Optional[str] = Field(default=None, description="Detailed error information")
     timestamp: str = Field(description="Error timestamp")
@@ -694,3 +776,161 @@ class BlastRadiusResponse(BaseModel):
     )
     processing_time_ms: float = Field(description="Wall-clock time taken to compute the blast radius.")
     timestamp: str = Field(description="ISO-8601 UTC timestamp of the response.")
+
+# ============================================================================
+# ALERT SUMMARIES (AI-Powered)
+# ============================================================================
+
+class AlertSummaryRequest(BaseModel):
+    """Request schema for summarizing an anomaly alert"""
+    alert_data: Dict[str, Any] = Field(description="The complex JSON data of the anomaly alert")
+
+
+class AlertSummaryResponse(BaseModel):
+    """Response schema for the AI-generated alert summary"""
+    summary: str = Field(description="A plain English, 2-sentence explanation of the alert")
+    processing_time_ms: float = Field(description="Time taken to generate the summary in ms")
+
+
+# ============================================================================
+# CASE MANAGEMENT SCHEMAS (Phase 4)
+# ============================================================================
+
+class CreateCaseRequest(BaseModel):
+    """Request to open a new fraud investigation case."""
+    transaction_id: str = Field(description="Transaction ID that triggered the alert")
+    risk_score: float = Field(ge=0.0, le=1.0, description="Risk score from the fraud engine")
+    decision: str = Field(description="Engine decision: ALLOW, REVIEW, or BLOCK")
+    priority: Optional[str] = Field(default="MEDIUM", description="Case priority: LOW, MEDIUM, HIGH, CRITICAL")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Optional tags for categorisation")
+
+    @field_validator("decision")
+    @classmethod
+    def validate_decision(cls, v: str) -> str:
+        if v not in {"ALLOW", "REVIEW", "BLOCK"}:
+            raise ValueError("decision must be ALLOW, REVIEW, or BLOCK")
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
+        valid = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        if v and v.upper() not in valid:
+            raise ValueError(f"priority must be one of: {valid}")
+        return v.upper() if v else "MEDIUM"
+
+
+class UpdateCaseRequest(BaseModel):
+    """Partial update for an existing case (all fields optional)."""
+    status: Optional[str] = Field(default=None, description="New status: OPEN, IN_PROGRESS, ESCALATED, RESOLVED, CLOSED")
+    assigned_analyst: Optional[str] = Field(default=None, description="Analyst ID to assign the case to")
+    priority: Optional[str] = Field(default=None, description="New priority: LOW, MEDIUM, HIGH, CRITICAL")
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        valid = {"OPEN", "IN_PROGRESS", "ESCALATED", "RESOLVED", "CLOSED"}
+        if v and v.upper() not in valid:
+            raise ValueError(f"status must be one of: {valid}")
+        return v.upper() if v else None
+
+    @field_validator("priority")
+    @classmethod
+    def validate_update_priority(cls, v: Optional[str]) -> Optional[str]:
+        valid = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        if v and v.upper() not in valid:
+            raise ValueError(f"priority must be one of: {valid}")
+        return v.upper() if v else None
+
+
+class AddCommentRequest(BaseModel):
+    """Request to add an investigation note to a case."""
+    text: str = Field(min_length=1, max_length=5000, description="Investigation note text")
+
+
+class AddEvidenceRequest(BaseModel):
+    """Request to attach evidence to a case."""
+    evidence_type: str = Field(description="Type: TRANSACTION_LINK, GRAPH_SNAPSHOT, NOTE, DOCUMENT")
+    description: str = Field(min_length=1, max_length=2000, description="Description of the evidence")
+    reference_id: Optional[str] = Field(default=None, description="Optional ID referencing the source (e.g. transaction_id)")
+
+    @field_validator("evidence_type")
+    @classmethod
+    def validate_evidence_type(cls, v: str) -> str:
+        valid = {"TRANSACTION_LINK", "GRAPH_SNAPSHOT", "NOTE", "DOCUMENT"}
+        if v.upper() not in valid:
+            raise ValueError(f"evidence_type must be one of: {valid}")
+        return v.upper()
+
+
+class CaseCommentResponse(BaseModel):
+    """Serialised investigation comment."""
+    comment_id: str
+    case_id: str
+    analyst_id: str
+    text: str
+    created_at: str
+
+
+class CaseEvidenceResponse(BaseModel):
+    """Serialised case evidence record."""
+    evidence_id: str
+    case_id: str
+    analyst_id: str
+    evidence_type: str
+    description: str
+    reference_id: Optional[str]
+    created_at: str
+
+
+class CaseAuditEventResponse(BaseModel):
+    """A single immutable audit event from the case timeline."""
+    event_id: str
+    case_id: str
+    analyst_id: str
+    action: str
+    old_value: Optional[str]
+    new_value: Optional[str]
+    timestamp: str
+
+
+class FraudCaseResponse(BaseModel):
+    """Full fraud case detail response."""
+    case_id: str
+    transaction_id: str
+    risk_score: float
+    decision: str
+    status: str
+    priority: str
+    assigned_analyst: Optional[str]
+    created_at: str
+    updated_at: str
+    tags: List[str]
+    comment_count: int
+    evidence_count: int
+
+
+class CaseListResponse(BaseModel):
+    """Paginated list of fraud cases."""
+    cases: List[FraudCaseResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class CaseTimelineResponse(BaseModel):
+    """Immutable audit trail for a case."""
+    case_id: str
+    events: List[CaseAuditEventResponse]
+    total_events: int
+
+
+class CaseDashboardResponse(BaseModel):
+    """Aggregated case management dashboard statistics."""
+    total_cases: int
+    open_cases: int
+    in_progress_cases: int
+    escalated_cases: int
+    by_status: Dict[str, int]
+    by_priority: Dict[str, int]
