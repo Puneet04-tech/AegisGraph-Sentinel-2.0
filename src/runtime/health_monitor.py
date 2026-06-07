@@ -62,7 +62,7 @@ class RuntimeHealthMonitor:
 
         service.status = "healthy"
         service.failures = 0
-        service.restart_attempts = 0
+        service.restart_attempts = 0   
         service.last_error = None
         service.last_heartbeat = time.time()
 
