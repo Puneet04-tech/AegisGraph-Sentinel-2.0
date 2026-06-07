@@ -1012,3 +1012,73 @@ class AnalystFeedbackResponse(BaseModel):
     feedback_text: Optional[str]
     created_at: str
 
+
+# ---------------------------------------------------------------------------
+# Threat Intelligence Schemas (Phase 7)
+# ---------------------------------------------------------------------------
+
+class ThreatFeedIndicatorResponse(BaseModel):
+    """A threat indicator of compromise (IOC)."""
+    indicator_id: str
+    indicator_type: str
+    value: str
+    source_feed: str
+    threat_score: float
+    confidence: float
+    last_seen: str
+
+
+class ThreatActorProfileResponse(BaseModel):
+    """Profile of a tracked threat actor group."""
+    actor_id: str
+    name: str
+    risk_score: float
+    associated_accounts: List[str]
+    associated_devices: List[str]
+    associated_ips: List[str]
+    campaign_ids: List[str]
+    created_at: str
+    updated_at: str
+
+
+class FraudCampaignResponse(BaseModel):
+    """Details of a tracked coordinated fraud campaign."""
+    campaign_id: str
+    name: str
+    description: str
+    attack_pattern: str
+    severity: str
+    status: str
+    threat_actor_id: Optional[str] = None
+    case_ids: List[str]
+    start_time: str
+    end_time: Optional[str] = None
+
+
+class ThreatCorrelationResponse(BaseModel):
+    """Correlated fraud alert group."""
+    correlation_id: str
+    case_ids: List[str]
+    similarity_score: float
+    common_features: List[str]
+    description: str
+    created_at: str
+
+
+class CommandCenterStatsResponse(BaseModel):
+    """Central stats for the Fraud Command Center dashboard."""
+    total_correlated_alerts: int
+    active_campaigns_count: int
+    total_threat_indicators: int
+    global_threat_level: float
+
+
+class AddThreatIndicatorRequest(BaseModel):
+    """Request to manually add a threat indicator of compromise."""
+    indicator_type: str = Field(..., description="IP | DEVICE | ACCOUNT")
+    value: str = Field(..., description="e.g. 192.168.1.1")
+    source_feed: str = Field("MANUAL_ANALYST", description="The source of the threat feed")
+    threat_score: float = Field(..., ge=0, le=1, description="Threat score from 0.0 to 1.0")
+    confidence: float = Field(..., ge=0, le=1, description="Confidence rating from 0.0 to 1.0")
+
+

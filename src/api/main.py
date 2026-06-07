@@ -172,8 +172,17 @@ from .schemas import (
     CopilotAskResponse,
     AnalystFeedbackRequest,
     AnalystFeedbackResponse,
+    # Threat Intelligence (Phase 7)
+    ThreatFeedIndicatorResponse,
+    ThreatActorProfileResponse,
+    FraudCampaignResponse,
+    ThreatCorrelationResponse,
+    CommandCenterStatsResponse,
+    AddThreatIndicatorRequest,
 )
 import src.copilot as copilot
+import src.threat_intelligence as threat_intel
+
 
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
@@ -2905,6 +2914,13 @@ async def create_case(
         priority=priority,
         tags=request.tags or [],
     )
+    # Phase 7 Threat Intelligence correlation and campaign tracking triggers
+    try:
+        threat_intel.correlate_alert(case.case_id)
+        threat_intel.detect_campaigns()
+    except Exception as e:
+        _api_logger.error(f"Failed to run threat intelligence correlation on case {case.case_id}: {e}")
+        
     return _serialise_case(case)
 
 
@@ -3323,6 +3339,208 @@ async def submit_copilot_feedback(
     except Exception as exc:
         _api_logger.error(f"Failed to submit feedback: {exc}")
         raise HTTPException(status_code=500, detail="Failed to record feedback") from exc
+
+
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _api_logger.error(f"Failed to submit feedback: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to record feedback") from exc
+
+
+# ---------------------------------------------------------------------------
+# Threat Intelligence Endpoints (Phase 7)
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/v1/threat-intelligence/command-center/stats",
+    response_model=CommandCenterStatsResponse,
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get central stats for the Fraud Command Center dashboard",
+)
+async def get_command_center_stats():
+    """Retrieve high-level metrics including active campaigns, correlated alerts, threat indicator counts, and global threat level."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        correlations = t_store.list_correlations()
+        campaigns = t_store.list_campaigns(status="ACTIVE")
+        indicators = t_store.list_indicators()
+        
+        # Calculate global threat level as average threat score of indicators (or 0.5 default)
+        if indicators:
+            global_level = sum(i.threat_score for i in indicators) / len(indicators)
+        else:
+            global_level = 0.5
+            
+        # Count total correlated alerts
+        correlated_alerts = set()
+        for corr in correlations:
+            correlated_alerts.update(corr.case_ids)
+            
+        return CommandCenterStatsResponse(
+            total_correlated_alerts=len(correlated_alerts),
+            active_campaigns_count=len(campaigns),
+            total_threat_indicators=len(indicators),
+            global_threat_level=round(global_level, 3),
+        )
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve command center stats: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve command center stats") from exc
+
+
+@app.get(
+    "/api/v1/threat-intelligence/campaigns",
+    response_model=List[FraudCampaignResponse],
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List active fraud campaigns",
+)
+async def list_fraud_campaigns():
+    """Retrieve all active/inactive campaigns tracked in the system."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        campaigns = t_store.list_campaigns()
+        return [
+            FraudCampaignResponse(
+                campaign_id=c.campaign_id,
+                name=c.name,
+                description=c.description,
+                attack_pattern=c.attack_pattern,
+                severity=c.severity,
+                status=c.status,
+                threat_actor_id=c.threat_actor_id,
+                case_ids=c.case_ids,
+                start_time=c.start_time,
+                end_time=c.end_time,
+            )
+            for c in campaigns
+        ]
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve fraud campaigns: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve campaigns") from exc
+
+
+@app.get(
+    "/api/v1/threat-intelligence/correlations",
+    response_model=List[ThreatCorrelationResponse],
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List correlated fraud alerts",
+)
+async def list_threat_correlations():
+    """Retrieve list of all correlations/clusters of fraud alerts."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        correlations = t_store.list_correlations()
+        return [
+            ThreatCorrelationResponse(
+                correlation_id=c.correlation_id,
+                case_ids=c.case_ids,
+                similarity_score=c.similarity_score,
+                common_features=c.common_features,
+                description=c.description,
+                created_at=c.created_at,
+            )
+            for c in correlations
+        ]
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve correlations: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve correlations") from exc
+
+
+@app.get(
+    "/api/v1/threat-intelligence/indicators",
+    response_model=List[ThreatFeedIndicatorResponse],
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List threat feed indicators of compromise",
+)
+async def list_threat_indicators(indicator_type: Optional[str] = Query(default=None, description="IP | DEVICE | ACCOUNT")):
+    """Get active threat feed indicators representing malicious IPs, devices, or accounts."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        indicators = t_store.list_indicators(indicator_type=indicator_type)
+        return [
+            ThreatFeedIndicatorResponse(
+                indicator_id=i.indicator_id,
+                indicator_type=i.indicator_type,
+                value=i.value,
+                source_feed=i.source_feed,
+                threat_score=i.threat_score,
+                confidence=i.confidence,
+                last_seen=i.last_seen,
+            )
+            for i in indicators
+        ]
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve indicators: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve threat indicators") from exc
+
+
+@app.get(
+    "/api/v1/threat-intelligence/actors/{actor_id}",
+    response_model=ThreatActorProfileResponse,
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get threat actor profile",
+)
+async def get_threat_actor_profile(actor_id: str):
+    """Retrieve full profile details of a threat actor by ID."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        actor = t_store.get_actor(actor_id)
+        if not actor:
+            raise KeyError(f"Threat Actor '{actor_id}' not found.")
+            
+        return ThreatActorProfileResponse(
+            actor_id=actor.actor_id,
+            name=actor.name,
+            risk_score=actor.risk_score,
+            associated_accounts=list(actor.associated_accounts),
+            associated_devices=list(actor.associated_devices),
+            associated_ips=list(actor.associated_ips),
+            campaign_ids=actor.campaign_ids,
+            created_at=actor.created_at,
+            updated_at=actor.updated_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve threat actor profile: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve threat actor") from exc
+
+
+@app.post(
+    "/api/v1/threat-intelligence/indicators",
+    response_model=ThreatFeedIndicatorResponse,
+    tags=["Threat Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Manually add a threat indicator",
+)
+async def add_threat_indicator(request: AddThreatIndicatorRequest):
+    """Manually register a threat indicator (malicious IP/device/account) in the intelligence feed."""
+    try:
+        t_store = threat_intel.get_threat_store()
+        ind = t_store.add_indicator(
+            indicator_type=request.indicator_type,
+            value=request.value,
+            source_feed=request.source_feed,
+            threat_score=request.threat_score,
+            confidence=request.confidence,
+        )
+        return ThreatFeedIndicatorResponse(
+            indicator_id=ind.indicator_id,
+            indicator_type=ind.indicator_type,
+            value=ind.value,
+            source_feed=ind.source_feed,
+            threat_score=ind.threat_score,
+            confidence=ind.confidence,
+            last_seen=ind.last_seen,
+        )
+    except Exception as exc:
+        _api_logger.error(f"Failed to add manual threat indicator: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to add threat indicator") from exc
 
 
 def main():
