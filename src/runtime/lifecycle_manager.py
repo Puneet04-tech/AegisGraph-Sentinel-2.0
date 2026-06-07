@@ -8,6 +8,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List
 
+from ..audit import log_audit_event
 from ..observability import get_logger
 from .events import RuntimeShutdownEvent, RuntimeStartedEvent
 from .events.subscriptions import register_default_subscriptions
@@ -34,6 +35,17 @@ class LifecycleManager:
         self._started = False
         self._shutting_down = False
 
+    def _audit(self, event_type: str, severity: str = "info", **metadata: Any) -> None:
+        try:
+            log_audit_event(
+                event_type=event_type,
+                severity=severity,
+                source="lifecycle_manager",
+                metadata=metadata,
+            )
+        except Exception:
+            self._logger.debug("Runtime audit recording failed", exc_info=True)
+
     def register_startup(self, name: str, handler: LifecycleCallable, *, critical: bool = True) -> None:
         self._startup_steps.append(LifecycleStep(name=name, handler=handler, critical=critical))
 
@@ -51,6 +63,7 @@ class LifecycleManager:
                 event_type="runtime_startup_started",
                 metadata={"steps": [step.name for step in self._startup_steps]},
             )
+            self._audit("runtime_startup_started", steps=[step.name for step in self._startup_steps])
             self.runtime_state.shutting_down = False
 
             dispatcher = getattr(self.runtime_state, "dispatcher", None)
@@ -76,6 +89,7 @@ class LifecycleManager:
             self.runtime_state.started = True
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
             self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
+            self._audit("runtime_startup_complete", steps=len(self._startup_steps))
 
             # Emit RuntimeStartedEvent after all steps succeed.
             if dispatcher is not None and dispatcher.started:
@@ -102,12 +116,14 @@ class LifecycleManager:
                 event_type="runtime_shutdown_started",
                 metadata={"steps": [step.name for step in reversed(self._shutdown_steps)]},
             )
+            self._audit("runtime_shutdown_started", steps=[step.name for step in reversed(self._shutdown_steps)])
             for step in reversed(self._shutdown_steps):
                 await self._run_step(step, phase="shutdown")
             self._started = False
             self.runtime_state.started = False
             self.runtime_state.record_lifecycle_event("shutdown_complete", steps=len(self._shutdown_steps))
             self._logger.info("Runtime shutdown complete", event_type="runtime_shutdown_complete")
+            self._audit("runtime_shutdown_complete", steps=len(self._shutdown_steps))
 
             # Emit RuntimeShutdownEvent then stop the dispatcher so it
             # drains any remaining queued events before exiting.

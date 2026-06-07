@@ -1521,7 +1521,15 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-Legal-Export-Token",
+        "X-Request-Timestamp",
+        "X-Honeypot-Token",
+        "X-Honeypot-Admin-Token",
+    ],
     max_age=600,
 )
 
