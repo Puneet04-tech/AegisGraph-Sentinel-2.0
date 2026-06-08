@@ -76,15 +76,19 @@ class LifecycleManager:
                 await register_default_subscriptions(event_bus)
 
             completed_steps = []
-            for step in self._startup_steps:
-                try:
+
+            try:
+                for step in self._startup_steps:
                     await self._run_step(step, phase="startup")
                     completed_steps.append(step.name)
             except Exception as exc:
                 self._logger.error(
                     f"Startup failed at step '{step.name}': {exc}",
                     event_type="runtime_startup_failed",
-                    metadata={"failed_step": step.name, "completed_steps": completed_steps},
+                    metadata={
+                        "failed_step": step.name,
+                        "completed_steps": completed_steps,
+                    },
                 )
                 await self._rollback_startup(completed_steps)
                 raise

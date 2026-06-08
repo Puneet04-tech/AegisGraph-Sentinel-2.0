@@ -1,6 +1,8 @@
 import asyncio
 from typing import Callable, Optional, Any
 
+from ..observability import get_logger
+
 async def honeypot_auto_release_loop(
     get_honeypot_manager: Callable[[], Optional[Any]],
     *,
