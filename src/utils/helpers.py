@@ -12,6 +12,13 @@ import logging
 from datetime import datetime
 import functools
 
+REQUIRED_CONFIG_SECTIONS = {
+    "graph",
+    "training",
+    "runtime",
+    "observability",
+}
+
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
     """
@@ -29,7 +36,20 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
-    
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"Invalid configuration format in {config_path}"
+        )
+
+    missing_sections = REQUIRED_CONFIG_SECTIONS - set(config.keys())
+
+    if missing_sections:
+        raise ValueError(
+            "Missing required configuration sections: "
+            + ", ".join(sorted(missing_sections))
+        )
+
     return config
 
 
