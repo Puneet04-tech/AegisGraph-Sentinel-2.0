@@ -179,9 +179,18 @@ from .schemas import (
     ThreatCorrelationResponse,
     CommandCenterStatsResponse,
     AddThreatIndicatorRequest,
+    # Digital Forensics (Phase 8)
+    CreateInvestigationRequest,
+    InvestigationResponse,
+    EvidenceResponse,
+    TimelineEventResponse,
+    TimelineResponse,
+    AttackChainResponse,
 )
 import src.copilot as copilot
 import src.threat_intelligence as threat_intel
+import src.forensics as forensics
+
 
 
 from ..case_management import get_case_store
@@ -3561,3 +3570,156 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Digital Forensics Endpoints (Phase 8)
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/api/v1/forensics/investigations",
+    response_model=InvestigationResponse,
+    tags=["Forensics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create a new forensic investigation",
+)
+async def create_investigation(
+    request: CreateInvestigationRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    analyst = x_analyst_id or "system"
+    try:
+        service = forensics.InvestigationService()
+        inv = service.create_investigation(
+            title=request.title,
+            analyst_id=analyst,
+            case_ids=request.case_ids,
+        )
+        return InvestigationResponse(
+            investigation_id=inv.id,
+            title=inv.title,
+            status=inv.status,
+            analyst_id=inv.analyst_id,
+            case_ids=inv.case_ids,
+            created_at=inv.created_at,
+            updated_at=inv.updated_at,
+        )
+    except Exception as exc:
+        _api_logger.error(f"Failed to create investigation: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to create investigation") from exc
+
+
+@app.get(
+    "/api/v1/forensics/investigations",
+    response_model=List[InvestigationResponse],
+    tags=["Forensics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List all digital investigations",
+)
+async def list_investigations():
+    try:
+        service = forensics.InvestigationService()
+        invs = service.list_investigations()
+        return [
+            InvestigationResponse(
+                investigation_id=i.id,
+                title=i.title,
+                status=i.status,
+                analyst_id=i.analyst_id,
+                case_ids=i.case_ids,
+                created_at=i.created_at,
+                updated_at=i.updated_at,
+            )
+            for i in invs
+        ]
+    except Exception as exc:
+        _api_logger.error(f"Failed to list investigations: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve investigations") from exc
+
+
+@app.get(
+    "/api/v1/forensics/timeline/{investigation_id}",
+    response_model=TimelineResponse,
+    tags=["Forensics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Retrieve chronological timeline for an investigation",
+)
+async def get_investigation_timeline(investigation_id: str):
+    try:
+        engine = forensics.TimelineEngine()
+        events = engine.build_timeline(investigation_id)
+        return TimelineResponse(
+            investigation_id=investigation_id,
+            events=[
+                TimelineEventResponse(
+                    event_id=e.id,
+                    investigation_id=e.investigation_id,
+                    event_type=e.event_type,
+                    timestamp=e.timestamp,
+                    entity_id=e.entity_id,
+                    description=e.description,
+                    metadata=e.metadata,
+                )
+                for e in events
+            ]
+        )
+    except Exception as exc:
+        _api_logger.error(f"Failed to generate timeline: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to generate timeline") from exc
+
+
+@app.get(
+    "/api/v1/forensics/evidence/{evidence_id}",
+    response_model=EvidenceResponse,
+    tags=["Forensics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Retrieve and verify forensic evidence details",
+)
+async def get_evidence(evidence_id: str):
+    try:
+        manager = forensics.EvidenceManager()
+        is_valid, ev = manager.verify_evidence(evidence_id)
+        if not ev:
+            raise KeyError(f"Evidence ID '{evidence_id}' not found.")
+        return EvidenceResponse(
+            evidence_id=ev.id,
+            case_id=ev.case_id,
+            evidence_type=ev.type,
+            source=ev.source,
+            value=ev.value,
+            hash=ev.hash,
+            created_at=ev.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _api_logger.error(f"Failed to retrieve evidence: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve evidence") from exc
+
+
+@app.get(
+    "/api/v1/forensics/reconstruction/{campaign_id}",
+    response_model=AttackChainResponse,
+    tags=["Forensics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Reconstruct attack path for a coordinated campaign",
+)
+async def reconstruct_attack(campaign_id: str):
+    try:
+        engine = forensics.AttackReconstructionEngine()
+        chain = engine.reconstruct_campaign(campaign_id)
+        if not chain:
+            raise KeyError(f"Attack chain for campaign '{campaign_id}' not found.")
+        return AttackChainResponse(
+            chain_id=chain.id,
+            campaign_id=chain.campaign_id,
+            steps=chain.steps,
+            confidence_score=chain.confidence_score,
+            created_at=chain.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _api_logger.error(f"Failed to reconstruct attack path: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to reconstruct attack path") from exc
+

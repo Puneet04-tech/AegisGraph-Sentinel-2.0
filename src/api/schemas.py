@@ -1082,3 +1082,62 @@ class AddThreatIndicatorRequest(BaseModel):
     confidence: float = Field(..., ge=0, le=1, description="Confidence rating from 0.0 to 1.0")
 
 
+# ---------------------------------------------------------------------------
+# Digital Forensics Schemas (Phase 8)
+# ---------------------------------------------------------------------------
+
+class CreateInvestigationRequest(BaseModel):
+    """Request payload to create a new forensic investigation."""
+    title: str = Field(..., min_length=3, max_length=255)
+    case_ids: Optional[List[str]] = Field(default_factory=list)
+
+
+class InvestigationResponse(BaseModel):
+    """Details of a tracked digital forensics investigation."""
+    investigation_id: str
+    title: str
+    status: str
+    analyst_id: str
+    case_ids: List[str]
+    created_at: str
+    updated_at: str
+
+
+class EvidenceResponse(BaseModel):
+    """Tamper-evident forensic evidence profile."""
+    evidence_id: str
+    case_id: str
+    evidence_type: str
+    source: str
+    value: str
+    hash: str
+    created_at: str
+
+
+class TimelineEventResponse(BaseModel):
+    """A single chronological forensic event."""
+    event_id: str
+    investigation_id: str
+    event_type: str
+    timestamp: str
+    entity_id: str
+    description: str
+    metadata: Dict[str, Any]
+
+
+class TimelineResponse(BaseModel):
+    """Chronologically compiled timeline for an investigation."""
+    investigation_id: str
+    events: List[TimelineEventResponse]
+
+
+class AttackChainResponse(BaseModel):
+    """Reconstructed path of a coordinated campaign attack."""
+    chain_id: str
+    campaign_id: str
+    steps: List[Dict[str, Any]]
+    confidence_score: float
+    created_at: str
+
+
+
