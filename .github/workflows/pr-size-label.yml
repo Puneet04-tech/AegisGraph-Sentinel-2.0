@@ -1,0 +1,31 @@
+name: "PR Size Labeler"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  label-pr-size:
+    name: Apply PR Size Label
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+
+    steps:
+      # Calculates total line diff and applies a size label to the PR
+      - name: Calculate Diff and Apply Size Label
+        uses: pascalgn/size-label-action@v0.5.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          sizes: >
+            {
+              "0":    "size/XS",
+              "10":   "size/S",
+              "30":   "size/M",
+              "100":  "size/L",
+              "500":  "size/XL",
+              "1000": "size/XXL"
+            }
+            

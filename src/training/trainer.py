@@ -347,14 +347,17 @@ class Trainer:
 
     def save_checkpoint(self, path: Path):
         """Save model checkpoint"""
-        torch.save({
+        checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'best_val_f1': self.best_val_f1,
             'best_val_loss': self.best_val_loss,
             'config': self.config,
-        }, path)
+        }
+        if self.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        torch.save(checkpoint, path)
 
     def load_checkpoint(self, path: Path):
         """Load model checkpoint"""
@@ -364,6 +367,8 @@ class Trainer:
         self.current_epoch = checkpoint['epoch']
         self.best_val_f1 = checkpoint['best_val_f1']
         self.best_val_loss = checkpoint['best_val_loss']
+        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     def save_history(self, path: Path):
         """Save training history"""

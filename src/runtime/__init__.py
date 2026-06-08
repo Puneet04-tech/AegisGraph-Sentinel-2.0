@@ -10,6 +10,13 @@ from .service_health import ServiceHealth
 from .health_monitor import RuntimeHealthMonitor
 from .recovery_manager import RecoveryManager
 from .watchdog import RuntimeWatchdog
+from .resources import (
+    BackpressureController,
+    QueueBudget,
+    ResourceLimits,
+    RuntimeResourceManager,
+    TaskBudget,
+)
 
 __all__ = [
     "LifecycleManager",
@@ -22,6 +29,11 @@ __all__ = [
     "RuntimeHealthMonitor",
     "RecoveryManager",
     "RuntimeWatchdog",
+    "BackpressureController",
+    "QueueBudget",
+    "ResourceLimits",
+    "RuntimeResourceManager",
+    "TaskBudget",
     # Event infrastructure
     "RuntimeEventBus",
     "EventDispatcher",

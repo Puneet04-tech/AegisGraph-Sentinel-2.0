@@ -1,0 +1,22 @@
+name: Label Merge Conflicts
+
+on:
+  schedule:
+    # Runs every 4 hours
+    - cron: "0 */4 * * *"
+
+# Added permissions to ensure the scheduled bot can write comments and labels
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  label-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: eps1lon/actions-label-merge-conflict@v3
+        with:
+          dirtyLabel: "has conflicts"
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          commentOnDirty: "This pull request has conflicts, please resolve those before we can evaluate the pull request."
+          commentOnClean: "Conflicts have been resolved. A maintainer will review the pull request shortly."

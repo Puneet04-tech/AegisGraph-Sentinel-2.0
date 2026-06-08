@@ -1,7 +1,9 @@
 import os
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict
 import numpy as np
 from scipy import stats
 
@@ -10,14 +12,17 @@ try:
 except ImportError:
     requests = None
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Module-level logger — configuration is the responsibility of the
+# application entry point, not of library modules.
+logger = logging.getLogger(__name__)
+
 
 class AdversarialDriftMonitor:
     """
     MLOps service to monitor continuous data distributions using the 
     Kolmogorov-Smirnov (K-S) test. Detects when attackers change their behavior.
     """
-    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4):
+    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4, alert_cooldown=300.0):
         self.p_value_threshold = p_value_threshold
         self.webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
         self._alert_workers = max(2, int(alert_workers))
@@ -26,7 +31,9 @@ class AdversarialDriftMonitor:
             thread_name_prefix="drift-alert",
         )
         self._closed = False
-        
+        self._last_alert_time: Dict[str, float] = {}
+        self._alert_cooldown = alert_cooldown
+
         # Load or simulate the baseline data (what the model was trained on)
         self.baselines = self._load_training_baselines()
 
@@ -35,7 +42,7 @@ class AdversarialDriftMonitor:
         if self._closed:
             return
         self._closed = True
-        self._alert_executor.shutdown(wait=False, cancel_futures=True)
+        self._alert_executor.shutdown(wait=True)
 
     def __enter__(self):
         return self
@@ -47,12 +54,12 @@ class AdversarialDriftMonitor:
     def __del__(self):
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("AdversarialDriftMonitor cleanup failed: %s", exc)
 
     def _load_training_baselines(self):
         """Loads baseline distributions. Mocked here for CI/CD testing."""
-        logging.info("Loading training baselines for drift monitoring...")
+        logger.info("Loading training baselines for drift monitoring...")
         return {
             # E.g., Humans type with an average flight time of ~120ms with some variance
             "keystroke_flight_time": np.random.normal(loc=120.0, scale=15.0, size=1000),
@@ -69,27 +76,39 @@ class AdversarialDriftMonitor:
             f"Diagnosis: {drift_type}. The incoming live data no longer matches the training distribution."
             f" Immediate model retraining recommended."
         )
-        logging.warning(msg)
+        logger.warning(msg)
+
+        now = time.time()
+        last_time = self._last_alert_time.get(feature_name, 0.0)
+        if now - last_time < self._alert_cooldown:
+            logger.info("Suppressed duplicate webhook for %s (cooldown active)", feature_name)
+            return
+
+        self._last_alert_time[feature_name] = now
 
         if self.webhook_url and not self._closed:
             self._alert_executor.submit(self._dispatch_webhook_alert, msg)
 
-    def _dispatch_webhook_alert(self, msg):
+    def _dispatch_webhook_alert(self, msg, retries=3):
         if requests is None:
-            logging.warning("requests is unavailable; skipping webhook dispatch")
+            logger.warning("requests is unavailable; skipping webhook dispatch")
             return
 
-        try:
-            requests.post(self.webhook_url, json={"text": msg}, timeout=2)
-        except Exception as e:
-            logging.error(f"Failed to dispatch webhook alert: {e}")
+        for attempt in range(retries):
+            try:
+                requests.post(self.webhook_url, json={"text": msg}, timeout=2)
+                return
+            except Exception as e:
+                logger.error("Webhook alert dispatch attempt %d/%d failed: %s", attempt + 1, retries, e)
+                if attempt < retries - 1:
+                    time.sleep(1 * (attempt + 1))
 
     def evaluate_batch(self, feature_name, live_data_batch):
         """
         Compares a batch of live incoming data against the training baseline.
         """
         if feature_name not in self.baselines:
-            logging.error(f"Feature {feature_name} not found in baselines.")
+            logger.error("Feature '%s' not found in baselines.", feature_name)
             return
 
         baseline_data = self.baselines[feature_name]
@@ -102,7 +121,7 @@ class AdversarialDriftMonitor:
             self.trigger_alert(feature_name, p_value, stat)
             return True # Drift detected
             
-        logging.info(f"✅ {feature_name} distribution is stable (p={p_value:.4f}).")
+        logger.info("✅ %s distribution is stable (p=%.4f).", feature_name, p_value)
         return False # No drift
 
 

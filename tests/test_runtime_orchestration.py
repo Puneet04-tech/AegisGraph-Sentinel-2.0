@@ -51,6 +51,77 @@ def test_runtime_state_isolation_and_metrics():
     metrics = runtime_state.get_metrics()
     assert metrics["active_task_count"] == 0
     assert metrics["lifecycle_events"] == 1
+def test_runtime_state_tracks_multiple_lifecycle_events():
+    runtime_state = RuntimeState()
+
+    runtime_state.record_lifecycle_event("startup", ok=True)
+    runtime_state.record_lifecycle_event("health_check", ok=True)
+    runtime_state.record_lifecycle_event("recovery", ok=False)
+
+    metrics = runtime_state.get_metrics()
+
+    assert metrics["lifecycle_events"] == 3
+def test_runtime_metrics_reflect_active_task_registration():
+    async def _run():
+        registry = TaskRegistry()
+
+        async def worker():
+            await asyncio.sleep(0.05)
+
+        task = registry.register_task(
+            worker(),
+            name="metrics_worker",
+            owner="test",
+        )
+
+        assert registry.active_count == 1
+
+        await task
+        await asyncio.sleep(0)
+
+        assert registry.active_count == 0
+
+    asyncio.run(_run())
+def test_runtime_metrics_reset_after_task_completion():
+    async def _run():
+        registry = TaskRegistry()
+
+        async def worker():
+            return "done"
+
+        task = registry.register_task(
+            worker(),
+            name="cleanup_worker",
+            owner="test",
+        )
+
+        await task
+        await asyncio.sleep(0)
+
+        assert registry.active_count == 0
+        assert registry.get_active_tasks() == []
+
+    asyncio.run(_run())
+def test_runtime_metrics_handle_multiple_task_cycles():
+    async def _run():
+        registry = TaskRegistry()
+
+        async def worker():
+            await asyncio.sleep(0)
+
+        for i in range(5):
+            task = registry.register_task(
+                worker(),
+                name=f"worker_{i}",
+                owner="test",
+            )
+            await task
+
+        await asyncio.sleep(0)
+
+        assert registry.active_count == 0
+
+    asyncio.run(_run())
 
 
 def test_runtime_state_lifecycle_events_are_bounded(monkeypatch):

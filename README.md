@@ -7,6 +7,33 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red)
 ![Innovations](https://img.shields.io/badge/innovations-6-gold)
 
+## 📄 Table of Contents
+
+- [Overview](#-overview)
+- [Key Achievements](#-key-achievements)
+- [Six Breakthrough Innovations](#-six-breakthrough-innovations)
+- [Core Technologies](#-core-technologies)
+- [Architecture](#-architecture)
+- [Quick Start](#-quick-start)
+  - [Installation](#installation)
+  - [Environment Configuration](#environment-configuration)
+  - [Running the API Server](#running-the-api-server)
+  - [Training the Model](#training-the-model)
+- [Project Structure](#-project-structure)
+- [Key Features](#-key-features)
+- [API Usage](#-api-usage)
+- [Performance Metrics](#-performance-metrics)
+- [Security & Privacy](#-security--privacy)
+- [Economic Impact](#-economic-impact)
+- [Technology Stack](#-technology-stack)
+- [Documentation](#-documentation)
+- [Testing](#-testing)
+- [Deployment](#-deployment)
+- [Contributing](#-contributing)
+- [Contributor Environment Setup Guide](#-contributor-environment-setup-guide)
+- [License](#-license)
+- [Contact](#-contact)
+
 ## 🎯 Overview
 
 AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses **Heterogeneous Temporal Graph Neural Networks (HTGNN)** to detect mule account networks in real-time—within the critical **200-500ms** transaction authorization window.
@@ -93,7 +120,10 @@ Edit `.env` with your configuration:
 API_URL=http://localhost:8000
 
 # CORS Configuration (comma-separated origins)
-AEGIS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
+CORS_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
+
+# Backward compatibility alias for CORS_ORIGINS
+# AEGIS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8501,http://127.0.0.1:8501
 
 # Debug Mode (set to 'true' to enable debug endpoints)
 DEBUG=false
@@ -113,7 +143,10 @@ CUDA_VISIBLE_DEVICES=0
 
 **Required Environment Variables:**
 - `API_URL`: Backend API URL for the Streamlit frontend
-- `AEGIS_ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins
+- `CORS_ORIGINS`: Comma-separated list of allowed CORS origins
+
+**Backward Compatibility:**
+- `AEGIS_ALLOWED_ORIGINS`: Legacy alias for `CORS_ORIGINS` if you are updating an older deployment
 
 **Optional Environment Variables:**
 - `DEBUG`: Enable debug endpoints (default: false)
@@ -133,6 +166,34 @@ python -m src.api.main
 # API will be available at http://localhost:8000
 # Documentation at http://localhost:8000/docs
 ```
+
+## API Documentation
+
+The AegisGraph Sentinel 2.0 API features comprehensive OpenAPI (Swagger) documentation, allowing developers to interactively explore and test endpoints directly from their browser.
+
+### Accessing the Interactive Documentation
+
+1. Start the API Server:
+   ```bash
+   python -m pip install -r requirements.txt
+   python -m uvicorn src.api.main:app --reload
+   ```
+
+2. Open your browser and navigate to:
+   - **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+   - **OpenAPI Schema**: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
+
+### Authentication via Swagger UI
+
+All protected endpoints in AegisGraph Sentinel require an API Key. You can easily test them via the Swagger UI:
+
+1. Click the **Authorize** button at the top right of the Swagger UI page.
+2. In the `APIKeyHeader` dialog box, enter your API Key. (By default, use `SUPER_ADMIN`).
+3. Click **Authorize** and then **Close**. 
+4. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
+
+*(Insert Screenshot here)*
 
 ### Training the Model
 
@@ -184,10 +245,10 @@ Fixed risk scoring to properly scale with transaction amount.
 ### 3. **Hesitation Monitor**
 Analyzes keystroke dynamics to detect stress patterns indicating social engineering attacks.
 
-### 3. **Honeypot Virtual Escrow**
+### 4. **Honeypot Virtual Escrow**
 Deception-based fund containment that prevents fraudster adaptation while buying investigation time.
 
-### 4. **Aegis-Oracle**
+### 5. **Aegis-Oracle**
 Explainable AI engine that generates human-readable explanations for regulatory compliance.
 
 ## 💻 API Usage
@@ -319,6 +380,17 @@ print(f"Verified: {response.json()['verified']}")
 - [Model Training Guide](docs/training.md)
 - [Deployment Guide](docs/deployment.md)
 
+Detailed project documentation is available in the `docs/` directory.
+
+| Document | Description |
+|-----------|-------------|
+| `system_architecture.md` | Explains overall system architecture, component responsibilities, and transaction lifecycle |
+| `api_cookbook.md` | API examples, request/response samples, and integration guides |
+| `contributor_handbook.md` | Contributor workflow, repository structure, and contribution guidelines |
+| `training_workflow.md` | End-to-end machine learning and HTGNN training pipeline |
+| `testing_guide.md` | Testing procedures, coverage reporting, and debugging guidance |
+
+These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
 ## 🧪 Testing
 
 ```bash
@@ -335,7 +407,133 @@ Run the API server directly:
 ```bash
 python -m src.api.main
 ```
+## 🤝 Contributing
 
+We welcome contributions from the community! Follow the steps below to get started.
+
+### 1. Fork the Repository
+Click the **Fork** button at the top right of this repository to create your own copy.
+
+### 2. Clone Your Fork
+```bash
+git clone https://github.com/your-username/AegisGraph-Sentinel-2.0PP.git
+cd AegisGraph-Sentinel-2.0PP
+```
+
+### 3. Create a Feature Branch
+Always create a new branch — never work directly on `main`.
+```bash
+git checkout -b feature/your-feature-name
+```
+
+### 4. Make Your Changes
+- Follow the existing code style and conventions
+- Keep changes focused and minimal
+- Add comments where necessary
+
+### 5. Commit Your Changes
+Write clear, descriptive commit messages:
+```bash
+git add .
+git commit -m "feat: describe what you changed"
+```
+
+### 6. Push to Your Fork
+```bash
+git push origin feature/your-feature-name
+```
+
+### 7. Submit a Pull Request
+- Go to the original repository on GitHub
+- Click **New Pull Request**
+- Select your branch and describe your changes clearly
+- Reference the related issue (e.g. `Closes #855`)
+
+### 📌 Guidelines
+- Always **comment on an issue** before starting work so maintainers can assign it to you
+- One PR per issue — keep it focused
+- Be respectful and follow the project's Code of Conduct
+
+> 💡 **Tip**: Check `docs/contributor_handbook.md` for detailed contribution guidelines.
+
+---
+## 🛠️ Contributor Environment Setup Guide
+
+This guide helps new contributors set up a local development environment to start contributing to AegisGraph Sentinel 2.0.
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/prernaajaypatil-oss/AegisGraph-Sentinel-2.0PP.git
+cd AegisGraph-Sentinel-2.0PP
+```
+
+### 2. Create a Virtual Environment
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate it — Windows
+venv\Scripts\activate
+
+# Activate it — Mac/Linux
+source venv/bin/activate
+```
+
+### 3. Install Dependencies
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 4. Configure Environment Variables
+```bash
+# Copy the example env file
+cp .env.example .env
+```
+Then open `.env` and set:
+```env
+API_URL=http://localhost:8000
+CORS_ORIGINS=http://localhost:3000,http://localhost:8501
+DEVICE=cpu
+MODEL_PATH=models/htgnn_best.pt
+```
+
+### 5. Run Tests
+```bash
+# Run all unit tests
+pytest tests/
+
+# Run with coverage report
+pytest --cov=src tests/
+```
+
+### 6. Start the API Locally
+```bash
+python -m src.api.main
+```
+API will be live at: `http://localhost:8000`  
+Interactive docs at: `http://localhost:8000/docs`
+
+### 7. (Optional) Train the Model
+```bash
+# Generate synthetic training data
+python -m src.data.data_generator
+
+# Train the HTGNN model
+python -m src.training.trainer
+```
+
+> 💡 **Tip**: If you face any setup issues, check the existing docs in the `docs/` folder or open a GitHub Discussion.
+---
+## 🤝 Thanks to Contributors
+
+Thank you to everyone who has contributed to making this project better 🚀 .
+
+<a href="https://github.com/Puneet04-tech/AegisGraph-Sentinel-2.0/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Puneet04-tech/AegisGraph-Sentinel-2.0" alt="Contributors Graph" />
+</a>
+
+---
 
 ## 📄 License
 

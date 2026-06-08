@@ -112,3 +112,62 @@ class NodeInjection(BaseAttack):
             "edge_type": torch.cat([graph["edge_type"], new_edge_type], dim=0),
             "edge_timestamp": torch.cat([graph["edge_timestamp"], new_edge_timestamp], dim=0),
         }
+        
+class DecoyNodeInjection(BaseAttack):
+    """Inject decoy nodes targeted specifically at high-degree (high-centrality) nodes.
+
+    Budget = fraction of existing nodes to add as decoy nodes.
+    Each new decoy node gets connected to the highest-degree nodes in the graph
+    to simulate structural masking/evasion by fraud rings trying to dilute centrality.
+    """
+    name = "decoy_node_injection"
+    edges_per_new_node: int = 2
+
+    def perturb(self, graph: Graph) -> Graph:
+        num_nodes = graph["x"].shape[0]
+        feature_dim = graph["x"].shape[1]
+        num_node_types = int(graph["node_type"].max().item()) + 1
+        num_edges = graph["edge_index"].shape[1]
+        num_edge_types = (
+            int(graph["edge_type"].max().item()) + 1
+            if num_edges > 0 else 4
+        )
+
+        n_new_nodes = max(1, math.ceil(num_nodes * self.config.budget))
+        n_new_edges = n_new_nodes * self.edges_per_new_node
+
+        # Compute degrees of nodes in the graph
+        degrees = torch.zeros(num_nodes, dtype=torch.float)
+        if num_edges > 0:
+            degrees.scatter_add_(0, graph["edge_index"][0], torch.ones(num_edges))
+            degrees.scatter_add_(0, graph["edge_index"][1], torch.ones(num_edges))
+
+        # Select target nodes with highest degrees
+        _, top_nodes = torch.sort(degrees, descending=True)
+
+        gen = torch.Generator().manual_seed(self.config.seed)
+
+        new_x = torch.randn(n_new_nodes, feature_dim, generator=gen)
+        new_node_type = torch.randint(0, num_node_types, (n_new_nodes,), generator=gen)
+
+        new_node_ids = torch.arange(num_nodes, num_nodes + n_new_nodes)
+        sources = new_node_ids.repeat_interleave(self.edges_per_new_node)
+        
+        # Connect to top 30% of highest degree nodes
+        k_targets = max(self.edges_per_new_node, math.ceil(num_nodes * 0.3))
+        targets_pool = top_nodes[:k_targets]
+        
+        target_indices = torch.randint(0, len(targets_pool), (n_new_edges,), generator=gen)
+        targets = targets_pool[target_indices]
+
+        new_edge_index = torch.stack([sources, targets])
+        new_edge_type = torch.randint(0, num_edge_types, (n_new_edges,), generator=gen)
+        new_edge_timestamp = torch.rand(n_new_edges, generator=gen) * 86400
+
+        return {
+            "x": torch.cat([graph["x"], new_x], dim=0),
+            "edge_index": torch.cat([graph["edge_index"], new_edge_index], dim=1),
+            "node_type": torch.cat([graph["node_type"], new_node_type], dim=0),
+            "edge_type": torch.cat([graph["edge_type"], new_edge_type], dim=0),
+            "edge_timestamp": torch.cat([graph["edge_timestamp"], new_edge_timestamp], dim=0),
+        }

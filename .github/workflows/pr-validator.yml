@@ -8,6 +8,7 @@ on:
 
 jobs:
   gatekeeper:
+    timeout-minutes: 10
     if: |
       github.event_name == 'pull_request' || 
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
@@ -44,23 +45,28 @@ jobs:
         with:
           script: |
             const prNumber = parseInt('${{ steps.pr_info.outputs.number }}', 10);
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              per_page: 100,
-            });
+            let files = [];
+            
+            try {
+              files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.setFailed(`Failed to list files: ${error.message}`);
+              return;
+            }
 
-            const backendOnly = files.length > 0 && files.every((file) => {
+            const backendOnly = files.length === 0 || files.every((file) => {
               return (
                 file.filename.endsWith('.py') ||
                 file.filename.endsWith('.yml') ||
                 file.filename.endsWith('.yaml') ||
                 file.filename === 'requirements.txt' ||
                 file.filename === 'pyproject.toml' ||
-                file.filename === 'setup.cfg' ||
-                file.filename === 'Dockerfile' ||
-                file.filename === '.dockerignore'
+                file.filename === 'setup.cfg'
               );
             });
 
