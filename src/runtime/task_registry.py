@@ -35,6 +35,11 @@ class TaskRegistry:
         self._lock = threading.RLock()
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
+        self._resource_manager = None
+
+    def set_resource_manager(self, resource_manager: Any) -> None:
+        """Attach optional resource governance without changing construction API."""
+        self._resource_manager = resource_manager
 
     def register_task(
         self,
@@ -50,6 +55,16 @@ class TaskRegistry:
             task = asyncio.create_task(task_or_coro, name=name)
         else:
             raise TypeError("register_task expects an asyncio.Task or awaitable")
+
+        if self._resource_manager is not None and not self._resource_manager.register_task(task):
+            if task is not task_or_coro:
+                task.cancel()
+            self._logger.warning(
+                "Background task registration denied by resource manager",
+                event_type="runtime_task_budget_denied",
+                metadata={"task": name, "owner": owner},
+            )
+            raise RuntimeError("runtime task budget exceeded")
 
         info = TaskInfo(
             name=name,
@@ -80,6 +95,8 @@ class TaskRegistry:
         with self._lock:
             info = self._tasks.pop(task, None)
             active_tasks = len(self._tasks)
+        if self._resource_manager is not None:
+            self._resource_manager.unregister_task(task)
         if info is None:
             return
 
@@ -156,6 +173,8 @@ class TaskRegistry:
         """Remove a task from tracking without cancelling it."""
         with self._lock:
             self._tasks.pop(task, None)
+        if self._resource_manager is not None:
+            self._resource_manager.unregister_task(task)
 
     def get_active_tasks(self) -> List[TaskInfo]:
         """Return active task metadata for inspection and metrics."""
@@ -175,6 +194,11 @@ class TaskRegistry:
                     )
                 )
         return active
+
+    def find_tasks_by_name(self, name: str) -> List[asyncio.Task]:
+        """Return a snapshot of active tasks matching the given name."""
+        with self._lock:
+            return [t for t, info in list(self._tasks.items()) if info.name == name]
 
     @property
     def active_count(self) -> int:

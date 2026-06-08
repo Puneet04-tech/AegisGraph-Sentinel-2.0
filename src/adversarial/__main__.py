@@ -14,9 +14,9 @@ import torch
 
 from ..models.risk_model import FraudDetectionModel
 from .base import AttackConfig
-from .attacks import EdgeAddition, EdgeDeletion, NodeInjection, FeaturePerturbation
+from .attacks import EdgeAddition, EdgeDeletion, NodeInjection, FeaturePerturbation, DecoyNodeInjection
 from .evaluator import evaluate_attack
-from .reporting import write_json_report, write_markdown_report
+from .reporting import write_json_report, write_markdown_report, write_robustness_report
 
 
 ATTACK_REGISTRY = {
@@ -24,6 +24,7 @@ ATTACK_REGISTRY = {
     "edge_deletion": EdgeDeletion,
     "node_injection": NodeInjection,
     "feature_perturbation": FeaturePerturbation,
+    "decoy_node_injection": DecoyNodeInjection,
 }
 
 
@@ -111,8 +112,10 @@ def main():
 
     json_path = write_json_report(all_results, args.output_dir / "adversarial_results.json")
     md_path = write_markdown_report(all_results, args.output_dir / "adversarial_results.md")
-    print(f"\nJSON report:     {json_path}")
-    print(f"Markdown report: {md_path}")
+    robustness_path = write_robustness_report(all_results, args.output_dir / "adversarial_robustness_report.md")
+    print(f"\nJSON report:          {json_path}")
+    print(f"Markdown report:      {md_path}")
+    print(f"Robustness report:    {robustness_path}")
 
 
 if __name__ == "__main__":

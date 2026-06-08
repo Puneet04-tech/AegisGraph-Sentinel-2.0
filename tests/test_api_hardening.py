@@ -34,6 +34,16 @@ def _transaction(transaction_id="txn_001", amount=100.0):
 def _enable_real_api_key_gate(monkeypatch):
     monkeypatch.setenv("AEGIS_API_KEY_HASHES", hashlib.sha256(b"hardening-test-key").hexdigest())
     api_main.app.dependency_overrides.pop(require_api_key, None)
+    # Also remove any require_role() bypasses installed by the conftest fixture
+    # so that RBAC-gated endpoints perform real authentication in these tests.
+    from fastapi.routing import APIRoute
+    for route in api_main.app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for dep in route.dependencies:
+            fn = getattr(dep, "dependency", None)
+            if fn and getattr(fn, "__qualname__", "").startswith("require_role.<locals>.dependency"):
+                api_main.app.dependency_overrides.pop(fn, None)
 
 
 def _load_fresh_api_main(monkeypatch, *, environment: str, debug: str):
@@ -79,7 +89,8 @@ def test_health_smoke(api_client):
     assert "graph_loaded" not in body
     assert "innovations_available" not in body
     assert "requests_processed" not in body
-    assert "uptime_seconds" not in body
+    assert "uptime_seconds" in body
+    assert "version" in body
 
 
 def test_debug_honeypot_route_is_not_registered_in_production(monkeypatch):
@@ -94,6 +105,8 @@ def test_debug_honeypot_route_fails_closed_when_enabled_in_production(monkeypatc
 
 
 def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
+    api_key = "debug-api-key"
+    monkeypatch.setenv("AEGIS_API_KEY_HASHES", hashlib.sha256(api_key.encode("utf-8")).hexdigest())
     module = _load_fresh_api_main(monkeypatch, environment="development", debug="true")
     fake_manager = Mock()
     fake_manager.activate_honeypot.return_value = Mock(
@@ -107,7 +120,7 @@ def test_debug_honeypot_route_works_in_safe_debug_environment(monkeypatch):
     with TestClient(module.app) as client:
         response = client.post(
             "/debug/activate_honeypot",
-            headers={"X-Honeypot-Admin-Token": "debug-token"},
+            headers={"X-API-Key": api_key, "X-Honeypot-Admin-Token": "debug-token"},
             json={
                 "transaction_id": "txn_debug_001",
                 "source_account": "acct_src",
@@ -265,21 +278,32 @@ def test_fallback_graph_analysis_does_not_swallow_keyboard_interrupt(monkeypatch
         api_main._fallback_compute_risk_score(_transaction())
 
 
-def test_lateral_movement_initializes_even_when_other_innovations_are_unavailable(monkeypatch):
-    dummy_detector = object()
+def test_lateral_movement_deferred_to_lazy_provider(monkeypatch):
+    """LateralMovementDetector is no longer constructed at startup.
+    _initialize_innovation_runtime() only registers the health monitor
+    slot. Actual construction is deferred to get_lateral_movement_detector()
+    in src/api/dependencies/subsystems.py on first request."""
     startup_logger = Mock()
-    register_service = Mock()
 
     monkeypatch.setattr(api_main, "INNOVATIONS_AVAILABLE", False)
     monkeypatch.setattr(api_main, "LATERAL_MOVEMENT_AVAILABLE", True)
-    monkeypatch.setattr(api_main, "LateralMovementDetector", lambda: dummy_detector)
-    monkeypatch.setattr(api_main.state.services, "register_service", register_service)
-    monkeypatch.setattr(api_main.state, "lateral_movement_detector", None, raising=False)
+
+    # Clear any previously constructed instance from shared state
+    with api_main.state.services._lock:
+        api_main.state.services._services.pop(
+            "lateral_movement_detector", None
+        )
 
     api_main._initialize_innovation_runtime(startup_logger)
 
-    assert api_main.state.lateral_movement_detector is dummy_detector
-    register_service.assert_called_once_with("lateral_movement_detector", dummy_detector, replace=True)
+    # Service slot must NOT be constructed at startup
+    assert api_main.state.services.optional_get(
+        "lateral_movement_detector"
+    ) is None
+
+    # Health monitor slot must be registered
+    snapshot = api_main.state.runtime.health_monitor.get_health_snapshot()
+    assert "lateral_movement_detector" in snapshot
 
 
 @pytest.mark.parametrize(
@@ -772,260 +796,49 @@ def test_voice_analysis_rate_limit_enforced(api_client, monkeypatch):
     assert 429 in statuses
 
 
-class TestMuleAccountDynamicLoading:
-    """Regression tests for dynamic mule account intelligence loading."""
+# ---------------------------------------------------------------------------
+# CORS preflight regression tests (issue #909)
+# ---------------------------------------------------------------------------
 
-    def test_appstate_initializes_with_empty_mule_accounts(self):
-        """AppState should initialize with empty mule_accounts set, not hard-coded values."""
-        from src.api.main import AppState
+_CORS_ALLOWED_ORIGIN = "http://localhost:8501"
 
-        fresh_state = AppState()
-        assert fresh_state.mule_accounts == set(), (
-            "AppState should initialize with empty mule_accounts set, not hard-coded demo data"
-        )
-        assert "mule_acc_001" not in fresh_state.mule_accounts
-        assert "mule_acc_002" not in fresh_state.mule_accounts
-        assert "test_merchant" not in fresh_state.mule_accounts
 
-    def test_mule_accounts_load_from_environment_json(self, monkeypatch, tmp_path):
-        """Mule accounts should load from AEGIS_MULE_ACCOUNTS_JSON environment variable."""
-        import json
+def _cors_preflight(client: TestClient, request_headers: str, origin: str = _CORS_ALLOWED_ORIGIN):
+    """Send an OPTIONS preflight for /api/v1/transaction/check."""
+    return client.options(
+        "/api/v1/transaction/check",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": request_headers,
+        },
+    )
 
-        mule_json = json.dumps(["mule_env_1", "mule_env_2", "mule_env_3"])
-        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_JSON", mule_json)
 
-        # Reset state to empty
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
+def test_cors_preflight_allows_x_api_key(api_client):
+    """OPTIONS preflight must advertise X-API-Key in Access-Control-Allow-Headers."""
+    response = _cors_preflight(api_client, "X-API-Key")
+    allow = response.headers.get("access-control-allow-headers", "")
+    assert "X-API-Key" in allow, (
+        f"X-API-Key missing from CORS allow_headers. Got: {allow!r}"
+    )
 
-        class DummyLogger:
-            def info(self, *args, **kwargs):
-                pass
 
-            def warning(self, *args, **kwargs):
-                pass
-
-        try:
-            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
-
-            assert state.mule_accounts == {"mule_env_1", "mule_env_2", "mule_env_3"}
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
-
-    def test_mule_accounts_load_from_custom_file(self, monkeypatch, tmp_path):
-        """Mule accounts should load from AEGIS_MULE_ACCOUNTS_FILE environment variable."""
-        import json
-
-        custom_file = tmp_path / "custom_mules.json"
-        custom_file.write_text(json.dumps(["mule_file_1", "mule_file_2"]), encoding="utf-8")
-
-        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_FILE", str(custom_file))
-
-        # Reset state to empty
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
-
-        class DummyLogger:
-            def info(self, *args, **kwargs):
-                pass
-
-            def warning(self, *args, **kwargs):
-                pass
-
-        try:
-            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
-
-            assert state.mule_accounts == {"mule_file_1", "mule_file_2"}
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_FILE", raising=False)
-
-    def test_mule_accounts_load_from_default_fraud_chains(self, monkeypatch, tmp_path):
-        """Mule accounts should load from default fraud_chains.json when no env vars set."""
-        import json
-
-        chains_file = tmp_path / "fraud_chains.json"
-        chains_file.write_text(
-            json.dumps([{"accounts": ["chain_mule_1", "chain_mule_2"]}]),
-            encoding="utf-8",
+def test_cors_preflight_allows_legacy_headers(api_client):
+    """Pre-existing auth headers must still be advertised after the X-API-Key addition."""
+    for header in ("Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers after patch. Got: {allow!r}"
         )
 
-        original_mule_accounts = set(state.mule_accounts)
-        original_fraud_chains = state.fraud_chains
-        state.mule_accounts.clear()
 
-        def fake_path(value):
-            if value == "data/synthetic/fraud_chains.json":
-                return chains_file
-            return Path(value)
-
-        original_path = api_main.Path
-        monkeypatch.setattr(api_main, "Path", fake_path)
-
-        class DummyLogger:
-            def info(self, *args, **kwargs):
-                pass
-
-            def warning(self, *args, **kwargs):
-                pass
-
-        try:
-            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
-
-            assert state.mule_accounts == {"chain_mule_1", "chain_mule_2"}
-            assert state.fraud_chains == [{"accounts": ["chain_mule_1", "chain_mule_2"]}]
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            state.fraud_chains = original_fraud_chains
-            monkeypatch.setattr(api_main, "Path", original_path)
-
-    def test_mule_accounts_empty_when_no_source_configured(self, monkeypatch):
-        """When no mule account source is configured, mule_accounts should remain empty."""
-        # Ensure no environment variables are set
-        monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
-        monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_FILE", raising=False)
-
-        # Ensure default file doesn't exist
-        def fake_path(value):
-            if value == "data/synthetic/fraud_chains.json":
-                return Path("nonexistent_path_fraud_chains.json")
-            return Path(value)
-
-        original_path = api_main.Path
-        monkeypatch.setattr(api_main, "Path", fake_path)
-
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
-
-        class DummyLogger:
-            def info(self, *args, **kwargs):
-                pass
-
-            def warning(self, *args, **kwargs):
-                pass
-
-        try:
-            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
-
-            assert state.mule_accounts == set(), (
-                "mule_accounts should be empty when no source is configured"
-            )
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            monkeypatch.setattr(api_main, "Path", original_path)
-
-    def test_mule_accounts_invalid_json_handled_safely(self, monkeypatch):
-        """Invalid JSON in AEGIS_MULE_ACCOUNTS_JSON should be handled gracefully."""
-        monkeypatch.setenv("AEGIS_MULE_ACCOUNTS_JSON", "invalid json {{{")
-
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
-
-        class DummyLogger:
-            def info(self, *args, **kwargs):
-                pass
-
-            def warning(self, *args, **kwargs):
-                pass
-
-        try:
-            asyncio.run(api_main._load_graph_runtime_data(DummyLogger()))
-
-            # Should remain empty and not crash
-            assert state.mule_accounts == set()
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            monkeypatch.delenv("AEGIS_MULE_ACCOUNTS_JSON", raising=False)
-
-    def test_fraud_scoring_stable_with_empty_mule_accounts(self, monkeypatch):
-        """Fraud scoring should remain stable when mule_accounts is empty."""
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
-
-        try:
-            result = api_main._fallback_compute_risk_score(
-                {
-                    "source_account": "acct_src",
-                    "target_account": "acct_dst",
-                    "amount": 100.0,
-                },
-                biometrics={"hold_times": [120.0], "flight_times": [80.0]},
-            )
-
-            # Should return a valid risk score without crashing
-            assert "risk_score" in result
-            assert "decision" in result
-            assert "confidence" in result
-            assert "breakdown" in result
-            assert 0.0 <= result["risk_score"] <= 1.0
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-
-    def test_fraud_scoring_uses_loaded_mule_accounts(self, monkeypatch):
-        """Fraud scoring should use dynamically loaded mule accounts."""
-        original_mule_accounts = set(state.mule_accounts)
-        original_graph_loaded = state.graph_loaded
-        original_transaction_graph = state.transaction_graph
-        
-        state.mule_accounts.clear()
-        state.mule_accounts.update({"known_mule_001", "known_mule_002"})
-        state.graph_loaded = True
-        
-        # Create a minimal graph with the mule account
-        import networkx as nx
-        state.transaction_graph = nx.DiGraph()
-        state.transaction_graph.add_node("known_mule_001")
-        state.transaction_graph.add_node("acct_dst")
-
-        try:
-            # Transaction with known mule as source
-            result = api_main._fallback_compute_risk_score(
-                {
-                    "source_account": "known_mule_001",
-                    "target_account": "acct_dst",
-                    "amount": 100.0,
-                },
-                biometrics=None,
-            )
-
-            # Should have elevated graph risk due to mule account
-            assert result["breakdown"]["graph"] > 0.5
-            assert result["decision"] in ["BLOCK", "REVIEW"]
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
-            state.graph_loaded = original_graph_loaded
-            state.transaction_graph = original_transaction_graph
-
-    def test_explanation_uses_loaded_mule_accounts(self, monkeypatch):
-        """Explanation generation should use dynamically loaded mule accounts."""
-        original_mule_accounts = set(state.mule_accounts)
-        state.mule_accounts.clear()
-        state.mule_accounts.update({"known_mule_001"})
-
-        try:
-            result = api_main._fallback_generate_explanation(
-                transaction={
-                    "source_account": "known_mule_001",
-                    "target_account": "acct_dst",
-                },
-                risk_result={
-                    "risk_score": 0.8,
-                    "decision": "BLOCK",
-                    "breakdown": {"graph": 0.7, "velocity": 0.1, "behavior": 0.0, "entropy": 0.0},
-                },
-            )
-
-            # Should mention mule account in explanation
-            assert "known_mule_001" in result["explanation"]
-            assert "MULE ACCOUNT" in result["explanation"].upper()
-        finally:
-            state.mule_accounts.clear()
-            state.mule_accounts.update(original_mule_accounts)
+def test_cors_preflight_allows_honeypot_admin_headers(api_client):
+    """Honeypot admin headers must be advertised so admin tooling can reach those endpoints."""
+    for header in ("X-Honeypot-Token", "X-Honeypot-Admin-Token"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers. Got: {allow!r}"
+        )

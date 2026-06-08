@@ -43,8 +43,8 @@ def validate_runtime_settings(
     missing_required_env = []
     if not settings.raw_environment.api_url:
         missing_required_env.append("API_URL")
-    if not settings.raw_environment.aegis_allowed_origins:
-        missing_required_env.append("AEGIS_ALLOWED_ORIGINS")
+    if not (settings.raw_environment.cors_origins or settings.raw_environment.aegis_allowed_origins):
+        missing_required_env.append("CORS_ORIGINS (or legacy AEGIS_ALLOWED_ORIGINS)")
 
     if missing_required_env:
         message = f"Missing environment variables: {', '.join(missing_required_env)}"
@@ -59,10 +59,10 @@ def validate_runtime_settings(
                 f"Graph artifact must use {settings.graph.allowed_suffix}: {settings.graph.graph_path}"
             )
 
-    if settings.graph.graph_path != Path(""):
+    if settings.graph.graph_path != Path("") and settings.raw_environment.aegis_graph_path:
         graph_exists = settings.graph.graph_path.exists()
-        if settings.raw_environment.aegis_graph_path and not graph_exists:
-            message = f"Configured graph path does not exist: {settings.graph.graph_path}"
+        if not graph_exists:
+            message = f"Graph artifact does not exist: {settings.graph.graph_path}"
             if strict_mode:
                 report.errors.append(message)
             else:

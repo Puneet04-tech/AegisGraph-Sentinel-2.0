@@ -38,7 +38,7 @@ import time
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Tuple
+from typing import List, Dict, Optional
 from fastapi import HTTPException
 from datetime import datetime
 from datetime import timezone
@@ -53,6 +53,8 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -163,8 +165,94 @@ class BlockchainNode:
         except TypeError as e:
             raise HTTPException(status_code=422, detail=f"Cryptographic hash computation failed: {e}")
     
+    # Required fields for every blockchain transaction record
+    _REQUIRED_FIELDS: tuple = (
+        "evidence_id",
+        "transaction_hash",
+        "risk_score",
+        "decision",
+        "confidence",
+    )
+
+    # Allowed decision values (must match FraudDecision enum in API layer)
+    _VALID_DECISIONS: frozenset = frozenset({"ALLOW", "REVIEW", "BLOCK"})
+
+    def _validate_transaction(self, transaction: Dict) -> None:
+        """Validate a transaction record before it enters the pending pool.
+
+        Raises HTTPException(422) on any validation failure so callers
+        receive a structured error rather than a silent no-op or a later
+        crash inside create_block().
+
+        Args:
+            transaction: Raw transaction dict to validate.
+        """
+        # 1. Presence check
+        missing = [f for f in self._REQUIRED_FIELDS if f not in transaction]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Transaction missing required fields: {', '.join(missing)}",
+            )
+
+        # 2. risk_score must be a float in [0.0, 1.0]
+        risk = transaction["risk_score"]
+        if not isinstance(risk, (int, float)) or not (0.0 <= float(risk) <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"risk_score must be a numeric value in [0.0, 1.0]; "
+                    f"got {risk!r}"
+                ),
+            )
+
+        # 3. confidence must be a float in [0.0, 1.0]
+        conf = transaction["confidence"]
+        if not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"confidence must be a numeric value in [0.0, 1.0]; "
+                    f"got {conf!r}"
+                ),
+            )
+
+        # 4. decision must be one of the allowed values
+        decision = transaction.get("decision", "")
+        if str(decision).upper() not in self._VALID_DECISIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"decision must be one of {sorted(self._VALID_DECISIONS)}; "
+                    f"got {decision!r}"
+                ),
+            )
+
+        # 5. evidence_id must be a non-empty string
+        eid = transaction.get("evidence_id", "")
+        if not isinstance(eid, str) or not eid.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="evidence_id must be a non-empty string",
+            )
+
+        # 6. transaction_hash must look like a hex digest (non-empty string)
+        tx_hash_val = transaction.get("transaction_hash", "")
+        if not isinstance(tx_hash_val, str) or not tx_hash_val.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="transaction_hash must be a non-empty string",
+            )
+
     def add_transaction(self, transaction: Dict) -> str:
-        """Add transaction to pending pool"""
+        """Validate and add a transaction to the pending pool.
+
+        Validates all required fields and value constraints before
+        computing the content hash and appending to the pending list.
+        Raises HTTPException(422) if validation fails so callers are
+        informed instead of silently receiving a corrupt chain entry.
+        """
+        self._validate_transaction(transaction)
         tx_hash = hashlib.sha256(json.dumps(transaction, sort_keys=True).encode()).hexdigest()
         transaction['tx_hash'] = tx_hash
         transaction['timestamp'] = datetime.now(timezone.utc).isoformat()
@@ -1235,20 +1323,18 @@ class BlockchainEvidenceManager:
         """
         try:
             # Phase 1: Input Validation
-            if not transaction_id or not isinstance(transaction_id, str):
-                raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
-            
-            if not data or not isinstance(data, dict):
-                raise HTTPException(status_code=422, detail="data must be non-empty dict")
-            
+            if transaction_id is None or not isinstance(transaction_id, str) or not transaction_id.strip():
+                raise ValueError("transaction_id must be non-empty string")
+
+            if data is None or not isinstance(data, dict) or not data:
+                raise ValueError("data must be non-empty dict")
+
             # Validate required fields in data
             required_fields = ['risk_score', 'decision', 'amount']
             missing_fields = [f for f in required_fields if f not in data]
             if missing_fields:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"data missing required fields: {', '.join(missing_fields)}"
-                )
+                raise ValueError(f"data missing required fields: {', '.join(missing_fields)}")
+
             
             # Phase 2: Store in journal
             try:
@@ -1342,22 +1428,19 @@ class BlockchainEvidenceManager:
         Raises:
             ValueError: If transaction_id is invalid
         """
-        if not transaction_id or not isinstance(transaction_id, str):
-            raise HTTPException(status_code=422, detail="transaction_id must be non-empty string")
+        if transaction_id is None or not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError("transaction_id must be non-empty string")
+
 
         try:
             transaction_hash = hashlib.sha256(transaction_id.encode()).hexdigest()
-        except Exception:
-            transaction_hash = hashlib.sha256(transaction_id.encode('utf-8', errors='ignore')).hexdigest()
+            chain_data = {
+                'transaction_id': transaction_id,
+                'transaction_hash': transaction_hash,
+                'chain': [],
+                'verified': False,
+            }
 
-        chain_data = {
-            'transaction_id': transaction_id,
-            'transaction_hash': transaction_hash,
-            'chain': [],
-            'verified': False,
-        }
-
-        try:
             block_ref = self._transaction_block_index.get(transaction_hash)
             if block_ref is None:
                 chain_data['status'] = 'not_found'
@@ -1516,7 +1599,13 @@ class BlockchainEvidenceManager:
         """Get blockchain statistics"""
         # Prefer Redis count (authoritative across workers) over in-process counter
         if self._redis.available:
-            self.stats['total_sealed'] = self._redis.total_sealed()
+            try:
+                self.stats['total_sealed'] = self._redis.total_sealed()
+            except Exception as exc:
+                logger.warning(
+                    "Redis total_sealed() failed, using in-process counter: %s",
+                    exc,
+                )
         now = time.time()
         if (
             self._chain_integrity_cache is None
@@ -1528,8 +1617,7 @@ class BlockchainEvidenceManager:
                 )
                 self._chain_integrity_cache_checked_at = now
             except Exception as exc:
-                logging.warning("Chain integrity refresh failed: %s", exc)
-                self._chain_integrity_cache_checked_at = now
+                logger.warning("Chain integrity refresh failed: %s", exc)
                 self._chain_integrity_cache_checked_at = now
 
         self.stats['chain_verified'] = bool(self._chain_integrity_cache)

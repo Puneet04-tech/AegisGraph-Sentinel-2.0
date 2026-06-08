@@ -97,6 +97,8 @@ class ProductionRiskScorer:
         self.model_version = model_version
         self.enable_heuristic_fallback = enable_heuristic_fallback
         
+        self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
+
         logger.info(
             f"Initialized ProductionRiskScorer "
             f"(model={model_version}, device={device})"
@@ -251,18 +253,37 @@ class ProductionRiskScorer:
         # Per-batch cache keyed by source_account to avoid re-extracting the same neighborhood
         subgraph_cache = _ThreadSafeCache()
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
-                future_to_index = {
-                    executor.submit(self.score_transaction, txn, reference_time, 2, subgraph_cache): idx
-                    for idx, txn in transaction_batch
-                }
+        executor = self._executor
+        for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
+            future_to_index = {
+                executor.submit(self.score_transaction, txn, reference_time, 2, subgraph_cache): idx
+                for idx, txn in transaction_batch
+            }
 
-                for future in as_completed(future_to_index):
-                    idx = future_to_index.pop(future)
-                    scores[idx] = future.result()
+            for future in as_completed(future_to_index):
+                idx = future_to_index.pop(future)
+                scores[idx] = future.result()
 
         return [score for score in scores if score is not None]
+
+    def close(self) -> None:
+        """Shut down the shared executor, draining pending work."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception as exc:
+            logger.error("ProductionRiskScorer cleanup failed: %s", exc)
 
     def _iter_transaction_batches(
         self,

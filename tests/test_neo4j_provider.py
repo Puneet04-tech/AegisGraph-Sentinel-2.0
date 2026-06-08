@@ -44,7 +44,7 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertTrue(provider.enabled)
             self.assertTrue(provider.is_active)
             mock_neo4j_lib.GraphDatabase.driver.assert_called_once_with(
-                self.mock_uri,
+                "bolt+ssc://localhost:7687",
                 auth=(self.mock_user, self.mock_password),
                 max_connection_lifetime=3600,
                 keep_alive=True,
@@ -145,12 +145,12 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             provider = Neo4jGraphProvider(enabled=True)
             
             # Seed cache
-            provider._subgraph_cache["ACC1"] = (time.time(), nx.DiGraph())
+            provider._subgraph_cache[provider._cache_key("ACC1", 2)] = (time.time(), nx.DiGraph())
             
             provider.add_transaction("ACC1", "ACC2", 500.0, 12345.6)
             
             # Cache for involved nodes must be cleared
-            self.assertNotIn("ACC1", provider._subgraph_cache)
+            self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
 
             # Query verification
             mock_session.run.assert_called_once()
@@ -257,6 +257,86 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             provider.get_approx_subgraph("ACC1", max_hops=2)
             provider.get_approx_subgraph("ACC3", max_hops=2)
 
-            self.assertEqual(list(provider._subgraph_cache.keys()), ["ACC3"])
-            self.assertNotIn("ACC1", provider._subgraph_cache)
+            self.assertEqual(list(provider._subgraph_cache.keys()), [provider._cache_key("ACC3", 2)])
+            self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
             self.assertEqual(mock_session.run.call_count, 2)
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_contains_checks_node_existence(self, mock_neo4j_lib) -> None:
+        """Verify that __contains__ calls Neo4j check and returns boolean."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+        mock_session.run.return_value = mock_result
+        
+        # Test case: node exists
+        mock_result.single.return_value = {"exists": True}
+        
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True)
+            self.assertTrue("ACC1" in provider)
+            mock_session.run.assert_called_with(
+                "MATCH (n:Account {id: $account_id}) RETURN count(n) > 0 AS exists",
+                account_id="ACC1"
+            )
+
+            # Test case: node does not exist
+            mock_result.single.return_value = {"exists": False}
+            self.assertFalse("ACC2" in provider)
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_compute_blast_radius_execution(self, mock_neo4j_lib) -> None:
+        """Verify compute_blast_radius runs Cypher APOC query and shapes BlastRadiusReport."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result_exists = MagicMock()
+        mock_result_blast = MagicMock()
+        
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+        
+        # Node exists check query runs first, then APOC query
+        mock_result_exists.single.return_value = {"exists": True}
+        
+        mock_records = [
+            {"node_id": "ACC2", "depth": 1, "score": 0.85},   # CRITICAL
+            {"node_id": "ACC3", "depth": 2, "score": 0.40},   # HIGH
+            {"node_id": "ACC4", "depth": 2, "score": 0.15},   # SUSPICIOUS
+            {"node_id": "ACC5", "depth": 3, "score": 0.05},   # Under threshold, ignored
+        ]
+        mock_result_blast.__iter__.return_value = mock_records
+        mock_session.run.side_effect = [mock_result_exists, mock_result_blast]
+
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True)
+            report = provider.compute_blast_radius("ACC1", max_depth=3)
+            
+            # Assertions on returned report
+            from src.features.blast_radius import BlastRadiusReport
+            self.assertIsInstance(report, BlastRadiusReport)
+            self.assertEqual(report.source_node, "ACC1")
+            self.assertEqual(report.max_depth, 3)
+            self.assertEqual(report.total_nodes_evaluated, 3) # 3 node results passed threshold
+            
+            # Validate tiers
+            self.assertEqual(len(report.critical), 1)
+            self.assertEqual(report.critical[0].node_id, "ACC2")
+            self.assertEqual(report.critical[0].contagion_score, 0.85)
+            self.assertEqual(report.critical[0].risk_tier, "CRITICAL")
+            self.assertEqual(report.critical[0].depth, 1)
+
+            self.assertEqual(len(report.high), 1)
+            self.assertEqual(report.high[0].node_id, "ACC3")
+
+            self.assertEqual(len(report.suspicious), 1)
+            self.assertEqual(report.suspicious[0].node_id, "ACC4")
+
+            # Check that missing node raises ValueError
+            mock_session.run.reset_mock()
+            mock_result_exists.single.return_value = {"exists": False}
+            mock_session.run.side_effect = [mock_result_exists]
+            
+            with self.assertRaisesRegex(ValueError, "not found in graph"):
+                provider.compute_blast_radius("ACC_MISSING", max_depth=3)

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 import torch
 import numpy as np
 import weakref
+from threading import Lock
 from typing import Dict, Optional, Tuple, List
 import networkx as nx  #models
 
@@ -367,14 +368,17 @@ class RiskScorer:
 def compute_risk_score(
     transaction: dict,
     biometrics: Optional[dict] = None,
+    graph_data: Optional[dict] = None,
     *,
-    graph_loaded: bool,
-    transaction_graph,
-    mule_accounts: set[str],
-    centrality_baseline: dict[str, list[float]],
-    centrality_window_size: int,
-    account_profiles: dict[str, dict],
-    config: dict,
+    graph_loaded: Optional[bool] = None,
+    transaction_graph=None,
+    mule_accounts: Optional[set[str]] = None,
+    centrality_baseline: Optional[dict[str, list[float]]] = None,
+    centrality_window_size: Optional[int] = None,
+    account_profiles: Optional[dict[str, dict]] = None,
+    config: Optional[dict] = None,
+    subgraph_cache: Optional[Dict] = None,
+    subgraph_cache_lock: Optional[Lock] = None,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
@@ -393,6 +397,40 @@ def compute_risk_score(
     Returns:
         Risk score dictionary with mule detection
     """
+    if graph_data is None:
+        graph_data = {}
+
+    if graph_loaded is None:
+        try:
+            from src.api.main import state as api_state
+            graph_loaded = getattr(api_state, "graph_loaded", False)
+            transaction_graph = transaction_graph or getattr(api_state, "transaction_graph", None)
+            mule_accounts = mule_accounts if mule_accounts is not None else getattr(api_state, "mule_accounts", set())
+            centrality_baseline = (
+                centrality_baseline
+                if centrality_baseline is not None
+                else getattr(api_state, "centrality_baseline", {})
+            )
+            centrality_window_size = (
+                centrality_window_size
+                if centrality_window_size is not None
+                else getattr(api_state, "centrality_window_size", 10)
+            )
+            account_profiles = (
+                account_profiles
+                if account_profiles is not None
+                else getattr(api_state, "account_profiles", {})
+            )
+            config = config if config is not None else getattr(api_state, "config", {})
+        except Exception:
+            graph_loaded = False
+
+    mule_accounts = mule_accounts or set()
+    centrality_baseline = centrality_baseline if centrality_baseline is not None else {}
+    centrality_window_size = centrality_window_size or 10
+    account_profiles = account_profiles or {}
+    config = config or {}
+
     risk_score = 0.0
     breakdown = {
         'graph': 0.0,
@@ -436,11 +474,25 @@ def compute_risk_score(
         # them a second time, doubling graph_risk for every mule transaction
         # and masking all topology signals (fix for Issue #133).
 
-        # Check graph topology patterns
+        # Check graph topology patterns.
+        # When a batch-level subgraph_cache dict is provided (with an
+        # accompanying lock), reuse the extracted subgraph for any
+        # additional transactions from the same source account within
+        # the same batch, avoiding redundant graph traversals.
         if hasattr(transaction_graph, "is_active") and transaction_graph.is_active:
-            G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+            if subgraph_cache is not None and source_account is not None:
+                lock = subgraph_cache_lock or Lock()
+                with lock:
+                    G = subgraph_cache.get(source_account)
+                if G is None:
+                    G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+                    with lock:
+                        subgraph_cache[source_account] = G
+            else:
+                G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
             G = transaction_graph
+        graph_view = G
         
         if source_account in G.nodes:
             # Analyze source account patterns
@@ -643,28 +695,22 @@ def compute_risk_score(
     entropy_risk = min(entropy_risk, 1.0)
     breakdown['entropy'] = entropy_risk
 
-    try:
-        threshold_data = load_thresholds('config/thresholds.yaml', validate=True)
-        rs = threshold_data.get('risk_scoring', {})
-        thresholds = {
-            'allow': rs.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"]),
-            'review': rs.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"]),
-            'block': rs.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"]),
-        }
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        thresholds = config.get('risk_scoring', {}).get('thresholds', {
-            'allow': config_defaults.DEFAULT_RISK_THRESHOLDS["allow"],
-            'review': config_defaults.DEFAULT_RISK_THRESHOLDS["review"],
-            'block': config_defaults.DEFAULT_RISK_THRESHOLDS["block"],
-        })
-
-    component_weights = {
-        'graph': config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"],
-        'velocity': config_defaults.DEFAULT_COMPONENT_WEIGHTS["velocity"],
-        'behavior': config_defaults.DEFAULT_COMPONENT_WEIGHTS["behavior"],
-        'entropy': config_defaults.DEFAULT_COMPONENT_WEIGHTS["entropy"],
+    rs = config.get('risk_scoring', {})
+    caller_thresholds = rs.get('thresholds', {})
+    thresholds = {
+        'allow': caller_thresholds.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"]),
+        'review': caller_thresholds.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"]),
+        'block': caller_thresholds.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"]),
     }
+
+    caller_weights = rs.get('weights', {})
+    component_weights = {
+        'graph': caller_weights.get('graph', config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"]),
+        'velocity': caller_weights.get('velocity', config_defaults.DEFAULT_COMPONENT_WEIGHTS["velocity"]),
+        'behavior': caller_weights.get('behavior', config_defaults.DEFAULT_COMPONENT_WEIGHTS["behavior"]),
+        'entropy': caller_weights.get('entropy', config_defaults.DEFAULT_COMPONENT_WEIGHTS["entropy"]),
+    }
+
     central_thresholds = ThresholdConfig(thresholds=thresholds)
     central_scorer = CentralRiskScorer(
         threshold_config=central_thresholds,

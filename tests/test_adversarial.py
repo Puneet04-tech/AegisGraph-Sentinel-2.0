@@ -8,13 +8,17 @@ Each attack class is tested for:
     - Edge cases (zero budget, max budget) behave correctly
 """
 from __future__ import annotations
+import os
 import pytest
+
+if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
 
 # Handle optional torch dependency
 try:
     import torch
     from src.adversarial.base import AttackConfig
-    from src.adversarial.attacks import EdgeAddition, EdgeDeletion, FeaturePerturbation, NodeInjection
+    from src.adversarial.attacks import EdgeAddition, EdgeDeletion, FeaturePerturbation, NodeInjection, DecoyNodeInjection
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -161,4 +165,38 @@ if TORCH_AVAILABLE:
             graph = _build_graph()
             p1 = NodeInjection(AttackConfig(budget=0.10, seed=42)).perturb(graph)
             p2 = NodeInjection(AttackConfig(budget=0.10, seed=42)).perturb(graph)
+            assert _graphs_equal(p1, p2)
+
+    class TestDecoyNodeInjection:
+        def test_adds_nodes(self):
+            graph = _build_graph(num_nodes=30)
+            attack = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42))
+            perturbed = attack.perturb(graph)
+            assert perturbed["x"].shape[0] > graph["x"].shape[0]
+            assert perturbed["node_type"].shape[0] == perturbed["x"].shape[0]
+
+        def test_adds_edges(self):
+            graph = _build_graph()
+            attack = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42))
+            perturbed = attack.perturb(graph)
+            assert perturbed["edge_index"].shape[1] > graph["edge_index"].shape[1]
+
+        def test_preserves_existing_nodes(self):
+            graph = _build_graph()
+            original_n = graph["x"].shape[0]
+            attack = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42))
+            perturbed = attack.perturb(graph)
+            assert torch.equal(perturbed["x"][:original_n], graph["x"])
+
+        def test_does_not_mutate_input(self):
+            graph = _build_graph()
+            original_n = graph["x"].shape[0]
+            attack = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42))
+            _ = attack.perturb(graph)
+            assert graph["x"].shape[0] == original_n
+
+        def test_reproducible_with_same_seed(self):
+            graph = _build_graph()
+            p1 = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42)).perturb(graph)
+            p2 = DecoyNodeInjection(AttackConfig(budget=0.10, seed=42)).perturb(graph)
             assert _graphs_equal(p1, p2)

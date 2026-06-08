@@ -182,7 +182,7 @@ def test_development_validation_warns_for_missing_required_env(tmp_path):
     assert report.ok
     assert report.warnings
     assert "API_URL" in report.warnings[0]
-    assert "AEGIS_ALLOWED_ORIGINS" in report.warnings[0]
+    assert "CORS_ORIGINS" in report.warnings[0]
 
 
 def test_production_validation_raises_for_missing_required_env(tmp_path):
@@ -203,7 +203,7 @@ def test_production_validation_accepts_required_env(tmp_path):
         environ={
             "AEGIS_ENV": "production",
             "API_URL": "https://api.example.test",
-            "AEGIS_ALLOWED_ORIGINS": "https://app.example.test",
+                "CORS_ORIGINS": "https://app.example.test",
         },
     )
 
@@ -212,3 +212,42 @@ def test_production_validation_accepts_required_env(tmp_path):
     assert report.ok
     assert report.warnings == []
     assert settings.to_runtime_dict()["api"]["api_url"] == "https://api.example.test"
+
+
+import pytest
+from pydantic import ValidationError
+
+from src.config.schemas import GraphRuntimeSettings
+
+
+def test_k_hop_neighbors_accepts_positive_integer():
+    settings = GraphRuntimeSettings(k_hop_neighbors=3)
+    assert settings.k_hop_neighbors == 3
+
+
+def test_k_hop_neighbors_rejects_zero():
+    with pytest.raises(ValidationError):
+        GraphRuntimeSettings(k_hop_neighbors=0)
+
+
+def test_k_hop_neighbors_rejects_negative_value():
+    with pytest.raises(ValidationError):
+        GraphRuntimeSettings(k_hop_neighbors=-5)
+
+
+def test_cors_origins_env_var_populates_allowed_origins(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "test",
+            "API_URL": "https://api.example.test",
+            "CORS_ORIGINS": "https://app.example.test,https://admin.example.test",
+        },
+    )
+
+    assert settings.api.allowed_origins == [
+        "https://app.example.test",
+        "https://admin.example.test",
+    ]
+
