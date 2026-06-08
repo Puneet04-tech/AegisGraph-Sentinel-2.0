@@ -54,6 +54,8 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class BlockchainEvidence:
@@ -1597,7 +1599,13 @@ class BlockchainEvidenceManager:
         """Get blockchain statistics"""
         # Prefer Redis count (authoritative across workers) over in-process counter
         if self._redis.available:
-            self.stats['total_sealed'] = self._redis.total_sealed()
+            try:
+                self.stats['total_sealed'] = self._redis.total_sealed()
+            except Exception as exc:
+                logger.warning(
+                    "Redis total_sealed() failed, using in-process counter: %s",
+                    exc,
+                )
         now = time.time()
         if (
             self._chain_integrity_cache is None
@@ -1609,8 +1617,7 @@ class BlockchainEvidenceManager:
                 )
                 self._chain_integrity_cache_checked_at = now
             except Exception as exc:
-                logging.warning("Chain integrity refresh failed: %s", exc)
-                self._chain_integrity_cache_checked_at = now
+                logger.warning("Chain integrity refresh failed: %s", exc)
                 self._chain_integrity_cache_checked_at = now
 
         self.stats['chain_verified'] = bool(self._chain_integrity_cache)

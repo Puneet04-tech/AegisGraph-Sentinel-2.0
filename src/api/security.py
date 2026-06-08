@@ -29,7 +29,8 @@ import os
 from enum import Enum
 from typing import Annotated, List, Optional
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 
 
 class Role(str, Enum):
@@ -101,8 +102,10 @@ def _get_key_role(api_key: str) -> Optional[Role]:
     return None
 
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
 def require_api_key(
-    x_api_key: Annotated[Optional[str], Header(alias="X-API-Key")] = None,
+    x_api_key: str = Security(api_key_header),
 ) -> None:
     """FastAPI dependency that gates a route behind a generic API key check.
 
@@ -157,7 +160,7 @@ def require_role(*allowed_roles: Role):
         HTTPException 403: Insufficient permissions for the requested role.
     """
     def dependency(
-        x_api_key: Annotated[Optional[str], Header(alias="X-API-Key")] = None,
+        x_api_key: str = Security(api_key_header),
     ) -> Role:
         if not _is_configured():
             raise HTTPException(

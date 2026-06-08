@@ -695,28 +695,22 @@ def compute_risk_score(
     entropy_risk = min(entropy_risk, 1.0)
     breakdown['entropy'] = entropy_risk
 
-    try:
-        threshold_data = load_thresholds('config/thresholds.yaml', validate=True)
-        rs = threshold_data.get('risk_scoring', {})
-        thresholds = {
-            'allow': rs.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"]),
-            'review': rs.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"]),
-            'block': rs.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"]),
-        }
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        thresholds = config.get('risk_scoring', {}).get('thresholds', {
-            'allow': config_defaults.DEFAULT_RISK_THRESHOLDS["allow"],
-            'review': config_defaults.DEFAULT_RISK_THRESHOLDS["review"],
-            'block': config_defaults.DEFAULT_RISK_THRESHOLDS["block"],
-        })
-
-    component_weights = {
-        'graph': config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"],
-        'velocity': config_defaults.DEFAULT_COMPONENT_WEIGHTS["velocity"],
-        'behavior': config_defaults.DEFAULT_COMPONENT_WEIGHTS["behavior"],
-        'entropy': config_defaults.DEFAULT_COMPONENT_WEIGHTS["entropy"],
+    rs = config.get('risk_scoring', {})
+    caller_thresholds = rs.get('thresholds', {})
+    thresholds = {
+        'allow': caller_thresholds.get('allow', config_defaults.DEFAULT_RISK_THRESHOLDS["allow"]),
+        'review': caller_thresholds.get('review', config_defaults.DEFAULT_RISK_THRESHOLDS["review"]),
+        'block': caller_thresholds.get('block', config_defaults.DEFAULT_RISK_THRESHOLDS["block"]),
     }
+
+    caller_weights = rs.get('weights', {})
+    component_weights = {
+        'graph': caller_weights.get('graph', config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"]),
+        'velocity': caller_weights.get('velocity', config_defaults.DEFAULT_COMPONENT_WEIGHTS["velocity"]),
+        'behavior': caller_weights.get('behavior', config_defaults.DEFAULT_COMPONENT_WEIGHTS["behavior"]),
+        'entropy': caller_weights.get('entropy', config_defaults.DEFAULT_COMPONENT_WEIGHTS["entropy"]),
+    }
+
     central_thresholds = ThresholdConfig(thresholds=thresholds)
     central_scorer = CentralRiskScorer(
         threshold_config=central_thresholds,

@@ -59,10 +59,10 @@ def validate_runtime_settings(
                 f"Graph artifact must use {settings.graph.allowed_suffix}: {settings.graph.graph_path}"
             )
 
-    if settings.graph.graph_path != Path(""):
+    if settings.graph.graph_path != Path("") and settings.raw_environment.aegis_graph_path:
         graph_exists = settings.graph.graph_path.exists()
-        if settings.raw_environment.aegis_graph_path and not graph_exists:
-            message = f"Configured graph path does not exist: {settings.graph.graph_path}"
+        if not graph_exists:
+            message = f"Graph artifact does not exist: {settings.graph.graph_path}"
             if strict_mode:
                 report.errors.append(message)
             else:

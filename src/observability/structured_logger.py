@@ -31,16 +31,24 @@ def get_correlation_id() -> Optional[str]:
 def set_request_context(
     request_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
-) -> None:
+) -> dict:
+    tokens = {}
     if request_id is not None:
-        _request_id_var.set(request_id)
+        tokens['request_id'] = _request_id_var.set(request_id)
     if correlation_id is not None:
-        _correlation_id_var.set(correlation_id)
+        tokens['correlation_id'] = _correlation_id_var.set(correlation_id)
+    return tokens
 
 
-def clear_request_context() -> None:
-    _request_id_var.set(None)
-    _correlation_id_var.set(None)
+def clear_request_context(tokens: Optional[dict] = None) -> None:
+    if tokens:
+        if 'request_id' in tokens:
+            _request_id_var.reset(tokens['request_id'])
+        if 'correlation_id' in tokens:
+            _correlation_id_var.reset(tokens['correlation_id'])
+    else:
+        _request_id_var.set(None)
+        _correlation_id_var.set(None)
 
 
 class StructuredLogger:
