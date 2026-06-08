@@ -29,6 +29,8 @@
 - [Documentation](#-documentation)
 - [Testing](#-testing)
 - [Deployment](#-deployment)
+- [Contributing](#-contributing)
+- [Contributor Environment Setup Guide](#-contributor-environment-setup-guide)
 - [License](#-license)
 - [Contact](#-contact)
 
@@ -405,9 +407,124 @@ Run the API server directly:
 ```bash
 python -m src.api.main
 ```
+## 🤝 Contributing
+
+We welcome contributions from the community! Follow the steps below to get started.
+
+### 1. Fork the Repository
+Click the **Fork** button at the top right of this repository to create your own copy.
+
+### 2. Clone Your Fork
+```bash
+git clone https://github.com/your-username/AegisGraph-Sentinel-2.0PP.git
+cd AegisGraph-Sentinel-2.0PP
+```
+
+### 3. Create a Feature Branch
+Always create a new branch — never work directly on `main`.
+```bash
+git checkout -b feature/your-feature-name
+```
+
+### 4. Make Your Changes
+- Follow the existing code style and conventions
+- Keep changes focused and minimal
+- Add comments where necessary
+
+### 5. Commit Your Changes
+Write clear, descriptive commit messages:
+```bash
+git add .
+git commit -m "feat: describe what you changed"
+```
+
+### 6. Push to Your Fork
+```bash
+git push origin feature/your-feature-name
+```
+
+### 7. Submit a Pull Request
+- Go to the original repository on GitHub
+- Click **New Pull Request**
+- Select your branch and describe your changes clearly
+- Reference the related issue (e.g. `Closes #855`)
+
+### 📌 Guidelines
+- Always **comment on an issue** before starting work so maintainers can assign it to you
+- One PR per issue — keep it focused
+- Be respectful and follow the project's Code of Conduct
+
+> 💡 **Tip**: Check `docs/contributor_handbook.md` for detailed contribution guidelines.
 
 ---
+## 🛠️ Contributor Environment Setup Guide
 
+This guide helps new contributors set up a local development environment to start contributing to AegisGraph Sentinel 2.0.
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/prernaajaypatil-oss/AegisGraph-Sentinel-2.0PP.git
+cd AegisGraph-Sentinel-2.0PP
+```
+
+### 2. Create a Virtual Environment
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate it — Windows
+venv\Scripts\activate
+
+# Activate it — Mac/Linux
+source venv/bin/activate
+```
+
+### 3. Install Dependencies
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 4. Configure Environment Variables
+```bash
+# Copy the example env file
+cp .env.example .env
+```
+Then open `.env` and set:
+```env
+API_URL=http://localhost:8000
+CORS_ORIGINS=http://localhost:3000,http://localhost:8501
+DEVICE=cpu
+MODEL_PATH=models/htgnn_best.pt
+```
+
+### 5. Run Tests
+```bash
+# Run all unit tests
+pytest tests/
+
+# Run with coverage report
+pytest --cov=src tests/
+```
+
+### 6. Start the API Locally
+```bash
+python -m src.api.main
+```
+API will be live at: `http://localhost:8000`  
+Interactive docs at: `http://localhost:8000/docs`
+
+### 7. (Optional) Train the Model
+```bash
+# Generate synthetic training data
+python -m src.data.data_generator
+
+# Train the HTGNN model
+python -m src.training.trainer
+```
+
+> 💡 **Tip**: If you face any setup issues, check the existing docs in the `docs/` folder or open a GitHub Discussion.
+---
 ## 🤝 Thanks to Contributors
 
 Thank you to everyone who has contributed to making this project better 🚀 .
