@@ -113,7 +113,7 @@ def _build_batch_transaction(row, index: int) -> dict:
         "amount": float(row.get("amount", 0)),
         "currency": str(row.get("currency", "INR")),
         "mode": str(row.get("mode", "UPI")),
-        "timestamp": str(row.get("timestamp", _get_timestamp())),
+        "timestamp": str(row.get("timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))),
     }
 
 
@@ -717,9 +717,15 @@ if page == "🧭 Command Center":
     if "live_event_txn" not in st.session_state:
         st.session_state.live_event_txn = None
 
-    health = _fetch_health_snapshot(API_URL)
-    stats = _fetch_stats_snapshot(API_URL)
-
+    try:
+        health = _fetch_health_snapshot(API_URL)
+    except Exception:
+        health = {}
+    try:
+        stats = _fetch_stats_snapshot(API_URL)
+    except Exception:
+        stats = {}
+        
     # Generate a live event if active
     if live_mode:
         _schedule_live_refresh()
@@ -745,7 +751,7 @@ if page == "🧭 Command Center":
                 "amount": float(random.choice([500, 2500, 50000, 150000, 300000])),
                 "currency": "INR",
                 "mode": random.choice(["UPI", "IMPS"]),
-                "timestamp": _get_timestamp()
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             }
             st.session_state.live_event_txn = txn
             st.session_state.live_event_future = COMMAND_CENTER_IO_EXECUTOR.submit(
@@ -937,7 +943,7 @@ elif page == "💳 Transaction Scan":
                     "amount": float(amount),
                     "currency": currency,
                     "mode": mode,
-                    "timestamp": _get_timestamp(),
+                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
                 }
 
                 if device_id:
