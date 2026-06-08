@@ -350,15 +350,15 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
         scorer = PredictiveMuleScorer()
 
         # Insert a stale entry (older than 24h)
         stale = AccountOpeningData(
-            opening_timestamp=datetime.now() - timedelta(hours=48),
-            form_start_time=datetime.now() - timedelta(hours=48),
-            form_submit_time=datetime.now() - timedelta(hours=48),
+            opening_timestamp=datetime.now(timezone.utc) - timedelta(hours=48),
+            form_start_time=datetime.now(timezone.utc) - timedelta(hours=48),
+            form_submit_time=datetime.now(timezone.utc) - timedelta(hours=48),
             name="stale", age=20, profession="s", stated_address="a",
             email="s@t.com", phone_number="0", kyc_document_type="PAN",
             facial_match_score=0.5, document_quality_score=0.5,
@@ -372,9 +372,9 @@ class TestPredictiveMuleCache:
 
         # Fresh entries should be kept
         fresh = AccountOpeningData(
-            opening_timestamp=datetime.now(),
-            form_start_time=datetime.now(),
-            form_submit_time=datetime.now(),
+            opening_timestamp=datetime.now(timezone.utc),
+            form_start_time=datetime.now(timezone.utc),
+            form_submit_time=datetime.now(timezone.utc),
             name="fresh", age=20, profession="s", stated_address="a",
             email="f@t.com", phone_number="1", kyc_document_type="PAN",
             facial_match_score=0.5, document_quality_score=0.5,
@@ -392,7 +392,7 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         scorer = PredictiveMuleScorer()
         scorer.MAX_HISTORY_SIZE = 3  # small for testing
@@ -400,9 +400,9 @@ class TestPredictiveMuleCache:
         # Insert 4 entries with distinct IPs — the first should be evicted
         for i in range(4):
             data = AccountOpeningData(
-                opening_timestamp=datetime.now(),
-                form_start_time=datetime.now(),
-                form_submit_time=datetime.now(),
+                opening_timestamp=datetime.now(timezone.utc),
+                form_start_time=datetime.now(timezone.utc),
+                form_submit_time=datetime.now(timezone.utc),
                 name=f"u{i}", age=20, profession="s", stated_address="a",
                 email=f"u{i}@t.com", phone_number=str(i),
                 kyc_document_type="PAN", facial_match_score=0.5,
@@ -427,16 +427,16 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         scorer = PredictiveMuleScorer()
         scorer.MAX_HISTORY_SIZE = 2
 
         for i in range(3):
             data = AccountOpeningData(
-                opening_timestamp=datetime.now(),
-                form_start_time=datetime.now(),
-                form_submit_time=datetime.now(),
+                opening_timestamp=datetime.now(timezone.utc),
+                form_start_time=datetime.now(timezone.utc),
+                form_submit_time=datetime.now(timezone.utc),
                 name=f"u{i}", age=20, profession="s", stated_address="a",
                 email=f"u{i}@t.com", phone_number=str(i),
                 kyc_document_type="PAN", facial_match_score=0.5,
