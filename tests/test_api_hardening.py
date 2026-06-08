@@ -794,3 +794,51 @@ def test_voice_analysis_rate_limit_enforced(api_client, monkeypatch):
         statuses.append(response.status_code)
 
     assert 429 in statuses
+
+
+# ---------------------------------------------------------------------------
+# CORS preflight regression tests (issue #909)
+# ---------------------------------------------------------------------------
+
+_CORS_ALLOWED_ORIGIN = "http://localhost:8501"
+
+
+def _cors_preflight(client: TestClient, request_headers: str, origin: str = _CORS_ALLOWED_ORIGIN):
+    """Send an OPTIONS preflight for /api/v1/transaction/check."""
+    return client.options(
+        "/api/v1/transaction/check",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": request_headers,
+        },
+    )
+
+
+def test_cors_preflight_allows_x_api_key(api_client):
+    """OPTIONS preflight must advertise X-API-Key in Access-Control-Allow-Headers."""
+    response = _cors_preflight(api_client, "X-API-Key")
+    allow = response.headers.get("access-control-allow-headers", "")
+    assert "X-API-Key" in allow, (
+        f"X-API-Key missing from CORS allow_headers. Got: {allow!r}"
+    )
+
+
+def test_cors_preflight_allows_legacy_headers(api_client):
+    """Pre-existing auth headers must still be advertised after the X-API-Key addition."""
+    for header in ("Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers after patch. Got: {allow!r}"
+        )
+
+
+def test_cors_preflight_allows_honeypot_admin_headers(api_client):
+    """Honeypot admin headers must be advertised so admin tooling can reach those endpoints."""
+    for header in ("X-Honeypot-Token", "X-Honeypot-Admin-Token"):
+        response = _cors_preflight(api_client, header)
+        allow = response.headers.get("access-control-allow-headers", "")
+        assert header in allow, (
+            f"{header} missing from CORS allow_headers. Got: {allow!r}"
+        )

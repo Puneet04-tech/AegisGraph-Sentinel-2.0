@@ -22,7 +22,27 @@ from functools import partial
 from pathlib import Path
 from itertools import islice
 from threading import Lock
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
+
+class LRUCache(OrderedDict):
+    """A simple LRU cache to prevent memory leaks in global dictionaries."""
+    def __init__(self, maxsize=10000, *args, **kwds):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwds)
+        
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+        
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            oldest = next(iter(self))
+            del self[oldest]
 
 import networkx as nx
 import numpy as np
@@ -52,7 +72,7 @@ try:
     _rate_limit_exceeded_handler = _slowapi._rate_limit_exceeded_handler
     RateLimitExceeded = _slowapi_errors.RateLimitExceeded
     SlowAPIMiddleware = _slowapi_middleware.SlowAPIMiddleware
-    get_remote_address = _slowapi_util.get_remote_address
+    from src.api.dependencies.ip_resolution import get_remote_address
     SLOWAPI_AVAILABLE = True
 except ImportError as e:
     SLOWAPI_AVAILABLE = False
@@ -76,19 +96,7 @@ except ImportError as e:
         async def __call__(self, scope, receive, send):
             await self.app(scope, receive, send)
 
-    def get_remote_address(request) -> str:
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            ips = [ip.strip() for ip in forwarded_for.split(",")]
-            if ips and ips[0]:
-                return ips[0]
-
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip and real_ip.strip():
-            return real_ip.strip()
-
-        client = getattr(request, "client", None)
-        return getattr(client, "host", "unknown")
+    from src.api.dependencies.ip_resolution import get_remote_address
 
     async def _rate_limit_exceeded_handler(request, exc):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -142,7 +150,21 @@ from .schemas import (
     HoneypotStatus,
     AlertSummaryRequest,
     AlertSummaryResponse,
+    # Case Management (Phase 4)
+    AddCommentRequest,
+    AddEvidenceRequest,
+    CaseAuditEventResponse,
+    CaseCommentResponse,
+    CaseDashboardResponse,
+    CaseEvidenceResponse,
+    CaseListResponse,
+    CaseTimelineResponse,
+    CreateCaseRequest,
+    FraudCaseResponse,
+    UpdateCaseRequest,
 )
+from ..case_management import get_case_store
+from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
 from .security import require_api_key, Role, require_role
 from .validators import StrictRateLimit
 
@@ -814,7 +836,7 @@ class AppState:
         self.account_profiles = {}
         self.graph_loaded = False
         # Lateral movement detection - rolling betweenness centrality baseline
-        self.centrality_baseline = {}  # {account_id: [centrality_history]}
+        self.centrality_baseline = LRUCache(maxsize=10000)  # {account_id: [centrality_history]}
         self.centrality_window_size = 10  # Track last 10 measurements
         # Innovation managers (dynamically registered in services container via properties)
 
@@ -1425,13 +1447,34 @@ async def lifespan(app: FastAPI):
 
         await lifecycle_manager.shutdown()
 
+import os
+SWAGGER_ENABLED = os.getenv("SWAGGER_ENABLED", "true").lower() == "true"
+
 # Initialize FastAPI app
 app = FastAPI(
-    title="AegisGraph Sentinel 2.0",
-    description="Real-Time Cross-Channel Mule Account Detection & Neutralization API",
+    title="AegisGraph Sentinel 2.0 API",
+    description="Real-Time Cross-Channel Mule Account Detection & Neutralization API.\n\n"
+                "### Authentication\n"
+                "All protected endpoints require an API Key via the `X-API-Key` header. "
+                "Use the **Authorize** button to authenticate globally.",
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    contact={
+        "name": "AegisGraph Team",
+        "email": "support@aegisgraph.internal",
+    },
+    license_info={
+        "name": "Proprietary",
+    },
+    openapi_tags=[
+        {"name": "Health", "description": "System health and liveness checks"},
+        {"name": "Monitoring", "description": "System statistics and model metrics"},
+        {"name": "Detection", "description": "Real-time fraud detection and risk scoring"},
+        {"name": "Analytics", "description": "Graph analytics and alert summarization"},
+        {"name": "Administration", "description": "Honeypot management and blockchain evidence"}
+    ],
+    docs_url="/docs" if SWAGGER_ENABLED else None,
+    redoc_url="/redoc" if SWAGGER_ENABLED else None,
+    openapi_url="/openapi.json" if SWAGGER_ENABLED else None,
     lifespan=lifespan
 )
 
@@ -1449,7 +1492,15 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type", "X-Legal-Export-Token", "X-Request-Timestamp"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-Legal-Export-Token",
+        "X-Request-Timestamp",
+        "X-Honeypot-Token",
+        "X-Honeypot-Admin-Token",
+    ],
     max_age=600,
 )
 
@@ -1468,7 +1519,7 @@ register_observability_middleware(app)
 
 
 
-@app.get("/", tags=["General"])
+@app.get("/", tags=["Health"])
 async def root():
     """Root endpoint"""
     return {
@@ -1485,7 +1536,7 @@ async def root():
     "/api/v1/health",
     response_model=HealthCheckResponse,
     response_model_exclude_none=True,
-    tags=["System"],
+    tags=["Health"],
     dependencies=[Depends(_require_verbose_health_access)],
 )
 async def health_check_v1(verbose: bool = False):
@@ -1494,7 +1545,7 @@ async def health_check_v1(verbose: bool = False):
 
 @app.get(
     "/health/liveness",
-    tags=["General"],
+    tags=["Health"],
     summary="Lightweight liveness probe",
 )
 async def liveness():
@@ -1509,7 +1560,7 @@ async def liveness():
     "/health",
     response_model=HealthCheckResponse,
     response_model_exclude_none=True,
-    tags=["General"],
+    tags=["Health"],
     dependencies=[Depends(_require_verbose_health_access)],
 )
 async def health_check(verbose: bool = False):
@@ -1521,7 +1572,7 @@ async def health_check(verbose: bool = False):
     return _build_health_response(include_details=verbose)
 
 
-@app.get("/stats", response_model=StatsResponse, tags=["General"], dependencies=[Depends(require_role(Role.AUDITOR))])
+@app.get("/stats", response_model=StatsResponse, tags=["Monitoring"], dependencies=[Depends(require_role(Role.AUDITOR))])
 async def get_stats():
     """
     Get service statistics
@@ -1547,10 +1598,33 @@ async def get_stats():
     )
 
 
+
+def _analyze_keystrokes_sync(biometrics: dict) -> bool:
+    import numpy as np
+    behavioral_stress_detected = False
+    try:
+        hold_times = biometrics.get('hold_times', [])
+        flight_times = biometrics.get('flight_times', [])
+        
+        if hold_times and len(hold_times) > 1:
+            hold_times_arr = np.array(hold_times)
+            hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
+            if hold_cv > 0.30:
+                behavioral_stress_detected = True
+        
+        if flight_times and len(flight_times) > 1:
+            flight_times_arr = np.array(flight_times)
+            flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
+            if flight_cv > 0.35:
+                behavioral_stress_detected = True
+    except Exception:
+        pass
+    return behavioral_stress_detected
+
 @app.post(
     "/api/v1/fraud/check",
     response_model=TransactionCheckResponse,
-    tags=["Fraud Detection"],
+    tags=["Detection"],
     summary="Check transaction for fraud",
     description="Analyze a single transaction for fraud risk using HTGNN and behavioral biometrics",
     dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=60, api_key_limit=300))]
@@ -1589,26 +1663,7 @@ async def check_transaction(
             # Innovation 1: Simple keystroke stress detection
             if INNOVATIONS_AVAILABLE:
                 try:
-                    # Detect stress via typing variance, not absolute timing
-                    hold_times = biometrics['hold_times']
-                    flight_times = biometrics['flight_times']
-                    
-                    if hold_times and len(hold_times) > 1:
-                        # Calculate coefficient of variation (std/mean)
-                        hold_times_arr = np.array(hold_times)
-                        hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
-                        
-                        # High variance (CV > 0.30) indicates stress/coercion
-                        if hold_cv > 0.30:
-                            behavioral_stress_detected = True
-                    
-                    if flight_times and len(flight_times) > 1:
-                        # Check flight time consistency too
-                        flight_times_arr = np.array(flight_times)
-                        flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
-                        if flight_cv > 0.35:
-                            behavioral_stress_detected = True
-                            
+                    behavioral_stress_detected = await asyncio.to_thread(_analyze_keystrokes_sync, biometrics)
                 except Exception as e:
                     _api_logger.warning(
                         f"Keystroke analysis failed: {e}",
@@ -1624,31 +1679,19 @@ async def check_transaction(
         loop = asyncio.get_running_loop()
         subgraph_cache = _batch_subgraph_cache.get()
         subgraph_lock = _batch_subgraph_lock.get()
-        risk_result = await loop.run_in_executor(
-            None,
-            partial(
-                _run_scoring_pipeline,
-                transaction,
+        risk_result = await asyncio.to_thread(_run_scoring_pipeline, transaction,
                 biometrics,
                 request.source_account,
                 request.target_account,
                 lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
                 INNOVATIONS_AVAILABLE,
                 subgraph_cache,
-                subgraph_lock,
-            ),
-        )
+                subgraph_lock,)
 
         # Generate explanation off the event loop to keep the request thread responsive.
-        explanation_result = await loop.run_in_executor(
-            None,
-            partial(
-                generate_explanation,
-                transaction=transaction,
+        explanation_result = await asyncio.to_thread(generate_explanation, transaction=transaction,
                 risk_result=risk_result,
-                detail_level='high',
-            ),
-        )
+                detail_level='high',)
         
         # Innovation 2: Check if honeypot should be activated
         honeypot_activated = False
@@ -1674,20 +1717,14 @@ async def check_transaction(
                 logic_decision = _normalize_decision(risk_result['decision'])
                 if should_activate and logic_decision == FraudDecision.BLOCK.value:
                     # Activate honeypot
-                    honeypot = await loop.run_in_executor(
-                        None,
-                        partial(
-                            _activate_honeypot_sync,
-                            honeypot_manager,
+                    honeypot = await asyncio.to_thread(_activate_honeypot_sync, honeypot_manager,
                             request.transaction_id,
                             request.source_account,
                             request.target_account,
                             request.amount,
                             request.currency,
                             risk_result['risk_score'],
-                            fraud_indicators,
-                        ),
-                    )
+                            fraud_indicators,)
                     honeypot_activated = True
                     honeypot_id = honeypot.honeypot_id
 
@@ -1731,11 +1768,7 @@ async def check_transaction(
                     if 'circular' in explanation_result['explanation'].lower():
                         fraud_patterns.append('circular_flow')
                     
-                    evidence = await loop.run_in_executor(
-                        None,
-                        partial(
-                            _seal_blockchain_sync,
-                            blockchain_manager,
+                    evidence = await asyncio.to_thread(_seal_blockchain_sync, blockchain_manager,
                             request.transaction_id,
                             request.source_account,
                             request.target_account,
@@ -1745,9 +1778,7 @@ async def check_transaction(
                             risk_result['confidence'],
                             risk_result['breakdown'],
                             explanation_result['explanation'],
-                            fraud_patterns,
-                        ),
-                    )
+                            fraud_patterns,)
                     blockchain_evidence_id = evidence.evidence_id
                     _audit_logger.log_security_action(
                         "blockchain_evidence_sealed",
@@ -1871,7 +1902,7 @@ async def check_transaction(
     "/api/v1/explain",
     include_in_schema=False,
 
-    tags=["Explainability - Aegis-Oracle"],
+    tags=["Analytics"],
     summary="Generate AI-explainable decision explanation",
     description="Innovation 5: Aegis-Oracle generates regulatory-compliant explanations for all fraud decisions. Includes causal factors, evidence,  and legal admissibility.",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -1930,16 +1961,10 @@ async def explain_transaction(
         
         # Use Aegis-Oracle to generate explanation
         loop = asyncio.get_running_loop()
-        explanation = await loop.run_in_executor(
-            None,
-            partial(
-                aegis_oracle.generate_explanation,
-                transaction=transaction,
+        explanation = await asyncio.to_thread(aegis_oracle.generate_explanation, transaction=transaction,
                 risk_assessment=risk_assessment,
                 break_down=breakdown,
-                innovations_triggered=innovations_triggered,
-            ),
-        )
+                innovations_triggered=innovations_triggered,)
         
         return explanation
         
@@ -1957,7 +1982,7 @@ async def explain_transaction(
 # Enhanced Aegis-Oracle endpoint
 @app.post(
     "/api/v1/oracle/explain",
-    tags=["Explainability - Aegis-Oracle"],
+    tags=["Analytics"],
     summary="Get comprehensive AI reasoning for fraud decisions",
     description="Advanced Aegis-Oracle endpoint with full forensic analysis and causal reasoning",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -1982,17 +2007,11 @@ async def oracle_explain_detailed(
             aegis_oracle = get_aegis_oracle()
 
         loop = asyncio.get_running_loop()
-        explanation = await loop.run_in_executor(
-            None,
-            partial(
-                aegis_oracle.generate_explanation,
-                transaction=request.transaction,
+        explanation = await asyncio.to_thread(aegis_oracle.generate_explanation, transaction=request.transaction,
                 risk_assessment=request.risk_assessment,
                 attention_weights=request.attention_weights,
                 break_down=request.risk_breakdown,
-                innovations_triggered=request.innovations_triggered,
-            ),
-        )
+                innovations_triggered=request.innovations_triggered,)
         
         return {
             'oracle_reasoning': explanation,
@@ -2089,7 +2108,8 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
 
 @app.post(
     "/api/v1/fraud/batch",
-    tags=["Fraud Detection"],
+    response_model=BatchTransactionResponse,
+    tags=["Detection"],
     summary="Check multiple transactions",
     description="Batch processing of multiple transactions for fraud detection",
     dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=10, api_key_limit=50))]
@@ -2115,7 +2135,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
     txns = request.transactions
 
     # Per-batch subgraph cache shared across all concurrent scorer calls
-    batch_subgraph_cache: Dict = {}
+    batch_subgraph_cache: Dict = LRUCache(maxsize=1000)
     batch_subgraph_lock: Lock = Lock()
 
     async def _process_transaction(txn_request):
@@ -2195,7 +2215,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
     return StreamingResponse(_stream_batch_response(), media_type="application/json")
 
 
-@app.get("/api/v1/model/info", tags=["Model"], dependencies=[Depends(require_role(Role.VIEWER))])
+@app.get("/api/v1/model/info", tags=["Monitoring"], dependencies=[Depends(require_role(Role.VIEWER))])
 async def get_model_info():
     """
     Get information about the loaded model
@@ -2230,7 +2250,7 @@ async def get_model_info():
 @app.post(
     "/api/v1/voice/analyze",
     response_model=VoiceAnalysisResponse,
-    tags=["Innovation - Voice Stress"],
+    tags=["Detection"],
     summary="Analyze voice stress during transaction",
     description="Innovation 5: Real-time voice stress analysis to detect coercion or AI generation",
     dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=5, api_key_limit=20))]
@@ -2273,14 +2293,8 @@ async def analyze_voice(
         # Offload CPU-heavy analysis so a few voice requests do not monopolize
         # the request worker thread.
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                voice_analyzer.analyze_voice,
-                audio_file=tmp_path,
-                sample_rate=request_body.sample_rate,
-            ),
-        )
+        result = await asyncio.to_thread(voice_analyzer.analyze_voice, audio_file=tmp_path,
+                sample_rate=request_body.sample_rate,)
         
         processing_time_ms = (time.time() - start_time) * 1000
         
@@ -2306,7 +2320,7 @@ async def analyze_voice(
 @app.post(
     "/api/v1/accounts/score-opening",
     response_model=AccountOpeningResponse,
-    tags=["Innovation - Predictive Mule"],
+    tags=["Detection"],
     summary="Score account opening for mule risk",
     description="Innovation 4: Predicts mule accounts before first transaction using 12 features",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -2373,7 +2387,7 @@ def score_account_opening(
 @app.post(
     "/api/v1/mule/assess",
     response_model=AccountOpeningResponse,
-    tags=["Innovation - Predictive Mule"],
+    tags=["Detection"],
     summary="Assess account mule risk",
     description="Innovation 3: Alias for mule assessment endpoint",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -2386,7 +2400,7 @@ def assess_mule_risk(request: AccountOpeningRequest):
 @app.get(
     "/api/v1/honeypot/active",
     response_model=HoneypotListResponse,
-    tags=["Innovation - Honeypot Escrow"],
+    tags=["Administration"],
     summary="List active honeypot traps",
     description="Innovation 2: View all active deceptive containment operations",
     dependencies=[Depends(require_role(Role.ADMIN))],
@@ -2438,7 +2452,7 @@ async def list_active_honeypots(
 @app.get(
     "/api/v1/honeypot/stats",
     response_model=HoneypotStatsResponse,
-    tags=["Innovation - Honeypot Escrow"],
+    tags=["Administration"],
     summary="Get honeypot system statistics",
     description="Innovation 2: View performance metrics including arrest rate and recovery amount",
     dependencies=[Depends(require_role(Role.ADMIN))],
@@ -2475,7 +2489,7 @@ async def get_honeypot_stats(
 @app.post(
     "/api/v1/blockchain/seal",
     response_model=BlockchainEvidenceResponse,
-    tags=["Innovation - Blockchain Evidence"],
+    tags=["Administration"],
     summary="Seal evidence in blockchain",
     description="Innovation 6: Create immutable evidence record for legal admissibility",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -2492,18 +2506,12 @@ async def seal_evidence(
     """
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                blockchain_manager.seal_evidence,
-                transaction_id=request.transaction_id,
+        result = await asyncio.to_thread(blockchain_manager.seal_evidence, transaction_id=request.transaction_id,
                 source_account=request.source_account,
                 target_account=request.target_account,
                 amount=request.amount,
                 risk_result=request.risk_result.model_dump(),
-                explanation=request.explanation,
-            ),
-        )
+                explanation=request.explanation,)
         
         return BlockchainEvidenceResponse(
             evidence_id=result.evidence_id,
@@ -2522,7 +2530,7 @@ async def seal_evidence(
 @app.get(
     "/api/v1/blockchain/verify/{evidence_id}",
     response_model=BlockchainVerificationResponse,
-    tags=["Innovation - Blockchain Evidence"],
+    tags=["Administration"],
     summary="Verify blockchain evidence",
     description="Innovation 6: Verify integrity and authenticity of sealed evidence",
     dependencies=[Depends(require_role(Role.VIEWER))]
@@ -2540,10 +2548,7 @@ async def verify_evidence(
     """
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            partial(blockchain_manager.verify_evidence, evidence_id, block_number),
-        )
+        result = await asyncio.to_thread(blockchain_manager.verify_evidence, evidence_id, block_number)
         
         return BlockchainVerificationResponse(
             evidence_id=evidence_id,
@@ -2562,7 +2567,7 @@ async def verify_evidence(
 @app.post(
     "/api/v1/blockchain/export",
     response_model=LegalExportResponse,
-    tags=["Innovation - Blockchain Evidence"],
+    tags=["Administration"],
     summary="Export evidence for legal proceedings",
     description="Innovation 6: Generate court-admissible evidence package",
     dependencies=[Depends(require_role(Role.ADMIN))]
@@ -2591,16 +2596,10 @@ async def export_legal_evidence(
 
         loop = asyncio.get_running_loop()
         token = _extract_legal_export_token(authorization, x_legal_export_token)
-        result = await loop.run_in_executor(
-            None,
-            partial(
-                blockchain_manager.export_for_legal_proceedings,
-                evidence_id=export_request.evidence_id,
+        result = await asyncio.to_thread(blockchain_manager.export_for_legal_proceedings, evidence_id=export_request.evidence_id,
                 case_number=export_request.case_number,
                 requesting_authority=export_request.requesting_authority,
-                authorization_token=token,
-            ),
-        )
+                authorization_token=token,)
         if 'error' in result:
             raise HTTPException(status_code=404, detail=result['error'])
         
@@ -2641,7 +2640,7 @@ def _run_blast_radius(
 @app.post(
     "/api/v1/graph/blast-radius",
     response_model=BlastRadiusResponse,
-    tags=["Graph Analytics"],
+    tags=["Analytics"],
     summary="Blast-radius contagion analysis",
     description=(
         "Starting from a single flagged/compromised node, perform a bounded graph "
@@ -2710,15 +2709,9 @@ async def blast_radius_analysis(request: BlastRadiusRequest):
     # ------------------------------------------------------------------
     try:
         loop = asyncio.get_running_loop()
-        report = await loop.run_in_executor(
-            None,
-            partial(
-                _run_blast_radius,
-                request.node_id,
+        report = await asyncio.to_thread(_run_blast_radius, request.node_id,
                 graph,
-                request.max_depth,
-            ),
-        )
+                request.max_depth,)
     except ValueError as exc:
         # BlastRadiusAnalyzer raises ValueError when the node is absent;
         # translate to 404 in case there was a race between the guard and
@@ -2783,7 +2776,7 @@ async def blast_radius_analysis(request: BlastRadiusRequest):
 @app.post(
     "/api/v1/alerts/summarize",
     response_model=AlertSummaryResponse,
-    tags=["Alerts"],
+    tags=["Analytics"],
     summary="Generate AI-powered summary for anomaly alerts",
     description="Takes complex alert JSON and uses Gemini to return a 2-sentence plain English summary.",
     dependencies=[Depends(require_role(Role.ANALYST))]
@@ -2822,6 +2815,303 @@ async def summarize_alert(request: AlertSummaryRequest):
             metadata={"operation": "Alert summary", "error_type": type(e).__name__},
         )
         raise HTTPException(status_code=500, detail="Failed to generate AI summary")
+
+
+@app.get("/api/v1/monitoring/memory", tags=["Monitoring"], dependencies=[Depends(require_role(Role.ADMIN))])
+async def get_memory_diagnostics():
+    """Diagnostic endpoint to inspect memory usage and cache sizes."""
+    import sys
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        rss_mb = memory_info.rss / 1024 / 1024
+        vms_mb = memory_info.vms / 1024 / 1024
+    except ImportError:
+        rss_mb = -1
+        vms_mb = -1
+
+    return {
+        "status": "ok",
+        "memory": {
+            "rss_mb": round(rss_mb, 2) if rss_mb > 0 else "psutil not installed",
+            "vms_mb": round(vms_mb, 2) if vms_mb > 0 else "psutil not installed"
+        },
+        "caches": {
+            "centrality_baseline_size": len(state.centrality_baseline),
+            "centrality_baseline_maxsize": getattr(state.centrality_baseline, "maxsize", None),
+            "account_profiles_size": len(state.account_profiles),
+            "fraud_chains_size": len(state.fraud_chains)
+        },
+        "globals": {
+            "mule_accounts_size": len(state.mule_accounts)
+        }
+    }
+
+
+# ==============================================================================
+# CASE MANAGEMENT ENDPOINTS (Phase 4)
+# ==============================================================================
+
+def _serialise_case(case) -> FraudCaseResponse:
+    """Convert a FraudCase dataclass to its API response schema."""
+    return FraudCaseResponse(
+        case_id=case.case_id,
+        transaction_id=case.transaction_id,
+        risk_score=case.risk_score,
+        decision=case.decision,
+        status=case.status.value,
+        priority=case.priority.value,
+        assigned_analyst=case.assigned_analyst,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        tags=case.tags,
+        comment_count=len(case.comment_ids),
+        evidence_count=len(case.evidence_ids),
+    )
+
+
+@app.post(
+    "/api/v1/cases",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create a new fraud investigation case",
+)
+async def create_case(
+    request: CreateCaseRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Open a new fraud investigation case from a detected alert."""
+    store = get_case_store()
+    priority = CasePriority(request.priority or "MEDIUM")
+    case = store.create_case(
+        transaction_id=request.transaction_id,
+        risk_score=request.risk_score,
+        decision=request.decision,
+        analyst_id=x_analyst_id or "system",
+        priority=priority,
+        tags=request.tags or [],
+    )
+    return _serialise_case(case)
+
+
+@app.get(
+    "/api/v1/cases",
+    response_model=CaseListResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="List all fraud investigation cases with filters and pagination",
+)
+async def list_cases(
+    status: Optional[str] = Query(default=None, description="Filter by status"),
+    priority: Optional[str] = Query(default=None, description="Filter by priority"),
+    assigned_analyst: Optional[str] = Query(default=None, description="Filter by analyst ID"),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Page size"),
+):
+    """Return a paginated, filterable list of all fraud cases."""
+    store = get_case_store()
+    status_filter = CaseStatus(status) if status else None
+    priority_filter = CasePriority(priority) if priority else None
+    cases, total = store.list_cases(
+        status=status_filter,
+        priority=priority_filter,
+        assigned_analyst=assigned_analyst,
+        page=page,
+        page_size=page_size,
+    )
+    import math
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
+    return CaseListResponse(
+        cases=[_serialise_case(c) for c in cases],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@app.get(
+    "/api/v1/cases/dashboard",
+    response_model=CaseDashboardResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Aggregated case management dashboard statistics",
+)
+async def get_case_dashboard():
+    """Return aggregated counts of cases by status and priority."""
+    store = get_case_store()
+    stats = store.get_dashboard_stats()
+    return CaseDashboardResponse(**stats)
+
+
+@app.get(
+    "/api/v1/cases/{case_id}",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get full details of a fraud case",
+)
+async def get_case(case_id: str):
+    """Return full details of a specific fraud case."""
+    store = get_case_store()
+    case = store.get_case(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
+    return _serialise_case(case)
+
+
+@app.patch(
+    "/api/v1/cases/{case_id}",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Update status, assignment, or priority of a case",
+)
+async def update_case(
+    case_id: str,
+    request: UpdateCaseRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Partially update a fraud case (status, assigned analyst, or priority)."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        case = store.get_case(case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
+        if request.status:
+            store.update_status(case_id, CaseStatus(request.status), analyst)
+        if request.assigned_analyst:
+            store.assign_analyst(case_id, request.assigned_analyst, analyst)
+        if request.priority:
+            store.update_priority(case_id, CasePriority(request.priority), analyst)
+        case = store.get_case(case_id)
+        return _serialise_case(case)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/claim",
+    response_model=FraudCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Claim an unassigned case",
+)
+async def claim_case(
+    case_id: str,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Analyst claims an unassigned case to begin investigation."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        case = store.claim_case(case_id, analyst)
+        return _serialise_case(case)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/comments",
+    response_model=CaseCommentResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Add an investigation note to a case",
+)
+async def add_case_comment(
+    case_id: str,
+    request: AddCommentRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Attach an investigation note or comment to a fraud case."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        comment = store.add_comment(case_id, analyst, request.text)
+        return CaseCommentResponse(
+            comment_id=comment.comment_id,
+            case_id=comment.case_id,
+            analyst_id=comment.analyst_id,
+            text=comment.text,
+            created_at=comment.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/evidence",
+    response_model=CaseEvidenceResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Attach evidence to a fraud case",
+)
+async def add_case_evidence(
+    case_id: str,
+    request: AddEvidenceRequest,
+    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+):
+    """Attach a piece of evidence (transaction link, graph snapshot, etc.) to a case."""
+    store = get_case_store()
+    analyst = x_analyst_id or "system"
+    try:
+        evidence = store.add_evidence(
+            case_id=case_id,
+            analyst_id=analyst,
+            evidence_type=EvidenceType(request.evidence_type),
+            description=request.description,
+            reference_id=request.reference_id,
+        )
+        return CaseEvidenceResponse(
+            evidence_id=evidence.evidence_id,
+            case_id=evidence.case_id,
+            analyst_id=evidence.analyst_id,
+            evidence_type=evidence.evidence_type.value,
+            description=evidence.description,
+            reference_id=evidence.reference_id,
+            created_at=evidence.created_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/v1/cases/{case_id}/timeline",
+    response_model=CaseTimelineResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
+    summary="Get the immutable audit trail for a case",
+)
+async def get_case_timeline(case_id: str):
+    """Return the full chronological audit trail for a fraud case."""
+    store = get_case_store()
+    try:
+        events = store.get_timeline(case_id)
+        return CaseTimelineResponse(
+            case_id=case_id,
+            events=[
+                CaseAuditEventResponse(
+                    event_id=e.event_id,
+                    case_id=e.case_id,
+                    analyst_id=e.analyst_id,
+                    action=e.action,
+                    old_value=e.old_value,
+                    new_value=e.new_value,
+                    timestamp=e.timestamp,
+                )
+                for e in events
+            ],
+            total_events=len(events),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def main():

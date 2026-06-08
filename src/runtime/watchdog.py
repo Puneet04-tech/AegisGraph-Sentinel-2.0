@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any, Optional
 
+from ..audit import log_audit_event
 from ..observability import get_logger
 from .events.event_types import WatchdogAlertEvent
 from .health_monitor import RuntimeHealthMonitor
@@ -34,6 +35,17 @@ class RuntimeWatchdog:
         self._logger = logger or _logger
         self._watchdog_task: Optional[asyncio.Task] = None
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
+
+    def _audit(self, event_type: str, severity: str = "warning", **metadata: Any) -> None:
+        try:
+            log_audit_event(
+                event_type=event_type,
+                severity=severity,
+                source="watchdog",
+                metadata=metadata,
+            )
+        except Exception:
+            self._logger.debug("Watchdog audit recording failed", exc_info=True)
 
     async def start(self, interval_seconds: float = 10.0) -> None:
         """Start the periodic watchdog loop."""
@@ -91,6 +103,7 @@ class RuntimeWatchdog:
                         event_type="watchdog_stale_heartbeat",
                         metadata={"service": name, "elapsed": elapsed},
                     )
+                    self._audit("watchdog_stale_heartbeat", service=name, elapsed=elapsed)
                     self.health_monitor.mark_failed(
                         name,
                         error=f"Stale heartbeat: no response in {elapsed:.1f} seconds"
@@ -132,6 +145,7 @@ class RuntimeWatchdog:
                             event_type="watchdog_dead_task",
                             metadata={"task": name},
                         )
+                        self._audit("watchdog_dead_task", task=name)
                         self.health_monitor.mark_failed(
                             name,
                             error="Dead task: background task has stopped running"

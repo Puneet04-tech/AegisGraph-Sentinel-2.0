@@ -5,12 +5,25 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from ...audit import log_audit_event
 from .backpressure import BackpressureController
 from .queue_budget import QueueBudget
 from .resource_limits import ResourceLimits
 from .task_budget import TaskBudget
 
 logger = logging.getLogger(__name__)
+
+
+def _audit_resource_event(event_type: str, **metadata: Any) -> None:
+    try:
+        log_audit_event(
+            event_type=event_type,
+            severity="warning",
+            source="resource_manager",
+            metadata=metadata,
+        )
+    except Exception:
+        logger.debug("Resource audit recording failed", exc_info=True)
 
 
 class RuntimeResourceManager:
@@ -26,6 +39,7 @@ class RuntimeResourceManager:
         accepted = self.task_budget.register_task(task_id)
         if not accepted:
             logger.warning("Runtime task registration denied by resource budget")
+            _audit_resource_event("resource_task_registration_throttled")
         return accepted
 
     def unregister_task(self, task_id: Any) -> None:
@@ -45,6 +59,11 @@ class RuntimeResourceManager:
                 self.queue_budget.utilization,
                 self.backpressure.event_rate,
             )
+            _audit_resource_event(
+                "resource_event_throttled",
+                queue_utilization=self.queue_budget.utilization,
+                event_rate=self.backpressure.event_rate,
+            )
         return accepted
 
     def can_start_recovery(self) -> bool:
@@ -53,6 +72,10 @@ class RuntimeResourceManager:
             logger.warning(
                 "Runtime recovery denied by backpressure: recovery_rate=%s",
                 self.backpressure.recovery_rate,
+            )
+            _audit_resource_event(
+                "resource_recovery_throttled",
+                recovery_rate=self.backpressure.recovery_rate,
             )
         return accepted
 

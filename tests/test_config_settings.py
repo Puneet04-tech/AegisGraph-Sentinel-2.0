@@ -214,6 +214,27 @@ def test_production_validation_accepts_required_env(tmp_path):
     assert settings.to_runtime_dict()["api"]["api_url"] == "https://api.example.test"
 
 
+import pytest
+from pydantic import ValidationError
+
+from src.config.schemas import GraphRuntimeSettings
+
+
+def test_k_hop_neighbors_accepts_positive_integer():
+    settings = GraphRuntimeSettings(k_hop_neighbors=3)
+    assert settings.k_hop_neighbors == 3
+
+
+def test_k_hop_neighbors_rejects_zero():
+    with pytest.raises(ValidationError):
+        GraphRuntimeSettings(k_hop_neighbors=0)
+
+
+def test_k_hop_neighbors_rejects_negative_value():
+    with pytest.raises(ValidationError):
+        GraphRuntimeSettings(k_hop_neighbors=-5)
+
+
 def test_cors_origins_env_var_populates_allowed_origins(tmp_path):
     settings = load_settings(
         config_path=tmp_path / "missing-config.yaml",
@@ -229,3 +250,4 @@ def test_cors_origins_env_var_populates_allowed_origins(tmp_path):
         "https://app.example.test",
         "https://admin.example.test",
     ]
+
