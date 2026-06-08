@@ -1,13 +1,21 @@
 import importlib
+import os
 import sys
 import types
 
 import pytest
 
+if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
+
 import torch
 
 
 def _load_explainer_module():
+    loaded_module = sys.modules.get("src.inference.explainer")
+    if loaded_module is not None:
+        return loaded_module
+
     tg_module = types.ModuleType("torch_geometric")
     explain_module = types.ModuleType("torch_geometric.explain")
 
@@ -21,8 +29,8 @@ def _load_explainer_module():
     explain_module.GNNExplainer = PlaceholderGNNExplainer
     tg_module.explain = explain_module
 
-    sys.modules.setdefault("torch_geometric", tg_module)
-    sys.modules.setdefault("torch_geometric.explain", explain_module)
+    sys.modules["torch_geometric"] = tg_module
+    sys.modules["torch_geometric.explain"] = explain_module
     return importlib.import_module("src.inference.explainer")
 
 

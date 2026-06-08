@@ -29,12 +29,23 @@ ENV_ALIASES = {
     "environment": "ENVIRONMENT",
     "api_url": "API_URL",
     "aegis_allowed_origins": "AEGIS_ALLOWED_ORIGINS",
+    "cors_origins": "CORS_ORIGINS",
     "debug": "DEBUG",
     "aegis_graph_path": "AEGIS_GRAPH_PATH",
     "aegis_graph_sha256": "AEGIS_GRAPH_SHA256",
     "redis_url": "REDIS_URL",
     "aegis_config_path": "AEGIS_CONFIG_PATH",
     "aegis_thresholds_path": "AEGIS_THRESHOLDS_PATH",
+    "api_host": "API_HOST",
+    "api_port": "API_PORT",
+    "api_reload": "API_RELOAD",
+    "api_log_level": "API_LOG_LEVEL",
+    "rate_limit": "RATE_LIMIT",
+    "max_batch_size": "MAX_BATCH_SIZE",
+    "log_level": "LOG_LEVEL",
+    "log_format": "LOG_FORMAT",
+    "log_output_dir": "LOG_OUTPUT_DIR",
+    "prometheus_port": "PROMETHEUS_PORT",
 }
 
 
@@ -47,24 +58,56 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
     return base
 
 
+def _substitute_env_vars(raw: str) -> str:
+    """Replace ${VAR_NAME} placeholders with os.environ values."""
+    import re as _re
+
+    def _replace(match: "_re.Match[str]") -> str:
+        return os.environ.get(match.group(1), "")
+
+    return _re.sub(r"\$\{([^}]+)\}", _replace, raw)
+
+
 def _load_yaml(path: Path, *, optional: bool = True) -> Dict[str, Any]:
     if not path.exists():
         if optional:
             return {}
         raise FileNotFoundError(f"Configuration file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+        raw = handle.read()
+    raw = _substitute_env_vars(raw)
+    data = yaml.safe_load(raw) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Configuration file must contain a mapping: {path}")
     return data
 
 
-def load_environment(environ: Optional[Mapping[str, str]] = None) -> EnvironmentVariablesSchema:
+
+def load_environment(
+    environ: Optional[Mapping[str, str]] = None,
+) -> EnvironmentVariablesSchema:
+    """Load recognized environment variables into a typed raw schema."""
+def load_environment(
+    environ: Optional[Mapping[str, str]] = None,
+) -> EnvironmentVariablesSchema:
     """Load recognized environment variables into a typed raw schema."""
     load_dotenv()
-    source = os.environ if environ is None else environ
-    values = {field: source.get(env_name) for field, env_name in ENV_ALIASES.items()}
-    return EnvironmentVariablesSchema(**values)
+    if environ is None:
+        source = os.environ
+    else:
+        source = environ
+    
+    mapped = {}
+
+    for key, value in source.items():
+        if key in EnvironmentVariablesSchema.model_fields:
+            mapped[key] = value
+
+    for field_name, env_var in ENV_ALIASES.items():
+        if env_var in source:
+            mapped[field_name] = source[env_var]
+
+    return EnvironmentVariablesSchema(**mapped)
 
 
 def load_runtime_yaml(config_path: Optional[str | Path] = None) -> Dict[str, Any]:
@@ -129,15 +172,37 @@ def _build_settings_dict(
     if isinstance(system_config, dict) and not (env.aegis_env or env.app_env or env.environment):
         environment = system_config.get("environment", defaults.DEFAULT_ENVIRONMENT)
 
+    api_port_val = env.api_port or api_config.get("port", defaults.DEFAULT_API_PORT)
+    try:
+        api_port_val = int(api_port_val)
+    except (ValueError, TypeError):
+        pass
+
+    api_reload_raw = api_config.get("reload")
+    if api_reload_raw is None:
+        api_reload_val = defaults.DEFAULT_API_RELOAD
+    elif not isinstance(api_reload_raw, bool):
+        api_reload_val = str(api_reload_raw).strip().lower() in {"true", "1", "yes", "on"}
+    else:
+        api_reload_val = api_reload_raw
+
+    reload_bool = _bool_from_env(env.api_reload, api_reload_val) if env.api_reload is not None else api_reload_val
+
+    prometheus_port_val = env.prometheus_port or prometheus_config.get("port", defaults.DEFAULT_PROMETHEUS_PORT)
+    try:
+        prometheus_port_val = int(prometheus_port_val)
+    except (ValueError, TypeError):
+        pass
+
     return {
         "api": {
-            "host": api_config.get("host", defaults.DEFAULT_API_HOST),
-            "port": api_config.get("port", defaults.DEFAULT_API_PORT),
-            "reload": api_config.get("reload", defaults.DEFAULT_API_RELOAD),
-            "log_level": api_config.get("log_level", defaults.DEFAULT_API_LOG_LEVEL),
-            "allowed_origins": env.aegis_allowed_origins or api_config.get("allowed_origins"),
+            "host": env.api_host or api_config.get("host", defaults.DEFAULT_API_HOST),
+            "port": api_port_val,
+            "reload": reload_bool,
+            "log_level": env.api_log_level or api_config.get("log_level", defaults.DEFAULT_API_LOG_LEVEL),
+            "allowed_origins": env.cors_origins or env.aegis_allowed_origins or api_config.get("allowed_origins"),
             "api_url": env.api_url or api_config.get("api_url"),
-            "rate_limit": api_config.get("rate_limit", defaults.DEFAULT_RATE_LIMIT),
+            "rate_limit": env.rate_limit or api_config.get("rate_limit", defaults.DEFAULT_RATE_LIMIT),
         },
         "graph": {
             "graph_path": env.aegis_graph_path or graph_config.get("path") or defaults.DEFAULT_GRAPH_PATH,
@@ -147,11 +212,11 @@ def _build_settings_dict(
             "max_subgraph_edges": graph_config.get("max_subgraph_edges", 5000),
         },
         "observability": {
-            "log_level": logging_config.get("level", defaults.DEFAULT_OBSERVABILITY_LOG_LEVEL),
-            "log_format": logging_config.get("format", defaults.DEFAULT_OBSERVABILITY_LOG_FORMAT),
-            "output_dir": logging_config.get("output_dir", defaults.DEFAULT_OBSERVABILITY_OUTPUT_DIR),
+            "log_level": env.log_level or logging_config.get("level", defaults.DEFAULT_OBSERVABILITY_LOG_LEVEL),
+            "log_format": env.log_format or logging_config.get("format", defaults.DEFAULT_OBSERVABILITY_LOG_FORMAT),
+            "output_dir": env.log_output_dir or logging_config.get("output_dir", defaults.DEFAULT_OBSERVABILITY_OUTPUT_DIR),
             "prometheus_enabled": prometheus_config.get("enabled", False),
-            "prometheus_port": prometheus_config.get("port", defaults.DEFAULT_PROMETHEUS_PORT),
+            "prometheus_port": prometheus_port_val,
         },
         "scoring": {
             "thresholds": risk_thresholds,

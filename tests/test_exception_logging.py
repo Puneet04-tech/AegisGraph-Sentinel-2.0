@@ -29,6 +29,7 @@ from src.observability import (
     get_request_id,
     set_request_context,
 )
+from src.api import main as api_main
 from src.api.main import app
 
 
@@ -252,7 +253,12 @@ class TestApiIntegration:
         assert "factors" in data
         assert "explanation" in data
 
-    def test_http_exception_standardized_json(self):
+    def test_http_exception_standardized_json(self, monkeypatch):
+        class _BoomOracle:
+            def generate_explanation(self, *args, **kwargs):
+                raise RuntimeError("oracle internal failure")
+
+        monkeypatch.setitem(api_main.app.dependency_overrides, api_main.get_aegis_oracle, lambda: _BoomOracle())
         client = TestClient(app)
         response = client.post("/api/v1/explain", json={"decision": "BLOCK", "risk_score": 0.9})
         assert response.status_code in (503, 500)

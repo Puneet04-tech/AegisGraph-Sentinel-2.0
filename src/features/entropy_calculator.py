@@ -1,3 +1,4 @@
+#
 """
 Graph Entropy Calculator
 
@@ -72,6 +73,7 @@ class GraphEntropyCalculator:
         graph: nx.Graph,
         node_attributes: Dict[str, Dict],
         attribute_key: str = 'type',
+        neighborhood_profile: Optional[Dict[str, object]] = None,
     ) -> float:
         """
         Compute entropy based on diversity of neighbor attributes
@@ -91,8 +93,11 @@ class GraphEntropyCalculator:
             Entropy value
         """
         try:
-            # Get k-hop neighbors
-            neighbors = self._get_k_hop_neighbors(node, graph, self.neighborhood_size)
+            profile = neighborhood_profile or self._build_neighborhood_profile(
+                node,
+                graph,
+            )
+            neighbors = profile["k_hop_neighbors"]
             
             if len(neighbors) == 0:
                 return 0.0
@@ -124,6 +129,7 @@ class GraphEntropyCalculator:
         self,
         node: str,
         graph: nx.Graph,
+        neighborhood_profile: Optional[Dict[str, object]] = None,
     ) -> Dict[str, float]:
         """
         Compute entropy based on degree distribution of neighbors
@@ -136,387 +142,179 @@ class GraphEntropyCalculator:
             Dictionary with entropy metrics
         """
         try:
-            neighbors = list(graph.neighbors(node))
+            profile = neighborhood_profile or self._build_neighborhood_profile(
+                node,
+                graph,
+            )
+            neighbors = list(profile["direct_neighbors"])
             
             if len(neighbors) == 0:
-                return {
-                    'degree_entropy': 0.0,
-                    'avg_neighbor_degree': 0.0,
-                    'degree_variance': 0.0,
-                }
+                return {"degree_entropy": 0.0}
             
-            # Get neighbor degrees
-            neighbor_degrees = [graph.degree(n) for n in neighbors]
-            
-            # Binning degrees for entropy calculation
+            # Compute probability distribution
+            degrees = list(profile.get("neighbor_degrees") or [])
+            if not degrees:
+                degrees = [graph.degree(neighbor) for neighbor in neighbors]
             bins = [0, 1, 5, 10, 50, 100, float('inf')]
-            binned_degrees = np.digitize(neighbor_degrees, bins)
+            binned_degrees = np.digitize(degrees, bins)
+            counts = Counter(binned_degrees)
+            total = len(degrees)
+            probs = [count / total for count in counts.values()]
             
             # Compute entropy
-            counts = Counter(binned_degrees)
-            total = len(neighbor_degrees)
-            probs = [count / total for count in counts.values()]
             entropy = -sum(p * math.log2(p) if p > 0 else 0 for p in probs)
             
-            return {
-                'degree_entropy': entropy,
-                'avg_neighbor_degree': np.mean(neighbor_degrees),
-                'degree_variance': np.var(neighbor_degrees),
-            }
+            return {"degree_entropy": entropy}
         
         except nx.NetworkXError:
-            return {
-                'degree_entropy': 0.0,
-                'avg_neighbor_degree': 0.0,
-                'degree_variance': 0.0,
-            }
-    
-    def compute_temporal_entropy(
-        self,
-        node: str,
-        edge_timestamps: Dict[tuple, float],
-        current_time: float,
-        time_window: float = 86400.0,  # 24 hours
-    ) -> float:
-        """
-        Compute entropy of transaction timing patterns
-        
-        Regular patterns → low entropy → legitimate
-        Irregular patterns → high entropy → suspicious
-        
-        Args:
-            node: Target node
-            edge_timestamps: Dictionary mapping (src, tgt) → timestamp
-            current_time: Current timestamp
-            time_window: Time window to consider
-        
-        Returns:
-            Temporal entropy
-        """
-        # Collect timestamps for node's edges
-        timestamps = []
-        for (src, tgt), ts in edge_timestamps.items():
-            if (src == node or tgt == node) and (current_time - ts) <= time_window:
-                timestamps.append(ts)
-        
-        if len(timestamps) < 2:
-            return 0.0
-        
-        # Compute time differences
-        timestamps = sorted(timestamps)
-        time_diffs = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
-        
-        # Bin time differences (seconds)
-        bins = [0, 60, 300, 3600, 86400, float('inf')]  # 1min, 5min, 1hr, 1day
-        binned_diffs = np.digitize(time_diffs, bins)
-        
-        # Compute entropy
-        counts = Counter(binned_diffs)
-        total = len(time_diffs)
-        probs = [count / total for count in counts.values()]
-        entropy = -sum(p * math.log2(p) if p > 0 else 0 for p in probs)
-        
-        return entropy
-    
+            return {"degree_entropy": 0.0}
+
+    def _get_k_hop_neighbors(self, node: str, graph: nx.Graph, k: Optional[int] = None) -> Set[str]:
+        if graph is None or not graph.has_node(node):
+            return set()
+
+        max_depth = self.neighborhood_size if k is None else k
+        visited = {node}
+        frontier = {node}
+        neighbors: Set[str] = set()
+
+        for _ in range(max_depth):
+            next_frontier = set()
+            for current in frontier:
+                current_neighbors = set(graph.neighbors(current))
+                next_frontier.update(current_neighbors - visited)
+            if not next_frontier:
+                break
+            neighbors.update(next_frontier)
+            visited.update(next_frontier)
+            frontier = next_frontier
+
+        return neighbors
+
+    def _count_edges_between_neighbors(self, graph: nx.Graph, neighbors: Set[str]) -> int:
+        if not neighbors:
+            return 0
+        subgraph = graph.subgraph(neighbors)
+        return subgraph.number_of_edges()
+
+    def _build_neighborhood_profile(self, node: str, graph: nx.Graph) -> Dict[str, object]:
+        direct_neighbors = set(graph.neighbors(node)) if graph is not None and graph.has_node(node) else set()
+        k_hop_neighbors = self._get_k_hop_neighbors(node, graph)
+        subgraph_nodes = set(k_hop_neighbors)
+        subgraph_nodes.add(node)
+        subgraph = graph.subgraph(subgraph_nodes) if graph is not None else None
+
+        return {
+            "direct_neighbors": direct_neighbors,
+            "k_hop_neighbors": k_hop_neighbors,
+            "subgraph": subgraph,
+            "neighbor_degrees": [graph.degree(neighbor) for neighbor in direct_neighbors] if graph is not None else [],
+            "edges_between_neighbors": self._count_edges_between_neighbors(graph, direct_neighbors) if graph is not None else 0,
+        }
+
     def compute_structural_entropy(
         self,
         node: str,
         graph: nx.Graph,
+        neighborhood_profile: Optional[Dict[str, object]] = None,
     ) -> Dict[str, float]:
-        """
-        Compute structural entropy metrics
-        
-        Measures randomness in local network structure
-        
-        Args:
-            node: Target node
-            graph: Graph structure
-        
-        Returns:
-            Dictionary with structural entropy metrics
-        """
         try:
-            neighbors = self._get_neighbors(graph, node)
-            
-            if len(neighbors) < 2:
-                return {
-                    'clustering_coefficient': 0.0,
-                    'local_efficiency': 0.0,
-                    'structural_entropy': 0.0,
-                }
-            
-            # Clustering coefficient (how connected are neighbors)
-            clustering_fn = getattr(nx, "clustering", None)
-            if callable(clustering_fn):
-                clustering = clustering_fn(graph, node)
-            else:
-                clustering = self._estimate_clustering_from_edge_density(neighbors, graph)
+            profile = neighborhood_profile or self._build_neighborhood_profile(node, graph)
+            direct_neighbors = set(profile["direct_neighbors"])
+            if len(direct_neighbors) < 2:
+                return {"structural_entropy": 0.0, "clustering_coefficient": 0.0}
 
-            # Local efficiency
-            subgraph = graph.subgraph([node] + list(neighbors))
-            local_eff_fn = getattr(nx, "local_efficiency", None)
-            if callable(local_eff_fn):
-                try:
-                    local_eff = local_eff_fn(subgraph)
-                except Exception as e:
-                    logger.error(f"Error: {e}")
-                    local_eff = 0.0
-            else:
-                local_eff = 0.0
-
-            # Structural entropy based on edge distribution
-            edges_between_neighbors = self._count_edges_between_neighbors(graph, neighbors)
-            
-            # Maximum possible edges
-            max_edges = len(neighbors) * (len(neighbors) - 1) // 2
-            
-            if max_edges > 0:
-                edge_prob = edges_between_neighbors / max_edges
-                # Entropy of random graph with same edge probability
-                if 0 < edge_prob < 1:
-                    structural_entropy = -(edge_prob * math.log2(edge_prob) + 
-                                         (1-edge_prob) * math.log2(1-edge_prob))
-                else:
-                    structural_entropy = 0.0
-            else:
-                structural_entropy = 0.0
-            
+            possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1) / 2
+            edges_between = float(profile["edges_between_neighbors"])
+            clustering = edges_between / possible_edges if possible_edges else 0.0
+            structural_entropy = -math.log2(clustering) if clustering > 0 else 0.0
             return {
-                'clustering_coefficient': clustering,
-                'local_efficiency': local_eff,
-                'structural_entropy': structural_entropy,
+                "structural_entropy": float(structural_entropy),
+                "clustering_coefficient": float(clustering),
             }
-        
-        except getattr(nx, "NetworkXError", Exception):
-            return {
-                'clustering_coefficient': 0.0,
-                'local_efficiency': 0.0,
-                'structural_entropy': 0.0,
-            }
+        except nx.NetworkXError:
+            return {"structural_entropy": 0.0, "clustering_coefficient": 0.0}
 
-    def _count_edges_between_neighbors(
+    def compute_temporal_entropy(
         self,
-        graph: nx.Graph,
-        neighbors: Set[str],
-    ) -> int:
-        """Count unique edges inside the induced neighbor subgraph."""
-        if len(neighbors) < 2:
-            return 0
+        edge_timestamps: Dict,
+        current_time: Optional[float] = None,
+    ) -> Dict[str, float]:
+        if not edge_timestamps:
+            return {"temporal_entropy": 0.0}
 
-        edge_pairs = set()
-        subgraph = graph.subgraph(list(neighbors))
-        for u, v in subgraph.edges():
-            if u == v:
-                continue
-            edge_pairs.add(tuple(sorted((u, v))))
-        return len(edge_pairs)
+        timestamps = list(edge_timestamps.values())
+        if len(timestamps) < 2:
+            return {"temporal_entropy": 0.0}
 
-    def _get_neighbors(self, graph: nx.Graph, node: str) -> Set[str]:
-        """Return neighbors for real NetworkX graphs and lightweight test stubs."""
-        if hasattr(graph, "neighbors"):
-            return set(graph.neighbors(node))
-        if hasattr(graph, "successors"):
-            return set(graph.successors(node))
-        return set()
+        intervals = np.diff(sorted(float(timestamp) for timestamp in timestamps))
+        if len(intervals) == 0:
+            return {"temporal_entropy": 0.0}
 
-    def _estimate_clustering_from_edge_density(
-        self,
-        neighbors: Set[str],
-        graph: nx.Graph,
-    ) -> float:
-        """Fallback clustering estimate for lightweight graph stubs."""
-        max_edges = len(neighbors) * (len(neighbors) - 1) // 2
-        if max_edges <= 0:
-            return 0.0
-        return self._count_edges_between_neighbors(graph, neighbors) / max_edges
-    
-    def compute_transaction_amount_entropy(
-        self,
-        node: str,
-        edge_amounts: Dict[tuple, float],
-    ) -> float:
-        """
-        Compute entropy of transaction amounts
-        
-        Regular amounts → low entropy → legitimate
-        Varied amounts → high entropy → suspicious
-        
-        Args:
-            node: Target node
-            edge_amounts: Dictionary mapping (src, tgt) → amount
-        
-        Returns:
-            Amount entropy
-        """
-        # Collect amounts for node's transactions
-        amounts = []
-        for (src, tgt), amount in edge_amounts.items():
-            if src == node or tgt == node:
-                amounts.append(amount)
-        
+        std = float(np.std(intervals))
+        mean = float(np.mean(intervals)) or 1.0
+        return {"temporal_entropy": min(std / mean, 1.0)}
+
+    def compute_amount_entropy(self, edge_amounts: Dict) -> Dict[str, float]:
+        if not edge_amounts:
+            return {"amount_entropy": 0.0}
+
+        amounts = [float(amount) for amount in edge_amounts.values()]
         if len(amounts) < 2:
-            return 0.0
-        
-        # Bin amounts
-        bins = [0, 1000, 5000, 10000, 50000, 100000, float('inf')]
-        binned_amounts = np.digitize(amounts, bins)
-        
-        # Compute entropy
-        counts = Counter(binned_amounts)
-        total = len(amounts)
-        probs = [count / total for count in counts.values()]
-        entropy = -sum(p * math.log2(p) if p > 0 else 0 for p in probs)
-        
-        return entropy
-    
+            return {"amount_entropy": 0.0}
+
+        bins = np.histogram_bin_edges(amounts, bins="auto")
+        counts, _ = np.histogram(amounts, bins=bins)
+        total = counts.sum()
+        probs = [count / total for count in counts if count > 0]
+        entropy = -sum(p * math.log2(p) for p in probs)
+        return {"amount_entropy": float(entropy)}
+
     def compute_all_entropy_features(
         self,
         node: str,
         graph: nx.Graph,
         node_attributes: Optional[Dict[str, Dict]] = None,
-        edge_timestamps: Optional[Dict[tuple, float]] = None,
-        edge_amounts: Optional[Dict[tuple, float]] = None,
+        edge_timestamps: Optional[Dict] = None,
+        edge_amounts: Optional[Dict] = None,
         current_time: Optional[float] = None,
     ) -> Dict[str, float]:
-        """
-        Compute all entropy-based features
-        
-        Args:
-            node: Target node
-            graph: Graph structure
-            node_attributes: Node attributes
-            edge_timestamps: Edge timestamps
-            edge_amounts: Edge amounts
-            current_time: Current time
-        
-        Returns:
-            Dictionary with all entropy features
-        """
-        features = {}
-        
-        # Neighbor entropy
-        if node_attributes is not None:
-            for attr_key in ['type', 'category']:
-                if any(attr_key in attrs for attrs in node_attributes.values()):
-                    entropy = self.compute_neighbor_entropy(node, graph, node_attributes, attr_key)
-                    features[f'neighbor_entropy_{attr_key}'] = entropy
-        
-        # Degree entropy
-        degree_features = self.compute_degree_entropy(node, graph)
-        features.update(degree_features)
-        
-        # Structural entropy
-        structural_features = self.compute_structural_entropy(node, graph)
-        features.update(structural_features)
-        
-        # Temporal entropy
-        if edge_timestamps is not None and current_time is not None:
-            features['temporal_entropy'] = self.compute_temporal_entropy(
-                node, edge_timestamps, current_time
-            )
-        
-        # Amount entropy
-        if edge_amounts is not None:
-            features['amount_entropy'] = self.compute_transaction_amount_entropy(
-                node, edge_amounts
-            )
-        
+        profile = self._build_neighborhood_profile(node, graph)
+        features = self.compute_degree_entropy(node, graph, profile)
+        features.update(self.compute_structural_entropy(node, graph, profile))
+        features["neighbor_entropy"] = self.compute_neighbor_entropy(
+            node,
+            graph,
+            node_attributes or {},
+            neighborhood_profile=profile,
+        )
+        features.update(self.compute_temporal_entropy(edge_timestamps or {}, current_time))
+        features.update(self.compute_amount_entropy(edge_amounts or {}))
         return features
-    
-    def _get_k_hop_neighbors(
-        self,
-        node: str,
-        graph: nx.Graph,
-        k: int,
-    ) -> Set[str]:
-        """Get k-hop neighbors of a node"""
-        if k == 0:
-            return {node}
-        
-        neighbors = set()
-        visited = {node}
-        current_layer = {node}
-        
-        for _ in range(k):
-            next_layer = set()
-            for n in current_layer:
-                has_node = False
-                if hasattr(graph, "has_node"):
-                    has_node = graph.has_node(n)
-                else:
-                    has_node = n in graph.nodes()
-
-                if has_node:
-                    if hasattr(graph, "neighbors"):
-                        neighbor_iter = graph.neighbors(n)
-                    else:
-                        neighbor_iter = graph.successors(n)
-
-                    for neighbor in neighbor_iter:
-                        if neighbor not in visited:
-                            next_layer.add(neighbor)
-                            visited.add(neighbor)
-            neighbors.update(next_layer)
-            current_layer = next_layer
-            if not current_layer:
-                break
-        
-        return neighbors
 
 
 def compute_entropy_risk_score(
     node: str,
     graph: nx.Graph,
     node_attributes: Optional[Dict[str, Dict]] = None,
-    edge_timestamps: Optional[Dict[tuple, float]] = None,
-    edge_amounts: Optional[Dict[tuple, float]] = None,
+    edge_timestamps: Optional[Dict] = None,
+    edge_amounts: Optional[Dict] = None,
     current_time: Optional[float] = None,
 ) -> float:
-    """
-    Compute overall entropy-based fraud risk score
-    
-    Args:
-        node: Target node
-        graph: Graph structure
-        node_attributes: Node attributes
-        edge_timestamps: Edge timestamps
-        edge_amounts: Edge amounts
-        current_time: Current time
-    
-    Returns:
-        Entropy risk score (0-1)
-    """
     calculator = GraphEntropyCalculator()
     features = calculator.compute_all_entropy_features(
-        node, graph, node_attributes, edge_timestamps, edge_amounts, current_time
+        node,
+        graph,
+        node_attributes=node_attributes or {},
+        edge_timestamps=edge_timestamps or {},
+        edge_amounts=edge_amounts or {},
+        current_time=current_time,
     )
-    
-    # Combine features into risk score
-    risk = 0.0
-    
-    # High neighbor entropy → high risk
-    if 'neighbor_entropy_type' in features:
-        neighbor_entropy_norm = min(features['neighbor_entropy_type'] / 3.0, 1.0)
-        risk += 0.3 * neighbor_entropy_norm
-    
-    # High degree entropy → high risk
-    if 'degree_entropy' in features:
-        degree_entropy_norm = min(features['degree_entropy'] / 3.0, 1.0)
-        risk += 0.2 * degree_entropy_norm
-    
-    # Low clustering (random connections) → high risk
-    if 'clustering_coefficient' in features:
-        clustering_risk = 1.0 - features['clustering_coefficient']
-        risk += 0.2 * clustering_risk
-    
-    # High temporal entropy → high risk
-    if 'temporal_entropy' in features:
-        temporal_entropy_norm = min(features['temporal_entropy'] / 2.0, 1.0)
-        risk += 0.15 * temporal_entropy_norm
-    
-    # High amount entropy → high risk
-    if 'amount_entropy' in features:
-        amount_entropy_norm = min(features['amount_entropy'] / 2.0, 1.0)
-        risk += 0.15 * amount_entropy_norm
-    
-    return min(risk, 1.0)
+    normalized = [
+        min(features.get("degree_entropy", 0.0) / 3.0, 1.0),
+        min(features.get("structural_entropy", 0.0) / 3.0, 1.0),
+        min(features.get("neighbor_entropy", 0.0) / 3.0, 1.0),
+        min(features.get("temporal_entropy", 0.0), 1.0),
+        min(features.get("amount_entropy", 0.0) / 3.0, 1.0),
+    ]
+    return float(min(sum(normalized) / len(normalized), 1.0))

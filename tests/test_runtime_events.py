@@ -371,6 +371,56 @@ class TestDispatcherBoundedQueue:
         assert "first" in sources, "first event should have been delivered"
         # Dispatcher completed stop() without error — bounded queue did not crash it
 
+        def test_queue_accepts_events_up_to_exact_capacity(self):
+            received: List[RuntimeEvent] = []
+
+            async def _go():
+                bus = RuntimeEventBus()
+
+                async def handler(event):
+                    received.append(event)
+
+                await bus.subscribe(RuntimeEvent, handler)
+
+                dispatcher = EventDispatcher(bus, maxsize=2)
+                await dispatcher.start()
+
+                dispatcher.dispatch(RuntimeStartedEvent(source="first"))
+                dispatcher.dispatch(RuntimeStartedEvent(source="second"))
+
+                await asyncio.sleep(0.05)
+                await dispatcher.stop()
+
+            _run(_go())
+
+            assert len(received) == 2
+
+        def test_zero_queue_size_behaves_as_unbounded(self):
+            received: List[RuntimeEvent] = []
+
+            async def _go():
+                bus = RuntimeEventBus()
+
+                async def handler(event):
+                    received.append(event)
+
+                await bus.subscribe(RuntimeEvent, handler)
+
+                dispatcher = EventDispatcher(bus, maxsize=0)
+                await dispatcher.start()
+
+                for i in range(20):
+                    dispatcher.dispatch(
+                        RuntimeStartedEvent(source=f"event-{i}")
+                    )
+
+                await asyncio.sleep(0.05)
+                await dispatcher.stop()
+
+            _run(_go())
+
+            assert len(received) == 20
+
 
 class TestDispatcherThreadSafety:
     def test_dispatch_from_background_thread_is_safe(self):

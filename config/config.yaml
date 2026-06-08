@@ -138,9 +138,10 @@ database:
   # Neo4j (if using)
   neo4j:
     enabled: false
-    uri: "bolt://localhost:7687"
-    user: "neo4j"
-    password: "password"
+    uri: "neo4j+ssc://localhost:7687"
+    require_encryption: true
+    user: ${AEGIS_NEO4J_USER}
+    password: ${AEGIS_NEO4J_PASSWORD}
   
   # Redis Cache
   redis:

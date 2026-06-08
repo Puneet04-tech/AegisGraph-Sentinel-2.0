@@ -309,9 +309,10 @@ class GraphOperationCache:
     def _hash_graph(graph: nx.DiGraph) -> str:
         """
         Generate deterministic hash for graph structure.
-        
-        Uses sorted edge set and edge payloads to create a consistent hash
-        regardless of node order while still invalidating on attribute changes.
+
+        Includes edges, edge payloads, node count, isolated nodes, and
+        node degree sums to detect structural changes that edges alone
+        would miss (e.g. adding or removing isolated nodes).
         """
         def edge_payload(u, v):
             if hasattr(graph, "get_edge_data"):
@@ -328,8 +329,22 @@ class GraphOperationCache:
             )
             for u, v in graph.edges()
         )
-        edge_str = str(edges).encode()
-        return hashlib.sha256(edge_str).hexdigest()[:16]
+
+        isolated_nodes = sorted(
+            n for n in graph.nodes() if graph.degree(n) == 0
+        )
+        node_count = graph.number_of_nodes()
+        degree_sig = tuple(
+            sorted((n, d) for n, d in graph.degree())
+        )
+
+        payload = (
+            node_count,
+            tuple(isolated_nodes),
+            degree_sig,
+            edges,
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()[:16]
 
     @staticmethod
     def _hash_params(**params) -> str:
@@ -446,11 +461,40 @@ class GraphOperationCache:
     def invalidate_graph(self, graph: nx.DiGraph) -> None:
         """Invalidate all cached operations for a graph."""
         graph_hash = self._hash_graph(graph)
-        # Invalidate all operations for this graph
-        for operation in ["betweenness", "pagerank", "cliques"]:
-            cache_key = f"graph:{operation}:{graph_hash}"
-            self.backend.invalidate(cache_key)
+
+        # Cliques key has no params hash — exact key works
+        self.backend.invalidate(f"graph:cliques:{graph_hash}")
+
+        # Betweenness and pagerank include a params hash suffix — use prefix scan
+        for operation in ["betweenness", "pagerank"]:
+            prefix = f"graph:{operation}:{graph_hash}:"
+            self._invalidate_by_prefix(prefix)
+
         logger.info(f"Invalidated cache for graph {graph_hash}")
+
+    def _invalidate_by_prefix(self, prefix: str) -> None:
+        """Delete all cache keys that start with the given prefix."""
+        if isinstance(self.backend, RedisGraphCache):
+            try:
+                cursor = 0
+                while True:
+                    cursor, keys = self.backend.client.scan(
+                        cursor, match=f"{prefix}*", count=100
+                    )
+                    if keys:
+                        self.backend.client.delete(*keys)
+                    if cursor == 0:
+                        break
+            except Exception as e:
+                logger.error(f"Prefix invalidation error for {prefix}: {e}")
+        elif isinstance(self.backend, InMemoryGraphCache):
+            with self.backend._lock:
+                keys_to_delete = [
+                    k for k in self.backend.cache if k.startswith(prefix)
+                ]
+                for k in keys_to_delete:
+                    del self.backend.cache[k]
+                    logger.debug(f"Cache INVALIDATE: {k}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""

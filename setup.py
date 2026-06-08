@@ -41,6 +41,7 @@ def check_dependencies():
         ('httpx', 'httpx'),
         ('pytest', 'pytest'),
         ('pytest-cov', 'pytest_cov'),
+        ('google-generativeai', 'google.generativeai'),
     ]
     
     missing = []
@@ -158,9 +159,9 @@ def main():
     if all_passed:
         print("\n🎉 Setup successful! You're ready to use AegisGraph Sentinel 2.0")
         print("\nNext steps:")
-        print("1. Generate synthetic data: python -m src.data.data_generator")
-        print("2. Start API server: python -m src.api.main")
-        print("3. Test API: python example_usage.py")
+        print("1. Generate synthetic data: python -m src.data.synthetic_data_gen")
+        print("2. Start API server: uvicorn src.api.main:app --reload")
+        print("3. Open dashboard:   streamlit run app.py")
         print("\nDocumentation: http://localhost:8000/docs")
     else:
         print("\n⚠ Setup incomplete. Please resolve the issues above.")

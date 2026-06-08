@@ -9,8 +9,9 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import functools
+
 
 REQUIRED_CONFIG_SECTIONS = {
     "graph",
@@ -18,6 +19,46 @@ REQUIRED_CONFIG_SECTIONS = {
     "runtime",
     "observability",
 }
+
+
+logger = logging.getLogger(__name__)
+
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails"""
+    pass
+
+
+def validate_dataset_splits(config: dict) -> list:
+    """
+    Validate dataset split configuration.
+    """
+    errors = []
+
+    data_config = config.get("data", {})
+
+    train_split = data_config.get("train_split")
+    val_split = data_config.get("val_split")
+    test_split = data_config.get("test_split")
+
+    if None not in (train_split, val_split, test_split):
+        total = train_split + val_split + test_split
+
+        if abs(total - 1.0) > 1e-6:
+            errors.append(
+                f"Dataset splits must sum to 1.0, got {total}"
+            )
+
+        for name, value in [
+            ("train_split", train_split),
+            ("val_split", val_split),
+            ("test_split", test_split),
+        ]:
+            if value < 0 or value > 1:
+                errors.append(
+                    f"{name} must be between 0 and 1"
+                )
+
+    return errors
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
@@ -37,6 +78,7 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
 
+
     if not isinstance(config, dict):
         raise ValueError(
             f"Invalid configuration format in {config_path}"
@@ -48,6 +90,14 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         raise ValueError(
             "Missing required configuration sections: "
             + ", ".join(sorted(missing_sections))
+
+    errors = validate_dataset_splits(config)
+
+    if errors:
+        raise ConfigValidationError(
+            "Dataset split validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+
         )
 
     return config
@@ -161,7 +211,7 @@ def get_device(device: Optional[str] = None) -> torch.device:
         return torch.device('mps')
 
     if requested_device in {'cuda', 'mps'}:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Requested %s device is unavailable; falling back to best available device",
             requested_device,
         )
@@ -248,7 +298,7 @@ def get_timestamp() -> str:
     Returns:
         ISO format timestamp
     """
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 # ==============================================================================
@@ -329,9 +379,7 @@ def validate_thresholds(thresholds: dict) -> list:
             errors.append("graph_analysis.lateral_movement_threshold_multiplier must be >= 1")
     
     return errors
-
-
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=None)
 def load_thresholds(config_path: str = "config/thresholds.yaml", 
                     validate: bool = True) -> dict:
     """
@@ -362,7 +410,7 @@ def load_thresholds(config_path: str = "config/thresholds.yaml",
                 f"Threshold validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
             )
     
-    logging.getLogger(__name__).info(f"Loaded thresholds from {config_path}")
+    logger.info(f"Loaded thresholds from {config_path}")
     return thresholds
 
 

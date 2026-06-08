@@ -1,0 +1,148 @@
+name: Issue Assignment Bot
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+  workflow_dispatch: # Allows manual run to clean up everything at once
+
+jobs:
+  welcome-message:
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Post Welcome Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"body": "👋 Welcome! This repository automatically assigns issues to their creators. If you are looking at older issues, an administrator can trigger our bulk catch-up system!"}' \
+            "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments"
+        shell: bash
+
+  assign-issue:
+    if: |
+      (github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'edited')) ||
+      (github.event_name == 'issue_comment' && github.event.action == 'created' && contains(github.event.comment.body, '/assign')) ||
+      (github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Handle Assignment Request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          import json, urllib.request, os, time
+
+          token = os.getenv('GITHUB_TOKEN')
+          repo = os.getenv('REPO')
+          event_name = os.getenv('EVENT_NAME')
+          event_path = os.getenv('EVENT_PATH')
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json"
+          }
+
+          def process_single_assignment(issue_num, issue_creator, current_assignees, trigger):
+              if current_assignees:
+                  print(f"Issue #{issue_num} is already assigned. Skipping.")
+                  return False
+
+              try:
+                  # 1. Assign the creator
+                  assign_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/assignees"
+                  data = json.dumps({"assignees": [issue_creator]}).encode()
+                  req = urllib.request.Request(assign_url, data=data, headers=headers, method="POST")
+                  urllib.request.urlopen(req)
+
+                  # 2. Build comment text based on scenario
+                  if trigger == 'workflow_dispatch':
+                      body = f"⚡ @{issue_creator}, this open issue has been automatically assigned to you during a repository-wide history sweep! 🚀"
+                  elif trigger == 'issue_comment':
+                      body = f"✅ @{issue_creator} (the issue creator) has been assigned. Thanks for looking into this!"
+                  else:
+                      body = f"✅ @{issue_creator}, you have been automatically assigned to this issue. Good luck! 🚀"
+
+                  # 3. Post notification comment
+                  comment_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/comments"
+                  comment_data = json.dumps({"body": body}).encode()
+                  req_comment = urllib.request.Request(comment_url, data=comment_data, headers=headers, method="POST")
+                  urllib.request.urlopen(req_comment)
+
+                  print(f"Successfully assigned Issue #{issue_num} to @{issue_creator}")
+                  return True
+              except Exception as e:
+                  print(f"Error assigning issue #{issue_num}: {e}")
+                  return False
+
+          def run_bulk_crawl():
+              print("Scanning repository for all open unassigned issues...")
+              page = 1
+              per_page = 100
+              total_fixed = 0
+
+              while True:
+                  url = f"https://api.github.com/repos/{repo}/issues?state=open&per_page={per_page}&page={page}"
+                  req = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(req) as resp:
+                          issues = json.loads(resp.read().decode())
+                  except Exception as e:
+                      print(f"Failed loading issues on page {page}: {e}")
+                      break
+
+                  if not issues:
+                      break  # No more issues remaining in the history loop
+
+                  for issue in issues:
+                      # Skip pull requests (GitHub processes PRs inside the issues endpoint framework)
+                      if 'pull_request' in issue:
+                          continue
+
+                      issue_num = issue['number']
+                      issue_creator = issue['user']['login']
+                      assignees = [a['login'] for a in issue.get('assignees', [])]
+
+                      was_assigned = process_single_assignment(issue_num, issue_creator, assignees, 'workflow_dispatch')
+                      if was_assigned:
+                          total_fixed += 1
+                          time.sleep(0.4) # Brief safety padding to respect GitHub API rate limits
+
+                  page += 1
+
+              print(f"Historical sweep complete. Assigned {total_fixed} backlog issues.")
+
+          # ---- EXECUTION SWITCH ----
+          if event_name == 'workflow_dispatch':
+              run_bulk_crawl()
+          else:
+              # Safely parse context parameters from the runner event file
+              if event_path and os.path.exists(event_path):
+                  with open(event_path, 'r') as f:
+                      event_data = json.load(f)
+                  
+                  issue = event_data.get('issue')
+                  if issue:
+                      issue_num = issue.get('number')
+                      issue_creator = issue['user']['login']
+                      assignees = [a['login'] for a in issue.get('assignees', [])]
+                      
+                      # Use the commenter handle if someone manually inputs `/assign` on an issue
+                      if event_name == 'issue_comment':
+                          commenter = event_data.get('comment', {}).get('user', {}).get('login')
+                          process_single_assignment(issue_num, commenter, assignees, 'issue_comment')
+                      else:
+                          process_single_assignment(issue_num, issue_creator, assignees, 'issues')
+        shell: python
