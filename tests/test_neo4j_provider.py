@@ -260,3 +260,15 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertEqual(list(provider._subgraph_cache.keys()), ["ACC3"])
             self.assertNotIn("ACC1", provider._subgraph_cache)
             self.assertEqual(mock_session.run.call_count, 2)
+
+def test_cache_entry_expires_after_ttl():
+    provider = Neo4jGraphProvider(
+        enabled=True,
+        cache_ttl_seconds=1
+    )
+
+    # cache graph
+
+    time.sleep(2)
+
+    # verify cache miss after TTL

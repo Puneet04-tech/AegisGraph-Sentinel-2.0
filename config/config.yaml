@@ -1,11 +1,17 @@
 # AegisGraph Sentinel 2.0 Configuration
-
+graph:
+  enable_subgraph_cache: true
 # System Settings
 system:
   name: "AegisGraph Sentinel 2.0"
   version: "2.0.0"
   environment: "development"  # development, staging, production
+cache_ttl_seconds: 3600
 
+# Cache entries are invalidated for updates performed through
+# this provider. External Neo4j updates from other services,
+# clients, or administrative tools may remain cached until
+# TTL expiration.
 # API Settings
 api:
   host: "0.0.0.0"

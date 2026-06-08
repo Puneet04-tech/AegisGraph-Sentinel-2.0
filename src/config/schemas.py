@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import defaults
+enable_subgraph_cache: bool = Field(default=True)
 
 
 class ConfigBaseModel(BaseModel):
