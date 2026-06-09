@@ -12,9 +12,18 @@ import numpy as np
 from pathlib import Path
 import yaml
 from tqdm import tqdm
-import mlflow
-import mlflow.pytorch
+import logging
 from contextlib import contextmanager
+
+try:
+    import mlflow
+    import mlflow.pytorch
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    mlflow = None  # type: ignore[assignment]
+    MLFLOW_AVAILABLE = False
+
+_trainer_logger = logging.getLogger(__name__)
 
 from .losses import FocalLoss, CombinedLoss
 from ..utils.helpers import get_device
@@ -113,7 +122,15 @@ class Trainer:
 
         # MLflow setup
         mlflow_config = config.get('mlflow', {})
-        self.mlflow_enabled = mlflow_config.get('enabled', False)
+        config_requests_mlflow = mlflow_config.get('enabled', False)
+
+        if config_requests_mlflow and not MLFLOW_AVAILABLE:
+            _trainer_logger.warning(
+                "mlflow is not installed; experiment tracking will be disabled. "
+                "Install it with: pip install mlflow"
+            )
+
+        self.mlflow_enabled = config_requests_mlflow and MLFLOW_AVAILABLE
 
         if self.mlflow_enabled:
             mlflow.set_tracking_uri(mlflow_config.get('tracking_uri', 'mlruns'))
