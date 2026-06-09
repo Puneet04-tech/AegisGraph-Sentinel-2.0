@@ -14,7 +14,8 @@ Unit tests (BlastRadiusAnalyzer)
   - max_depth_limit_respected          — no nodes beyond the cap appear
   - tier_classification_boundaries     — 0.70 / 0.35 / 0.10 land correctly
   - source_node_not_in_graph_raises    — ValueError propagated
-  - undirected_graph_traversal         — works on nx.Graph (not only DiGraph)
+  - undirected_graph_raises_type_error — nx.Graph raises TypeError (direction required)
+  - directed_graph_no_upstream_scoring — upstream senders excluded from results
   - zero_score_nodes_excluded          — sub-threshold nodes absent from output
   - hard_max_depth_cap                 — HARD_MAX_DEPTH clamps the input
   - weighted_edges_used                — edge weight != 1.0 changes the score
@@ -351,22 +352,40 @@ class TestErrorHandling:
 
 
 class TestUndirectedGraph:
-    def test_undirected_traversal(self):
-        """BlastRadiusAnalyzer should work on undirected graphs via nx.Graph."""
+    def test_undirected_graph_raises_type_error(self):
+        """
+        compute() must raise TypeError when passed an undirected nx.Graph.
+
+        Contagion propagates along fund-transfer direction (A → B means B is
+        downstream of A).  An undirected graph traverses both directions,
+        which would score innocent upstream senders as fraud targets — a
+        semantically incorrect and potentially harmful result.
+        """
         g = nx.Graph()
         g.add_edge("A", "B", weight=1.0)
         g.add_edge("B", "C", weight=1.0)
         analyzer = BlastRadiusAnalyzer()
-        report = analyzer.compute("A", g, max_depth=2)
+        with pytest.raises(TypeError, match="directed graph"):
+            analyzer.compute("A", g, max_depth=2)
+
+    def test_directed_graph_does_not_score_upstream_senders(self):
+        """
+        With a directed graph A → Flagged → C, only C (downstream) must
+        appear in results.  A (upstream sender) must not be scored.
+        """
+        g = nx.DiGraph()
+        g.add_edge("A", "Flagged", weight=1.0)
+        g.add_edge("Flagged", "C", weight=1.0)
+        analyzer = BlastRadiusAnalyzer()
+        report = analyzer.compute("Flagged", g, max_depth=2)
         all_ids = {
             r.node_id
             for tier in (report.critical, report.high, report.suspicious)
             for r in tier
         }
-        assert "B" in all_ids
-        assert "C" in all_ids
-        # A must not self-score
-        assert "A" not in all_ids
+        assert "C" in all_ids, "Downstream node C must be scored"
+        assert "A" not in all_ids, "Upstream sender A must NOT be scored"
+        assert "Flagged" not in all_ids, "Source node must not self-score"
 
 
 class TestSortOrder:

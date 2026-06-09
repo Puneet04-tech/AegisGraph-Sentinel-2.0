@@ -203,7 +203,7 @@ from .schemas import (
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
-from .security import require_api_key, Role, require_role
+from .security import require_api_key, Role, require_role, require_any_role, require_admin
 from .validators import StrictRateLimit
 
 
@@ -323,7 +323,7 @@ def _require_verbose_health_access(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> None:
     if verbose:
-        require_api_key(x_api_key)
+        require_role(Role.ADMIN)(x_api_key)
 
 
 def _build_health_response(include_details: bool) -> dict[str, Any]:
@@ -1402,7 +1402,7 @@ async def lifespan(app: FastAPI):
         task_registry=state.tasks,
         recovery_manager=recovery_manager,
     )
-    state.runtime.recovery_manager = recovery_manager
+    state.runtime.set_recovery_manager(recovery_manager)
     state.runtime.watchdog = watchdog
 
     def restart_honeypot_task():
@@ -1491,10 +1491,25 @@ SWAGGER_ENABLED = os.getenv("SWAGGER_ENABLED", "true").lower() == "true"
 # Initialize FastAPI app
 app = FastAPI(
     title="AegisGraph Sentinel 2.0 API",
-    description="Real-Time Cross-Channel Mule Account Detection & Neutralization API.\n\n"
-                "### Authentication\n"
-                "All protected endpoints require an API Key via the `X-API-Key` header. "
-                "Use the **Authorize** button to authenticate globally.",
+    description=(
+        "Real-Time Cross-Channel Mule Account Detection & Neutralization API.\n\n"
+        "### Authentication\n"
+        "All protected endpoints require an API Key via the `X-API-Key` header. "
+        "Use the **Authorize** button to authenticate globally.\n\n"
+        "### Role-Based Access Control (RBAC)\n"
+        "Endpoints are protected by a 5-tier role hierarchy. "
+        "Supply the appropriate key for your role via `X-API-Key`.\n\n"
+        "| Role | Inherits | Typical operations |\n"
+        "|------|----------|--------------------|\n"
+        "| `SUPER_ADMIN` | All roles | Unrestricted |\n"
+        "| `ADMIN` | ADMIN, ANALYST, AUDITOR, VIEWER | Honeypot mgmt, memory diagnostics, blockchain export, legal evidence, case status updates |\n"
+        "| `ANALYST` | ANALYST, VIEWER | Fraud detection, batch scoring, explain, voice, mule, blast-radius, alert summaries, case CRUD, blockchain seal |\n"
+        "| `AUDITOR` | AUDITOR, VIEWER | System stats (`/stats`), case audit timeline |\n"
+        "| `VIEWER` | VIEWER | Model info, blockchain evidence verification |\n\n"
+        "Configure keys via environment variables:\n"
+        "- `AEGIS_API_KEY_HASHES` — comma-separated SHA-256 hashes (maps to SUPER_ADMIN)\n"
+        "- `AEGIS_ROLE_ADMIN`, `AEGIS_ROLE_ANALYST`, etc. — role-specific key hashes"
+    ),
     version="2.0.0",
     contact={
         "name": "AegisGraph Team",
@@ -1927,6 +1942,32 @@ async def check_transaction(
                 "confidence": risk_result.get('confidence'),
             },
         )
+
+        if internal_decision == "BLOCK":
+            dispatcher = getattr(state.runtime, "dispatcher", None)
+            if dispatcher is not None:
+                from ..runtime.events import SentinelAlertEvent
+                dispatcher.dispatch(
+                    SentinelAlertEvent(
+                        source="api.fraud_check",
+                        severity="HIGH",
+                        title="Fraud Transaction Blocked",
+                        message=(
+                            f"Transaction {request.transaction_id} was automatically blocked "
+                            f"due to high risk score ({risk_result['risk_score']:.4f})."
+                        ),
+                        payload={
+                            "transaction_id": request.transaction_id,
+                            "risk_score": risk_result['risk_score'],
+                            "decision": decision,
+                            "amount": request.amount,
+                            "currency": request.currency,
+                            "source_account": request.source_account,
+                            "target_account": request.target_account,
+                            "explanation": explanation_result['explanation'],
+                        }
+                    )
+                )
 
         return response
     
@@ -3004,8 +3045,13 @@ async def get_case(case_id: str):
     "/api/v1/cases/{case_id}",
     response_model=FraudCaseResponse,
     tags=["Case Management"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
     summary="Update status, assignment, or priority of a case",
+    description=(
+        "Partially update a fraud case (status, assigned analyst, or priority). "
+        "**Required role: ADMIN** — this is a privileged mutation that changes "
+        "authoritative case data."
+    ),
 )
 async def update_case(
     case_id: str,

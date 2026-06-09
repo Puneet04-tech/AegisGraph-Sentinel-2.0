@@ -13,6 +13,8 @@ from .task_registry import TaskRegistry
 from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
 from ..security import sanitize_metadata
+from ..audit import log_audit_event
+from ..configuration import ConfigRegistry, ConfigReloadManager, ConfigSnapshot
 
 
 @dataclass
@@ -25,6 +27,8 @@ class RuntimeState:
     tasks: TaskRegistry = field(default_factory=TaskRegistry)
     health_monitor: RuntimeHealthMonitor = field(default_factory=RuntimeHealthMonitor)
     resource_manager: RuntimeResourceManager = field(default_factory=RuntimeResourceManager)
+    config_registry: ConfigRegistry = field(default_factory=ConfigRegistry)
+    config_reload_manager: ConfigReloadManager = field(init=False)
     recovery_manager: Optional[Any] = None
     watchdog: Optional[Any] = None
     legacy_state: Optional[Any] = None
@@ -44,7 +48,18 @@ class RuntimeState:
             resource_manager=self.resource_manager,
         )
         self.tasks.set_resource_manager(self.resource_manager)
+        self.config_reload_manager = ConfigReloadManager(self.config_registry, audit_logger=log_audit_event)
+        self.resource_manager.set_config_registry(self.config_registry)
+        self.health_monitor.set_config_registry(self.config_registry)
         self.services.register_service("resource_manager", self.resource_manager, replace=True)
+        self.services.register_service("config_registry", self.config_registry, replace=True)
+        self.services.register_service("config_reload_manager", self.config_reload_manager, replace=True)
+
+    def set_recovery_manager(self, recovery_manager: Any) -> None:
+        self.recovery_manager = recovery_manager
+        if hasattr(recovery_manager, "set_config_registry"):
+            recovery_manager.set_config_registry(self.config_registry)
+        self.services.register_service("recovery_manager", recovery_manager, replace=True)
 
     # EventDispatcher needs a reference to the event_bus field.  Using a
     # helper avoids capturing 'self' in a lambda stored on self before the
@@ -73,6 +88,7 @@ class RuntimeState:
 
     def get_metrics(self) -> Dict[str, Any]:
         resource_metrics = self.resource_manager.get_resource_metrics()
+        config_snapshot = ConfigSnapshot.capture(self.config_registry)
         return {
             "active_task_count": self.tasks.active_count,
             "services": [info.__dict__ for info in self.services.get_initialization_state()],
@@ -82,5 +98,10 @@ class RuntimeState:
             "health_status": self.health_monitor.get_overall_status(),
             "resource_state": resource_metrics["backpressure_state"],
             "resources": resource_metrics,
+            "configuration": {
+                "count": len(config_snapshot.values),
+                "snapshot_timestamp": config_snapshot.timestamp,
+                "names": sorted(config_snapshot.values.keys()),
+            },
         }
 

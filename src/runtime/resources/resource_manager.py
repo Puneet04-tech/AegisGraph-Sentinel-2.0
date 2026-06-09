@@ -34,6 +34,10 @@ class RuntimeResourceManager:
         self.task_budget = TaskBudget(self.limits)
         self.queue_budget = QueueBudget(self.limits)
         self.backpressure = BackpressureController(self.limits)
+        self._config_registry: Any = None
+
+    def set_config_registry(self, registry: Any) -> None:
+        self._config_registry = registry
 
     def register_task(self, task_id: Any) -> bool:
         accepted = self.task_budget.register_task(task_id)
@@ -89,5 +93,6 @@ class RuntimeResourceManager:
             "event_rate": self.backpressure.event_rate,
             "recovery_rate": self.backpressure.recovery_rate,
             "memory_warning_threshold_mb": self.limits.memory_warning_threshold_mb,
+            "configuration_count": len(self._config_registry.list_configs()) if self._config_registry else 0,
         }
 

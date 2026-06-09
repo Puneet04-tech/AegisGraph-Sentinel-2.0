@@ -19,6 +19,7 @@ from .schemas import (
     RuntimeFlags,
     ScoringSettings,
     ScoringThresholdSettings,
+    WebhookSettings,
 )
 from .settings import RuntimeSettings
 
@@ -46,6 +47,10 @@ ENV_ALIASES = {
     "log_format": "LOG_FORMAT",
     "log_output_dir": "LOG_OUTPUT_DIR",
     "prometheus_port": "PROMETHEUS_PORT",
+    "discord_webhook_url": "DISCORD_WEBHOOK_URL",
+    "slack_webhook_url": "SLACK_WEBHOOK_URL",
+    "enable_discord_webhook": "ENABLE_DISCORD_WEBHOOK",
+    "enable_slack_webhook": "ENABLE_SLACK_WEBHOOK",
 }
 
 
@@ -140,6 +145,7 @@ def _build_settings_dict(
     prometheus_config = dict(monitoring_config.get("prometheus", {}))
     risk_config = dict(runtime_config.get("risk_scoring", {}))
     advanced_config = dict(runtime_config.get("advanced_features", {}))
+    webhook_config = dict(runtime_config.get("webhook", {}))
 
     risk_thresholds = dict(risk_config.get("thresholds", {}))
     threshold_risk_config = thresholds_config.get("risk_scoring")
@@ -271,6 +277,12 @@ def _build_settings_dict(
                 else defaults.DEFAULT_HONEYPOT_ESCROW_SECONDS,
             ),
         },
+        "webhook": {
+            "discord_url": env.discord_webhook_url or webhook_config.get("discord_url", defaults.DEFAULT_DISCORD_WEBHOOK_URL),
+            "slack_url": env.slack_webhook_url or webhook_config.get("slack_url", defaults.DEFAULT_SLACK_WEBHOOK_URL),
+            "enable_discord": _bool_from_env(env.enable_discord_webhook, webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)) if env.enable_discord_webhook is not None else webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK),
+            "enable_slack": _bool_from_env(env.enable_slack_webhook, webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)) if env.enable_slack_webhook is not None else webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK),
+        },
         "runtime": {
             "environment": environment,
             "debug": _bool_from_env(env.debug, default=False),
@@ -315,6 +327,7 @@ def load_settings(
             thresholds_path=settings_dict["scoring"]["thresholds_path"],
         ),
         innovations=InnovationSettings(**settings_dict["innovations"]),
+        webhook=WebhookSettings(**settings_dict["webhook"]),
         runtime=RuntimeFlags(**settings_dict["runtime"]),
         raw_config=settings_dict["raw_config"],
         raw_environment=settings_dict["raw_environment"],

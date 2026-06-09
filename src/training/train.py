@@ -4,8 +4,10 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+from pathlib import Path
 
 from .data_loader import AegisGraphLoader
+from ..utils.encryption import get_encryption_handler
 
 # Attempt to import the real model architecture, fallback to a mock for pipeline testing
 try:
@@ -164,11 +166,21 @@ def main():
         # Step the scheduler to decay learning rate
         scheduler.step()
 
-    # 6. Save the compiled artifact
-    print("\nTraining Complete! Saving model weights...")
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/htgnn_v1.pt")
-    print("Artifact saved to models/htgnn_v1.pt")
+    # 6. Save the compiled artifact with encryption
+    print("\nTraining Complete! Saving encrypted model weights...")
+    models_dir = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create checkpoint dict and encrypt before saving
+    checkpoint = {'model_state_dict': model.state_dict()}
+    encryption = get_encryption_handler()
+    encrypted_data = encryption.encrypt_checkpoint(checkpoint)
+
+    # Write encrypted checkpoint to disk
+    checkpoint_path = models_dir / "htgnn_v1.pt"
+    with open(checkpoint_path, 'wb') as f:
+        f.write(encrypted_data)
+    print(f"Encrypted artifact saved to {checkpoint_path}")
 
 if __name__ == "__main__":
     main()

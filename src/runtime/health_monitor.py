@@ -27,6 +27,15 @@ class RuntimeHealthMonitor:
         self._unhealthy_threshold = unhealthy_threshold
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
+        self._config_registry: Any = None
+
+    def set_config_registry(self, registry: Any) -> None:
+        self._config_registry = registry
+
+    def get_configuration_status(self) -> Dict[str, Any]:
+        return {
+            "configuration_count": len(self._config_registry.list_configs()) if self._config_registry else 0,
+        }
 
     def register_service(self, name: str) -> None:
         """Register a service or background task for tracking."""
