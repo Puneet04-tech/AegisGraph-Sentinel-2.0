@@ -1,0 +1,84 @@
+# AegisGraph Sentinel - PostgreSQL StatefulSet for Multi-Tenant Data
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: aegisgraph
+spec:
+  serviceName: postgresql
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: postgres:15-alpine
+        ports:
+        - name: postgres
+          containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: "aegisgraph"
+        - name: POSTGRES_DB
+          value: "aegisgraph"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: NEO4J_PASSWORD
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        - name: wal
+          mountPath: /var/lib/postgresql/wal
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "aegisgraph"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "aegisgraph"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgresql-data-pvc
+      - name: wal
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "gp3"
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: aegisgraph
+spec:
+  clusterIP: None
+  selector:
+    app: postgresql
+  ports:
+  - name: postgres
+    port: 5432

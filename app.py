@@ -135,24 +135,29 @@ def _schedule_live_refresh(interval_ms: int = 1500) -> None:
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
-def _honeypot_admin_headers() -> dict:
-    """Return the headers required by honeypot admin endpoints.
+def _api_headers(extra: dict | None = None) -> dict:
+    """Return the base auth headers required by all protected API endpoints.
 
-    Reads ``AEGIS_HONEYPOT_ADMIN_TOKEN`` from the environment first, then
-    falls back to ``st.secrets`` (key ``AEGIS_HONEYPOT_ADMIN_TOKEN``).
-    Returns an empty dict when neither source is configured, so callers
-    can still attempt the request and surface a clear 401/403 rather than
-    crashing before the network call is made.
+    Reads ``AEGIS_UI_API_KEY`` from the environment first, then falls back
+    to ``st.secrets`` (key ``AEGIS_UI_API_KEY``).  An optional *extra* dict
+    is merged in last so callers can add endpoint-specific headers (e.g.
+    ``X-Honeypot-Token``) without duplicating the base auth logic.
+
+    Returns an empty dict when no key is configured so that unauthenticated
+    deployments keep working — the backend will return 401/403 which the
+    helpers surface as a clear warning.
     """
-    token = os.getenv("AEGIS_HONEYPOT_ADMIN_TOKEN", "")
-    if not token:
+    key = os.getenv("AEGIS_UI_API_KEY", "")
+    if not key:
         try:
-            token = st.secrets.get("AEGIS_HONEYPOT_ADMIN_TOKEN", "")
+            key = st.secrets.get("AEGIS_UI_API_KEY", "")
         except Exception:
-            token = ""
+            key = ""
     headers: dict = {}
-    if token:
-        headers["X-Honeypot-Token"] = token
+    if key:
+        headers["X-API-Key"] = key
+    if extra:
+        headers.update(extra)
     return headers
 
 
@@ -164,12 +169,12 @@ def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None)
     Streamlit warning banner is shown when the backend is unreachable so
     operators can distinguish "no data" from "API offline".
 
-    *extra_headers* are merged into the request headers, allowing callers
-    to pass auth tokens (e.g. ``X-Honeypot-Token``) without duplicating
-    error-handling logic.
+    Auth headers (``X-API-Key``) are injected automatically via
+    ``_api_headers()``.  Pass *extra_headers* for endpoint-specific tokens
+    such as ``X-Honeypot-Token``.
     """
     try:
-        response = requests.get(url, timeout=timeout, headers=extra_headers or {})
+        response = requests.get(url, timeout=timeout, headers=_api_headers(extra_headers))
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -185,8 +190,8 @@ def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None)
         logger.warning("API returned HTTP %s: %s", status, url)
         if status in (401, 403):
             st.warning(
-                f"⚠️ API returned {status} — the admin token may be missing or invalid. "
-                "Set **AEGIS_HONEYPOT_ADMIN_TOKEN** in your environment or `st.secrets`."
+                f"⚠️ API returned {status} — verify **AEGIS_UI_API_KEY** is set correctly "
+                "in your environment or `st.secrets`."
             )
         return {}
     except Exception as exc:
@@ -194,16 +199,19 @@ def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None)
         return {}
 
 
-def _safe_api_post(url: str, payload: dict, timeout: int = 5) -> dict | None:
+def _safe_api_post(url: str, payload: dict, timeout: int = 5, extra_headers: dict | None = None) -> dict | None:
     """POST *payload* to *url* and return the parsed JSON body on success.
 
     Returns ``None`` on any network failure or non-2xx response and logs
     the error.  Unlike ``_safe_api_get``, this helper does **not** show a
     Streamlit banner because POST calls are typically made from background
     threads where ``st.*`` calls are not safe.
+
+    Auth headers (``X-API-Key``) are injected automatically via
+    ``_api_headers()``.  Pass *extra_headers* for endpoint-specific tokens.
     """
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=timeout, headers=_api_headers(extra_headers))
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -957,7 +965,7 @@ elif page == "💳 Transaction Scan":
                         f"{API_URL}/api/v1/fraud/check",
                         json=transaction,
                         timeout=10,
-                        headers={"X-API-Key": "demo-key"},
+                        headers=_api_headers(),
                     )
 
                     if response.status_code == 200:
@@ -1153,7 +1161,7 @@ elif page == "📁 Batch Triage":
                                 f"{API_URL}/api/v1/fraud/check",
                                 json=txn,
                                 timeout=30,
-                                headers={"X-API-Key": "demo-key"},
+                                headers=_api_headers(),
                             )
                             if response.status_code == 200:
                                 result = response.json()
@@ -2332,13 +2340,8 @@ elif page == "🧪 Innovation Lab":
 
         st.markdown("---")
 
-        # Honeypot Statistics
-        _hp_headers = _honeypot_admin_headers()
-        stats = _safe_api_get(
-            f"{API_URL}/api/v1/honeypot/stats",
-            timeout=5,
-            extra_headers=_hp_headers,
-        )
+        # Honeypot Statistics — auth injected automatically by _safe_api_get
+        stats = _safe_api_get(f"{API_URL}/api/v1/honeypot/stats", timeout=5)
         if stats:
             col1, col2, col3, col4 = st.columns(4)
 
@@ -2385,30 +2388,19 @@ elif page == "🧪 Innovation Lab":
                     f"{arrest_rate_colored} Operational (Operational)",
                 )
         else:
-            if not _hp_headers:
-                st.info(
-                    "💡 Set **AEGIS_HONEYPOT_ADMIN_TOKEN** in your environment or "
-                    "`st.secrets` to enable honeypot admin statistics."
-                )
-            else:
-                st.warning("⚠️ Honeypot statistics unavailable — ensure the API is running with innovation modules loaded.")
+            st.warning(
+                "⚠️ Honeypot statistics unavailable — ensure the API is running with innovation modules loaded."
+            )
 
         st.markdown("---")
 
-        # Active Honeypots
+        # Active Honeypots — auth injected automatically by _safe_api_get
         st.subheader("🎭 Active Honeypot Traps")
 
-        active_data = _safe_api_get(
-            f"{API_URL}/api/v1/honeypot/active",
-            timeout=5,
-            extra_headers=_hp_headers,
-        )
-        active = active_data.get("active_honeypots", []) if active_data else None
+        active_data = _safe_api_get(f"{API_URL}/api/v1/honeypot/active", timeout=5)
+        active = active_data.get("active_honeypots", []) if active_data else []
 
-        if active is None:
-            # _safe_api_get already showed a warning for 401/403/network errors.
-            pass
-        elif len(active) > 0:
+        if len(active) > 0:
             st.info(
                 f"🔴 Active honeypots: {len(active)} currently monitoring withdrawal attempts"
             )
@@ -2499,7 +2491,10 @@ elif page == "🧪 Innovation Lab":
                         }
 
                         response = requests.post(
-                            f"{API_URL}/api/v1/voice/analyze", json=payload, timeout=30
+                            f"{API_URL}/api/v1/voice/analyze",
+                            json=payload,
+                            timeout=30,
+                            headers=_api_headers(),
                         )
 
                         if response.status_code == 200:
@@ -2664,6 +2659,7 @@ elif page == "🧪 Innovation Lab":
                         f"{API_URL}/api/v1/accounts/score-opening",
                         json=payload,
                         timeout=10,
+                        headers=_api_headers(),
                     )
 
                     if response.status_code == 200:
@@ -2822,7 +2818,10 @@ elif page == "🧪 Innovation Lab":
                     },
                 }
                 resp = requests.post(
-                    f"{API_URL}/api/v1/fraud/check", json=payload, timeout=10
+                    f"{API_URL}/api/v1/fraud/check",
+                    json=payload,
+                    timeout=10,
+                    headers=_api_headers(),
                 )
                 if resp.status_code == 200:
                     result = resp.json()
@@ -2865,7 +2864,10 @@ elif page == "🧪 Innovation Lab":
             }
             try:
                 resp = requests.post(
-                    f"{API_URL}/api/v1/explain", json=payload, timeout=10
+                    f"{API_URL}/api/v1/explain",
+                    json=payload,
+                    timeout=10,
+                    headers=_api_headers(),
                 )
                 if resp.status_code == 200:
                     st.json(resp.json())
@@ -2915,6 +2917,7 @@ elif page == "🧪 Innovation Lab":
                         response = requests.get(
                             f"{API_URL}/api/v1/blockchain/verify/{evidence_id}?block_number={block_number}",
                             timeout=10,
+                            headers=_api_headers(),
                         )
 
                         if response.status_code == 200:
@@ -3013,6 +3016,7 @@ elif page == "🧪 Innovation Lab":
                                 f"{API_URL}/api/v1/blockchain/export",
                                 json=payload,
                                 timeout=15,
+                                headers=_api_headers(),
                             )
 
                             if response.status_code == 200:
@@ -4044,3 +4048,21 @@ st.markdown(
     '<p style="text-align: center; color: #94a3b8; font-weight: 500;">© 2026 AegisGraph Sentinel 2.0 | Detecting the Flow, Protecting the Soul 🛡️</p>',
     unsafe_allow_html=True,
 )
+
+# --- ADVANCED CONCURRENCY IMPLEMENTATION FOR GSOC ---
+# Import the custom in-memory ring buffer we created to handle extreme data peaks
+from ring_buffer_concurrency import InMemoryRingBuffer
+
+# Initialize the global telemetry sentinel shield ring buffer array
+sentinel_telemetry_buffer = InMemoryRingBuffer(capacity=1024)
+
+def process_incoming_stream_safely(new_log_data):
+    """
+    Layman Safe Ingestion System: Bypasses immediate heavy graph processing context 
+    by feeding logs straight into our lock-free buffer array.
+    """
+    is_saved = sentinel_telemetry_buffer.enqueue(new_log_data)
+    if not is_saved:
+        print("[Warning] Buffer capacity exceeded threshold! Applying safe backpressure drop.")
+    return is_saved
+# --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---

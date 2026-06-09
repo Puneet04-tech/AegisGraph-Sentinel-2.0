@@ -77,3 +77,12 @@ class RecoveryTriggeredEvent(RuntimeEvent):
 class WatchdogAlertEvent(RuntimeEvent):
     """Emitted when the watchdog detects a stale heartbeat or dead task."""
     source: str = "watchdog"
+
+
+@dataclass
+class SentinelAlertEvent(RuntimeEvent):
+    """Emitted when a high-severity fraud decision or security event occurs."""
+    severity: str = "HIGH"
+    title: str = "Sentinel Alert"
+    message: str = ""
+    payload: Dict[str, Any] = field(default_factory=dict)

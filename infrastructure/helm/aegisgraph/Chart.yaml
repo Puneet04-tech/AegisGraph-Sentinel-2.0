@@ -1,0 +1,50 @@
+# AegisGraph Sentinel Enterprise - Helm Chart
+
+apiVersion: v2
+name: aegisgraph-sentinel
+description: A Helm chart for AegisGraph Sentinel Enterprise - AI-Powered Fraud Detection Platform
+type: application
+
+version: 2.0.0
+appVersion: "2.0.0"
+
+keywords:
+  - fraud-detection
+  - machine-learning
+  - graph-neural-networks
+  - security
+  - financial-crime
+
+home: https://aegisgraph.com
+sources:
+  - https://github.com/aegisgraph/sentinel-enterprise
+
+maintainers:
+  - name: AegisGraph Team
+    email: support@aegisgraph.com
+
+dependencies:
+  - name: postgresql
+    version: ~12.0
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: ~17.0
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: prometheus
+    version: ~25.0
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: monitoring.enabled
+  - name: grafana
+    version: ~8.0
+    repository: https://grafana.github.io/helm-charts
+    condition: monitoring.enabled
+  - name: ingress-nginx
+    version: ~4.0
+    repository: https://kubernetes.github.io/ingress-nginx
+    condition: ingress.enabled
+
+annotations:
+  category: Security
+  licenses: Apache-2.0
