@@ -122,6 +122,13 @@ from ..observability import get_audit_logger, get_logger
 from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWatchdog
 from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
+from .security import (
+    _get_key_role,
+    ROLE_INHERITANCE,
+    require_role,
+    Role,
+    api_key_header,
+)
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -352,8 +359,40 @@ def _require_verbose_health_access(
     verbose: bool = Query(default=False),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> None:
+    """
+    Require ADMIN role for verbose health checks.
+    
+    Non-verbose health checks are allowed for any authenticated user (VIEWER and above).
+    Verbose health checks expose sensitive internal service state and require ADMIN role.
+    """
+    # Always require authentication for health endpoints
+    if not x_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required for health endpoint access"
+        )
+    
+    # Validate the API key is valid
+    role = _get_key_role(x_api_key)
+    if role is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+    
+    # Verbose mode requires ADMIN role
     if verbose:
-        require_role(Role.ADMIN)(x_api_key)
+        has_admin_access = Role.ADMIN in ROLE_INHERITANCE.get(role, set())
+        if not has_admin_access:
+            _api_logger.warning(
+                "Non-ADMIN user attempted verbose health check",
+                event_type="unauthorized_verbose_health_access",
+                metadata={"role": role.value}
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Verbose health checks require ADMIN role"
+            )
 
 
 def _build_health_response(include_details: bool) -> dict[str, Any]:
@@ -1602,9 +1641,9 @@ register_observability_middleware(app)
 
 
 
-@app.get("/", tags=["Health"])
+@app.get("/", tags=["Health"], dependencies=[Depends(require_role(Role.VIEWER))])
 async def root():
-    """Root endpoint"""
+    """Root endpoint - requires authentication"""
     return {
         "service": "AegisGraph Sentinel 2.0",
         "version": "2.0.0",
@@ -1630,11 +1669,13 @@ async def health_check_v1(verbose: bool = False):
     "/health/liveness",
     tags=["Health"],
     summary="Lightweight liveness probe",
+    dependencies=[Depends(StrictRateLimit(ip_limit=100, api_key_limit=1000))]
 )
 async def liveness():
     """
     Lightweight health check endpoint for Kubernetes liveness probes.
     Returns immediately to ensure responsiveness.
+    Rate-limited to prevent abuse while maintaining Kubernetes compatibility.
     """
     return {"status": "ok", "service": "AegisGraph Sentinel 2.0"}
 
@@ -1660,7 +1701,8 @@ async def get_stats():
     """
     Get service statistics
     
-    Returns detailed statistics about processed transactions
+    Returns detailed statistics about processed transactions.
+    Requires AUDITOR role or higher.
     """
     uptime = time.time() - state.start_time
     
@@ -2928,7 +2970,10 @@ async def summarize_alert(request: AlertSummaryRequest):
 
 @app.get("/api/v1/monitoring/memory", tags=["Monitoring"], dependencies=[Depends(require_role(Role.ADMIN))])
 async def get_memory_diagnostics():
-    """Diagnostic endpoint to inspect memory usage and cache sizes."""
+    """
+    Diagnostic endpoint to inspect memory usage and cache sizes.
+    Requires ADMIN role - exposes sensitive internal state information.
+    """
     import sys
     try:
         import psutil
@@ -2940,6 +2985,11 @@ async def get_memory_diagnostics():
         rss_mb = -1
         vms_mb = -1
 
+    # Sanitize cache maxsize values to prevent information disclosure
+    # Only return whether cache has a maxsize, not the actual value
+    centrality_baseline_maxsize = getattr(state.centrality_baseline, "maxsize", None)
+    has_maxsize = centrality_baseline_maxsize is not None
+
     return {
         "status": "ok",
         "memory": {
@@ -2948,7 +2998,7 @@ async def get_memory_diagnostics():
         },
         "caches": {
             "centrality_baseline_size": len(state.centrality_baseline),
-            "centrality_baseline_maxsize": getattr(state.centrality_baseline, "maxsize", None),
+            "centrality_baseline_has_maxsize": has_maxsize,
             "account_profiles_size": len(state.account_profiles),
             "fraud_chains_size": len(state.fraud_chains)
         },
@@ -3547,7 +3597,7 @@ async def get_contagion_report(entity_id: str, max_depth: int = Query(default=3,
     "/api/v1/entity-resolution/stats",
     response_model=GraphStatsResponse,
     tags=["Entity Resolution"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
     summary="Get knowledge graph statistics",
 )
 async def get_graph_stats():
@@ -3966,7 +4016,7 @@ async def generate_recommendations(
 @app.get(
     "/api/v1/predictive/stats",
     tags=["Predictive Intelligence"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
     summary="Get predictive intelligence statistics",
 )
 async def get_predictive_stats():
@@ -4328,7 +4378,7 @@ async def get_soc_dashboard():
 @app.get(
     "/api/v1/soc/stats",
     tags=["Multi-Agent SOC"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
     summary="Get SOC statistics",
 )
 async def get_soc_stats():
@@ -4674,7 +4724,7 @@ async def generate_governance_report(
 @app.get(
     "/api/v1/governance/stats",
     tags=["Executive Governance"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.AUDITOR))],
     summary="Get governance statistics",
 )
 async def get_governance_stats():
