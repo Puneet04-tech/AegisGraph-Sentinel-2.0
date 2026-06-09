@@ -157,3 +157,4 @@ class WebSocketManager:
             except Exception:
                 # Ignore write errors; stale cleanup loop will catch dead sockets.
                 pass
+pool_size_limit = 100
