@@ -350,15 +350,15 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
         scorer = PredictiveMuleScorer()
 
         # Insert a stale entry (older than 24h)
         stale = AccountOpeningData(
-            opening_timestamp=datetime.now() - timedelta(hours=48),
-            form_start_time=datetime.now() - timedelta(hours=48),
-            form_submit_time=datetime.now() - timedelta(hours=48),
+            opening_timestamp=datetime.now(timezone.utc) - timedelta(hours=48),
+            form_start_time=datetime.now(timezone.utc) - timedelta(hours=48),
+            form_submit_time=datetime.now(timezone.utc) - timedelta(hours=48),
             name="stale", age=20, profession="s", stated_address="a",
             email="s@t.com", phone_number="0", kyc_document_type="PAN",
             facial_match_score=0.5, document_quality_score=0.5,
@@ -372,9 +372,9 @@ class TestPredictiveMuleCache:
 
         # Fresh entries should be kept
         fresh = AccountOpeningData(
-            opening_timestamp=datetime.now(),
-            form_start_time=datetime.now(),
-            form_submit_time=datetime.now(),
+            opening_timestamp=datetime.now(timezone.utc),
+            form_start_time=datetime.now(timezone.utc),
+            form_submit_time=datetime.now(timezone.utc),
             name="fresh", age=20, profession="s", stated_address="a",
             email="f@t.com", phone_number="1", kyc_document_type="PAN",
             facial_match_score=0.5, document_quality_score=0.5,
@@ -392,7 +392,7 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         scorer = PredictiveMuleScorer()
         scorer.MAX_HISTORY_SIZE = 3  # small for testing
@@ -400,9 +400,9 @@ class TestPredictiveMuleCache:
         # Insert 4 entries with distinct IPs — the first should be evicted
         for i in range(4):
             data = AccountOpeningData(
-                opening_timestamp=datetime.now(),
-                form_start_time=datetime.now(),
-                form_submit_time=datetime.now(),
+                opening_timestamp=datetime.now(timezone.utc),
+                form_start_time=datetime.now(timezone.utc),
+                form_submit_time=datetime.now(timezone.utc),
                 name=f"u{i}", age=20, profession="s", stated_address="a",
                 email=f"u{i}@t.com", phone_number=str(i),
                 kyc_document_type="PAN", facial_match_score=0.5,
@@ -427,16 +427,16 @@ class TestPredictiveMuleCache:
             PredictiveMuleScorer,
             AccountOpeningData,
         )
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         scorer = PredictiveMuleScorer()
         scorer.MAX_HISTORY_SIZE = 2
 
         for i in range(3):
             data = AccountOpeningData(
-                opening_timestamp=datetime.now(),
-                form_start_time=datetime.now(),
-                form_submit_time=datetime.now(),
+                opening_timestamp=datetime.now(timezone.utc),
+                form_start_time=datetime.now(timezone.utc),
+                form_submit_time=datetime.now(timezone.utc),
                 name=f"u{i}", age=20, profession="s", stated_address="a",
                 email=f"u{i}@t.com", phone_number=str(i),
                 kyc_document_type="PAN", facial_match_score=0.5,
@@ -450,6 +450,51 @@ class TestPredictiveMuleCache:
 
         # Same device seen 3 times -> count is 3
         assert scorer.device_history["shared_device"] == 3
+
+
+    def test_update_cache_timezone_aware_no_type_error(self):
+        """Timezone-aware opening_timestamp must not raise TypeError in _update_cache."""
+        from datetime import datetime, timezone
+        from src.features.predictive_mule_identification import (
+            AccountOpeningData,
+            PredictiveMuleScorer,
+        )
+
+        scorer = PredictiveMuleScorer()
+        aware_ts = datetime.now(timezone.utc)
+        data = AccountOpeningData(
+            opening_timestamp=aware_ts,
+            form_start_time=aware_ts,
+            form_submit_time=aware_ts,
+            name="test", age=25, profession="student", stated_address="Delhi",
+            email="test@example.com", phone_number="9999999999",
+            kyc_document_type="PAN", facial_match_score=0.9,
+            document_quality_score=0.9, ip_address="1.2.3.4",
+            device_id="DEV_TEST", device_age_days=10,
+            browser_fingerprint="fp_test", referrer_url=None,
+            initial_deposit=1000.0, account_type="savings", referral_code=None,
+            existing_customer_connections=0,
+        )
+        # Must not raise TypeError: can't compare offset-naive and offset-aware datetimes
+        scorer._update_cache(data)
+
+    def test_score_account_opening_kwargs_uses_aware_defaults(self):
+        """score_account_opening kwargs path defaults must be timezone-aware."""
+        from datetime import timezone
+        from src.features.predictive_mule_identification import PredictiveMuleScorer
+
+        scorer = PredictiveMuleScorer()
+        # Calling with no explicit timestamps should not raise TypeError
+        result = scorer.score_account_opening(
+            name="test", age=25, profession="student",
+            stated_address="Mumbai", email="t@t.com",
+            phone="9876543210", document_type="PAN",
+            facial_match=0.8, ip_address="10.0.0.1",
+            device_id="DEV1", device_age_days=5,
+            browser_fingerprint="fp", initial_deposit=500.0,
+            account_type="savings",
+        )
+        assert "risk_score" in result
 
 
 if __name__ == "__main__":

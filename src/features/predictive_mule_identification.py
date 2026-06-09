@@ -30,7 +30,7 @@ from collections import OrderedDict, deque
 import numpy as np
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
 
@@ -128,9 +128,9 @@ class PredictiveMuleScorer:
         """
         if account_data is None:
             account_data = AccountOpeningData(
-                opening_timestamp=kwargs.get('opening_timestamp', datetime.now()),
-                form_start_time=kwargs.get('form_start_time', datetime.now()),
-                form_submit_time=kwargs.get('form_submit_time', datetime.now()),
+                opening_timestamp=kwargs.get('opening_timestamp', datetime.now(timezone.utc)),
+                form_start_time=kwargs.get('form_start_time', datetime.now(timezone.utc)),
+                form_submit_time=kwargs.get('form_submit_time', datetime.now(timezone.utc)),
                 name=kwargs.get('name',''),
                 age=kwargs.get('age',0),
                 profession=kwargs.get('profession',''),
@@ -483,7 +483,7 @@ class PredictiveMuleScorer:
         # O(1) deque append + popleft for account data
         self.recent_openings.append(account_data)
         self._opening_timestamps.append(account_data.opening_timestamp)
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         while self.recent_openings and self.recent_openings[0].opening_timestamp <= cutoff:
             self.recent_openings.popleft()
             self._opening_timestamps[self._timestamp_offset] = None  # mark as tombstone
@@ -560,7 +560,7 @@ def score_new_account(
     Returns:
         Dictionary with risk scores and recommendation
     """
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     account_data = AccountOpeningData(
         opening_timestamp=now,
