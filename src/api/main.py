@@ -47,7 +47,7 @@ class LRUCache(OrderedDict):
 import networkx as nx
 import numpy as np
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from .websocket_manager import WebSocketManager
@@ -162,10 +162,78 @@ from .schemas import (
     CreateCaseRequest,
     FraudCaseResponse,
     UpdateCaseRequest,
+    # Entity Resolution (Phase 9)
+    EntityLinkRequest,
+    EntityLinkResponse,
+    EntityNetworkResponse,
+    EntityResponse,
+    EntityRelationshipResponse,
+    FraudClusterResponse,
+    HighRiskRingsResponse,
+    ContagionReportResponse,
+    ClusterDetailResponse,
+    GraphStatsResponse,
+    RiskPropagationNode,
+    # Predictive Intelligence (Phase 12)
+    SimulationScenarioRequest,
+    SimulationScenarioResponse,
+    SimulationResultResponse,
+    ForecastRequest,
+    ForecastResultResponse,
+    RiskTrendResponse,
+    CampaignPredictionResponse,
+    AttackPathResponse,
+    RecommendationResponse,
+    PredictiveStatsResponse,
+    # Multi-Agent SOC (Phase 13)
+    InvestigationRequestSchema,
+    InvestigationResponse,
+    ThreatAnalysisRequest,
+    ThreatAnalysisResponse,
+    ForensicAnalysisRequest,
+    ForensicAnalysisResponse,
+    FraudRingDetectionRequest,
+    FraudRingResponse,
+    SOCReportRequest,
+    SOCReportResponse,
+    OrchestrationRequest,
+    OrchestrationResponse,
+    SOCDashboardResponse,
+    SOCStatsResponse,
+    # Executive Governance (Phase 14)
+    DashboardRequest,
+    DashboardResponse,
+    BoardReportRequest,
+    BoardReportResponse,
+    ComplianceGapAnalysisRequest,
+    ComplianceGapAnalysisResponse,
+    RiskScorecardRequest,
+    RiskScorecardResponse,
+    AuditFindingRequest,
+    AuditFindingResponse,
+    GovernanceReportRequest,
+    GovernanceReportResponse,
+    GovernanceStatsResponse,
+    # Advanced Analytics & BI (Phase 15)
+    MetricDefinitionRequest,
+    MetricValueRequest,
+    KPIRequest,
+    KPIResponse,
+    TrendAnalysisRequest,
+    TrendAnalysisResponse,
+    CorrelationAnalysisRequest,
+    CorrelationAnalysisResponse,
+    DashboardRequest,
+    DashboardResponse,
+    ChartDataRequest,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ScheduledReportRequest,
+    AnalyticsStatsResponse,
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
-from .security import require_api_key, Role, require_role
+from .security import require_api_key, Role, require_role, require_any_role, require_admin
 from .validators import StrictRateLimit
 
 
@@ -285,7 +353,7 @@ def _require_verbose_health_access(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> None:
     if verbose:
-        require_api_key(x_api_key)
+        require_role(Role.ADMIN)(x_api_key)
 
 
 def _build_health_response(include_details: bool) -> dict[str, Any]:
@@ -1364,7 +1432,7 @@ async def lifespan(app: FastAPI):
         task_registry=state.tasks,
         recovery_manager=recovery_manager,
     )
-    state.runtime.recovery_manager = recovery_manager
+    state.runtime.set_recovery_manager(recovery_manager)
     state.runtime.watchdog = watchdog
 
     def restart_honeypot_task():
@@ -1453,10 +1521,25 @@ SWAGGER_ENABLED = os.getenv("SWAGGER_ENABLED", "true").lower() == "true"
 # Initialize FastAPI app
 app = FastAPI(
     title="AegisGraph Sentinel 2.0 API",
-    description="Real-Time Cross-Channel Mule Account Detection & Neutralization API.\n\n"
-                "### Authentication\n"
-                "All protected endpoints require an API Key via the `X-API-Key` header. "
-                "Use the **Authorize** button to authenticate globally.",
+    description=(
+        "Real-Time Cross-Channel Mule Account Detection & Neutralization API.\n\n"
+        "### Authentication\n"
+        "All protected endpoints require an API Key via the `X-API-Key` header. "
+        "Use the **Authorize** button to authenticate globally.\n\n"
+        "### Role-Based Access Control (RBAC)\n"
+        "Endpoints are protected by a 5-tier role hierarchy. "
+        "Supply the appropriate key for your role via `X-API-Key`.\n\n"
+        "| Role | Inherits | Typical operations |\n"
+        "|------|----------|--------------------|\n"
+        "| `SUPER_ADMIN` | All roles | Unrestricted |\n"
+        "| `ADMIN` | ADMIN, ANALYST, AUDITOR, VIEWER | Honeypot mgmt, memory diagnostics, blockchain export, legal evidence, case status updates |\n"
+        "| `ANALYST` | ANALYST, VIEWER | Fraud detection, batch scoring, explain, voice, mule, blast-radius, alert summaries, case CRUD, blockchain seal |\n"
+        "| `AUDITOR` | AUDITOR, VIEWER | System stats (`/stats`), case audit timeline |\n"
+        "| `VIEWER` | VIEWER | Model info, blockchain evidence verification |\n\n"
+        "Configure keys via environment variables:\n"
+        "- `AEGIS_API_KEY_HASHES` — comma-separated SHA-256 hashes (maps to SUPER_ADMIN)\n"
+        "- `AEGIS_ROLE_ADMIN`, `AEGIS_ROLE_ANALYST`, etc. — role-specific key hashes"
+    ),
     version="2.0.0",
     contact={
         "name": "AegisGraph Team",
@@ -1889,6 +1972,32 @@ async def check_transaction(
                 "confidence": risk_result.get('confidence'),
             },
         )
+
+        if internal_decision == "BLOCK":
+            dispatcher = getattr(state.runtime, "dispatcher", None)
+            if dispatcher is not None:
+                from ..runtime.events import SentinelAlertEvent
+                dispatcher.dispatch(
+                    SentinelAlertEvent(
+                        source="api.fraud_check",
+                        severity="HIGH",
+                        title="Fraud Transaction Blocked",
+                        message=(
+                            f"Transaction {request.transaction_id} was automatically blocked "
+                            f"due to high risk score ({risk_result['risk_score']:.4f})."
+                        ),
+                        payload={
+                            "transaction_id": request.transaction_id,
+                            "risk_score": risk_result['risk_score'],
+                            "decision": decision,
+                            "amount": request.amount,
+                            "currency": request.currency,
+                            "source_account": request.source_account,
+                            "target_account": request.target_account,
+                            "explanation": explanation_result['explanation'],
+                        }
+                    )
+                )
 
         return response
     
@@ -2966,8 +3075,13 @@ async def get_case(case_id: str):
     "/api/v1/cases/{case_id}",
     response_model=FraudCaseResponse,
     tags=["Case Management"],
-    dependencies=[Depends(require_role(Role.ANALYST))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
     summary="Update status, assignment, or priority of a case",
+    description=(
+        "Partially update a fraud case (status, assigned analyst, or priority). "
+        "**Required role: ADMIN** — this is a privileged mutation that changes "
+        "authoritative case data."
+    ),
 )
 async def update_case(
     case_id: str,
@@ -3112,6 +3226,1919 @@ async def get_case_timeline(case_id: str):
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ============================================================================
+# ENTITY RESOLUTION ENDPOINTS (Phase 9)
+# ============================================================================
+
+@app.post(
+    "/api/v1/entity-resolution/link",
+    response_model=EntityLinkResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Link two entities in the knowledge graph",
+)
+async def link_entity(request: EntityLinkRequest):
+    """Link two entities together with a relationship in the knowledge graph.
+    
+    This endpoint creates or updates entities and establishes a relationship
+    between them based on the provided parameters.
+    """
+    import time
+    from src.entity_resolution import get_entity_resolver, get_entity_store
+    from src.entity_resolution.models import EntityType, RelationshipType
+    from src.entity_resolution.entity_resolver import LinkRequest
+    
+    start_time = time.time()
+    
+    # Get the entity resolver
+    resolver = get_entity_resolver()
+    
+    # Create link request
+    link_req = LinkRequest(
+        source_entity_id=request.source_entity_id,
+        source_entity_type=EntityType(request.source_entity_type) if request.source_entity_type else None,
+        source_value=request.source_value,
+        target_entity_id=request.target_entity_id,
+        target_entity_type=EntityType(request.target_entity_type) if request.target_entity_type else None,
+        target_value=request.target_value,
+        relationship_type=RelationshipType(request.relationship_type),
+        confidence_score=request.confidence_score,
+        evidence=request.evidence or [],
+    )
+    
+    # Link entities
+    result = resolver.link_entities(link_req)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return EntityLinkResponse(
+        success=True,
+        relationship=EntityRelationshipResponse(
+            source_id=result.relationship.source_id,
+            target_id=result.relationship.target_id,
+            relationship_type=result.relationship.relationship_type.value,
+            confidence_score=result.relationship.confidence_score,
+            evidence=result.relationship.evidence,
+            created_at=result.relationship.created_at.isoformat(),
+        ),
+        source_entity=EntityResponse(
+            id=result.source_entity.id,
+            entity_type=result.source_entity.entity_type.value,
+            value=result.source_entity.value,
+            risk_score=result.source_entity.risk_score,
+            tags=list(result.source_entity.tags),
+            created_at=result.source_entity.created_at.isoformat(),
+            updated_at=result.source_entity.updated_at.isoformat(),
+        ),
+        target_entity=EntityResponse(
+            id=result.target_entity.id,
+            entity_type=result.target_entity.entity_type.value,
+            value=result.target_entity.value,
+            risk_score=result.target_entity.risk_score,
+            tags=list(result.target_entity.tags),
+            created_at=result.target_entity.created_at.isoformat(),
+            updated_at=result.target_entity.updated_at.isoformat(),
+        ),
+        is_new_relationship=result.is_new_relationship,
+        is_new_source_entity=result.is_new_source_entity,
+        is_new_target_entity=result.is_new_target_entity,
+        processing_time_ms=processing_time,
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/entity/{entity_id}",
+    response_model=EntityResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get entity details by ID",
+)
+async def get_entity(entity_id: str):
+    """Get details of a specific entity from the knowledge graph."""
+    from src.entity_resolution import get_entity_store
+    
+    store = get_entity_store()
+    entity = store.get_entity(entity_id)
+    
+    if entity is None:
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_id}' not found")
+    
+    return EntityResponse(
+        id=entity.id,
+        entity_type=entity.entity_type.value,
+        value=entity.value,
+        risk_score=entity.risk_score,
+        tags=list(entity.tags),
+        created_at=entity.created_at.isoformat(),
+        updated_at=entity.updated_at.isoformat(),
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/network/{entity_id}",
+    response_model=EntityNetworkResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get entity network/connections",
+)
+async def get_entity_network(entity_id: str, max_depth: int = Query(default=3, ge=1, le=10)):
+    """Get the network of entities connected to a given entity."""
+    import time
+    from src.entity_resolution import get_entity_resolver
+    
+    start_time = time.time()
+    
+    resolver = get_entity_resolver()
+    network = resolver.get_entity_network(entity_id, max_depth=max_depth)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return EntityNetworkResponse(
+        root_entity_id=network["root_entity_id"],
+        entities=network["entities"],
+        relationships=network["relationships"],
+        depth=network["depth"],
+        total_entities=network["total_entities"],
+        total_relationships=network["total_relationships"],
+        processing_time_ms=processing_time,
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/high-risk-rings",
+    response_model=HighRiskRingsResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get all high-risk fraud rings",
+)
+async def get_high_risk_rings(threshold: float = Query(default=0.7, ge=0.0, le=1.0)):
+    """Get all fraud rings with risk score above the threshold."""
+    import time
+    from src.entity_resolution import get_cluster_engine
+    
+    start_time = time.time()
+    
+    engine = get_cluster_engine()
+    rings = engine.get_high_risk_rings(threshold=threshold)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    # Count by tier
+    critical_count = sum(1 for r in rings if r.risk_score >= 0.8)
+    high_count = sum(1 for r in rings if 0.6 <= r.risk_score < 0.8)
+    
+    return HighRiskRingsResponse(
+        rings=[
+            FraudClusterResponse(
+                cluster_id=r.cluster_id,
+                entity_ids=list(r.entity_ids),
+                risk_score=r.risk_score,
+                tags=list(r.tags),
+                created_at=r.created_at.isoformat(),
+                updated_at=r.updated_at.isoformat(),
+                member_count=len(r.entity_ids),
+            )
+            for r in rings
+        ],
+        total_rings=len(rings),
+        critical_count=critical_count,
+        high_count=high_count,
+        processing_time_ms=processing_time,
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/cluster/{cluster_id}",
+    response_model=ClusterDetailResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get fraud cluster details",
+)
+async def get_cluster_detail(cluster_id: str):
+    """Get detailed information about a fraud cluster."""
+    import time
+    from src.entity_resolution import get_cluster_engine
+    
+    start_time = time.time()
+    
+    engine = get_cluster_engine()
+    cluster = engine._store.get_cluster(cluster_id)
+    
+    if cluster is None:
+        raise HTTPException(status_code=404, detail=f"Cluster '{cluster_id}' not found")
+    
+    # Get cluster entities
+    entities = engine.get_ring_members(cluster_id)
+    
+    # Get cluster relationships
+    relationships = engine.get_ring_relationships(cluster_id)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return ClusterDetailResponse(
+        cluster=FraudClusterResponse(
+            cluster_id=cluster.cluster_id,
+            entity_ids=list(cluster.entity_ids),
+            risk_score=cluster.risk_score,
+            tags=list(cluster.tags),
+            created_at=cluster.created_at.isoformat(),
+            updated_at=cluster.updated_at.isoformat(),
+            member_count=len(cluster.entity_ids),
+        ),
+        entities=[
+            EntityResponse(
+                id=e.id,
+                entity_type=e.entity_type.value,
+                value=e.value,
+                risk_score=e.risk_score,
+                tags=list(e.tags),
+                created_at=e.created_at.isoformat(),
+                updated_at=e.updated_at.isoformat(),
+            )
+            for e in entities
+        ],
+        relationships=[
+            EntityRelationshipResponse(
+                source_id=r.source_id,
+                target_id=r.target_id,
+                relationship_type=r.relationship_type.value,
+                confidence_score=r.confidence_score,
+                evidence=r.evidence,
+                created_at=r.created_at.isoformat(),
+            )
+            for r in relationships
+        ],
+        processing_time_ms=processing_time,
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/contagion/{entity_id}",
+    response_model=ContagionReportResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get risk contagion report for entity",
+)
+async def get_contagion_report(entity_id: str, max_depth: int = Query(default=3, ge=1, le=10)):
+    """Generate a detailed risk contagion report for an entity."""
+    import time
+    from src.entity_resolution import get_risk_propagator
+    
+    start_time = time.time()
+    
+    propagator = get_risk_propagator()
+    report = propagator.get_contagion_report(entity_id, max_depth=max_depth)
+    
+    if "error" in report:
+        raise HTTPException(status_code=404, detail=report["error"])
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return ContagionReportResponse(
+        source_entity_id=report["source_entity_id"],
+        source_entity_type=report["source_entity_type"],
+        source_risk_score=report["source_risk_score"],
+        source_contagion_score=report["source_contagion_score"],
+        total_affected=report["total_affected"],
+        max_depth=report["max_depth"],
+        critical=[
+            RiskPropagationNode(
+                node_id=n["entity_id"],
+                entity_type=n["entity_type"],
+                propagated_risk=n["propagated_risk"],
+                tier=n["tier"],
+            )
+            for n in report["critical"]
+        ],
+        high=[
+            RiskPropagationNode(
+                node_id=n["entity_id"],
+                entity_type=n["entity_type"],
+                propagated_risk=n["propagated_risk"],
+                tier=n["tier"],
+            )
+            for n in report["high"]
+        ],
+        medium=[
+            RiskPropagationNode(
+                node_id=n["entity_id"],
+                entity_type=n["entity_type"],
+                propagated_risk=n["propagated_risk"],
+                tier=n["tier"],
+            )
+            for n in report["medium"]
+        ],
+        low=[
+            RiskPropagationNode(
+                node_id=n["entity_id"],
+                entity_type=n["entity_type"],
+                propagated_risk=n["propagated_risk"],
+                tier=n["tier"],
+            )
+            for n in report["low"]
+        ],
+        processing_time_ms=processing_time,
+    )
+
+
+@app.get(
+    "/api/v1/entity-resolution/stats",
+    response_model=GraphStatsResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get knowledge graph statistics",
+)
+async def get_graph_stats():
+    """Get statistics about the knowledge graph."""
+    import time
+    from src.entity_resolution import get_knowledge_graph
+    
+    start_time = time.time()
+    
+    graph = get_knowledge_graph()
+    stats = graph.get_graph_stats()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return GraphStatsResponse(
+        current_entities=stats.get("current_entities", 0),
+        current_relationships=stats.get("current_relationships", 0),
+        current_clusters=stats.get("current_clusters", 0),
+        cache_utilization=stats.get("cache_utilization", 0.0),
+        graph_density=stats.get("graph_density", 0.0),
+        graph_connected_components=stats.get("graph_connected_components", 0),
+        processing_time_ms=processing_time,
+    )
+
+
+@app.post(
+    "/api/v1/entity-resolution/propagate",
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Propagate risk from entity",
+)
+async def propagate_risk(entity_id: str, additional_risk: float = Query(default=0.0, ge=0.0, le=1.0)):
+    """Propagate risk from a source entity to all connected entities."""
+    import time
+    from src.entity_resolution import get_risk_propagator
+    
+    start_time = time.time()
+    
+    propagator = get_risk_propagator()
+    result = propagator.propagate_risk(entity_id, additional_risk)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "source_entity_id": result.source_entity_id,
+        "original_risk_score": result.original_risk_score,
+        "propagated_entities": result.propagated_entities,
+        "total_propagated": result.total_propagated,
+        "max_propagation_depth": result.max_propagation_depth,
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/entity-resolution/detect-rings",
+    tags=["Entity Resolution"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Detect fraud rings using specified algorithm",
+)
+async def detect_fraud_rings(
+    min_cluster_size: int = Query(default=2, ge=2, le=100),
+    algorithm: str = Query(default="CONNECTED_COMPONENTS", description="Algorithm: CONNECTED_COMPONENTS, BREADTH_FIRST_SEARCH, DEPTH_FIRST_SEARCH, LABEL_PROPAGATION"),
+    risk_threshold: float = Query(default=0.0, ge=0.0, le=1.0),
+):
+    """Detect fraud rings using the specified algorithm."""
+    import time
+    from src.entity_resolution import get_cluster_engine
+    from src.entity_resolution.cluster_engine import ClusteringAlgorithm, RingDetectionRequest
+    
+    start_time = time.time()
+    
+    engine = get_cluster_engine()
+    
+    # Parse algorithm
+    try:
+        algo = ClusteringAlgorithm(algorithm.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid algorithm: {algorithm}")
+    
+    request = RingDetectionRequest(
+        min_cluster_size=min_cluster_size,
+        risk_threshold=risk_threshold,
+        algorithm=algo,
+    )
+    
+    result = engine.detect_fraud_rings(request)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "clusters": [
+            {
+                "cluster_id": c.cluster_id,
+                "entity_ids": list(c.entity_ids),
+                "risk_score": c.risk_score,
+                "tags": list(c.tags),
+                "created_at": c.created_at.isoformat(),
+            }
+            for c in result.clusters
+        ],
+        "total_entities": result.total_entities,
+        "total_clusters": result.total_clusters,
+        "high_risk_clusters": result.high_risk_clusters,
+        "algorithm_used": result.algorithm_used.value,
+        "processing_time_ms": processing_time,
+    }
+
+
+# =============================================================================
+# Predictive Intelligence Endpoints
+# =============================================================================
+
+@app.post(
+    "/api/v1/predictive/simulate",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Run a fraud simulation",
+)
+async def run_fraud_simulation(
+    request: SimulationScenarioRequest,
+):
+    """Run a fraud simulation to predict outcomes and risk."""
+    import time
+    from src.predictive_intelligence import (
+        get_fraud_simulator,
+        get_scenario_builder,
+    )
+    from src.predictive_intelligence.models import SimulationType
+    
+    start_time = time.time()
+    
+    simulator = get_fraud_simulator()
+    builder = get_scenario_builder()
+    
+    # Parse simulation type
+    try:
+        sim_type = SimulationType(request.simulation_type.upper())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid simulation type: {request.simulation_type}"
+        )
+    
+    # Build scenario
+    scenario = builder.build_scenario(
+        simulation_type=sim_type,
+        source_entity_ids=request.source_entity_ids,
+        parameters=request.parameters,
+        use_template=request.use_template,
+    )
+    
+    # Run simulation
+    result = simulator.simulate(scenario)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "scenario": {
+            "scenario_id": scenario.scenario_id,
+            "simulation_type": scenario.simulation_type.value,
+            "source_entity_ids": scenario.source_entity_ids,
+            "parameters": scenario.parameters,
+            "status": scenario.status.value,
+            "created_at": scenario.created_at.isoformat(),
+            "created_by": scenario.created_by,
+        },
+        "result": {
+            "scenario_id": result.scenario_id,
+            "predicted_outcomes": result.predicted_outcomes,
+            "risk_score": result.risk_score,
+            "affected_entities": result.affected_entities[:100],
+            "confidence": result.confidence,
+            "processing_time_ms": result.processing_time_ms,
+            "timestamp": result.timestamp.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/predictive/forecast",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Forecast risk for an entity",
+)
+async def forecast_risk(
+    entity_id: str = Query(..., description="Entity ID to forecast"),
+    current_risk: float = Query(0.0, ge=0.0, le=1.0, description="Current risk score"),
+    period: str = Query("DAY_1", description="Forecast period"),
+):
+    """Forecast future risk for an entity."""
+    import time
+    from src.predictive_intelligence import get_risk_forecaster
+    from src.predictive_intelligence.models import ForecastPeriod
+    
+    start_time = time.time()
+    
+    forecaster = get_risk_forecaster()
+    
+    # Parse period
+    try:
+        forecast_period = ForecastPeriod(period.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid period: {period}")
+    
+    # Generate forecast
+    forecast = forecaster.forecast_risk(entity_id, current_risk, forecast_period)
+    
+    # Also get trend
+    trend = forecaster.predict_risk_trend(entity_id, current_risk)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "forecast": {
+            "entity_id": forecast.entity_id,
+            "forecast_period": forecast.forecast_period.value,
+            "risk_score": forecast.risk_score,
+            "confidence": forecast.confidence,
+            "factors": forecast.factors,
+            "recommendations": forecast.recommendations,
+            "timestamp": forecast.timestamp.isoformat(),
+        },
+        "trend": {
+            "entity_id": trend.entity_id,
+            "current_risk": trend.current_risk,
+            "predicted_risk": trend.predicted_risk,
+            "risk_trend": trend.risk_trend,
+            "time_to_peak": trend.time_to_peak,
+            "confidence": trend.confidence,
+            "timestamp": trend.timestamp.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/predictive/campaigns",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get campaign predictions",
+)
+async def get_campaign_predictions(
+    growth_threshold: float = Query(0.0, ge=0.0, le=1.0, description="Growth rate threshold"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum results"),
+):
+    """Get campaign predictions, optionally filtered by growth rate."""
+    import time
+    from src.predictive_intelligence import get_campaign_predictor
+    
+    start_time = time.time()
+    
+    predictor = get_campaign_predictor()
+    
+    if growth_threshold > 0:
+        campaigns = predictor.get_high_growth_campaigns(growth_threshold)
+    else:
+        campaigns = predictor.get_all_campaigns()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "campaigns": [
+            {
+                "campaign_id": c.campaign_id,
+                "campaign_name": c.campaign_name,
+                "predicted_status": c.predicted_status.value,
+                "growth_rate": c.growth_rate,
+                "affected_entities": c.affected_entities[:50],
+                "peak_time": c.peak_time.isoformat() if c.peak_time else None,
+                "confidence": c.confidence,
+                "timestamp": c.timestamp.isoformat(),
+            }
+            for c in campaigns[:limit]
+        ],
+        "total_campaigns": len(campaigns),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/predictive/attack-paths",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Predict attack paths",
+)
+async def predict_attack_paths(
+    entity_id: str = Query(..., description="Source entity ID"),
+    depth: int = Query(3, ge=1, le=10, description="Prediction depth"),
+    probability_threshold: float = Query(0.0, ge=0.0, le=1.0, description="Probability threshold"),
+):
+    """Predict attack paths from an entity."""
+    import time
+    from src.predictive_intelligence import get_attack_path_predictor
+    
+    start_time = time.time()
+    
+    predictor = get_attack_path_predictor()
+    
+    # Generate attack path prediction
+    prediction = predictor.predict_attack_path(entity_id, depth=depth)
+    
+    # Get all paths for this entity
+    all_paths = predictor.get_attack_paths(entity_id)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "predictions": [
+            {
+                "source_entity_id": p.source_entity_id,
+                "predicted_path": p.predicted_path,
+                "probability": p.probability,
+                "estimated_damage": p.estimated_damage,
+                "confidence": p.confidence,
+                "timestamp": p.timestamp.isoformat(),
+            }
+            for p in all_paths if p.probability >= probability_threshold
+        ],
+        "total_predictions": len(all_paths),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/predictive/recommendations",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get prevention recommendations",
+)
+async def get_prevention_recommendations(
+    priority: str = Query("HIGH", description="Minimum priority: CRITICAL, HIGH, MEDIUM, LOW"),
+    entity_id: Optional[str] = Query(None, description="Filter by entity ID"),
+):
+    """Get prevention recommendations based on priority."""
+    import time
+    from src.predictive_intelligence import get_recommendation_engine
+    from src.predictive_intelligence.models import RecommendationPriority
+    
+    start_time = time.time()
+    
+    engine = get_recommendation_engine()
+    
+    # Parse priority
+    try:
+        min_priority = RecommendationPriority(priority.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid priority: {priority}")
+    
+    if entity_id:
+        recommendations = engine.get_entity_recommendations(entity_id)
+    else:
+        recommendations = engine.get_high_priority_recommendations(min_priority)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "recommendations": [
+            {
+                "recommendation_id": r.recommendation_id,
+                "entity_id": r.entity_id,
+                "recommendation_type": r.recommendation_type.value,
+                "priority": r.priority.value,
+                "description": r.description,
+                "expected_impact": r.expected_impact,
+                "timestamp": r.timestamp.isoformat(),
+            }
+            for r in recommendations
+        ],
+        "total_recommendations": len(recommendations),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/predictive/recommendations/generate",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate prevention recommendations",
+)
+async def generate_recommendations(
+    entity_id: str = Body(..., description="Entity ID"),
+    risk_score: float = Body(0.0, ge=0.0, le=1.0, description="Risk score"),
+    risk_factors: List[str] = Body(default=[], description="Risk factors"),
+):
+    """Generate prevention recommendations for an entity."""
+    import time
+    from src.predictive_intelligence import get_recommendation_engine
+    
+    start_time = time.time()
+    
+    engine = get_recommendation_engine()
+    
+    recommendation = engine.generate_recommendation(
+        entity_id=entity_id,
+        risk_score=risk_score,
+        risk_factors=risk_factors,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "recommendation": {
+            "recommendation_id": recommendation.recommendation_id,
+            "entity_id": recommendation.entity_id,
+            "recommendation_type": recommendation.recommendation_type.value,
+            "priority": recommendation.priority.value,
+            "description": recommendation.description,
+            "expected_impact": recommendation.expected_impact,
+            "timestamp": recommendation.timestamp.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/predictive/stats",
+    tags=["Predictive Intelligence"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get predictive intelligence statistics",
+)
+async def get_predictive_stats():
+    """Get statistics about predictive intelligence data."""
+    import time
+    from src.predictive_intelligence import get_predictive_store
+    
+    start_time = time.time()
+    
+    store = get_predictive_store()
+    stats = store.get_stats()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "total_simulations": stats.get("simulations_stored", 0),
+        "total_forecasts": stats.get("forecasts_stored", 0),
+        "total_campaigns": stats.get("campaigns_stored", 0),
+        "total_recommendations": stats.get("recommendations_stored", 0),
+        "current_scenarios": stats.get("current_scenarios", 0),
+        "current_campaigns": stats.get("current_campaigns", 0),
+        "processing_time_ms": processing_time,
+    }
+
+
+# =============================================================================
+# Multi-Agent SOC Endpoints
+# =============================================================================
+
+@app.post(
+    "/api/v1/soc/investigate",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Conduct multi-agent fraud investigation",
+)
+async def conduct_investigation(
+    request: InvestigationRequestSchema,
+):
+    """Conduct a comprehensive fraud investigation using multiple agents."""
+    import time
+    from src.multi_agent_soc import (
+        get_investigation_agent,
+        get_orchestrator,
+    )
+    
+    start_time = time.time()
+    
+    orchestrator = get_orchestrator()
+    
+    # Get entity_id from request
+    entity_id = request.entity_id or f"entity_{int(time.time())}"
+    
+    # Orchestrate multi-agent investigation
+    results = orchestrator.orchestrate_investigation(
+        entity_id=entity_id,
+        priority=request.priority,
+    )
+    
+    # Get investigation result
+    investigation_agent = get_investigation_agent()
+    inv_result = investigation_agent.analyze_entity(entity_id, request.context)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "investigation": {
+            "investigation_id": inv_result.investigation_id,
+            "entity_id": inv_result.entity_id,
+            "status": inv_result.status.value,
+            "risk_score": inv_result.risk_score,
+            "findings": inv_result.findings,
+            "recommendations": inv_result.recommendations,
+            "timestamp": inv_result.created_at.isoformat(),
+        },
+        "agent_results": {
+            "threat_intelligence": results.get("threat_intelligence", {}),
+            "forensics": results.get("forensics", {}),
+            "fraud_ring": results.get("fraud_ring", {}),
+            "report": results.get("report", {}),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/soc/threat/analyze",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Analyze threat intelligence",
+)
+async def analyze_threat(
+    request: ThreatAnalysisRequest,
+):
+    """Analyze threat intelligence and generate report."""
+    import time
+    from src.multi_agent_soc import get_threat_intelligence_agent
+    
+    start_time = time.time()
+    
+    agent = get_threat_intelligence_agent()
+    
+    report = agent.analyze_threat(
+        threat_type=request.threat_type,
+        indicators=request.indicators,
+        context={"affected_entities": request.affected_entities},
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report.report_id,
+            "threat_type": report.threat_type,
+            "severity": report.severity,
+            "confidence": report.confidence,
+            "ttps": report.ttps,
+            "recommendations": report.recommendations,
+            "timestamp": report.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/soc/forensics/analyze",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Perform forensic analysis",
+)
+async def perform_forensic_analysis(
+    request: ForensicAnalysisRequest,
+):
+    """Perform digital forensics analysis on an entity."""
+    import time
+    from src.multi_agent_soc import get_forensics_agent
+    
+    start_time = time.time()
+    
+    agent = get_forensics_agent()
+    
+    analysis = agent.perform_forensics(
+        target_entity_id=request.target_entity_id,
+        analysis_type=request.analysis_type,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "analysis": {
+            "analysis_id": analysis.analysis_id,
+            "target_entity_id": analysis.target_entity_id,
+            "analysis_type": analysis.analysis_type,
+            "conclusion": analysis.conclusion,
+            "confidence": analysis.confidence,
+            "artifacts": analysis.artifacts,
+            "timestamp": analysis.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/soc/fraud-ring/detect",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Detect fraud ring",
+)
+async def detect_fraud_ring(
+    request: FraudRingDetectionRequest,
+):
+    """Detect and analyze a fraud ring."""
+    import time
+    from src.multi_agent_soc import get_fraud_ring_agent
+    
+    start_time = time.time()
+    
+    agent = get_fraud_ring_agent()
+    
+    analysis = agent.detect_ring(
+        seed_entities=request.seed_entities,
+        ring_type=request.ring_type,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "ring": {
+            "ring_id": analysis.ring_id,
+            "ring_name": analysis.ring_name,
+            "member_count": len(analysis.member_entities),
+            "ring_score": analysis.ring_score,
+            "ring_type": analysis.ring_type,
+            "financial_impact": analysis.financial_impact,
+            "confidence": analysis.confidence,
+            "timestamp": analysis.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/soc/fraud-rings",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get all fraud rings",
+)
+async def get_fraud_rings(
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum ring score"),
+):
+    """Get all fraud rings, optionally filtered by score."""
+    import time
+    from src.multi_agent_soc import get_fraud_ring_agent
+    
+    start_time = time.time()
+    
+    agent = get_fraud_ring_agent()
+    
+    if min_score > 0:
+        rings = agent.get_high_risk_rings(min_score)
+    else:
+        rings = agent.get_all_rings()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "rings": [
+            {
+                "ring_id": r.ring_id,
+                "ring_name": r.ring_name,
+                "member_count": len(r.member_entities),
+                "ring_score": r.ring_score,
+                "ring_type": r.ring_type,
+                "confidence": r.confidence,
+                "timestamp": r.created_at.isoformat(),
+            }
+            for r in rings
+        ],
+        "total_rings": len(rings),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/soc/report/generate",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate SOC report",
+)
+async def generate_soc_report(
+    request: SOCReportRequest,
+):
+    """Generate a SOC summary report."""
+    import time
+    from datetime import datetime, timezone, timedelta
+    from src.multi_agent_soc import get_reporting_agent
+    
+    start_time = time.time()
+    
+    agent = get_reporting_agent()
+    
+    # Parse dates
+    now = datetime.now(timezone.utc)
+    if request.period_end:
+        period_end = datetime.fromisoformat(request.period_end.replace('Z', '+00:00'))
+    else:
+        period_end = now
+    
+    if request.period_start:
+        period_start = datetime.fromisoformat(request.period_start.replace('Z', '+00:00'))
+    else:
+        period_start = period_end - timedelta(hours=24)
+    
+    report = agent.generate_summary_report(
+        period_start=period_start,
+        period_end=period_end,
+        report_type=request.report_type,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report.report_id,
+            "report_type": report.report_type,
+            "period_start": report.period_start.isoformat(),
+            "period_end": report.period_end.isoformat(),
+            "metrics": report.metrics,
+            "threats_identified": report.threats_identified,
+            "recommendations": report.recommendations,
+            "generated_by": report.generated_by,
+            "timestamp": report.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/soc/orchestrate",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create orchestration workflow",
+)
+async def create_orchestration(
+    request: OrchestrationRequest,
+):
+    """Create a multi-agent orchestration workflow."""
+    import time
+    from src.multi_agent_soc import get_orchestrator
+    
+    start_time = time.time()
+    
+    orchestrator = get_orchestrator()
+    
+    plan = orchestrator.create_workflow(
+        workflow_name=request.workflow_name,
+        tasks=request.tasks,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "plan": {
+            "plan_id": plan.plan_id,
+            "title": plan.title,
+            "task_count": len(plan.tasks),
+            "estimated_duration_seconds": plan.estimated_duration_seconds,
+            "status": plan.status,
+            "timestamp": plan.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/soc/dashboard",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get SOC dashboard data",
+)
+async def get_soc_dashboard():
+    """Get executive SOC dashboard data."""
+    import time
+    from src.multi_agent_soc import get_reporting_agent
+    
+    start_time = time.time()
+    
+    agent = get_reporting_agent()
+    
+    dashboard = agent.generate_executive_dashboard()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "dashboard": dashboard,
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/soc/stats",
+    tags=["Multi-Agent SOC"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get SOC statistics",
+)
+async def get_soc_stats():
+    """Get SOC system statistics."""
+    import time
+    from src.multi_agent_soc import get_soc_store
+    
+    start_time = time.time()
+    
+    store = get_soc_store()
+    stats = store.get_stats()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "total_agents": stats.get("total_agents", 0),
+        "active_tasks": stats.get("pending_tasks", 0),
+        "completed_tasks": stats.get("total_tasks", 0) - stats.get("pending_tasks", 0),
+        "investigations_stored": stats.get("investigations_stored", 0),
+        "threat_reports_stored": stats.get("threat_reports_stored", 0),
+        "fraud_rings_stored": stats.get("fraud_rings_stored", 0),
+        "reports_stored": stats.get("reports_stored", 0),
+        "processing_time_ms": processing_time,
+    }
+
+
+# =============================================================================
+# Executive Governance Endpoints
+# =============================================================================
+
+@app.post(
+    "/api/v1/governance/dashboard",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate executive dashboard",
+)
+async def generate_executive_dashboard(
+    request: DashboardRequest,
+):
+    """Generate executive dashboard with KPIs and summaries."""
+    import time
+    from src.executive_governance import get_executive_dashboard_module
+    
+    start_time = time.time()
+    
+    module = get_executive_dashboard_module()
+    
+    dashboard = module.generate_dashboard(
+        title=request.title,
+        period=request.period,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "dashboard": {
+            "dashboard_id": dashboard.dashboard_id,
+            "title": dashboard.title,
+            "period": dashboard.period,
+            "risk_summary": dashboard.risk_summary,
+            "compliance_summary": dashboard.compliance_summary,
+            "performance_summary": dashboard.performance_summary,
+            "key_metrics_count": len(dashboard.key_metrics),
+            "alerts_count": len(dashboard.alerts),
+            "timestamp": dashboard.generated_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/governance/board-report",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate board report",
+)
+async def generate_board_report(
+    request: BoardReportRequest,
+):
+    """Generate board-level risk and governance report."""
+    import time
+    from datetime import datetime, timezone
+    from src.executive_governance import get_board_reporting_module
+    
+    start_time = time.time()
+    
+    module = get_board_reporting_module()
+    
+    # Parse dates
+    period_start = datetime.fromisoformat(request.period_start.replace('Z', '+00:00'))
+    period_end = datetime.fromisoformat(request.period_end.replace('Z', '+00:00'))
+    
+    report = module.generate_board_report(
+        period_start=period_start,
+        period_end=period_end,
+        include_sections=request.include_sections or None,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report.report_id,
+            "title": report.title,
+            "period_start": report.period_start.isoformat(),
+            "period_end": report.period_end.isoformat(),
+            "summary": report.summary,
+            "metrics": report.metrics,
+            "findings_count": len(report.findings),
+            "recommendations_count": len(report.recommendations),
+            "status": report.status,
+            "timestamp": report.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/governance/risk-scorecard",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate risk scorecard",
+)
+async def generate_risk_scorecard(
+    request: RiskScorecardRequest,
+):
+    """Generate enterprise risk scorecard."""
+    import time
+    from src.executive_governance import get_risk_governance_module
+    
+    start_time = time.time()
+    
+    module = get_risk_governance_module()
+    
+    scorecard = module.generate_risk_scorecard(period=request.period)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "scorecard": {
+            "scorecard_id": scorecard.scorecard_id,
+            "period": scorecard.period,
+            "overall_risk_score": scorecard.overall_risk_score,
+            "risk_level": scorecard.risk_level.value,
+            "risk_categories": scorecard.risk_categories,
+            "risk_trend": scorecard.risk_trend,
+            "key_risks_count": len(scorecard.key_risks),
+            "next_review": scorecard.next_review_date.isoformat() if scorecard.next_review_date else None,
+            "timestamp": scorecard.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/governance/compliance/frameworks",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get compliance frameworks",
+)
+async def get_compliance_frameworks():
+    """Get all compliance frameworks and their status."""
+    import time
+    from src.executive_governance import get_compliance_analytics_module
+    
+    start_time = time.time()
+    
+    module = get_compliance_analytics_module()
+    overview = module.get_compliance_overview()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "frameworks": overview.get("framework_summary", []),
+        "overall_compliance": overview.get("overall_compliance", 0),
+        "total_frameworks": overview.get("frameworks_tracked", 0),
+        "compliant_frameworks": overview.get("compliant_frameworks", 0),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/governance/compliance/gap-analysis",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Perform compliance gap analysis",
+)
+async def perform_gap_analysis(
+    request: ComplianceGapAnalysisRequest,
+):
+    """Perform compliance gap analysis for a framework."""
+    import time
+    from src.executive_governance import get_compliance_analytics_module
+    
+    start_time = time.time()
+    
+    module = get_compliance_analytics_module()
+    analysis = module.perform_gap_analysis(request.framework_name)
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "analysis": {
+            "framework": analysis.get("framework", request.framework_name),
+            "compliance_percentage": analysis.get("compliance_percentage", 0),
+            "gaps_identified": analysis.get("gaps_identified", 0),
+            "gap_details": analysis.get("gaps", []),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/governance/audit/finding",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create audit finding",
+)
+async def create_audit_finding(
+    request: AuditFindingRequest,
+):
+    """Create an audit finding."""
+    import time
+    from src.executive_governance import get_audit_intelligence_module
+    from src.executive_governance.models import AuditFindingSeverity
+    
+    start_time = time.time()
+    
+    module = get_audit_intelligence_module()
+    
+    # Parse severity
+    try:
+        severity = AuditFindingSeverity(request.severity.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid severity: {request.severity}")
+    
+    finding = module.create_audit_finding(
+        title=request.title,
+        description=request.description,
+        severity=severity,
+        category=request.category,
+        affected_controls=request.affected_controls,
+        affected_entities=request.affected_entities,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "finding": {
+            "finding_id": finding.finding_id,
+            "title": finding.finding_title,
+            "severity": finding.severity.value,
+            "status": finding.status,
+            "risk_impact": finding.risk_impact,
+            "due_date": finding.due_date.isoformat() if finding.due_date else None,
+            "timestamp": finding.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/governance/audit/findings",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get audit findings",
+)
+async def get_audit_findings(
+    status: str = Query(None, description="Filter by status (OPEN, CLOSED)"),
+    severity: str = Query(None, description="Filter by severity"),
+):
+    """Get audit findings, optionally filtered."""
+    import time
+    from src.executive_governance import get_audit_intelligence_module
+    
+    start_time = time.time()
+    
+    module = get_audit_intelligence_module()
+    summary = module.get_finding_summary()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "summary": summary,
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/governance/report",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate governance report",
+)
+async def generate_governance_report(
+    request: GovernanceReportRequest,
+):
+    """Generate a governance report."""
+    import time
+    from datetime import datetime, timezone, timedelta
+    from src.executive_governance import get_board_reporting_module
+    from src.executive_governance.models import ReportType
+    
+    start_time = time.time()
+    
+    module = get_board_reporting_module()
+    
+    # Parse report type
+    try:
+        report_type = ReportType(request.report_type.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid report type: {request.report_type}")
+    
+    # Generate based on type
+    if report_type == ReportType.EXECUTIVE_SUMMARY:
+        report = module.generate_executive_summary(period="monthly")
+    elif report_type == ReportType.RISK_REPORT:
+        now = datetime.now(timezone.utc)
+        report = module.generate_risk_report(
+            period_start=now - timedelta(days=30),
+            period_end=now,
+        )
+    else:
+        report = module.generate_executive_summary(period="monthly")
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report.report_id,
+            "report_type": report.report_type.value,
+            "title": report.title,
+            "period_start": report.period_start.isoformat(),
+            "period_end": report.period_end.isoformat(),
+            "summary": report.summary,
+            "status": report.status,
+            "timestamp": report.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/governance/stats",
+    tags=["Executive Governance"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get governance statistics",
+)
+async def get_governance_stats():
+    """Get governance system statistics."""
+    import time
+    from src.executive_governance import get_governance_store
+    
+    start_time = time.time()
+    
+    store = get_governance_store()
+    stats = store.get_stats()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "metrics_stored": stats.get("metrics_stored", 0),
+        "scorecards_stored": stats.get("scorecards_stored", 0),
+        "frameworks_tracked": stats.get("frameworks_stored", 0),
+        "findings_stored": stats.get("findings_stored", 0),
+        "open_findings": stats.get("open_findings", 0),
+        "critical_findings": stats.get("critical_findings", 0),
+        "dashboards_stored": stats.get("dashboards_stored", 0),
+        "reports_stored": stats.get("reports_stored", 0),
+        "processing_time_ms": processing_time,
+    }
+
+
+# =============================================================================
+# Advanced Analytics & BI Endpoints
+# =============================================================================
+
+@app.post(
+    "/api/v1/analytics/metric/define",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Define a new metric",
+)
+async def define_metric(
+    request: MetricDefinitionRequest,
+):
+    """Define a new analytics metric."""
+    import time
+    from src.analytics_business_intelligence import get_data_warehouse_module
+    from src.analytics_business_intelligence.models import MetricType, AggregationType
+    
+    start_time = time.time()
+    
+    module = get_data_warehouse_module()
+    
+    # Parse types
+    metric_type = MetricType(request.metric_type.upper())
+    aggregation = AggregationType(request.aggregation.upper())
+    
+    metric = module.define_metric(
+        name=request.name,
+        description=request.description,
+        metric_type=metric_type,
+        aggregation=aggregation,
+        category=request.category,
+        unit=request.unit,
+        formula=request.formula,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "metric": {
+            "metric_id": metric.metric_id,
+            "name": metric.name,
+            "metric_type": metric.metric_type.value,
+            "aggregation": metric.aggregation.value,
+            "category": metric.category,
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/metric/record",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Record a metric value",
+)
+async def record_metric_value(
+    request: MetricValueRequest,
+):
+    """Record a metric value."""
+    import time
+    from src.analytics_business_intelligence import get_data_warehouse_module
+    
+    start_time = time.time()
+    
+    module = get_data_warehouse_module()
+    
+    value = module.record_metric_value(
+        metric_id=request.metric_id,
+        value=request.value,
+        dimensions=request.dimensions,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "value_id": value.value_id,
+        "metric_id": value.metric_id,
+        "value": value.value,
+        "timestamp": value.timestamp.isoformat(),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/analytics/kpis",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get all KPIs",
+)
+async def get_kpis(
+    status: str = Query(None, description="Filter by status"),
+    category: str = Query(None, description="Filter by category"),
+):
+    """Get all KPIs with optional filters."""
+    import time
+    from src.analytics_business_intelligence import get_kpi_engine_module
+    
+    start_time = time.time()
+    
+    engine = get_kpi_engine_module()
+    dashboard = engine.get_kpi_dashboard()
+    
+    kpis = engine._store.get_all_kpis()
+    if status:
+        kpis = [k for k in kpis if k.status == status]
+    if category:
+        kpis = [k for k in kpis if k.category == category]
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "kpis": [
+            {
+                "kpi_id": k.kpi_id,
+                "name": k.name,
+                "target_value": k.target_value,
+                "current_value": k.current_value,
+                "change_percent": k.change_percent,
+                "status": k.status,
+                "category": k.category,
+            }
+            for k in kpis
+        ],
+        "summary": dashboard,
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/analytics/kpi/dashboard",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get KPI dashboard",
+)
+async def get_kpi_dashboard():
+    """Get KPI dashboard summary."""
+    import time
+    from src.analytics_business_intelligence import get_kpi_engine_module
+    
+    start_time = time.time()
+    
+    engine = get_kpi_engine_module()
+    dashboard = engine.get_kpi_dashboard()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "dashboard": dashboard,
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/trend/analyze",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Perform trend analysis",
+)
+async def analyze_trend(
+    request: TrendAnalysisRequest,
+):
+    """Perform trend analysis on data."""
+    import time
+    from datetime import datetime, timezone
+    from src.analytics_business_intelligence import get_advanced_analytics_module
+    
+    start_time = time.time()
+    
+    module = get_advanced_analytics_module()
+    
+    # Parse dates
+    period_start = datetime.fromisoformat(request.period_start.replace('Z', '+00:00'))
+    period_end = datetime.fromisoformat(request.period_end.replace('Z', '+00:00'))
+    
+    analysis = module.analyze_trend(
+        metric_name=request.metric_name,
+        data_points=request.data_points,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "analysis": {
+            "analysis_id": analysis.analysis_id,
+            "metric_name": analysis.metric_name,
+            "direction": analysis.direction,
+            "slope": analysis.slope,
+            "volatility": analysis.volatility,
+            "anomaly_detected": analysis.anomaly_detected,
+            "forecast_values": analysis.forecast_values,
+            "timestamp": analysis.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/correlation/analyze",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Perform correlation analysis",
+)
+async def analyze_correlation(
+    request: CorrelationAnalysisRequest,
+):
+    """Perform correlation analysis between variables."""
+    import time
+    from src.analytics_business_intelligence import get_advanced_analytics_module
+    
+    start_time = time.time()
+    
+    module = get_advanced_analytics_module()
+    
+    result = module.analyze_correlation(
+        variable_a=request.variable_a,
+        variable_b=request.variable_b,
+        variable_a_name=request.variable_a_name,
+        variable_b_name=request.variable_b_name,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "correlation": {
+            "correlation_id": result.correlation_id,
+            "variable_a": result.variable_a,
+            "variable_b": result.variable_b,
+            "correlation_coefficient": result.correlation_coefficient,
+            "p_value": result.p_value,
+            "significance": result.significance,
+            "interpretation": result.interpretation,
+            "timestamp": result.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/dashboard/create",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Create BI dashboard",
+)
+async def create_dashboard(
+    request: DashboardRequest,
+):
+    """Create a BI dashboard."""
+    import time
+    from src.analytics_business_intelligence import get_bi_dashboard_module
+    
+    start_time = time.time()
+    
+    module = get_bi_dashboard_module()
+    
+    dashboard = module.create_dashboard(
+        name=request.name,
+        description=request.description,
+        chart_ids=request.chart_ids,
+        kpi_ids=request.kpi_ids,
+        refresh_interval=request.refresh_interval,
+        created_by="api",
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "dashboard": {
+            "dashboard_id": dashboard.dashboard_id,
+            "name": dashboard.name,
+            "description": dashboard.description,
+            "chart_count": len(dashboard.charts),
+            "kpi_count": len(dashboard.kpis),
+            "refresh_interval": dashboard.refresh_interval,
+            "timestamp": dashboard.created_at.isoformat(),
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/report/generate",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate analytics report",
+)
+async def generate_analytics_report(
+    request: ReportGenerationRequest,
+):
+    """Generate an analytics report."""
+    import time
+    from src.analytics_business_intelligence import get_report_automation_module
+    
+    start_time = time.time()
+    
+    module = get_report_automation_module()
+    
+    report = module.generate_report(
+        report_type=request.report_type,
+        content_config=request.content_config,
+        format=request.format,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report["report_id"],
+            "report_type": report["report_type"],
+            "format": report["format"],
+            "generated_at": report["generated_at"],
+            "page_count": report["page_count"],
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.post(
+    "/api/v1/analytics/report/schedule",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Schedule automated report",
+)
+async def schedule_report(
+    request: ScheduledReportRequest,
+):
+    """Schedule an automated report."""
+    import time
+    from src.analytics_business_intelligence import get_report_automation_module
+    from src.analytics_business_intelligence.models import ReportSchedule
+    
+    start_time = time.time()
+    
+    module = get_report_automation_module()
+    
+    # Parse schedule
+    try:
+        schedule = ReportSchedule(request.schedule.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid schedule: {request.schedule}")
+    
+    report = module.create_scheduled_report(
+        name=request.name,
+        description=request.description,
+        schedule=schedule,
+        report_type=request.report_type,
+        content_config=request.content_config,
+        recipients=request.recipients,
+        report_format=request.format,
+    )
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "report": {
+            "report_id": report.report_id,
+            "name": report.name,
+            "schedule": report.schedule.value,
+            "enabled": report.enabled,
+            "next_run": report.next_run.isoformat() if report.next_run else None,
+        },
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/analytics/insights",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get business insights",
+)
+async def get_insights(
+    unacknowledged_only: bool = Query(False, description="Only unacknowledged"),
+):
+    """Get business insights from analytics."""
+    import time
+    from src.analytics_business_intelligence import get_analytics_store
+    
+    start_time = time.time()
+    
+    store = get_analytics_store()
+    
+    if unacknowledged_only:
+        insights = store.get_unacknowledged_insights()
+    else:
+        insights = store.get_recent_insights()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "insights": [
+            {
+                "insight_id": i.insight_id,
+                "title": i.title,
+                "description": i.description,
+                "insight_type": i.insight_type,
+                "severity": i.severity,
+                "generated_at": i.generated_at.isoformat(),
+                "acknowledged": i.acknowledged,
+            }
+            for i in insights
+        ],
+        "total_insights": len(insights),
+        "processing_time_ms": processing_time,
+    }
+
+
+@app.get(
+    "/api/v1/analytics/stats",
+    tags=["Advanced Analytics"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Get analytics statistics",
+)
+async def get_analytics_stats():
+    """Get analytics system statistics."""
+    import time
+    from src.analytics_business_intelligence import get_analytics_store
+    
+    start_time = time.time()
+    
+    store = get_analytics_store()
+    stats = store.get_stats()
+    
+    processing_time = (time.time() - start_time) * 1000
+    
+    return {
+        "metric_definitions_stored": stats.get("metric_definitions_stored", 0),
+        "kpis_stored": stats.get("kpis_stored", 0),
+        "trends_stored": stats.get("trends_stored", 0),
+        "dashboards_stored": stats.get("dashboards_stored", 0),
+        "reports_stored": stats.get("reports_stored", 0),
+        "insights_stored": stats.get("insights_stored", 0),
+        "unacknowledged_insights": stats.get("unacknowledged_insights", 0),
+        "processing_time_ms": processing_time,
+    }
 
 
 def main():

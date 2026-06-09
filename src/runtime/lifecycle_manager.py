@@ -70,6 +70,9 @@ class LifecycleManager:
             self.runtime_state.shutting_down = False
             completed_steps: List[str] = []
 
+            # Wire default event subscriptions to the event bus
+            await register_default_subscriptions(self.runtime_state.event_bus)
+
             dispatcher = getattr(self.runtime_state, "dispatcher", None)
             event_bus = getattr(self.runtime_state, "event_bus", None)
 

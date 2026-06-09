@@ -13,6 +13,17 @@ from .task_registry import TaskRegistry
 from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
 from ..security import sanitize_metadata
+from ..audit import log_audit_event
+from ..configuration import ConfigRegistry, ConfigReloadManager, ConfigSnapshot
+from ..policy import (
+    PolicyEngine,
+    PolicyRegistry,
+    PolicyRule,
+    config_reload_allowed_guardrail,
+    healthy_runtime_guardrail,
+    max_recovery_attempts_guardrail,
+    resource_throttled_guardrail,
+)
 
 
 @dataclass
@@ -25,6 +36,10 @@ class RuntimeState:
     tasks: TaskRegistry = field(default_factory=TaskRegistry)
     health_monitor: RuntimeHealthMonitor = field(default_factory=RuntimeHealthMonitor)
     resource_manager: RuntimeResourceManager = field(default_factory=RuntimeResourceManager)
+    config_registry: ConfigRegistry = field(default_factory=ConfigRegistry)
+    policy_registry: PolicyRegistry = field(default_factory=PolicyRegistry)
+    policy_engine: PolicyEngine = field(init=False)
+    config_reload_manager: ConfigReloadManager = field(init=False)
     recovery_manager: Optional[Any] = None
     watchdog: Optional[Any] = None
     legacy_state: Optional[Any] = None
@@ -38,13 +53,69 @@ class RuntimeState:
 
     def __post_init__(self) -> None:
         self.lifecycle_events = deque(maxlen=self._max_lifecycle_events)
+        self.policy_engine = PolicyEngine(self.policy_registry)
+        self._register_default_policies()
         self.dispatcher = EventDispatcher(
             self._event_bus_ref(),
             maxsize=self.resource_manager.limits.max_event_queue_size,
             resource_manager=self.resource_manager,
         )
         self.tasks.set_resource_manager(self.resource_manager)
+        self.config_reload_manager = ConfigReloadManager(
+            self.config_registry,
+            audit_logger=log_audit_event,
+            policy_engine=self.policy_engine,
+        )
+        self.resource_manager.set_config_registry(self.config_registry)
+        self.resource_manager.set_policy_engine(self.policy_engine)
+        self.health_monitor.set_config_registry(self.config_registry)
         self.services.register_service("resource_manager", self.resource_manager, replace=True)
+        self.services.register_service("config_registry", self.config_registry, replace=True)
+        self.services.register_service("config_reload_manager", self.config_reload_manager, replace=True)
+        self.services.register_service("policy_registry", self.policy_registry, replace=True)
+        self.services.register_service("policy_engine", self.policy_engine, replace=True)
+
+    def set_recovery_manager(self, recovery_manager: Any) -> None:
+        self.recovery_manager = recovery_manager
+        if hasattr(recovery_manager, "set_config_registry"):
+            recovery_manager.set_config_registry(self.config_registry)
+        if hasattr(recovery_manager, "set_policy_engine"):
+            recovery_manager.set_policy_engine(self.policy_engine)
+        self.services.register_service("recovery_manager", recovery_manager, replace=True)
+
+    def _register_default_policies(self) -> None:
+        self.policy_registry.register_policy(
+            PolicyRule(
+                name="max_recovery_attempts",
+                description="Deny recovery after a service reaches its configured attempt limit.",
+                enabled=True,
+                evaluator=max_recovery_attempts_guardrail,
+            )
+        )
+        self.policy_registry.register_policy(
+            PolicyRule(
+                name="resource_throttled",
+                description="Deny runtime admission when resource state is throttled.",
+                enabled=True,
+                evaluator=resource_throttled_guardrail,
+            )
+        )
+        self.policy_registry.register_policy(
+            PolicyRule(
+                name="healthy_runtime",
+                description="Allow operations only while runtime is healthy enough.",
+                enabled=True,
+                evaluator=healthy_runtime_guardrail,
+            )
+        )
+        self.policy_registry.register_policy(
+            PolicyRule(
+                name="config_reload_allowed",
+                description="Allow configuration reloads while reload guardrails permit them.",
+                enabled=True,
+                evaluator=config_reload_allowed_guardrail,
+            )
+        )
 
     # EventDispatcher needs a reference to the event_bus field.  Using a
     # helper avoids capturing 'self' in a lambda stored on self before the
@@ -73,6 +144,8 @@ class RuntimeState:
 
     def get_metrics(self) -> Dict[str, Any]:
         resource_metrics = self.resource_manager.get_resource_metrics()
+        config_snapshot = ConfigSnapshot.capture(self.config_registry)
+        policies = self.policy_registry.list_policies()
         return {
             "active_task_count": self.tasks.active_count,
             "services": [info.__dict__ for info in self.services.get_initialization_state()],
@@ -82,5 +155,15 @@ class RuntimeState:
             "health_status": self.health_monitor.get_overall_status(),
             "resource_state": resource_metrics["backpressure_state"],
             "resources": resource_metrics,
+            "configuration": {
+                "count": len(config_snapshot.values),
+                "snapshot_timestamp": config_snapshot.timestamp,
+                "names": sorted(config_snapshot.values.keys()),
+            },
+            "policies": {
+                "count": len(policies),
+                "enabled": sum(1 for policy in policies if policy.enabled),
+                "names": sorted(policy.name for policy in policies),
+            },
         }
 

@@ -14,6 +14,7 @@ from .schemas import (
     ObservabilitySettings,
     RuntimeFlags,
     ScoringSettings,
+    WebhookSettings,
 )
 
 
@@ -27,6 +28,7 @@ class RuntimeSettings(BaseModel):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     scoring: ScoringSettings = Field(default_factory=ScoringSettings)
     innovations: InnovationSettings = Field(default_factory=InnovationSettings)
+    webhook: WebhookSettings = Field(default_factory=WebhookSettings)
     runtime: RuntimeFlags = Field(default_factory=RuntimeFlags)
     raw_config: Dict[str, Any] = Field(default_factory=dict)
     raw_environment: EnvironmentVariablesSchema = Field(default_factory=EnvironmentVariablesSchema)
