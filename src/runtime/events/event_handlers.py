@@ -19,6 +19,7 @@ from .event_types import (
     ServiceFailedEvent,
     ServiceHealthyEvent,
     WatchdogAlertEvent,
+    SentinelAlertEvent,
 )
 
 _logger = get_logger("runtime.events.handlers")
@@ -116,3 +117,23 @@ def on_watchdog_alert(event: WatchdogAlertEvent) -> None:
             "event_id": event.event_id,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Webhook integration hooks
+# ---------------------------------------------------------------------------
+
+async def on_sentinel_alert(event: SentinelAlertEvent) -> None:
+    """Webhook event handler that triggers configured notifications."""
+    from ...config.settings import get_settings
+    from .webhook_manager import WebhookManager
+    try:
+        settings = get_settings()
+        manager = WebhookManager(settings.webhook)
+        await manager.send_alert(event)
+    except Exception as exc:
+        _logger.error(
+            f"Failed processing sentinel webhook alert: {exc}",
+            event_type="event_sentinel_alert_error",
+            metadata={"error": str(exc), "event_id": event.event_id},
+        )

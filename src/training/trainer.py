@@ -12,12 +12,22 @@ import numpy as np
 from pathlib import Path
 import yaml
 from tqdm import tqdm
-import mlflow
-import mlflow.pytorch
+import logging
 from contextlib import contextmanager
+
+try:
+    import mlflow
+    import mlflow.pytorch
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    mlflow = None  # type: ignore[assignment]
+    MLFLOW_AVAILABLE = False
+
+_trainer_logger = logging.getLogger(__name__)
 
 from .losses import FocalLoss, CombinedLoss
 from ..utils.helpers import get_device
+from ..utils.encryption import get_encryption_handler
 
 
 @contextmanager
@@ -112,7 +122,15 @@ class Trainer:
 
         # MLflow setup
         mlflow_config = config.get('mlflow', {})
-        self.mlflow_enabled = mlflow_config.get('enabled', False)
+        config_requests_mlflow = mlflow_config.get('enabled', False)
+
+        if config_requests_mlflow and not MLFLOW_AVAILABLE:
+            _trainer_logger.warning(
+                "mlflow is not installed; experiment tracking will be disabled. "
+                "Install it with: pip install mlflow"
+            )
+
+        self.mlflow_enabled = config_requests_mlflow and MLFLOW_AVAILABLE
 
         if self.mlflow_enabled:
             mlflow.set_tracking_uri(mlflow_config.get('tracking_uri', 'mlruns'))
@@ -346,7 +364,17 @@ class Trainer:
             print(f"Best validation loss: {self.best_val_loss:.4f}")
 
     def save_checkpoint(self, path: Path):
-        """Save model checkpoint"""
+        """Save model checkpoint with encryption.
+
+        Encrypts checkpoint using AES-256-GCM to protect model weights.
+        Encryption key is loaded from environment variables.
+
+        Args:
+            path: Destination path for encrypted checkpoint.
+
+        Raises:
+            ValueError: If encryption key is not configured.
+        """
         checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
@@ -357,11 +385,40 @@ class Trainer:
         }
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
-        torch.save(checkpoint, path)
+
+        # Encrypt checkpoint before saving
+        encryption = get_encryption_handler()
+        encrypted_data = encryption.encrypt_checkpoint(checkpoint)
+
+        # Write encrypted data to disk
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(encrypted_data)
 
     def load_checkpoint(self, path: Path):
-        """Load model checkpoint"""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        """Load encrypted model checkpoint.
+
+        Decrypts checkpoint using AES-256-GCM with authentication verification.
+        Encryption key is loaded from environment variables.
+
+        Args:
+            path: Path to encrypted checkpoint.
+
+        Raises:
+            ValueError: If encryption key is not configured.
+            cryptography.exceptions.InvalidTag: If checkpoint authentication fails.
+        """
+        # Read encrypted data from disk
+        path = Path(path)
+        with open(path, 'rb') as f:
+            encrypted_data = f.read()
+
+        # Decrypt checkpoint
+        encryption = get_encryption_handler()
+        checkpoint = encryption.decrypt_checkpoint(encrypted_data)
+
+        # Load checkpoint state
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.current_epoch = checkpoint['epoch']

@@ -1,0 +1,119 @@
+{{/* AegisGraph Sentinel API Deployment Template */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aegisgraph.fullname" . }}-api
+  labels:
+    {{- include "aegisgraph.labels" . | nindent 4 }}
+    component: api
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "aegisgraph.selectorLabels" . | nindent 6 }}
+      component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "aegisgraph.selectorLabels" . | nindent 8 }}
+        component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "aegisgraph.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: api
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.port }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.service.grpcPort }}
+          protocol: TCP
+        env:
+        - name: API_URL
+          value: {{ .Values.config.api.url }}
+        - name: LOG_LEVEL
+          value: {{ .Values.config.api.logLevel }}
+        - name: DEVICE
+          value: {{ .Values.config.api.device }}
+        - name: NEO4J_URI
+          value: {{ .Values.config.neo4j.uri }}
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: {{ .Values.config.kafka.bootstrapServers }}
+        - name: REDIS_HOST
+          value: {{ .Values.config.redis.host }}
+        - name: REDIS_PORT
+          value: {{ .Values.config.redis.port | quote }}
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "aegisgraph.fullname" . }}-secrets
+              key: apiKey
+              optional: true
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "aegisgraph.fullname" . }}-secrets
+              key: jwtSecret
+              optional: true
+        resources:
+          {{- toYaml .Values.resources.api | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: models-storage
+          mountPath: /models
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: models-storage
+        persistentVolumeClaim:
+          claimName: {{ include "aegisgraph.fullname" . }}-models-pvc
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

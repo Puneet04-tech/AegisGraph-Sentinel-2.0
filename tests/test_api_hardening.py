@@ -842,3 +842,71 @@ def test_cors_preflight_allows_honeypot_admin_headers(api_client):
         assert header in allow, (
             f"{header} missing from CORS allow_headers. Got: {allow!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fallback scoring metrics ordering regression tests (issue #910)
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_metrics_reflect_final_decision(api_client, monkeypatch):
+    """Stats endpoint must count the fallback-overridden decision, not the pre-override one.
+
+    When MODEL_AVAILABLE is False and a high-value transaction triggers the
+    amount-based fallback, /stats must record the BLOCK decision and the
+    overridden risk score — not the raw heuristic values that existed before
+    the override ran.
+    """
+    import src.api.main as _main
+
+    # Force model-unavailable path so the fallback branch is exercised.
+    monkeypatch.setattr(_main, "MODEL_AVAILABLE", False)
+
+    # Reset counters to get a clean baseline.
+    _main.state.requests_processed = 0
+    _main.state.decisions = {"ALLOW": 0, "BLOCK": 0, "REVIEW": 0}
+    _main.state.total_risk_score = 0.0
+
+    # Submit a transaction above the 200 000 block threshold.
+    payload = {
+        "transaction_id": "txn_fallback_regression",
+        "source_account": "acct_src",
+        "target_account": "acct_dst",
+        "amount": 250000.0,
+        "currency": "INR",
+        "mode": "IMPS",
+        "timestamp": "2026-01-01T10:00:00Z",
+    }
+    tx_response = api_client.post("/api/v1/fraud/check", json=payload)
+    # The endpoint may return 200 or 503 (innovations unavailable); either way
+    # the decision path runs. Only assert stats if the check reached scoring.
+    if tx_response.status_code not in (200, 207):
+        pytest.skip(f"fraud/check returned {tx_response.status_code}; scoring path not reached")
+
+    body = tx_response.json()
+    api_decision = body.get("decision", "")
+    api_risk_score = body.get("risk_score", 0.0)
+
+    # The response must say BLOCK with a high fallback score.
+    assert api_decision == "BLOCK", (
+        f"Expected BLOCK from fallback, got {api_decision!r}"
+    )
+    assert api_risk_score >= 0.85, (
+        f"Expected fallback risk_score >= 0.85, got {api_risk_score}"
+    )
+
+    # /stats must agree with the response — not the pre-override values.
+    stats = api_client.get("/stats")
+    if stats.status_code != 200:
+        pytest.skip("/stats returned non-200; skipping consistency check")
+
+    stats_body = stats.json()
+    block_count = stats_body.get("decisions", {}).get("BLOCK", 0)
+    assert block_count >= 1, (
+        f"/stats.decisions.BLOCK should be >= 1 after a fallback BLOCK, got {block_count}"
+    )
+    total_risk = stats_body.get("total_risk_score", stats_body.get("avg_risk_score", None))
+    if total_risk is not None and stats_body.get("total_requests", 1) == 1:
+        assert total_risk >= 0.85, (
+            f"/stats risk score should reflect fallback value >= 0.85, got {total_risk}"
+        )

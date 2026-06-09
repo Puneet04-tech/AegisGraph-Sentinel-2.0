@@ -1,6 +1,7 @@
 """Typed configuration schemas used by the settings loader."""
 
 from __future__ import annotations
+from pydantic import Field, model_validator
 
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -8,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import defaults
+
 
 
 class ConfigBaseModel(BaseModel):
@@ -39,6 +41,10 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
     log_format: Optional[str] = Field(default=None, description="Log format: json or text (default: json).")
     log_output_dir: Optional[str] = Field(default=None, description="Log output directory (default: logs).")
     prometheus_port: Optional[str] = Field(default=None, description="Prometheus metrics port (default: 9090).")
+    discord_webhook_url: Optional[str] = Field(default=None, description="Discord Webhook URL for alerts.")
+    slack_webhook_url: Optional[str] = Field(default=None, description="Slack Webhook URL for alerts.")
+    enable_discord_webhook: Optional[str] = Field(default=None, description="Enable/disable Discord webhook alerts.")
+    enable_slack_webhook: Optional[str] = Field(default=None, description="Enable/disable Slack webhook alerts.")
 
     @property
     def runtime_environment(self) -> str:
@@ -81,6 +87,13 @@ class APISettings(ConfigBaseModel):
         return value
 
 
+class WebhookSettings(ConfigBaseModel):
+    discord_url: str = Field(default=defaults.DEFAULT_DISCORD_WEBHOOK_URL)
+    slack_url: str = Field(default=defaults.DEFAULT_SLACK_WEBHOOK_URL)
+    enable_discord: bool = Field(default=defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)
+    enable_slack: bool = Field(default=defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)
+
+
 class GraphRuntimeSettings(ConfigBaseModel):
     graph_path: Path = Field(default=defaults.DEFAULT_GRAPH_PATH)
     graph_sha256: Optional[str] = Field(default=None)
@@ -89,6 +102,51 @@ class GraphRuntimeSettings(ConfigBaseModel):
     k_hop_neighbors: int = Field(default=3, ge=1)
     max_subgraph_nodes: int = Field(default=1000, ge=1)
     max_subgraph_edges: int = Field(default=5000, ge=1)
+    @model_validator(mode="after")
+    def validate_graph_limits(self):
+        if self.max_subgraph_edges < self.max_subgraph_nodes:
+            raise ValueError(
+                "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
+            )
+
+        return self
+    @model_validator(mode="after")
+    def validate_graph_limits(self):
+        if self.max_subgraph_edges < self.max_subgraph_nodes:
+            raise ValueError(
+                "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
+            )
+
+        if self.max_subgraph_nodes < 10:
+            raise ValueError(
+                "max_subgraph_nodes must be at least 10"
+            )
+
+        if self.max_subgraph_edges < 10:
+            raise ValueError(
+                "max_subgraph_edges must be at least 10"
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_graph_limits(self):
+        if self.max_subgraph_edges < self.max_subgraph_nodes:
+            raise ValueError(
+                "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
+            )
+
+        if self.max_subgraph_nodes < 10:
+            raise ValueError(
+                "max_subgraph_nodes must be at least 10"
+            )
+
+        if self.max_subgraph_edges < 10:
+            raise ValueError(
+                "max_subgraph_edges must be at least 10"
+            )
+
+        return self
 
 
 class ObservabilitySettings(ConfigBaseModel):
