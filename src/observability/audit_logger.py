@@ -1,5 +1,6 @@
 """Audit trail logging for fraud decisions and security events."""
 
+import threading
 from typing import Any, Dict, List, Optional
 
 from .structured_logger import StructuredLogger, get_logger
@@ -71,10 +72,13 @@ class AuditLogger:
 
 
 _audit_logger: Optional[AuditLogger] = None
+_audit_logger_lock = threading.Lock()
 
 
 def get_audit_logger() -> AuditLogger:
     global _audit_logger
     if _audit_logger is None:
-        _audit_logger = AuditLogger()
+        with _audit_logger_lock:
+            if _audit_logger is None:
+                _audit_logger = AuditLogger()
     return _audit_logger
