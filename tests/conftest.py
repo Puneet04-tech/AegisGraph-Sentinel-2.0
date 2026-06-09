@@ -62,6 +62,8 @@ def api_client(monkeypatch):
     state.honeypot_manager = None
     state.blockchain_manager = None
     state.aegis_oracle = None
+    # Also clear from services container to avoid None being cached
+    state.services._services.pop("aegis_oracle", None)
 
 
 @pytest.fixture(autouse=True)

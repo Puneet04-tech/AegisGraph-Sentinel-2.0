@@ -1,0 +1,293 @@
+# AegisGraph Sentinel - Kubernetes Deployment
+# Production-grade deployment with high availability and security
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegisgraph
+  labels:
+    app: aegisgraph-sentinel
+    environment: production
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aegisgraph-api
+  namespace: aegisgraph
+  labels:
+    app: aegisgraph-sentinel
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegisgraph-config
+  namespace: aegisgraph
+data:
+  API_URL: "https://api.aegisgraph.com"
+  LOG_LEVEL: "INFO"
+  DEVICE: "cuda"
+  REDIS_HOST: "redis-master"
+  REDIS_PORT: "6379"
+  NEO4J_URI: "bolt://neo4j:7687"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aegisgraph-secrets
+  namespace: aegisgraph
+type: Opaque
+stringData:
+  API_KEY: "${API_KEY}"
+  NEO4J_PASSWORD: "${NEO4J_PASSWORD}"
+  REDIS_PASSWORD: "${REDIS_PASSWORD}"
+  JWT_SECRET: "${JWT_SECRET}"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegisgraph-api
+  namespace: aegisgraph
+  labels:
+    app: aegisgraph-sentinel
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: aegisgraph-sentinel
+      component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: aegisgraph-sentinel
+        component: api
+    spec:
+      serviceAccountName: aegisgraph-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: api
+        image: aegisgraph/sentinel-api:2.0.0
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: grpc
+          containerPort: 50051
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: aegisgraph-config
+        env:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: API_KEY
+        - name: NEO4J_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: NEO4J_PASSWORD
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: REDIS_PASSWORD
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: JWT_SECRET
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+            nvidia.com/gpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: aegisgraph-models-pvc
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: aegisgraph-sentinel
+                  component: api
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegisgraph-api
+  namespace: aegisgraph
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+  - name: grpc
+    port: 50051
+    targetPort: grpc
+  selector:
+    app: aegisgraph-sentinel
+    component: api
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aegisgraph-ingress
+  namespace: aegisgraph
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  tls:
+  - hosts:
+    - api.aegisgraph.com
+    - dashboard.aegisgraph.com
+    secretName: aegisgraph-tls
+  rules:
+  - host: api.aegisgraph.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: aegisgraph-api
+            port:
+              number: 80
+  - host: dashboard.aegisgraph.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: aegisgraph-dashboard
+            port:
+              number: 80
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aegisgraph-api-hpa
+  namespace: aegisgraph
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aegisgraph-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      selectPolicy: Max
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aegisgraph-models-pvc
+  namespace: aegisgraph
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aegisgraph-api-pdb
+  namespace: aegisgraph
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: aegisgraph-sentinel
+      component: api

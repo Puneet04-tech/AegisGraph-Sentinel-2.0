@@ -66,6 +66,9 @@ class LifecycleManager:
             self._audit("runtime_startup_started", steps=[step.name for step in self._startup_steps])
             self.runtime_state.shutting_down = False
 
+            # Wire default event subscriptions to the event bus
+            await register_default_subscriptions(self.runtime_state.event_bus)
+
             dispatcher = getattr(self.runtime_state, "dispatcher", None)
             if dispatcher is not None:
                 if not dispatcher.started:
