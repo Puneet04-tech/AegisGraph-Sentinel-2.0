@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Deque, Dict, Optional
 
+from ..dependency import DependencyRegistry, DependencyValidator, ValidationResult
 from .events import EventDispatcher, RuntimeEventBus
 from .service_container import ServiceContainer
 from .task_registry import TaskRegistry
@@ -38,6 +40,8 @@ class RuntimeState:
     resource_manager: RuntimeResourceManager = field(default_factory=RuntimeResourceManager)
     config_registry: ConfigRegistry = field(default_factory=ConfigRegistry)
     policy_registry: PolicyRegistry = field(default_factory=PolicyRegistry)
+    dependency_registry: DependencyRegistry = field(default_factory=DependencyRegistry)
+    dependency_validator: DependencyValidator = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
     config_reload_manager: ConfigReloadManager = field(init=False)
     recovery_manager: Optional[Any] = None
@@ -46,6 +50,8 @@ class RuntimeState:
     started: bool = False
     shutting_down: bool = False
     lifecycle_events: Deque[Dict[str, Any]] = field(init=False)
+    dependency_validation_results: list[ValidationResult] = field(default_factory=list)
+    _dependency_validation_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     # ── Event infrastructure ────────────────────────────────────────────
     event_bus: RuntimeEventBus = field(default_factory=RuntimeEventBus)
@@ -53,6 +59,7 @@ class RuntimeState:
 
     def __post_init__(self) -> None:
         self.lifecycle_events = deque(maxlen=self._max_lifecycle_events)
+        self.dependency_validator = DependencyValidator(self.dependency_registry)
         self.policy_engine = PolicyEngine(self.policy_registry)
         self._register_default_policies()
         self.dispatcher = EventDispatcher(
@@ -74,6 +81,8 @@ class RuntimeState:
         self.services.register_service("config_reload_manager", self.config_reload_manager, replace=True)
         self.services.register_service("policy_registry", self.policy_registry, replace=True)
         self.services.register_service("policy_engine", self.policy_engine, replace=True)
+        self.services.register_service("dependency_registry", self.dependency_registry, replace=True)
+        self.services.register_service("dependency_validator", self.dependency_validator, replace=True)
 
     def set_recovery_manager(self, recovery_manager: Any) -> None:
         self.recovery_manager = recovery_manager
@@ -142,10 +151,40 @@ class RuntimeState:
     def optional_service(self, name: str) -> Any:
         return self.services.optional_service(name)
 
+    def validate_runtime_dependencies(self) -> list[ValidationResult]:
+        results = self.dependency_validator.validate_all(self.services)
+        with self._dependency_validation_lock:
+            self.dependency_validation_results = list(results)
+
+        for result in results:
+            if result.valid:
+                continue
+            event_type = (
+                "service_contract_failed"
+                if "method" in result.reason.lower() or "contract" in result.reason.lower()
+                else "dependency_validation_failed"
+            )
+            try:
+                log_audit_event(
+                    event_type=event_type,
+                    severity="warning",
+                    source="runtime_dependency_validator",
+                    metadata={
+                        "service": result.service_name,
+                        "reason": result.reason,
+                    },
+                )
+            except Exception:
+                pass
+        return results
+
     def get_metrics(self) -> Dict[str, Any]:
         resource_metrics = self.resource_manager.get_resource_metrics()
         config_snapshot = ConfigSnapshot.capture(self.config_registry)
         policies = self.policy_registry.list_policies()
+        with self._dependency_validation_lock:
+            dependency_results = list(self.dependency_validation_results)
+        dependency_failures = [result for result in dependency_results if not result.valid]
         return {
             "active_task_count": self.tasks.active_count,
             "services": [info.__dict__ for info in self.services.get_initialization_state()],
@@ -164,6 +203,13 @@ class RuntimeState:
                 "count": len(policies),
                 "enabled": sum(1 for policy in policies if policy.enabled),
                 "names": sorted(policy.name for policy in policies),
+            },
+            "dependencies": {
+                "rule_count": len(self.dependency_registry.list_rules()),
+                "contract_count": len(self.dependency_registry.list_contracts()),
+                "last_valid": not dependency_failures,
+                "failure_count": len(dependency_failures),
+                "failures": [result.__dict__ for result in dependency_failures],
             },
         }
 

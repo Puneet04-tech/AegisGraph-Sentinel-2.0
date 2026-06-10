@@ -878,6 +878,10 @@ def _load_fallback_scoring_config() -> dict:
 
 _FALLBACK_SCORING = _load_fallback_scoring_config()
 
+
+def _is_degraded_scoring_mode() -> bool:
+    return not MODEL_AVAILABLE or not getattr(state, "graph_loaded", False)
+
 # Global state
 class AppState:
     """Application state"""
@@ -1892,7 +1896,7 @@ async def check_transaction(
         # so they can be tuned without a code change.
         _model_degraded = False
         _trigger = _FALLBACK_SCORING.get("fallback_trigger_score", 0.25)
-        if not MODEL_AVAILABLE and risk_result.get('risk_score', 0) <= _trigger:
+        if _is_degraded_scoring_mode() and risk_result.get('risk_score', 0) <= _trigger:
             amount = request.amount
             _block_above = _FALLBACK_SCORING.get("block_above", 200000)
             _block_med_above = _FALLBACK_SCORING.get("block_medium_above", 100000)
