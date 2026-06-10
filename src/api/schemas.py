@@ -1762,3 +1762,128 @@ class PolicyResponse(BaseModel):
     actions: Dict[str, Any]
     created_at: str
     updated_at: str
+
+
+# =============================================================================
+# Autonomous SOAR Platform Schemas (Phase 35)
+# =============================================================================
+
+class IncidentCreateRequest(BaseModel):
+    """Request to create a security incident."""
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(description="Incident title")
+    description: str = Field(description="Incident description")
+    severity: str = Field(description="Threat severity (LOW, MEDIUM, HIGH, CRITICAL)")
+    source: str = Field(description="Source of the incident")
+    entities: List[str] = Field(default_factory=list, description="Associated entity IDs")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class IncidentResponse(BaseModel):
+    """Response containing incident details."""
+    model_config = ConfigDict(extra="allow")
+
+    incident_id: str
+    title: str
+    description: str
+    severity: str
+    status: str
+    source: str
+    created_at: str
+    updated_at: str
+    entities: List[str]
+    assigned_analyst: Optional[str] = None
+    tags: List[str]
+    metadata: Dict[str, Any]
+
+
+class PlaybookCreateRequest(BaseModel):
+    """Request to register an automation playbook."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Playbook name")
+    description: str = Field(description="Playbook description")
+    version: str = Field(description="Playbook version")
+    tasks: List[Dict[str, Any]] = Field(description="List of task definitions")
+    rules: Dict[str, Any] = Field(description="Triggers and conditions")
+
+
+class PlaybookExecuteRequest(BaseModel):
+    """Request to execute a playbook."""
+    model_config = ConfigDict(extra="forbid")
+
+    playbook_id: str = Field(description="Playbook ID")
+    incident_id: str = Field(description="Incident ID")
+
+
+class ResponseActionRequest(BaseModel):
+    """Request to run a response action."""
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: str = Field(description="Type of response action")
+    target_id: str = Field(description="Target entity ID")
+    additional_params: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class ResponseActionResponse(BaseModel):
+    """Response containing response action results."""
+    model_config = ConfigDict(extra="allow")
+
+    action_id: str
+    name: str
+    action_type: str
+    status: str
+    target_id: str
+    executed_by: str
+    executed_at: str
+    result: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+
+
+class ContainmentRequest(BaseModel):
+    """Request to trigger a containment action."""
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(description="Type of containment (NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)")
+    target_entity: str = Field(description="Target entity ID")
+    duration_seconds: Optional[int] = Field(default=None, description="Optional auto-release duration")
+
+
+class ContainmentResponse(BaseModel):
+    """Response containing containment details."""
+    model_config = ConfigDict(extra="allow")
+
+    containment_id: str
+    type: str
+    status: str
+    target_entity: str
+    initiated_by: str
+    timestamp: str
+    duration_seconds: Optional[int] = None
+    released_at: Optional[str] = None
+
+
+class SOARDashboardResponse(BaseModel):
+    """Response containing SOAR dashboard statistics."""
+    model_config = ConfigDict(extra="allow")
+
+    total_incidents: int
+    status_distribution: Dict[str, int]
+    severity_distribution: Dict[str, int]
+    active_containments: int
+    running_workflows: int
+    total_audit_records: int
+
+
+class SOARAuditResponse(BaseModel):
+    """Response containing SOAR audit record details."""
+    model_config = ConfigDict(extra="allow")
+
+    record_id: str
+    action: str
+    user_id: str
+    ip_address: str
+    timestamp: str
+    details: Dict[str, Any]
+    status: str
