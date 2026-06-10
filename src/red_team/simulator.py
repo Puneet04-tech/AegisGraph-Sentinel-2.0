@@ -118,12 +118,16 @@ class AdversarialSimulator:
         """Get campaign history."""
         return self._campaign_history
 
+import threading
+from threading import Lock
 
 _simulator: Optional[AdversarialSimulator] = None
+_simulator_lock = Lock()
 
 
 def get_adversarial_simulator() -> AdversarialSimulator:
     global _simulator
-    if _simulator is None:
-        _simulator = AdversarialSimulator()
-    return _simulator
+    with _simulator_lock:
+        if _simulator is None:
+            _simulator = AdversarialSimulator()
+        return _simulator

@@ -6,6 +6,8 @@ Simulates various fraud scenarios to predict outcomes and risk.
 
 import time
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 import logging
 
@@ -402,12 +404,14 @@ class FraudSimulator:
 
 # Global singleton
 _fraud_simulator: Optional[FraudSimulator] = None
+_fraud_simulator_lock = Lock()
 
 
 def get_fraud_simulator(store: Optional[PredictiveStore] = None) -> FraudSimulator:
     """Get or create the singleton FraudSimulator instance."""
     global _fraud_simulator
     
-    if _fraud_simulator is None:
-        _fraud_simulator = FraudSimulator(store=store)
-    return _fraud_simulator
+    with _fraud_simulator_lock:
+        if _fraud_simulator is None:
+            _fraud_simulator = FraudSimulator(store=store)
+        return _fraud_simulator

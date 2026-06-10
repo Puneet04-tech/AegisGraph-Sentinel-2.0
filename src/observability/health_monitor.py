@@ -5,6 +5,8 @@ System health monitoring and component tracking.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -173,12 +175,14 @@ class HealthMonitor:
 
 # Global singleton
 _health_monitor: Optional[HealthMonitor] = None
+_health_monitor_lock = Lock()
 
 
 def get_health_monitor(store: Optional[ObservabilityStore] = None) -> HealthMonitor:
     """Get or create the singleton HealthMonitor instance."""
     global _health_monitor
     
-    if _health_monitor is None:
-        _health_monitor = HealthMonitor(store=store)
-    return _health_monitor
+    with _health_monitor_lock:
+        if _health_monitor is None:
+            _health_monitor = HealthMonitor(store=store)
+        return _health_monitor

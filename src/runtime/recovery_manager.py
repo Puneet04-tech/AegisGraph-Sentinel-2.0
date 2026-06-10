@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from typing import Any, Callable, Dict, Optional
 
 from ..audit import log_audit_event
@@ -20,7 +21,8 @@ class RecoveryManager:
         """Return a list of service names that have registered recovery callbacks.
         This provides a public way to discover registered services without exposing the private _callbacks dict.
         """
-        return list(self._callbacks.keys())
+        with self._lock:
+            return list(self._callbacks.keys())
 
     def __init__(
         self,
@@ -32,11 +34,13 @@ class RecoveryManager:
         self.health_monitor = health_monitor
         self._callbacks: Dict[str, Callable[[], Any]] = {}
         self._max_attempts: Dict[str, int] = {}
+        self._lock = threading.Lock()
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
         self._resource_manager = resource_manager
         self._config_registry: Any = None
         self._policy_engine: Any = None
+        self._recovery_in_progress: Dict[str, bool] = {}  # Track recovery state per service
 
     def _audit(self, event_type: str, severity: str = "info", **metadata: Any) -> None:
         try:
@@ -66,8 +70,9 @@ class RecoveryManager:
 
     def register_recovery_callback(self, name: str, callback: Callable[[], Any], max_attempts: int = 3) -> None:
         """Register a recovery/restart callback for a service."""
-        self._callbacks[name] = callback
-        self._max_attempts[name] = max_attempts
+        with self._lock:
+            self._callbacks[name] = callback
+            self._max_attempts[name] = max_attempts
         self._logger.info(
             f"Registered recovery callback for: {name} (max_attempts: {max_attempts})",
             event_type="recovery_callback_registered",
@@ -79,7 +84,18 @@ class RecoveryManager:
         Coordinates the recovery attempt for a service.
         Returns True if recovery was successfully attempted, False otherwise.
         """
-        callback = self._callbacks.get(name)
+        # Check if recovery is already in progress for this service
+        if self._recovery_in_progress.get(name, False):
+            self._logger.info(
+                f"Recovery already in progress for service: {name}",
+                event_type="recovery_already_in_progress",
+                metadata={"service": name},
+            )
+            return False
+
+        with self._lock:
+            callback = self._callbacks.get(name)
+            max_attempts = self._max_attempts.get(name, 3)
         if callback is None:
             self._logger.info(
                 f"No recovery callback registered for service: {name}",
@@ -97,8 +113,6 @@ class RecoveryManager:
                 metadata={"service": name},
             )
             return False
-
-        max_attempts = self._max_attempts.get(name, 3)
         if self._policy_engine is not None:
             result = self._policy_engine.evaluate(
                 "max_recovery_attempts",
@@ -150,6 +164,9 @@ class RecoveryManager:
             )
             self._audit("recovery_throttled", "warning", service=name)
             return False
+
+        # Mark recovery as in progress
+        self._recovery_in_progress[name] = True
 
         self.health_monitor.increment_restart_attempts(name)
         new_attempt_count = health.restart_attempts + 1
@@ -204,6 +221,9 @@ class RecoveryManager:
                 )
                 self._audit("recovery_attempt_failed", "error", service=name, error=str(exc))
                 self.health_monitor.mark_failed(name, error=f"Recovery failed: {exc}")
+            finally:
+                # Clear recovery in progress flag
+                self._recovery_in_progress[name] = False
 
         await run_callback_safely()
         return True
