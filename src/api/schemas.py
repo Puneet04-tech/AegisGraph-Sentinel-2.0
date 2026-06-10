@@ -1591,3 +1591,76 @@ class AnalyticsStatsResponse(BaseModel):
     reports_stored: int
     insights_stored: int
     unacknowledged_insights: int
+
+
+# =============================================================================
+# Threat Hunting & Security Analytics Schemas (Phase 34)
+# =============================================================================
+
+class ThreatHuntStartRequest(BaseModel):
+    """Request to start a threat hunt."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the threat hunt")
+    description: str = Field(description="Description of the threat hunt")
+    query_criteria: Dict[str, Any] = Field(default_factory=dict, description="Custom criteria for finding threats")
+
+
+class ThreatHuntStartResponse(BaseModel):
+    """Response containing started hunt details."""
+    model_config = ConfigDict(extra="allow")
+
+    hunt_id: str
+    name: str
+    state: str
+    created_at: str
+
+
+class ThreatQueryRequest(BaseModel):
+    """Request to query threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(description="Entity identifier")
+    entity_type: str = Field(default="user", description="Entity type")
+    amount: float = Field(default=0.0)
+    hour: int = Field(default=12)
+    ip_address: str = Field(default="")
+    device_id: str = Field(default="")
+    device_status: str = Field(default="UNKNOWN")
+    failed_attempts: int = Field(default=0)
+    operation: str = Field(default="")
+    recent_txn_count_1m: int = Field(default=0)
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+    relationships: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreatQueryResponse(BaseModel):
+    """Response containing threat query details."""
+    model_config = ConfigDict(extra="allow")
+
+    entity_id: str
+    entity_type: str
+    score: float
+    severity: str
+    breakdown: Dict[str, float]
+    active_indicators: List[str]
+
+
+class ThreatCorrelateRequest(BaseModel):
+    """Request to correlate threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the correlation")
+    entities: List[str] = Field(description="List of entity IDs")
+    indicator_ids: List[str] = Field(description="List of threat indicator IDs")
+
+
+class ThreatCorrelateResponse(BaseModel):
+    """Response containing correlation details."""
+    model_config = ConfigDict(extra="allow")
+
+    correlation_id: str
+    name: str
+    correlation_score: float
+    timestamp: str
+

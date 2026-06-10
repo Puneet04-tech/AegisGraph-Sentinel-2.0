@@ -230,6 +230,9 @@ from .schemas import (
     ReportGenerationResponse,
     ScheduledReportRequest,
     AnalyticsStatsResponse,
+    ThreatHuntStartRequest,
+    ThreatQueryRequest,
+    ThreatCorrelateRequest,
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
@@ -5139,6 +5142,171 @@ async def get_analytics_stats():
         "unacknowledged_insights": stats.get("unacknowledged_insights", 0),
         "processing_time_ms": processing_time,
     }
+
+
+# =============================================================================
+# Threat Hunting & Security Analytics Endpoints (Phase 34)
+# =============================================================================
+
+@app.post(
+    "/api/v1/threat-hunting/start",
+    tags=["Threat Hunting"],
+    summary="Start a proactive threat hunt run",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def start_threat_hunt(request: ThreatHuntStartRequest):
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    hunt = service.start_hunt(
+        name=request.name,
+        description=request.description,
+        query_criteria=request.query_criteria,
+    )
+    return hunt.to_dict()
+
+
+@app.get(
+    "/api/v1/threat-hunting/hunts",
+    tags=["Threat Hunting"],
+    summary="List all threat hunts",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def list_threat_hunts():
+    """Retrieve all logged threat hunts."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    return [h.to_dict() for h in service.store.list_hunts()]
+
+
+@app.get(
+    "/api/v1/threat-hunting/hunt/{hunt_id}",
+    tags=["Threat Hunting"],
+    summary="Get threat hunt details",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_threat_hunt(hunt_id: str):
+    """Retrieve threat hunt details by ID."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    hunt = service.store.get_hunt(hunt_id)
+    if not hunt:
+        raise HTTPException(status_code=404, detail="Threat hunt not found")
+    return hunt.to_dict()
+
+
+@app.post(
+    "/api/v1/threat-hunting/query",
+    tags=["Threat Hunting"],
+    summary="Evaluate entity risk and query threat score",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def query_threat_score(request: ThreatQueryRequest):
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    score = service.evaluate_entity_threat(
+        entity_id=request.entity_id,
+        entity_type=request.entity_type,
+        amount=request.amount,
+        hour=request.hour,
+        ip_address=request.ip_address,
+        device_id=request.device_id,
+        device_status=request.device_status,
+        failed_attempts=request.failed_attempts,
+        operation=request.operation,
+        recent_txn_count_1m=request.recent_txn_count_1m,
+        events=request.events,
+        relationships=request.relationships,
+    )
+    return score.to_dict()
+
+
+@app.get(
+    "/api/v1/threat-hunting/results/{hunt_id}",
+    tags=["Threat Hunting"],
+    summary="Get threat hunt results",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_threat_hunt_results(hunt_id: str):
+    """Retrieve results for a completed threat hunt."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    results = service.store.get_results_for_hunt(hunt_id)
+    return [r.to_dict() for r in results]
+
+
+@app.get(
+    "/api/v1/threat-hunting/campaigns",
+    tags=["Threat Hunting"],
+    summary="List active threat campaigns",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def list_threat_campaigns():
+    """Retrieve all detected threat campaigns."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    service.campaign_detector.detect_campaigns()
+    return [c.to_dict() for c in service.store.list_campaigns()]
+
+
+@app.get(
+    "/api/v1/threat-hunting/anomalies",
+    tags=["Threat Hunting"],
+    summary="List detected indicators and anomalies",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def list_threat_anomalies():
+    """Retrieve all logged indicators of compromise."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    return [i.to_dict() for i in service.store.list_indicators()]
+
+
+@app.get(
+    "/api/v1/threat-hunting/attack-paths",
+    tags=["Threat Hunting"],
+    summary="Discover graph-based attack paths",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_threat_attack_paths(start_entity: str = Query(...)):
+    """Reconstruct attack propagation paths starting from an entity."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    relationships = []
+    for c in service.store.list_campaigns():
+        for e in c.associated_entities:
+            relationships.append({"from_id": start_entity, "to_id": e, "type": "campaign"})
+    paths = service.discover_attack_paths(start_entity, relationships)
+    return [p.to_dict() for p in paths]
+
+
+@app.post(
+    "/api/v1/threat-hunting/correlate",
+    tags=["Threat Hunting"],
+    summary="Correlate threat indicators",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def correlate_threats(request: ThreatCorrelateRequest):
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    correlation = service.correlate_threats(
+        name=request.name,
+        entities=request.entities,
+        indicator_ids=request.indicator_ids,
+    )
+    return correlation.to_dict()
+
+
+@app.get(
+    "/api/v1/threat-hunting/dashboard",
+    tags=["Threat Hunting"],
+    summary="Get threat hunting dashboard stats",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_threat_hunting_dashboard():
+    """Fetch dashboard metrics and aggregated counts."""
+    from src.threat_hunting import get_threat_hunting_service
+    service = get_threat_hunting_service()
+    return service.get_dashboard_stats()
 
 
 def main():
