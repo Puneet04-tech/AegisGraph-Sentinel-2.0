@@ -6,6 +6,8 @@ Forecasts future risk scores and trends for entities.
 
 import time
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 import logging
 
@@ -166,12 +168,14 @@ class RiskForecaster:
 
 # Global singleton
 _risk_forecaster: Optional[RiskForecaster] = None
+_risk_forecaster_lock = Lock()
 
 
 def get_risk_forecaster(store: Optional[PredictiveStore] = None) -> RiskForecaster:
     """Get or create the singleton RiskForecaster instance."""
     global _risk_forecaster
     
-    if _risk_forecaster is None:
-        _risk_forecaster = RiskForecaster(store=store)
-    return _risk_forecaster
+    with _risk_forecaster_lock:
+        if _risk_forecaster is None:
+            _risk_forecaster = RiskForecaster(store=store)
+        return _risk_forecaster

@@ -379,6 +379,7 @@ def compute_risk_score(
     config: Optional[dict] = None,
     subgraph_cache: Optional[Dict] = None,
     subgraph_cache_lock: Optional[Lock] = None,
+    centrality_lock: Optional[Lock] = None,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
@@ -422,7 +423,9 @@ def compute_risk_score(
                 else getattr(api_state, "account_profiles", {})
             )
             config = config if config is not None else getattr(api_state, "config", {})
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to load graph state from api_state: %s", exc)
             graph_loaded = False
 
     mule_accounts = mule_accounts or set()
@@ -571,11 +574,13 @@ def compute_risk_score(
                 if source_account in centrality:
                     current_score = centrality[source_account]
                     
-                    # Get or initialize baseline
-                    if source_account not in centrality_baseline:
-                        centrality_baseline[source_account] = []
-                    
-                    baseline_history = centrality_baseline[source_account]
+                    # Get or initialize baseline (thread-safe)
+                    lock = centrality_lock or Lock()
+                    with lock:
+                        if source_account not in centrality_baseline:
+                            centrality_baseline[source_account] = []
+                        
+                        baseline_history = centrality_baseline[source_account]
                     
                     if len(baseline_history) >= 3:
                         baseline_avg = np.mean(baseline_history)
@@ -600,10 +605,11 @@ def compute_risk_score(
                                 },
                             )
                     
-                    # Update baseline (rolling window)
-                    baseline_history.append(current_score)
-                    if len(baseline_history) > centrality_window_size:
-                        baseline_history.pop(0)
+                    # Update baseline (rolling window, thread-safe)
+                    with lock:
+                        baseline_history.append(current_score)
+                        if len(baseline_history) > centrality_window_size:
+                            baseline_history.pop(0)
                         
             except Exception as e:
                 pass

@@ -81,8 +81,36 @@ class WatchdogAlertEvent(RuntimeEvent):
 
 @dataclass
 class SentinelAlertEvent(RuntimeEvent):
-    """Emitted when a high-severity fraud decision or security event occurs."""
+    """Emitted when a high-severity fraud decision or security event occurs.
+
+    This event is the primary trigger for real-time webhook notifications
+    (Issue #633). When a transaction is blocked or a critical security rule
+    fires, the API layer constructs and dispatches a ``SentinelAlertEvent``
+    through the :class:`~src.runtime.events.dispatcher.EventDispatcher`.
+    The :func:`~src.runtime.events.event_handlers.on_sentinel_alert` handler
+    then routes the event to the configured Discord / Slack webhooks via
+    :class:`~src.runtime.events.webhook_manager.WebhookManager`.
+
+    Attributes
+    ----------
+    severity:
+        Alert severity level.  Supported values: ``"LOW"``, ``"MEDIUM"``,
+        ``"HIGH"``, ``"CRITICAL"``.  Defaults to ``"HIGH"``.
+    title:
+        Short, human-readable title for the alert card / embed.
+    message:
+        Detailed description of what triggered the alert.
+    payload:
+        Arbitrary metadata dict (transaction ID, risk score, accounts, etc.).
+        Values are automatically sanitised via :func:`sanitize_payload`.
+    """
+
     severity: str = "HIGH"
     title: str = "Sentinel Alert"
     message: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
+
+    # Supported severity levels for validation / documentation purposes.
+    SEVERITY_LEVELS: tuple = field(
+        default=("LOW", "MEDIUM", "HIGH", "CRITICAL"), init=False, repr=False, compare=False
+    )
