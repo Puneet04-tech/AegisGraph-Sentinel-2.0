@@ -6,6 +6,8 @@ Predicts fraud campaign growth, spread, and impact.
 
 import time
 import random
+import threading
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 import logging
@@ -220,12 +222,14 @@ class CampaignPredictor:
 
 # Global singleton
 _campaign_predictor: Optional[CampaignPredictor] = None
+_campaign_predictor_lock = Lock()
 
 
 def get_campaign_predictor(store: Optional[PredictiveStore] = None) -> CampaignPredictor:
     """Get or create the singleton CampaignPredictor instance."""
     global _campaign_predictor
     
-    if _campaign_predictor is None:
-        _campaign_predictor = CampaignPredictor(store=store)
-    return _campaign_predictor
+    with _campaign_predictor_lock:
+        if _campaign_predictor is None:
+            _campaign_predictor = CampaignPredictor(store=store)
+        return _campaign_predictor

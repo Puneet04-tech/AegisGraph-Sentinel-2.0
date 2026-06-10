@@ -908,6 +908,7 @@ class AppState:
         self.total_risk_score = 0.0
         self.total_processing_time = 0.0
         self._metrics_lock = None
+        self._centrality_lock = Lock()
         self.model_loaded = False
         self.config = {}
         # Graph-based fraud detection
@@ -1341,6 +1342,7 @@ def _run_scoring_pipeline(
         config=state.config,
         subgraph_cache=subgraph_cache,
         subgraph_cache_lock=subgraph_cache_lock,
+        centrality_lock=state._centrality_lock,
     )
 
     if lateral_detector is not None:
@@ -1678,23 +1680,24 @@ async def get_stats():
     
     Returns detailed statistics about processed transactions
     """
-    uptime = time.time() - state.start_time
-    
-    avg_risk = (state.total_risk_score / state.requests_processed 
-                if state.requests_processed > 0 else 0.0)
-    avg_time = (state.total_processing_time / state.requests_processed 
-                if state.requests_processed > 0 else 0.0)
-    
-    return StatsResponse(
-        total_requests=state.requests_processed,
-        decisions=state.decisions,
-        avg_risk_score=avg_risk,
-        avg_processing_time_ms=avg_time,
-        uptime_seconds=uptime,
-        total_checks=state.requests_processed,
-        flagged_transactions=state.decisions.get("BLOCK", 0) + state.decisions.get("REVIEW", 0),
-        average_response_time=avg_time,
-    )
+    async with _get_metrics_lock():
+        uptime = time.time() - state.start_time
+        
+        avg_risk = (state.total_risk_score / state.requests_processed 
+                    if state.requests_processed > 0 else 0.0)
+        avg_time = (state.total_processing_time / state.requests_processed 
+                    if state.requests_processed > 0 else 0.0)
+        
+        return StatsResponse(
+            total_requests=state.requests_processed,
+            decisions=state.decisions.copy(),
+            avg_risk_score=avg_risk,
+            avg_processing_time_ms=avg_time,
+            uptime_seconds=uptime,
+            total_checks=state.requests_processed,
+            flagged_transactions=state.decisions.get("BLOCK", 0) + state.decisions.get("REVIEW", 0),
+            average_response_time=avg_time,
+        )
 
 
 
