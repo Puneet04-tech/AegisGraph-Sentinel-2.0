@@ -151,7 +151,9 @@ def _api_headers(extra: dict | None = None) -> dict:
     if not key:
         try:
             key = st.secrets.get("AEGIS_UI_API_KEY", "")
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("Failed to access Streamlit secrets: %s", exc)
             key = ""
     headers: dict = {}
     if key:

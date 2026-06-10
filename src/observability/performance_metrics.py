@@ -5,6 +5,8 @@ Performance tracking and monitoring.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -186,12 +188,14 @@ class PerformanceTracker:
 
 # Global singleton
 _performance_tracker: Optional[PerformanceTracker] = None
+_performance_tracker_lock = Lock()
 
 
 def get_performance_tracker(store: Optional[ObservabilityStore] = None) -> PerformanceTracker:
     """Get or create the singleton PerformanceTracker instance."""
     global _performance_tracker
     
-    if _performance_tracker is None:
-        _performance_tracker = PerformanceTracker(store=store)
-    return _performance_tracker
+    with _performance_tracker_lock:
+        if _performance_tracker is None:
+            _performance_tracker = PerformanceTracker(store=store)
+        return _performance_tracker

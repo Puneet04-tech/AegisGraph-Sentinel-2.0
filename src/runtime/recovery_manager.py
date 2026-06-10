@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from typing import Any, Callable, Dict, Optional
 
 from ..audit import log_audit_event
@@ -20,7 +21,8 @@ class RecoveryManager:
         """Return a list of service names that have registered recovery callbacks.
         This provides a public way to discover registered services without exposing the private _callbacks dict.
         """
-        return list(self._callbacks.keys())
+        with self._lock:
+            return list(self._callbacks.keys())
 
     def __init__(
         self,
@@ -32,6 +34,7 @@ class RecoveryManager:
         self.health_monitor = health_monitor
         self._callbacks: Dict[str, Callable[[], Any]] = {}
         self._max_attempts: Dict[str, int] = {}
+        self._lock = threading.Lock()
         self._logger = logger or _logger
         self._dispatcher = dispatcher  # Optional[EventDispatcher]
         self._resource_manager = resource_manager
@@ -66,8 +69,9 @@ class RecoveryManager:
 
     def register_recovery_callback(self, name: str, callback: Callable[[], Any], max_attempts: int = 3) -> None:
         """Register a recovery/restart callback for a service."""
-        self._callbacks[name] = callback
-        self._max_attempts[name] = max_attempts
+        with self._lock:
+            self._callbacks[name] = callback
+            self._max_attempts[name] = max_attempts
         self._logger.info(
             f"Registered recovery callback for: {name} (max_attempts: {max_attempts})",
             event_type="recovery_callback_registered",
@@ -79,7 +83,9 @@ class RecoveryManager:
         Coordinates the recovery attempt for a service.
         Returns True if recovery was successfully attempted, False otherwise.
         """
-        callback = self._callbacks.get(name)
+        with self._lock:
+            callback = self._callbacks.get(name)
+            max_attempts = self._max_attempts.get(name, 3)
         if callback is None:
             self._logger.info(
                 f"No recovery callback registered for service: {name}",
@@ -97,8 +103,6 @@ class RecoveryManager:
                 metadata={"service": name},
             )
             return False
-
-        max_attempts = self._max_attempts.get(name, 3)
         if self._policy_engine is not None:
             result = self._policy_engine.evaluate(
                 "max_recovery_attempts",

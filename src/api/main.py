@@ -122,6 +122,7 @@ from ..observability import get_audit_logger, get_logger
 from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWatchdog
 from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
+from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -230,6 +231,13 @@ from .schemas import (
     ReportGenerationResponse,
     ScheduledReportRequest,
     AnalyticsStatsResponse,
+    # Zero Trust Security (Phase 31)
+    ZeroTrustEvaluateRequest,
+    DeviceRegisterRequest,
+    DeviceRegisterResponse,
+    SessionAnalyzeRequest,
+    SessionAnalyzeResponse,
+    PolicyResponse,
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
@@ -877,10 +885,15 @@ def _load_fallback_scoring_config() -> dict:
         from ..utils.helpers import load_thresholds
         thresholds = load_thresholds("config/thresholds.yaml")
         return thresholds.get("fallback_scoring", {})
-    except Exception:
+    except Exception as exc:
+        _api_logger.warning("Failed to load fallback scoring config, using empty defaults: %s", exc)
         return {}
 
 _FALLBACK_SCORING = _load_fallback_scoring_config()
+
+
+def _is_degraded_scoring_mode() -> bool:
+    return not MODEL_AVAILABLE or not getattr(state, "graph_loaded", False)
 
 # Global state
 class AppState:
@@ -899,6 +912,7 @@ class AppState:
         self.total_risk_score = 0.0
         self.total_processing_time = 0.0
         self._metrics_lock = None
+        self._centrality_lock = Lock()
         self.model_loaded = False
         self.config = {}
         # Graph-based fraud detection
@@ -1346,6 +1360,7 @@ def _run_scoring_pipeline(
         config=state.config,
         subgraph_cache=subgraph_cache,
         subgraph_cache_lock=subgraph_cache_lock,
+        centrality_lock=state._centrality_lock,
     )
 
     if lateral_detector is not None:
@@ -1571,7 +1586,8 @@ app = FastAPI(
         {"name": "Monitoring", "description": "System statistics and model metrics"},
         {"name": "Detection", "description": "Real-time fraud detection and risk scoring"},
         {"name": "Analytics", "description": "Graph analytics and alert summarization"},
-        {"name": "Administration", "description": "Honeypot management and blockchain evidence"}
+        {"name": "Administration", "description": "Honeypot management and blockchain evidence"},
+        {"name": "Adaptive Authentication", "description": "Risk-based authentication and continuous authorization"}
     ],
     docs_url="/docs" if SWAGGER_ENABLED else None,
     redoc_url="/redoc" if SWAGGER_ENABLED else None,
@@ -1618,6 +1634,8 @@ if SLOWAPI_AVAILABLE:
 register_exception_handlers(app)
 register_observability_middleware(app)
 
+# Register adaptive authentication routes
+register_adaptive_auth_routes(app)
 
 
 @app.get("/", tags=["Health"])
@@ -1680,23 +1698,24 @@ async def get_stats():
     
     Returns detailed statistics about processed transactions
     """
-    uptime = time.time() - state.start_time
-    
-    avg_risk = (state.total_risk_score / state.requests_processed 
-                if state.requests_processed > 0 else 0.0)
-    avg_time = (state.total_processing_time / state.requests_processed 
-                if state.requests_processed > 0 else 0.0)
-    
-    return StatsResponse(
-        total_requests=state.requests_processed,
-        decisions=state.decisions,
-        avg_risk_score=avg_risk,
-        avg_processing_time_ms=avg_time,
-        uptime_seconds=uptime,
-        total_checks=state.requests_processed,
-        flagged_transactions=state.decisions.get("BLOCK", 0) + state.decisions.get("REVIEW", 0),
-        average_response_time=avg_time,
-    )
+    async with _get_metrics_lock():
+        uptime = time.time() - state.start_time
+        
+        avg_risk = (state.total_risk_score / state.requests_processed 
+                    if state.requests_processed > 0 else 0.0)
+        avg_time = (state.total_processing_time / state.requests_processed 
+                    if state.requests_processed > 0 else 0.0)
+        
+        return StatsResponse(
+            total_requests=state.requests_processed,
+            decisions=state.decisions.copy(),
+            avg_risk_score=avg_risk,
+            avg_processing_time_ms=avg_time,
+            uptime_seconds=uptime,
+            total_checks=state.requests_processed,
+            flagged_transactions=state.decisions.get("BLOCK", 0) + state.decisions.get("REVIEW", 0),
+            average_response_time=avg_time,
+        )
 
 
 
@@ -1718,8 +1737,8 @@ def _analyze_keystrokes_sync(biometrics: dict) -> bool:
             flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
             if flight_cv > 0.35:
                 behavioral_stress_detected = True
-    except Exception:
-        pass
+    except Exception as exc:
+        _api_logger.debug("Keystroke stress analysis failed: %s", exc)
     return behavioral_stress_detected
 
 @app.post(
@@ -1910,7 +1929,7 @@ async def check_transaction(
         # so they can be tuned without a code change.
         _model_degraded = False
         _trigger = _FALLBACK_SCORING.get("fallback_trigger_score", 0.25)
-        if not MODEL_AVAILABLE and risk_result.get('risk_score', 0) <= _trigger:
+        if _is_degraded_scoring_mode() and risk_result.get('risk_score', 0) <= _trigger:
             amount = request.amount
             _block_above = _FALLBACK_SCORING.get("block_above", 200000)
             _block_med_above = _FALLBACK_SCORING.get("block_medium_above", 100000)
@@ -2813,7 +2832,8 @@ async def blast_radius_analysis(request: BlastRadiusRequest):
     # NetworkX supports `in` operator; Neo4j provider exposes `__contains__`.
     try:
         node_exists = request.node_id in graph
-    except Exception:
+    except Exception as exc:
+        _api_logger.warning("Failed to check node existence in graph: %s", exc)
         node_exists = False
 
     if not node_exists:
@@ -5177,3 +5197,556 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# =============================================================================
+# Zero Trust Security Endpoints (Phase 31)
+# =============================================================================
+
+@app.post(
+    "/api/v1/zero-trust/evaluate",
+    tags=["Zero Trust"],
+    summary="Evaluate trust using Zero Trust Security",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def evaluate_zero_trust(request: ZeroTrustEvaluateRequest):
+    """Perform comprehensive zero trust evaluation."""
+    import time
+    from src.zero_trust import get_zero_trust_service
+    start_time = time.time()
+    service = get_zero_trust_service()
+    result = service.evaluate(
+        user_id=request.user_id, device_id=request.device_id, session_id=request.session_id,
+        ip_address=request.ip_address, location=request.location, user_agent=request.user_agent,
+        resource=request.resource, action=request.action,
+        authentication_method=request.authentication_method,
+        authentication_strength=request.authentication_strength, device_info=request.device_info,
+    )
+    result["processing_time_ms"] = (time.time() - start_time) * 1000
+    return result
+
+
+@app.post(
+    "/api/v1/zero-trust/device/register",
+    tags=["Zero Trust"],
+    summary="Register a device for Zero Trust",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def register_device(request: DeviceRegisterRequest):
+    """Register a device for a user in the Zero Trust system."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    device_info = {"device_type": request.device_type, "os_version": request.os_version,
+                   "browser": request.browser, "browser_version": request.browser_version,
+                   "screen_resolution": request.screen_resolution, "timezone": request.timezone,
+                   "language": request.language, "ip_address": request.ip_address,
+                   "mac_address": request.mac_address, "serial_number": request.serial_number}
+    result = service.register_device(request.user_id, device_info)
+    return DeviceRegisterResponse(device_id=result["device_id"], fingerprint_id=result["fingerprint"]["fingerprint_id"],
+                                  status=result["status"], trust_score=result["trust_score"],
+                                  first_seen=result["first_seen"], last_seen=result["last_seen"],
+                                  verification_required=result["trust_score"] < 0.5)
+
+
+@app.get(
+    "/api/v1/zero-trust/device/{device_id}",
+    tags=["Zero Trust"],
+    summary="Get device information",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_device(device_id: str):
+    """Get device trust information by device ID."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    device = service.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return device
+
+
+@app.post(
+    "/api/v1/zero-trust/session/analyze",
+    tags=["Zero Trust"],
+    summary="Analyze session risk",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def analyze_session(request: SessionAnalyzeRequest):
+    """Analyze session for risk factors and anomalies."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    context_data = {"session_id": request.session_id, "device_id": request.device_id,
+                    "ip_address": request.ip_address, "location": request.location,
+                    "user_agent": request.user_agent, "resource": request.resource,
+                    "action": request.action, "auth_method": request.auth_method,
+                    "auth_strength": request.auth_strength,
+                    "session_attributes": request.session_attributes or {}}
+    result = service.analyze_session(request.user_id, context_data)
+    return SessionAnalyzeResponse(session_id=result["session_id"], user_id=result["user_id"],
+                                  risk_level=result["risk_level"], risk_score=result["risk_score"],
+                                  anomalies_detected=result["anomalies_detected"],
+                                  location_risk=result["location_risk"],
+                                  behavior_deviation=result["behavior_deviation"],
+                                  velocity_anomaly=result["velocity_anomaly"],
+                                  unusual_operations=result["unusual_operations"],
+                                  recommended_actions=result["recommended_actions"],
+                                  evaluated_at=result["evaluated_at"])
+
+
+@app.get(
+    "/api/v1/zero-trust/policies",
+    tags=["Zero Trust"],
+    summary="Get all policies",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_policies():
+    """Get all configured Zero Trust policies."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    policies = service.get_policies()
+    return [PolicyResponse(policy_id=p["policy_id"], name=p["name"], description=p["description"],
+                           priority=p["priority"], enabled=p["enabled"], conditions=p["conditions"],
+                           actions=p["actions"], created_at=p["created_at"], updated_at=p["updated_at"])
+            for p in policies]
+
+
+@app.get(
+    "/api/v1/zero-trust/stats",
+    tags=["Zero Trust"],
+    summary="Get Zero Trust statistics",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def get_zero_trust_stats():
+    """Get comprehensive Zero Trust system statistics."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    return service.get_stats()
+
+
+@app.get(
+    "/api/v1/zero-trust/session/{session_id}",
+    tags=["Zero Trust"],
+    summary="Get session risk assessment",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_session_risk(session_id: str):
+    """Get session risk assessment by session ID."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    session = service.get_session_risk(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.get(
+    "/api/v1/zero-trust/user/{user_id}/anomalies",
+    tags=["Zero Trust"],
+    summary="Get user anomaly summary",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_user_anomalies(user_id: str):
+    """Get anomaly summary for a specific user."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    return service.get_user_anomalies(user_id)
+
+
+@app.post(
+    "/api/v1/zero-trust/device/{device_id}/block",
+    tags=["Zero Trust"],
+    summary="Block a device",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def block_device(device_id: str, reason: str = Query("", description="Reason for blocking")):
+    """Block a device from accessing the system."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    result = service.block_device(device_id, reason)
+    if not result:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return result
+
+
+@app.post(
+    "/api/v1/zero-trust/device/{device_id}/unblock",
+    tags=["Zero Trust"],
+    summary="Unblock a device",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def unblock_device(device_id: str):
+    """Unblock a previously blocked device."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    result = service.unblock_device(device_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return result
+
+
+@app.get(
+    "/api/v1/zero-trust/user/{user_id}/devices",
+    tags=["Zero Trust"],
+    summary="Get user devices",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_user_devices(user_id: str):
+    """Get all devices for a user."""
+    from src.zero_trust import get_zero_trust_service
+    service = get_zero_trust_service()
+    return service.get_user_devices(user_id)
+
+
+# ==================== Identity Federation Endpoints ====================
+
+_identity_federation_service = None
+
+def get_identity_federation_service():
+    """Get or create the identity federation service singleton."""
+    global _identity_federation_service
+    if _identity_federation_service is None:
+        from src.identity_federation import IdentityFederationService
+        _identity_federation_service = IdentityFederationService()
+    return _identity_federation_service
+
+
+@app.post(
+    "/api/v1/identity/providers/register",
+    tags=["Identity Federation"],
+    summary="Register Identity Provider",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def register_provider(
+    name: str = Body(...),
+    provider_type: str = Body(...),
+    issuer: str = Body(...),
+    sso_provider: Optional[str] = Body(None),
+    client_id: Optional[str] = Body(None),
+    client_secret: Optional[str] = Body(None),
+    metadata_url: Optional[str] = Body(None),
+):
+    """Register a new identity provider."""
+    from src.identity_federation import IdentityProviderType, SSOProvider as IdpSSOProvider
+    service = get_identity_federation_service()
+    
+    provider, is_valid, errors = service.register_provider(
+        name=name,
+        provider_type=IdentityProviderType(provider_type),
+        issuer=issuer,
+        sso_provider=IdpSSOProvider(sso_provider) if sso_provider else None,
+        client_id=client_id,
+        client_secret=client_secret,
+        metadata_url=metadata_url,
+    )
+    
+    if not is_valid:
+        raise HTTPException(status_code=400, detail={"message": "Validation failed", "errors": errors})
+    
+    return {
+        "provider_id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type.value,
+        "issuer": provider.issuer,
+        "enabled": provider.enabled,
+        "is_valid": is_valid,
+    }
+
+
+@app.get(
+    "/api/v1/identity/providers",
+    tags=["Identity Federation"],
+    summary="List Identity Providers",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def list_providers(enabled_only: bool = Query(False)):
+    """List all registered identity providers."""
+    service = get_identity_federation_service()
+    providers = service.list_providers(enabled_only=enabled_only)
+    return [
+        {
+            "provider_id": p.id,
+            "name": p.name,
+            "provider_type": p.provider_type.value,
+            "sso_provider": p.sso_provider.value if p.sso_provider else None,
+            "issuer": p.issuer,
+            "enabled": p.enabled,
+            "created_at": p.created_at.isoformat(),
+        }
+        for p in providers
+    ]
+
+
+@app.get(
+    "/api/v1/identity/providers/{provider_id}",
+    tags=["Identity Federation"],
+    summary="Get Identity Provider",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_provider(provider_id: str):
+    """Get identity provider by ID."""
+    service = get_identity_federation_service()
+    provider = service.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return {
+        "provider_id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type.value,
+        "sso_provider": provider.sso_provider.value if provider.sso_provider else None,
+        "issuer": provider.issuer,
+        "enabled": provider.enabled,
+        "attribute_mappings": provider.attribute_mappings,
+        "created_at": provider.created_at.isoformat(),
+        "updated_at": provider.updated_at.isoformat(),
+    }
+
+
+@app.post(
+    "/api/v1/identity/authenticate",
+    tags=["Identity Federation"],
+    summary="Initiate Authentication",
+)
+async def authenticate(
+    provider_id: str = Body(...),
+    return_url: Optional[str] = Body(None),
+    protocol: Optional[str] = Body(None),
+    ip_address: Optional[str] = Header(None),
+    user_agent: Optional[str] = Header(None),
+):
+    """Initiate authentication with an identity provider."""
+    service = get_identity_federation_service()
+    response = service.authenticate(
+        provider_id=provider_id,
+        return_url=return_url,
+        protocol=protocol,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+    
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "provider_id": response.provider_id,
+        "authentication_method": response.authentication_method,
+        "metadata": response.metadata,
+    }
+
+
+@app.post(
+    "/api/v1/identity/sso/login",
+    tags=["Identity Federation"],
+    summary="SSO Login",
+)
+async def sso_login(
+    user_id: str = Body(...),
+    provider_id: str = Body(...),
+    target_url: Optional[str] = Body(None),
+):
+    """Initiate Single Sign-On for an existing user."""
+    service = get_identity_federation_service()
+    response = service.sso_login(user_id=user_id, provider_id=provider_id, target_url=target_url)
+    
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+    
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "user_id": response.user.id if response.user else None,
+    }
+
+
+@app.post(
+    "/api/v1/identity/saml/login",
+    tags=["Identity Federation"],
+    summary="SAML Login",
+)
+async def saml_login(
+    provider_id: str = Body(...),
+    return_url: Optional[str] = Body(None),
+    force_authn: bool = Body(False),
+):
+    """Initiate SAML authentication."""
+    from src.identity_federation import SAMLProvider
+    service = get_identity_federation_service()
+    store = service._store
+    
+    saml = SAMLProvider(store, "aegisgraph-sentinel")
+    response = saml.initiate_login(provider_id=provider_id, return_url=return_url, force_authn=force_authn)
+    
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+    
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "request_id": response.metadata.get("request_id") if response.metadata else None,
+    }
+
+
+@app.post(
+    "/api/v1/identity/oidc/login",
+    tags=["Identity Federation"],
+    summary="OIDC Login",
+)
+async def oidc_login(
+    provider_id: str = Body(...),
+    return_url: Optional[str] = Body(None),
+    prompt: Optional[str] = Body(None),
+    max_age: Optional[int] = Body(None),
+    scope: str = Body("openid profile email"),
+):
+    """Initiate OIDC authentication."""
+    from src.identity_federation import OIDCProvider
+    service = get_identity_federation_service()
+    store = service._store
+    
+    oidc = OIDCProvider(store, "https://aegisgraph.example.com")
+    response = oidc.initiate_login(
+        provider_id=provider_id,
+        return_url=return_url,
+        prompt=prompt,
+        max_age=max_age,
+        scope=scope,
+    )
+    
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+    
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "state": response.metadata.get("state") if response.metadata else None,
+        "nonce": response.metadata.get("nonce") if response.metadata else None,
+    }
+
+
+@app.post(
+    "/api/v1/identity/oauth/token",
+    tags=["Identity Federation"],
+    summary="OAuth Token Exchange",
+)
+async def oauth_token(
+    grant_type: str = Body(...),
+    code: Optional[str] = Body(None),
+    client_id: Optional[str] = Body(None),
+    client_secret: Optional[str] = Body(None),
+    refresh_token: Optional[str] = Body(None),
+    redirect_uri: Optional[str] = Body(None),
+    scope: Optional[str] = Body(None),
+):
+    """Exchange authorization code for tokens or refresh tokens."""
+    service = get_identity_federation_service()
+    
+    # Use OAuth provider directly
+    response = service._oauth.token(
+        grant_type=grant_type,
+        code=code,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        redirect_uri=redirect_uri,
+        scope=scope,
+    )
+    
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+    
+    return {
+        "success": True,
+        "access_token": response.access_token,
+        "refresh_token": response.refresh_token,
+        "token_type": response.metadata.get("token_type", "Bearer") if response.metadata else "Bearer",
+        "expires_in": response.metadata.get("expires_in", 3600) if response.metadata else 3600,
+        "scope": response.metadata.get("scope") if response.metadata else None,
+    }
+
+
+@app.get(
+    "/api/v1/identity/user/{user_id}",
+    tags=["Identity Federation"],
+    summary="Get Federated User",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_user(user_id: str):
+    """Get federated user by ID."""
+    service = get_identity_federation_service()
+    user = service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "username": user.username,
+        "provider_id": user.provider_id,
+        "groups": user.groups,
+        "roles": user.roles,
+        "enabled": user.enabled,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+@app.post(
+    "/api/v1/identity/provision",
+    tags=["Identity Federation"],
+    summary="Provision User",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def provision_user(
+    provider_id: str = Body(...),
+    user_info: dict = Body(...),
+):
+    """Provision a user from identity provider data."""
+    service = get_identity_federation_service()
+    user = service.provision_user(provider_id, user_info)
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Failed to provision user")
+    
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "provider_id": user.provider_id,
+        "provisioned": True,
+    }
+
+
+@app.get(
+    "/api/v1/identity/audit",
+    tags=["Identity Federation"],
+    summary="Get Audit Log",
+    dependencies=[Depends(require_role(Role.AUDITOR))],
+)
+async def get_audit_log(
+    user_id: Optional[str] = Query(None),
+    provider_id: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """Query identity federation audit log."""
+    service = get_identity_federation_service()
+    events = service.get_audit_log(
+        user_id=user_id,
+        provider_id=provider_id,
+        action=action,
+        limit=limit,
+    )
+    return {"events": events, "count": len(events)}
+
+
+@app.get(
+    "/api/v1/identity/stats",
+    tags=["Identity Federation"],
+    summary="Get Identity Federation Statistics",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def get_identity_stats():
+    """Get comprehensive identity federation statistics."""
+    service = get_identity_federation_service()
+    return service.get_stats()
