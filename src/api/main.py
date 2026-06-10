@@ -241,6 +241,17 @@ from .schemas import (
     SessionAnalyzeRequest,
     SessionAnalyzeResponse,
     PolicyResponse,
+    # Autonomous SOAR Platform (Phase 35)
+    IncidentCreateRequest,
+    IncidentResponse,
+    PlaybookCreateRequest,
+    PlaybookExecuteRequest,
+    ResponseActionRequest,
+    ResponseActionResponse,
+    ContainmentRequest,
+    ContainmentResponse,
+    SOARDashboardResponse,
+    SOARAuditResponse,
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
@@ -5900,3 +5911,188 @@ async def get_identity_stats():
     """Get comprehensive identity federation statistics."""
     service = get_identity_federation_service()
     return service.get_stats()
+
+
+# =============================================================================
+# Autonomous SOAR Platform Endpoints (Phase 35)
+# =============================================================================
+
+_soar_service_instance = None
+
+def get_soar_service_instance():
+    """Get or create the SOAR service singleton."""
+    global _soar_service_instance
+    if _soar_service_instance is None:
+        from src.soar import get_soar_service
+        _soar_service_instance = get_soar_service()
+    return _soar_service_instance
+
+
+@app.post(
+    "/api/v1/soar/incidents",
+    response_model=IncidentResponse,
+    tags=["SOAR"],
+    summary="Create a new security incident",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def create_soar_incident(request: IncidentCreateRequest):
+    """Create a security incident and evaluate it for automatic playbook execution."""
+    service = get_soar_service_instance()
+    incident = service.create_incident(
+        title=request.title,
+        description=request.description,
+        severity=request.severity,
+        source=request.source,
+        entities=request.entities,
+        metadata=request.metadata,
+    )
+    return incident
+
+
+@app.get(
+    "/api/v1/soar/incidents",
+    response_model=List[IncidentResponse],
+    tags=["SOAR"],
+    summary="Retrieve all security incidents",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def list_soar_incidents():
+    """List all security incidents logged in the SOAR platform."""
+    service = get_soar_service_instance()
+    return service.list_incidents()
+
+
+@app.get(
+    "/api/v1/soar/incidents/{incident_id}",
+    response_model=IncidentResponse,
+    tags=["SOAR"],
+    summary="Get incident details",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_soar_incident(incident_id: str):
+    """Retrieve details of a specific security incident by ID."""
+    service = get_soar_service_instance()
+    incident = service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
+
+@app.post(
+    "/api/v1/soar/playbooks",
+    tags=["SOAR"],
+    summary="Register a new automation playbook",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def register_soar_playbook(request: PlaybookCreateRequest):
+    """Register an automated response playbook."""
+    service = get_soar_service_instance()
+    playbook = service.register_playbook(
+        name=request.name,
+        description=request.description,
+        version=request.version,
+        tasks=request.tasks,
+        rules=request.rules,
+    )
+    return playbook
+
+
+@app.post(
+    "/api/v1/soar/playbooks/execute",
+    tags=["SOAR"],
+    summary="Trigger a playbook execution",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def execute_soar_playbook(request: PlaybookExecuteRequest):
+    """Manually trigger a playbook execution against an active incident."""
+    service = get_soar_service_instance()
+    execution = service.execute_playbook(request.playbook_id, request.incident_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="Playbook or Incident not found")
+    return execution
+
+
+@app.get(
+    "/api/v1/soar/workflows",
+    tags=["SOAR"],
+    summary="Retrieve all workflow executions",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def list_soar_workflows():
+    """List all workflow and playbook executions."""
+    service = get_soar_service_instance()
+    return service.store.list_workflow_executions()
+
+
+@app.post(
+    "/api/v1/soar/respond",
+    response_model=ResponseActionResponse,
+    tags=["SOAR"],
+    summary="Execute a manual response action",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def execute_soar_response(request: ResponseActionRequest):
+    """Execute a response action (e.g. account lock, session revoke)."""
+    from src.soar.models import ResponseActionType
+    service = get_soar_service_instance()
+    try:
+        action = service.execute_action(
+            action_type=ResponseActionType(request.action_type),
+            target_id=request.target_id,
+            executed_by="ANALYST",
+            additional_params=request.additional_params,
+        )
+        return action
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/api/v1/soar/contain",
+    response_model=ContainmentResponse,
+    tags=["SOAR"],
+    summary="Trigger a containment action",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def trigger_soar_containment(request: ContainmentRequest):
+    """Trigger a containment action (e.g. NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)."""
+    from src.soar.models import ContainmentType
+    service = get_soar_service_instance()
+    try:
+        action = service.trigger_containment(
+            containment_type=ContainmentType(request.type),
+            target_entity=request.target_entity,
+            initiated_by="ADMIN",
+            duration_seconds=request.duration_seconds,
+        )
+        return action
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+
+@app.get(
+    "/api/v1/soar/audit",
+    response_model=List[SOARAuditResponse],
+    tags=["SOAR"],
+    summary="Get SOAR audit logs",
+    dependencies=[Depends(require_role(Role.AUDITOR))],
+)
+async def list_soar_audits():
+    """Retrieve the audit log for all SOAR events and containment actions."""
+    service = get_soar_service_instance()
+    return service.list_audit_records()
+
+
+@app.get(
+    "/api/v1/soar/dashboard",
+    response_model=SOARDashboardResponse,
+    tags=["SOAR"],
+    summary="Get SOAR system dashboard",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_soar_dashboard():
+    """Get metrics and health status of the SOAR platform."""
+    service = get_soar_service_instance()
+    return service.get_dashboard_stats()
