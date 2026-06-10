@@ -5,6 +5,8 @@ Builds fraud simulation scenarios from various inputs.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 import logging
 
@@ -264,12 +266,14 @@ class ScenarioBuilder:
 
 # Global singleton
 _scenario_builder: Optional[ScenarioBuilder] = None
+_scenario_builder_lock = Lock()
 
 
 def get_scenario_builder(store: Optional[PredictiveStore] = None) -> ScenarioBuilder:
     """Get or create the singleton ScenarioBuilder instance."""
     global _scenario_builder
     
-    if _scenario_builder is None:
-        _scenario_builder = ScenarioBuilder(store=store)
-    return _scenario_builder
+    with _scenario_builder_lock:
+        if _scenario_builder is None:
+            _scenario_builder = ScenarioBuilder(store=store)
+        return _scenario_builder

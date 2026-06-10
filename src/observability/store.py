@@ -249,12 +249,14 @@ class ObservabilityStore:
 
 # Global singleton
 _observability_store: Optional[ObservabilityStore] = None
+_observability_store_lock = Lock()
 
 
 def get_observability_store() -> ObservabilityStore:
     """Get or create the singleton observability store instance."""
     global _observability_store
     
-    if _observability_store is None:
-        _observability_store = ObservabilityStore()
-    return _observability_store
+    with _observability_store_lock:
+        if _observability_store is None:
+            _observability_store = ObservabilityStore()
+        return _observability_store

@@ -45,6 +45,7 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
     slack_webhook_url: Optional[str] = Field(default=None, description="Slack Webhook URL for alerts.")
     enable_discord_webhook: Optional[str] = Field(default=None, description="Enable/disable Discord webhook alerts.")
     enable_slack_webhook: Optional[str] = Field(default=None, description="Enable/disable Slack webhook alerts.")
+    enable_webhook_alerts: Optional[str] = Field(default=None, description="Global kill-switch: enable/disable ALL webhook alerts (ENABLE_WEBHOOK_ALERTS).")
 
     @property
     def runtime_environment(self) -> str:
@@ -88,10 +89,56 @@ class APISettings(ConfigBaseModel):
 
 
 class WebhookSettings(ConfigBaseModel):
+    """Configuration for real-time Discord and Slack webhook notifications (Issue #633).
+
+    Attributes
+    ----------
+    discord_url:
+        Full Discord webhook URL.  Must start with ``https://discord.com/api/webhooks/``
+        when ``enable_discord`` is ``True``.  Defaults to ``""`` (disabled).
+    slack_url:
+        Full Slack incoming-webhook URL.  Must start with
+        ``https://hooks.slack.com/services/`` when ``enable_slack`` is ``True``.
+        Defaults to ``""`` (disabled).
+    enable_discord:
+        Enable per-service Discord notifications. Only takes effect when
+        ``enable_alerts`` is also ``True``.
+    enable_slack:
+        Enable per-service Slack notifications. Only takes effect when
+        ``enable_alerts`` is also ``True``.
+    enable_alerts:
+        Global kill-switch (``ENABLE_WEBHOOK_ALERTS``).  When ``False``,
+        **all** webhook notifications are suppressed regardless of the
+        per-service flags above.  Defaults to ``False``.
+    """
+
     discord_url: str = Field(default=defaults.DEFAULT_DISCORD_WEBHOOK_URL)
     slack_url: str = Field(default=defaults.DEFAULT_SLACK_WEBHOOK_URL)
     enable_discord: bool = Field(default=defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)
     enable_slack: bool = Field(default=defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)
+    enable_alerts: bool = Field(default=defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS)
+
+    @field_validator("discord_url")
+    @classmethod
+    def validate_discord_url(cls, value: str) -> str:
+        """Warn if Discord is enabled with a suspicious URL (non-empty validation only)."""
+        if value and not value.startswith("https://"):
+            raise ValueError(
+                "DISCORD_WEBHOOK_URL must be a full HTTPS URL "
+                "(e.g. https://discord.com/api/webhooks/…)"
+            )
+        return value
+
+    @field_validator("slack_url")
+    @classmethod
+    def validate_slack_url(cls, value: str) -> str:
+        """Validate Slack webhook URL schema."""
+        if value and not value.startswith("https://"):
+            raise ValueError(
+                "SLACK_WEBHOOK_URL must be a full HTTPS URL "
+                "(e.g. https://hooks.slack.com/services/…)"
+            )
+        return value
 
 
 class GraphRuntimeSettings(ConfigBaseModel):

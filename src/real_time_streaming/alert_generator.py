@@ -5,6 +5,8 @@ Low-latency alert generation, prioritization, and routing.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -227,12 +229,14 @@ class AlertGenerator:
 
 # Global singleton
 _alert_generator: Optional[AlertGenerator] = None
+_alert_generator_lock = Lock()
 
 
 def get_alert_generator(store: Optional[StreamStore] = None) -> AlertGenerator:
     """Get or create the singleton AlertGenerator instance."""
     global _alert_generator
     
-    if _alert_generator is None:
-        _alert_generator = AlertGenerator(store=store)
-    return _alert_generator
+    with _alert_generator_lock:
+        if _alert_generator is None:
+            _alert_generator = AlertGenerator(store=store)
+        return _alert_generator

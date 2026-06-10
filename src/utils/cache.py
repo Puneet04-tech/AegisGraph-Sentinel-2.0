@@ -507,17 +507,20 @@ class GraphOperationCache:
 
 # Global cache instance
 _cache_instance: Optional[GraphOperationCache] = None
+_cache_lock = threading.Lock()
 
 
 def get_graph_cache() -> GraphOperationCache:
     """Get or create global cache instance (singleton pattern)."""
     global _cache_instance
-    if _cache_instance is None:
-        _cache_instance = GraphOperationCache()
-    return _cache_instance
+    with _cache_lock:
+        if _cache_instance is None:
+            _cache_instance = GraphOperationCache()
+        return _cache_instance
 
 
 def reset_cache() -> None:
     """Reset global cache instance (for testing)."""
     global _cache_instance
-    _cache_instance = None
+    with _cache_lock:
+        _cache_instance = None

@@ -5,6 +5,8 @@ Generates proactive prevention recommendations based on predictive analysis.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 import logging
 
@@ -272,12 +274,14 @@ class RecommendationEngine:
 
 # Global singleton
 _recommendation_engine: Optional[RecommendationEngine] = None
+_recommendation_engine_lock = Lock()
 
 
 def get_recommendation_engine(store: Optional[PredictiveStore] = None) -> RecommendationEngine:
     """Get or create the singleton RecommendationEngine instance."""
     global _recommendation_engine
     
-    if _recommendation_engine is None:
-        _recommendation_engine = RecommendationEngine(store=store)
-    return _recommendation_engine
+    with _recommendation_engine_lock:
+        if _recommendation_engine is None:
+            _recommendation_engine = RecommendationEngine(store=store)
+        return _recommendation_engine

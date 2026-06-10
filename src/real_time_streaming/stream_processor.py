@@ -5,6 +5,8 @@ Real-time event processing, windowing, and transformation.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timezone, timedelta
 import logging
@@ -181,7 +183,9 @@ class StreamProcessor:
             if all(c in allowed_chars for c in expr):
                 return eval(expr)
             return 0.0
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("Formula evaluation failed: %s", exc)
             return 0.0
     
     def get_stream_summary(self, stream_name: str) -> Dict[str, Any]:
@@ -199,12 +203,14 @@ class StreamProcessor:
 
 # Global singleton
 _stream_processor: Optional[StreamProcessor] = None
+_stream_processor_lock = Lock()
 
 
 def get_stream_processor(store: Optional[StreamStore] = None) -> StreamProcessor:
     """Get or create the singleton StreamProcessor instance."""
     global _stream_processor
     
-    if _stream_processor is None:
-        _stream_processor = StreamProcessor(store=store)
-    return _stream_processor
+    with _stream_processor_lock:
+        if _stream_processor is None:
+            _stream_processor = StreamProcessor(store=store)
+        return _stream_processor
