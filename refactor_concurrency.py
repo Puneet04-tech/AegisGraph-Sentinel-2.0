@@ -24,8 +24,9 @@ def _analyze_keystrokes_sync(biometrics: dict) -> bool:
             flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
             if flight_cv > 0.35:
                 behavioral_stress_detected = True
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Behavioral stress detection failed: %s", e)
     return behavioral_stress_detected
 
 """
