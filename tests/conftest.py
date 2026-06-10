@@ -47,7 +47,7 @@ def pytest_collection_modifyitems(config, items):
 
 # Files whose tests should exercise the real API key gate. The autouse
 # bypass below skips these so the gate is active during those tests.
-_AUTH_TEST_FILES = frozenset({"test_api_auth.py", "test_rbac.py"})
+_AUTH_TEST_FILES = frozenset({"test_api_auth.py", "test_rbac.py", "test_soar.py"})
 
 
 @pytest.fixture
