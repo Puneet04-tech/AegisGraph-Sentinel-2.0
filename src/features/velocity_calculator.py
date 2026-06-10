@@ -327,7 +327,9 @@ class VelocityCalculator:
                 dt = value.to_pydatetime()
                 dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
                 return float(dt.timestamp())
-            except Exception:
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug("Failed to convert timestamp using to_pydatetime: %s", exc)
                 return fallback
 
         if isinstance(value, str):

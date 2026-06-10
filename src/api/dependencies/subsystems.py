@@ -126,6 +126,8 @@ async def get_lateral_movement_detector():
                     state.services.register_service(
                         "lateral_movement_detector", service, replace=True
                     )
-                except Exception:
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).debug("Lateral movement detector construction failed (optional feature): %s", exc)
                     return None  # lateral movement is optional
     return service  # may still be None if construction failed

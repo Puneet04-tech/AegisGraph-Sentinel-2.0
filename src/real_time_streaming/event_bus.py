@@ -5,6 +5,8 @@ Event-driven architecture with pub/sub and event routing.
 """
 
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timezone
 import logging
@@ -224,12 +226,14 @@ class EventBus:
 
 # Global singleton
 _event_bus: Optional[EventBus] = None
+_event_bus_lock = Lock()
 
 
 def get_event_bus(store: Optional[StreamStore] = None) -> EventBus:
     """Get or create the singleton EventBus instance."""
     global _event_bus
     
-    if _event_bus is None:
-        _event_bus = EventBus(store=store)
-    return _event_bus
+    with _event_bus_lock:
+        if _event_bus is None:
+            _event_bus = EventBus(store=store)
+        return _event_bus

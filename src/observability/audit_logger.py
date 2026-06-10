@@ -1,6 +1,7 @@
 """Audit trail logging for fraud decisions and security events."""
 
 import threading
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from .structured_logger import StructuredLogger, get_logger

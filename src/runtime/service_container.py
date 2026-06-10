@@ -48,6 +48,10 @@ class ServiceContainer(DependencyContainer):
     def optional_service(self, name: str) -> Any:
         return self.optional_get(name)
 
+    def list_services(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._services)
+
     def get_initialization_state(self) -> List[ServiceInfo]:
         with self._lock:
             return [

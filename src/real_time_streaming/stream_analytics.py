@@ -6,6 +6,8 @@ Real-time analytics over streams, pattern detection, and anomaly detection.
 
 import random
 import math
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -218,12 +220,14 @@ class StreamAnalytics:
 
 # Global singleton
 _stream_analytics: Optional[StreamAnalytics] = None
+_stream_analytics_lock = Lock()
 
 
 def get_stream_analytics(store: Optional[StreamStore] = None) -> StreamAnalytics:
     """Get or create the singleton StreamAnalytics instance."""
     global _stream_analytics
     
-    if _stream_analytics is None:
-        _stream_analytics = StreamAnalytics(store=store)
-    return _stream_analytics
+    with _stream_analytics_lock:
+        if _stream_analytics is None:
+            _stream_analytics = StreamAnalytics(store=store)
+        return _stream_analytics
