@@ -25,7 +25,7 @@ class SAMLProvider:
 <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
     ID="{request_id}" Version="2.0" IssueInstant="{issue_instant}" Destination="{provider.saml_sso_url}"
     AssertionConsumerServiceURL="{self._sp_sso_url}" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
-    {"ForceAuthn=\"true\"" if force_authn else ""}>
+    {'ForceAuthn="true"' if force_authn else ''}>
     <saml:Issuer>{self._sp_id}</saml:Issuer>
     <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/>
 </samlp:AuthnRequest>'''
