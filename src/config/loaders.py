@@ -51,6 +51,7 @@ ENV_ALIASES = {
     "slack_webhook_url": "SLACK_WEBHOOK_URL",
     "enable_discord_webhook": "ENABLE_DISCORD_WEBHOOK",
     "enable_slack_webhook": "ENABLE_SLACK_WEBHOOK",
+    "enable_webhook_alerts": "ENABLE_WEBHOOK_ALERTS",
 }
 
 
@@ -297,6 +298,7 @@ def _build_settings_dict(
             "slack_url": env.slack_webhook_url or webhook_config.get("slack_url", defaults.DEFAULT_SLACK_WEBHOOK_URL),
             "enable_discord": _bool_from_env(env.enable_discord_webhook, webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)) if env.enable_discord_webhook is not None else webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK),
             "enable_slack": _bool_from_env(env.enable_slack_webhook, webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)) if env.enable_slack_webhook is not None else webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK),
+            "enable_alerts": _bool_from_env(getattr(env, "enable_webhook_alerts", None), webhook_config.get("enable_alerts", defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS)) if getattr(env, "enable_webhook_alerts", None) is not None else webhook_config.get("enable_alerts", defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS),
         },
         "runtime": {
             "environment": environment,
