@@ -45,6 +45,7 @@ class EventDispatcher:
         self._running = False
         self._started = False
         self._stop_requested = asyncio.Event()
+        self._stopping = False  # Guard against concurrent start/stop
 
         self._task: Optional[asyncio.Task] = None
 
@@ -53,7 +54,7 @@ class EventDispatcher:
         return self._started
 
     async def start(self) -> None:
-        if self._started:
+        if self._started or self._stopping:
             return
         self._started = True
         self._queue = asyncio.Queue(maxsize=self._maxsize)
@@ -135,9 +136,9 @@ class EventDispatcher:
                 return
 
     async def stop(self) -> None:
-        if not self._started:
+        if not self._started or self._stopping:
             return
-        self._started = False
+        self._stopping = True
         self._running = False
         self._stop_requested.set()
 
@@ -163,6 +164,9 @@ class EventDispatcher:
 
         # Best-effort cleanup; doesn't need to be perfect for correctness.
         self._overflow.clear()
+        # Set _started to False only after stop completes successfully
+        self._started = False
+        self._stopping = False
 
     async def _process_loop(self) -> None:
         while not self._stop_requested.is_set() or not self._queue.empty() or self._overflow:

@@ -136,6 +136,49 @@ class RuntimeState:
         self.legacy_state = state
         self.services.register_service("app_state", state, replace=True)
 
+    def _validate_state_transition(self, new_started: bool, new_shutting_down: bool) -> None:
+        """Validate that a state transition is valid.
+        
+        Raises:
+            RuntimeError: If the state transition is invalid.
+        """
+        # Cannot be both started and shutting down
+        if new_started and new_shutting_down:
+            raise RuntimeError("Invalid state: cannot be both started and shutting_down")
+        
+        # If shutting down, must have been started at some point
+        if new_shutting_down and not self.started and not new_started:
+            raise RuntimeError("Invalid state: cannot set shutting_down without having been started")
+
+    def check_invariants(self) -> Dict[str, Any]:
+        """Check all runtime state invariants and return violations.
+        
+        Returns:
+            Dict with 'valid' (bool) and 'violations' (list of str).
+        """
+        violations = []
+        
+        # Invariant 1: Cannot be both started and shutting_down
+        if self.started and self.shutting_down:
+            violations.append("Runtime is both started and shutting_down")
+        
+        # Invariant 2: Dispatcher state should match started state
+        if hasattr(self, 'dispatcher'):
+            if self.started and not self.dispatcher.started:
+                violations.append("Runtime is started but dispatcher is not started")
+            if not self.started and self.dispatcher.started:
+                violations.append("Runtime is not started but dispatcher is started")
+        
+        # Invariant 3: If shutting_down, no new tasks should be registered
+        if self.shutting_down and self.tasks.active_count > 0:
+            # This is a warning, not a hard violation, as tasks may be in cleanup
+            pass
+        
+        return {
+            "valid": len(violations) == 0,
+            "violations": violations,
+        }
+
     def record_lifecycle_event(self, event_type: str, **metadata: Any) -> None:
         self.lifecycle_events.append(
             {
@@ -182,6 +225,7 @@ class RuntimeState:
         resource_metrics = self.resource_manager.get_resource_metrics()
         config_snapshot = ConfigSnapshot.capture(self.config_registry)
         policies = self.policy_registry.list_policies()
+        invariant_check = self.check_invariants()
         with self._dependency_validation_lock:
             dependency_results = list(self.dependency_validation_results)
         dependency_failures = [result for result in dependency_results if not result.valid]
@@ -204,6 +248,7 @@ class RuntimeState:
                 "enabled": sum(1 for policy in policies if policy.enabled),
                 "names": sorted(policy.name for policy in policies),
             },
+            "invariants": invariant_check,
             "dependencies": {
                 "rule_count": len(self.dependency_registry.list_rules()),
                 "contract_count": len(self.dependency_registry.list_contracts()),

@@ -57,6 +57,9 @@ class LifecycleManager:
             if self._started:
                 self._logger.info("Startup already completed", event_type="runtime_startup_already_complete")
                 return
+            if self._shutting_down:
+                self._logger.warning("Cannot start while shutdown is in progress", event_type="runtime_startup_during_shutdown")
+                raise RuntimeError("Cannot start runtime while shutdown is in progress")
 
             self._logger.info(
                 "Runtime startup started",
@@ -73,6 +76,9 @@ class LifecycleManager:
             if dispatcher is not None:
                 if not dispatcher.started:
                     await dispatcher.start()
+                # Validate dispatcher is actually started before proceeding
+                if not dispatcher.started:
+                    raise RuntimeError("Dispatcher failed to start during runtime startup")
                 self._logger.info("Event dispatcher started", event_type="dispatcher_started")
 
             completed_steps: List[str] = []
@@ -186,6 +192,12 @@ class LifecycleManager:
         if dispatcher is not None and dispatcher.started:
             try:
                 await dispatcher.stop()
+                # Validate dispatcher actually stopped
+                if dispatcher.started:
+                    self._logger.error(
+                        "Dispatcher still reports started after stop during rollback",
+                        event_type="runtime_startup_rollback_dispatcher_state_error",
+                    )
             except Exception as exc:
                 self._logger.error(
                     f"Dispatcher stop during rollback failed: {exc}",
