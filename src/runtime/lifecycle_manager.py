@@ -88,6 +88,7 @@ class LifecycleManager:
                 )
                 await self._rollback_startup(completed_steps)
                 raise
+            self._validate_runtime_services()
             self._started = True
             self.runtime_state.started = True
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
@@ -102,6 +103,28 @@ class LifecycleManager:
                         payload={"steps": len(self._startup_steps)},
                     )
                 )
+
+
+    def _validate_runtime_services(self) -> None:
+        validator = getattr(self.runtime_state, "validate_runtime_dependencies", None)
+        if validator is None:
+            return
+        try:
+            results = validator()
+        except Exception as exc:
+            self._logger.warning(
+                f"Runtime dependency validation failed unexpectedly: {exc}",
+                event_type="runtime_dependency_validation_error",
+            )
+            return
+
+        failures = [result for result in results if not getattr(result, "valid", False)]
+        if failures:
+            self._logger.warning(
+                "Runtime dependency validation found failures",
+                event_type="runtime_dependency_validation_failed",
+                metadata={"failures": [failure.__dict__ for failure in failures]},
+            )
 
 
     async def shutdown(self) -> None:
