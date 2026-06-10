@@ -134,7 +134,7 @@ class SAMLProvider:
     Destination="{provider.saml_sso_url}"
     AssertionConsumerServiceURL="{self._sp_sso_url}"
     ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
-    {"ForceAuthn=\"true\"" if force_authn else ""}>
+    {'ForceAuthn="true"' if force_authn else ''}>
     <saml:Issuer>{self._sp_id}</saml:Issuer>
     <samlp:NameIDPolicy
         Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
