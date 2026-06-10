@@ -4,6 +4,7 @@ Real-time Streaming Storage Engine.
 Thread-safe storage for streams, events, windows, and alerts.
 """
 
+import threading
 from collections import deque
 from threading import Lock
 from typing import Dict, List, Optional, Any
@@ -223,12 +224,14 @@ class StreamStore:
 
 # Global singleton
 _stream_store: Optional[StreamStore] = None
+_stream_store_lock = Lock()
 
 
 def get_stream_store() -> StreamStore:
     """Get or create the singleton stream store instance."""
     global _stream_store
     
-    if _stream_store is None:
-        _stream_store = StreamStore()
-    return _stream_store
+    with _stream_store_lock:
+        if _stream_store is None:
+            _stream_store = StreamStore()
+        return _stream_store

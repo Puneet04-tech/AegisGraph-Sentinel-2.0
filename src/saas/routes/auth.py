@@ -130,10 +130,15 @@ async def get_optional_user(authorization: Optional[str] = Depends(bearer_scheme
     """Get current user if authenticated, None otherwise"""
     if not authorization:
         return None
-    
+
     try:
         return await get_current_user(authorization)
-    except:
+    except HTTPException:
+        # Authentication failed, return None as expected
+        return None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Unexpected error during optional user authentication: %s", exc)
         return None
 
 

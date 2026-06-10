@@ -1591,3 +1591,174 @@ class AnalyticsStatsResponse(BaseModel):
     reports_stored: int
     insights_stored: int
     unacknowledged_insights: int
+
+# =============================================================================
+# Threat Hunting & Security Analytics Schemas (Phase 34)
+# =============================================================================
+
+class ThreatHuntStartRequest(BaseModel):
+    """Request to start a threat hunt."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the threat hunt")
+    description: str = Field(description="Description of the threat hunt")
+    query_criteria: Dict[str, Any] = Field(default_factory=dict, description="Custom criteria for finding threats")
+
+
+class ThreatHuntStartResponse(BaseModel):
+    """Response containing started hunt details."""
+    model_config = ConfigDict(extra="allow")
+
+    hunt_id: str
+    name: str
+    state: str
+    created_at: str
+
+
+class ThreatQueryRequest(BaseModel):
+    """Request to query threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(description="Entity identifier")
+    entity_type: str = Field(default="user", description="Entity type")
+    amount: float = Field(default=0.0)
+    hour: int = Field(default=12)
+    ip_address: str = Field(default="")
+    device_id: str = Field(default="")
+    device_status: str = Field(default="UNKNOWN")
+    failed_attempts: int = Field(default=0)
+    operation: str = Field(default="")
+    recent_txn_count_1m: int = Field(default=0)
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+    relationships: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreatQueryResponse(BaseModel):
+    """Response containing threat query details."""
+    model_config = ConfigDict(extra="allow")
+
+    entity_id: str
+    entity_type: str
+    score: float
+    severity: str
+    breakdown: Dict[str, float]
+    active_indicators: List[str]
+
+
+class ThreatCorrelateRequest(BaseModel):
+    """Request to correlate threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the correlation")
+    entities: List[str] = Field(description="List of entity IDs")
+    indicator_ids: List[str] = Field(description="List of threat indicator IDs")
+
+
+class ThreatCorrelateResponse(BaseModel):
+    """Response containing correlation details."""
+    model_config = ConfigDict(extra="allow")
+
+    correlation_id: str
+    name: str
+    correlation_score: float
+    timestamp: str
+
+
+# =============================================================================
+# Zero Trust Security Schemas (Phase 31)
+# =============================================================================
+
+class ZeroTrustEvaluateRequest(BaseModel):
+    """Request for zero trust evaluation."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    device_id: Optional[str] = Field(default=None, description="Device identifier")
+    session_id: Optional[str] = Field(default=None, description="Session identifier")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    location: Optional[Dict[str, Any]] = Field(default=None, description="Location data")
+    user_agent: Optional[str] = Field(default=None, description="User agent string")
+    resource: Optional[str] = Field(default=None, description="Resource being accessed")
+    action: Optional[str] = Field(default=None, description="Action being performed")
+    authentication_method: Optional[str] = Field(default=None, description="Auth method")
+    authentication_strength: float = Field(default=0.5, ge=0, le=1, description="Auth strength")
+    device_info: Optional[Dict[str, Any]] = Field(default=None, description="Device info for registration")
+
+
+class DeviceRegisterRequest(BaseModel):
+    """Request to register a device."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    device_type: str = Field(description="Device type (mobile, desktop, tablet)")
+    os_version: Optional[str] = Field(default=None, description="OS version")
+    browser: Optional[str] = Field(default=None, description="Browser name")
+    browser_version: Optional[str] = Field(default=None, description="Browser version")
+    screen_resolution: Optional[str] = Field(default=None, description="Screen resolution")
+    timezone: Optional[str] = Field(default=None, description="Device timezone")
+    language: Optional[str] = Field(default=None, description="Language")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    mac_address: Optional[str] = Field(default=None, description="MAC address")
+    serial_number: Optional[str] = Field(default=None, description="Device serial number")
+
+
+class DeviceRegisterResponse(BaseModel):
+    """Response for device registration."""
+    model_config = ConfigDict(extra="allow")
+    
+    device_id: str
+    fingerprint_id: str
+    status: str
+    trust_score: float
+    first_seen: str
+    last_seen: str
+    verification_required: bool = False
+
+
+class SessionAnalyzeRequest(BaseModel):
+    """Request for session risk analysis."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    session_id: Optional[str] = Field(default=None, description="Session identifier")
+    device_id: Optional[str] = Field(default=None, description="Device identifier")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    location: Optional[Dict[str, Any]] = Field(default=None, description="Location data")
+    user_agent: Optional[str] = Field(default=None, description="User agent")
+    resource: Optional[str] = Field(default=None, description="Resource being accessed")
+    action: Optional[str] = Field(default=None, description="Action being performed")
+    auth_method: Optional[str] = Field(default=None, description="Auth method")
+    auth_strength: float = Field(default=0.5, ge=0, le=1)
+    session_attributes: Optional[Dict[str, Any]] = Field(default=None, description="Session attributes")
+
+
+class SessionAnalyzeResponse(BaseModel):
+    """Response for session risk analysis."""
+    model_config = ConfigDict(extra="allow")
+    
+    session_id: str
+    user_id: str
+    risk_level: str
+    risk_score: float
+    anomalies_detected: List[str]
+    location_risk: float
+    behavior_deviation: float
+    velocity_anomaly: bool
+    unusual_operations: List[str]
+    recommended_actions: List[str]
+    evaluated_at: str
+
+
+class PolicyResponse(BaseModel):
+    """Response for policy information."""
+    model_config = ConfigDict(extra="allow")
+    
+    policy_id: str
+    name: str
+    description: str
+    priority: int
+    enabled: bool
+    conditions: Dict[str, Any]
+    actions: Dict[str, Any]
+    created_at: str
+    updated_at: str

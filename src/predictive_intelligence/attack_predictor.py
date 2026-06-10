@@ -6,6 +6,8 @@ Predicts future attack paths and fraud network expansion.
 
 import time
 import random
+import threading
+from threading import Lock
 from typing import Dict, List, Optional, Any, Set
 import logging
 
@@ -197,12 +199,14 @@ class AttackPathPredictor:
 
 # Global singleton
 _attack_path_predictor: Optional[AttackPathPredictor] = None
+_attack_path_predictor_lock = Lock()
 
 
 def get_attack_path_predictor(store: Optional[PredictiveStore] = None) -> AttackPathPredictor:
     """Get or create the singleton AttackPathPredictor instance."""
     global _attack_path_predictor
     
-    if _attack_path_predictor is None:
-        _attack_path_predictor = AttackPathPredictor(store=store)
-    return _attack_path_predictor
+    with _attack_path_predictor_lock:
+        if _attack_path_predictor is None:
+            _attack_path_predictor = AttackPathPredictor(store=store)
+        return _attack_path_predictor

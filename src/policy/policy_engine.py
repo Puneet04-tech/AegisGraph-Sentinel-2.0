@@ -28,4 +28,18 @@ class PolicyEngine:
         return PolicyResult(allowed, policy.name, reason)
 
     def evaluate_all(self, context: Dict[str, Any]) -> List[PolicyResult]:
-        return [self.evaluate(policy.name, context) for policy in self.registry.list_policies()]
+        """Evaluate all registered policies against context using a single consistent snapshot."""
+        snapshot = self.registry.list_policies()  # one lock acquisition, returns a copy
+        results = []
+        for policy in snapshot:
+            if not policy.enabled:
+                results.append(PolicyResult(True, policy.name, "policy disabled"))
+                continue
+            try:
+                allowed = bool(policy.evaluator(context))
+            except Exception as exc:
+                results.append(PolicyResult(False, policy.name, f"policy evaluation failed: {exc}"))
+                continue
+            reason = "allowed" if allowed else "denied by policy"
+            results.append(PolicyResult(allowed, policy.name, reason))
+        return results

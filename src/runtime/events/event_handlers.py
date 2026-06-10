@@ -120,13 +120,33 @@ def on_watchdog_alert(event: WatchdogAlertEvent) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Webhook integration hooks
+# Webhook / Sentinel alert integration hooks (Issue #633)
 # ---------------------------------------------------------------------------
 
 async def on_sentinel_alert(event: SentinelAlertEvent) -> None:
-    """Webhook event handler that triggers configured notifications."""
+    """Async event handler that routes high-severity Sentinel alerts to webhooks.
+
+    This handler is subscribed to :class:`~src.runtime.events.event_types.SentinelAlertEvent`
+    during startup by :func:`~src.runtime.events.subscriptions.register_default_subscriptions`.
+
+    It loads the current runtime settings on each invocation (lightweight due
+    to the settings cache in :func:`~src.config.settings.get_settings`) and
+    delegates to :class:`~src.runtime.events.webhook_manager.WebhookManager`
+    for payload formatting and HTTP delivery.
+
+    Failures in settings loading or webhook delivery are caught, logged at
+    ERROR level, and **never** propagated — the event bus guarantees isolation
+    between handlers.
+
+    Parameters
+    ----------
+    event:
+        The :class:`~src.runtime.events.event_types.SentinelAlertEvent` to
+        route to configured webhook endpoints.
+    """
     from ...config.settings import get_settings
     from .webhook_manager import WebhookManager
+
     try:
         settings = get_settings()
         manager = WebhookManager(settings.webhook)
