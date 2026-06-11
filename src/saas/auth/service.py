@@ -5,17 +5,94 @@ Supports: SSO, SAML 2.0, OAuth2, OpenID Connect, MFA
 """
 
 import hashlib
+import logging
+import os
 import secrets
 import pyotp
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from abc import ABC, abstractmethod
 import jwt
 from pydantic import BaseModel, EmailStr
 
 from src.exceptions import AuthenticationError, AuthorizationError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class UserRecord:
+    """Minimal user record used by AuthService for authentication."""
+    user_id: str
+    organization_id: str
+    email: str
+    password_hash: str = ""
+    mfa_enabled: bool = False
+    mfa_secret: str = ""
+    role: str = "member"
+    permissions: List[str] = field(default_factory=lambda: ["read", "write"])
+
+
+class UserStore(ABC):
+    """Abstract user store interface.
+
+    Concrete implementations back this with a database (PostgreSQL, DynamoDB,
+    etc.).  An in-memory implementation (``InMemoryUserStore``) is provided for
+    unit testing and local development.
+    """
+
+    @abstractmethod
+    def get_by_id(self, user_id: str) -> Optional[UserRecord]:
+        """Return the UserRecord for *user_id*, or None if not found."""
+
+    @abstractmethod
+    def get_by_email(self, email: str) -> Optional[UserRecord]:
+        """Return the UserRecord for *email*, or None if not found."""
+
+    @abstractmethod
+    def find_or_create_sso_user(
+        self, provider: str, user_info: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        """Return (user_id, organization_id) for an SSO login, creating the
+        user if this is their first sign-in."""
+
+
+class InMemoryUserStore(UserStore):
+    """Thread-unsafe in-memory user store for development and testing only.
+
+    Do **not** use this in production — records are not persisted across
+    restarts and there is no concurrency protection.
+    """
+
+    def __init__(self) -> None:
+        self._users: Dict[str, UserRecord] = {}
+        self._email_index: Dict[str, str] = {}
+
+    def add(self, record: UserRecord) -> None:
+        self._users[record.user_id] = record
+        self._email_index[record.email] = record.user_id
+
+    def get_by_id(self, user_id: str) -> Optional[UserRecord]:
+        return self._users.get(user_id)
+
+    def get_by_email(self, email: str) -> Optional[UserRecord]:
+        uid = self._email_index.get(email)
+        return self._users.get(uid) if uid else None
+
+    def find_or_create_sso_user(
+        self, provider: str, user_info: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        email = user_info.get("email", "")
+        record = self.get_by_email(email)
+        if record:
+            return record.user_id, record.organization_id
+        new_id = secrets.token_hex(8)
+        new_org = secrets.token_hex(8)
+        self.add(UserRecord(user_id=new_id, organization_id=new_org, email=email))
+        return new_id, new_org
 
 
 class AuthProvider(str, Enum):
@@ -69,13 +146,25 @@ class TokenPayload:
 class AuthService:
     """Enterprise authentication service"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], user_store: Optional[UserStore] = None):
         self.config = config
-        self.jwt_secret = config.get("jwt_secret", secrets.token_hex(32))
+        # Require an explicit secret in production; generate a random one only
+        # as a last-resort fallback so tests without config don't crash.
+        jwt_secret = config.get("jwt_secret") or os.getenv("AEGIS_JWT_SECRET")
+        if not jwt_secret:
+            logger.warning(
+                "No jwt_secret configured — generating a random secret. "
+                "Tokens will be invalid after restart. "
+                "Set AEGIS_JWT_SECRET in production."
+            )
+            jwt_secret = secrets.token_hex(32)
+        self.jwt_secret = jwt_secret
         self.jwt_algorithm = "HS256"
         self.access_token_expiry = config.get("access_token_expiry", 3600)  # 1 hour
         self.refresh_token_expiry = config.get("refresh_token_expiry", 86400 * 7)  # 7 days
-        
+
+        self.user_store: UserStore = user_store or InMemoryUserStore()
+
         # SSO providers
         self.sso_providers: Dict[str, 'SSOProvider'] = {}
 
@@ -157,39 +246,54 @@ class AuthService:
         password: str,
         organization_id: Optional[str] = None
     ) -> AuthResult:
-        """Authenticate user with email and password"""
-        # In production, fetch user from database
-        # For now, return mock success
-        user_id = "user_123"
-        org_id = organization_id or "org_123"
-        
-        # Check if MFA is enabled
-        mfa_enabled = False
-        
-        if mfa_enabled:
+        """Authenticate user with email and password.
+
+        Looks up the user via the injected ``UserStore``.  Returns an
+        ``AuthResult`` with ``success=False`` when the user is not found or
+        the password does not match.
+        """
+        record = self.user_store.get_by_email(email)
+        if record is None:
+            return AuthResult(success=False, error="Invalid credentials")
+
+        if record.password_hash and not self.verify_password(password, record.password_hash):
+            return AuthResult(success=False, error="Invalid credentials")
+
+        org_id = organization_id or record.organization_id
+
+        if record.mfa_enabled:
             mfa_token = secrets.token_hex(16)
             return AuthResult(
                 success=True,
-                user_id=user_id,
+                user_id=record.user_id,
                 organization_id=org_id,
                 mfa_required=True,
                 mfa_token=mfa_token,
             )
-        
-        return self._create_auth_result(user_id, org_id)
+
+        return self._create_auth_result(record.user_id, org_id)
 
     def authenticate_api_key(self, api_key: str) -> AuthResult:
-        """Authenticate using API key"""
-        # Hash the provided key
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        
-        # In production, look up key in database
-        # Verify organization and scopes
-        
-        org_id = "org_123"
+        """Authenticate using API key.
+
+        The caller is responsible for supplying a ``UserStore`` that can
+        resolve API key hashes to organization records.  The base
+        implementation hashes the key and delegates to the store's
+        ``get_by_id`` path; concrete stores should index keys appropriately.
+
+        Note: Full API-key-to-org resolution requires a store implementation
+        with an API key index.  The current ``InMemoryUserStore`` does not
+        support this lookup — production deployments must provide a store that
+        does.
+        """
+        _key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        logger.debug("API key authentication attempted (hash prefix: %s)", _key_hash[:8])
+        # Concrete store implementations should resolve _key_hash to a UserRecord.
+        # Until a store with key-index support is wired in, return a failed result
+        # rather than silently granting access with a hardcoded org.
         return AuthResult(
-            success=True,
-            organization_id=org_id,
+            success=False,
+            error="API key authentication requires a configured user store with key-index support",
             provider=AuthProvider.API_KEY,
         )
 
@@ -220,18 +324,23 @@ class AuthService:
         return self._create_auth_result(user_id, org_id, provider=provider)
 
     def verify_mfa(self, user_id: str, mfa_token: str, token: str) -> AuthResult:
-        """Verify MFA and complete authentication"""
-        # In production, fetch user MFA secret
-        secret = "MFA_SECRET_HERE"
-        
-        if not self.verify_mfa_token(secret, token):
-            return AuthResult(
-                success=False,
-                error="Invalid MFA token",
-            )
-        
-        org_id = "org_123"
-        return self._create_auth_result(user_id, org_id)
+        """Verify TOTP MFA token and complete authentication.
+
+        Fetches the per-user MFA secret from the ``UserStore``.  Returns
+        ``success=False`` when the user is not found, MFA is not configured
+        for the user, or the TOTP token is incorrect.
+        """
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            return AuthResult(success=False, error="User not found")
+
+        if not record.mfa_enabled or not record.mfa_secret:
+            return AuthResult(success=False, error="MFA is not configured for this user")
+
+        if not self.verify_mfa_token(record.mfa_secret, token):
+            return AuthResult(success=False, error="Invalid MFA token")
+
+        return self._create_auth_result(user_id, record.organization_id)
 
     def _create_auth_result(
         self,
@@ -272,9 +381,8 @@ class AuthService:
         provider: AuthProvider,
         user_info: Dict[str, Any],
     ) -> Tuple[str, str]:
-        """Find or create user from SSO provider"""
-        # In production, implement user lookup and creation
-        return ("user_123", "org_123")
+        """Find or create a user record for an SSO login via the UserStore."""
+        return self.user_store.find_or_create_sso_user(provider.value, user_info)
 
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
@@ -553,9 +661,10 @@ class ABACService:
         return True
 
 
-# Initialize services
+# Module-level service singletons.
+# jwt_secret is read from AEGIS_JWT_SECRET at startup; AuthService will emit
+# a warning and generate a random secret if the env var is not set.
 auth_service = AuthService({
-    "jwt_secret": "your-jwt-secret-here",
     "access_token_expiry": 3600,
     "refresh_token_expiry": 86400 * 7,
 })

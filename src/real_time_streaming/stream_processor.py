@@ -4,6 +4,8 @@ Stream Processor Module.
 Real-time event processing, windowing, and transformation.
 """
 
+import ast
+import operator
 import random
 import threading
 from threading import Lock
@@ -169,23 +171,56 @@ class StreamProcessor:
         
         return event
     
+    # Permitted arithmetic operators for formula evaluation.
+    _SAFE_OPS: Dict[type, Any] = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def _safe_eval_node(self, node: ast.expr, names: Dict[str, float]) -> float:
+        """Recursively evaluate a safe arithmetic AST node.
+
+        Intentionally excludes ``ast.Pow`` to prevent arithmetic DoS
+        (e.g. ``9**9**9``).  Only numeric literals, field name references, and
+        the four basic arithmetic operators are permitted.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            if node.id not in names:
+                raise ValueError(f"Unknown name '{node.id}' in formula")
+            return float(names[node.id])
+        if isinstance(node, ast.BinOp) and type(node.op) in self._SAFE_OPS:
+            left = self._safe_eval_node(node.left, names)
+            right = self._safe_eval_node(node.right, names)
+            if isinstance(node.op, ast.Div) and right == 0.0:
+                raise ZeroDivisionError("Division by zero in formula")
+            return self._SAFE_OPS[type(node.op)](left, right)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in self._SAFE_OPS:
+            return self._SAFE_OPS[type(node.op)](self._safe_eval_node(node.operand, names))
+        raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+
     def _evaluate_formula(self, formula: str, payload: Dict[str, Any]) -> float:
-        """Evaluate a simple formula."""
-        try:
-            # Simple evaluation - replace field names with values
-            expr = formula
-            for key, value in payload.items():
-                if isinstance(value, (int, float)):
-                    expr = expr.replace(key, str(value))
-            
-            # Safely evaluate
-            allowed_chars = set("0123456789+-*/.() ")
-            if all(c in allowed_chars for c in expr):
-                return eval(expr)
+        """Evaluate a formula string against event payload fields using a safe AST evaluator.
+
+        Supports +, -, *, / and numeric literals.  ``**`` (power) and all
+        other constructs are rejected to prevent arithmetic DoS attacks.
+        """
+        if not formula or not formula.strip():
             return 0.0
+        if len(formula) > 256:
+            logger.warning("Formula exceeds maximum length (256 chars), skipping evaluation")
+            return 0.0
+        try:
+            names = {k: float(v) for k, v in payload.items() if isinstance(v, (int, float))}
+            tree = ast.parse(formula.strip(), mode="eval")
+            return self._safe_eval_node(tree.body, names)
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).debug("Formula evaluation failed: %s", exc)
+            logger.debug("Formula evaluation failed for %r: %s", formula, exc)
             return 0.0
     
     def get_stream_summary(self, stream_name: str) -> Dict[str, Any]:

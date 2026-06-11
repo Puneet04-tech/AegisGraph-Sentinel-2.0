@@ -50,6 +50,7 @@ import uvicorn
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
 
 ws_manager = WebSocketManager()
@@ -1629,6 +1630,12 @@ if SLOWAPI_AVAILABLE:
 
 register_exception_handlers(app)
 register_observability_middleware(app)
+
+# Security headers — must be registered last so it wraps every response
+# including those from exception handlers and CORS preflight.
+# Disable HSTS when running over plain HTTP (e.g. local dev without TLS).
+_hsts_enabled = os.getenv("AEGIS_HSTS_ENABLED", "true").lower() not in ("0", "false", "no")
+app.add_middleware(SecurityHeadersMiddleware, hsts=_hsts_enabled)
 
 # Register adaptive authentication routes
 register_adaptive_auth_routes(app)
