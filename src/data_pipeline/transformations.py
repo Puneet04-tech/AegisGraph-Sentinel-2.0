@@ -4,9 +4,11 @@ Data Transformations Module.
 Data transformation operations.
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timezone
+import ast
 import logging
+import operator
 
 from .models import (
     DataTransformation,
@@ -190,21 +192,61 @@ class DataTransformer:
         
         return result
     
+    # Operators permitted in formula expressions.
+    _SAFE_OPS: Dict[type, Any] = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def _safe_eval_expr(self, node: ast.expr, names: Dict[str, float]) -> float:
+        """Recursively evaluate a safe arithmetic AST node.
+
+        Only numeric literals, whitelisted binary/unary operators, and
+        pre-resolved field-name constants are allowed.  ``ast.Pow`` and all
+        other node types are intentionally excluded to prevent arithmetic DoS
+        (e.g. ``9**9**9``).
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            if node.id not in names:
+                raise ValueError(f"Unknown name '{node.id}' in formula")
+            return float(names[node.id])
+        if isinstance(node, ast.BinOp) and type(node.op) in self._SAFE_OPS:
+            left = self._safe_eval_expr(node.left, names)
+            right = self._safe_eval_expr(node.right, names)
+            op_fn = self._SAFE_OPS[type(node.op)]
+            if isinstance(node.op, ast.Div) and right == 0.0:
+                raise ZeroDivisionError("Division by zero in formula")
+            return op_fn(left, right)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in self._SAFE_OPS:
+            operand = self._safe_eval_expr(node.operand, names)
+            return self._SAFE_OPS[type(node.op)](operand)
+        raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+
     def _compute_value(self, formula: str, record: Dict[str, Any]) -> float:
-        """Compute value from formula."""
-        try:
-            expr = formula
-            for key, value in record.items():
-                if isinstance(value, (int, float)):
-                    expr = expr.replace(key, str(value))
-            
-            allowed_chars = set("0123456789+-*/.() ")
-            if all(c in allowed_chars for c in expr):
-                return eval(expr)
+        """Compute a numeric value from a formula string using a safe AST evaluator.
+
+        Variable names in the formula are resolved against numeric fields in
+        *record*.  Only the four basic arithmetic operators (+, -, *, /) and
+        unary +/- are permitted.  ``**`` (power) and all other constructs are
+        rejected to prevent arithmetic DoS attacks.
+        """
+        if not formula or not formula.strip():
             return 0.0
+        if len(formula) > 256:
+            logger.warning("Formula exceeds maximum length (256 chars), skipping evaluation")
+            return 0.0
+        try:
+            names = {k: float(v) for k, v in record.items() if isinstance(v, (int, float))}
+            tree = ast.parse(formula.strip(), mode="eval")
+            return self._safe_eval_expr(tree.body, names)
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).debug("Formula evaluation failed: %s", exc)
+            logger.debug("Formula evaluation failed for %r: %s", formula, exc)
             return 0.0
     
     def _evaluate_conditions(

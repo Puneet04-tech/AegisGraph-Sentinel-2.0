@@ -355,3 +355,59 @@ class TestPipelineIntegration:
         assert rule.rule_id is not None
         assert pipeline.pipeline_id is not None
         assert job.job_id is not None
+
+# ---------------------------------------------------------------------------
+# Safe formula evaluator tests (Issue #1083)
+# ---------------------------------------------------------------------------
+
+class TestSafeFormulaEvaluator:
+    """Verify that _compute_value uses a safe AST evaluator instead of eval()."""
+
+    def setup_method(self):
+        from src.data_pipeline.transformations import DataTransformer
+        from src.data_pipeline.store import PipelineStore
+        self.transformer = DataTransformer(PipelineStore())
+
+    def test_basic_arithmetic(self):
+        record = {"amount": 100.0, "fee": 5.0}
+        assert self.transformer._compute_value("amount + fee", record) == 105.0
+
+    def test_subtraction(self):
+        record = {"price": 200.0, "discount": 20.0}
+        assert self.transformer._compute_value("price - discount", record) == 180.0
+
+    def test_multiplication(self):
+        record = {"quantity": 4.0, "unit_price": 25.0}
+        assert self.transformer._compute_value("quantity * unit_price", record) == 100.0
+
+    def test_division(self):
+        record = {"total": 90.0, "count": 3.0}
+        assert self.transformer._compute_value("total / count", record) == 30.0
+
+    def test_arithmetic_dos_rejected(self):
+        """Power operator must be rejected to prevent arithmetic DoS."""
+        record = {"x": 9.0}
+        # 9**9**9 would cause CPU exhaustion; must return 0.0 safely
+        result = self.transformer._compute_value("9**9**9", record)
+        assert result == 0.0
+
+    def test_formula_too_long_rejected(self):
+        long_formula = "amount + " * 50
+        record = {"amount": 1.0}
+        assert self.transformer._compute_value(long_formula, record) == 0.0
+
+    def test_division_by_zero_returns_zero(self):
+        record = {"a": 10.0, "b": 0.0}
+        assert self.transformer._compute_value("a / b", record) == 0.0
+
+    def test_empty_formula_returns_zero(self):
+        assert self.transformer._compute_value("", {}) == 0.0
+
+    def test_unknown_name_returns_zero(self):
+        assert self.transformer._compute_value("unknown_field + 1", {}) == 0.0
+
+    def test_no_builtins_accessible(self):
+        """Ensure builtins like __import__ cannot be called."""
+        record = {}
+        result = self.transformer._compute_value("__import__('os')", record)
+        assert result == 0.0
