@@ -1042,9 +1042,15 @@ class BlockchainEvidenceManager:
                 total_time = (time.time() - start_time) * 1000
                 
                 if total_time < 100:  # Target <100ms
-                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms)")
+                    logger.info(
+                        "Blockchain evidence sealed",
+                        extra={"evidence_id": evidence_id, "finality_ms": round(total_time, 1)},
+                    )
                 else:
-                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) WARNING Over target")
+                    logger.warning(
+                        "Blockchain evidence sealed — finality exceeded 100ms target",
+                        extra={"evidence_id": evidence_id, "finality_ms": round(total_time, 1)},
+                    )
                 
                 self._evidence_index[evidence_id] = {
                     **evidence_data,
@@ -1302,10 +1308,15 @@ class BlockchainEvidenceManager:
             },
         }
 
-        print(f"LEGAL EXPORT GENERATED: {evidence_id}")
-        print(f"   Case: {case_number}")
-        print(f"   Block: {block_number}")
-        print(f"   Verified by {len(attestations)} nodes")
+        logger.info(
+            "Legal export generated",
+            extra={
+                "evidence_id": evidence_id,
+                "case": case_number,
+                "block": block_number,
+                "attestations": len(attestations),
+            },
+        )
 
         return {
             'package': package,
