@@ -11,6 +11,7 @@ The Oracle pattern: Combine model reasoning with LLM narrative generation.
 """
 
 import json
+import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -355,9 +356,14 @@ class AegisOracleExplainer:
 
 # Example usage
 if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    _demo_logger = logging.getLogger(__name__)
+
     explainer = AegisOracleExplainer()
-    print("✅ Aegis-Oracle Explainer initialized and ready for use")
-    
+    _demo_logger.info("Aegis-Oracle Explainer initialized and ready for use")
+
     # Test explanation
     test_txn = {
         'transaction_id': 'TXN123',
@@ -365,28 +371,25 @@ if __name__ == "__main__":
         'target_account': 'ACC_MULE',
         'amount': 75000,
     }
-    
+
     test_assessment = {
         'decision': 'BLOCK',
         'risk_score': 0.92,
         'confidence': 0.95,
     }
-    
+
     test_breakdown = {
         'graph': 0.89,
         'velocity': 0.95,
         'behavior': 0.88,
         'entropy': 0.93,
     }
-    
+
     explanation = explainer.generate_explanation(
         test_txn,
         test_assessment,
         break_down=test_breakdown,
         innovations_triggered=['honeypot_activated', 'behavioral_stress_detected']
     )
-    
-    print("\n" + "="*60)
-    print("EXPLANATION OUTPUT:")
-    print("="*60)
-    print(json.dumps(explanation, indent=2))
+
+    _demo_logger.info("Explanation output:\n%s", json.dumps(explanation, indent=2))
