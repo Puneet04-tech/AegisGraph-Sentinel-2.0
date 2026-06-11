@@ -4,6 +4,7 @@ Real-time Fraud Detection Interface
 """
 # Updated: May 17, 2026
 
+import atexit
 import logging
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +69,17 @@ def display_decision_badge(decision: str):
         st.info(f"ℹ️ {status}")
 REQUIRED_CSV_COLUMNS = {"transaction_id", "source_account", "target_account", "amount"}
 COMMAND_CENTER_REFRESH_KEY = "command_center_live_refresh"
-COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("COMMAND_CENTER_WORKERS", 2)))
+
+# Module-level executor for Command Center background I/O.
+# The atexit handler ensures threads are drained when the Streamlit process
+# exits, preventing OS thread leaks on server restarts.  cancel_futures=True
+# discards queued tasks that have not yet started; running tasks are allowed
+# to finish (wait=False means we do not block the shutdown path).
+COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("COMMAND_CENTER_WORKERS", 2)),
+    thread_name_prefix="aegis-cmd-center",
+)
+atexit.register(COMMAND_CENTER_IO_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 def _cache_data(ttl: int):
