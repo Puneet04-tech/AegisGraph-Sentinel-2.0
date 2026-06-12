@@ -18,10 +18,11 @@ class SecurityExchangeService:
         data_classification: str = "INTERNAL"
     ) -> Dict[str, Any]:
         """Add a partner to the exchange"""
+        from .models import OrganizationType
         partner = ExchangePartner(
             partner_id=f"partner-{name.lower().replace(' ', '-')}",
             name=name,
-            organization_type=organization_type,
+            organization_type=OrganizationType(organization_type),
             country=country,
             verified=False,
             trust_score=trust_score,
