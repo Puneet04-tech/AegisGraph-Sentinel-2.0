@@ -6298,3 +6298,84 @@ async def get_soar_dashboard():
     """Get metrics and health status of the SOAR platform."""
     service = get_soar_service_instance()
     return service.get_dashboard_stats()
+
+
+# =============================================================================
+# Autonomous Adversary Emulation Platform (Phase 71)
+# =============================================================================
+from src.api.schemas import ProfileCreateRequest, CampaignGenerateRequest
+
+_adversary_service_instance = None
+
+def get_adversary_service_instance():
+    global _adversary_service_instance
+    if _adversary_service_instance is None:
+        from src.adversary_emulation.service import AdversaryEmulationService
+        _adversary_service_instance = AdversaryEmulationService()
+    return _adversary_service_instance
+
+@app.post(
+    "/api/v1/adversary/profiles",
+    tags=["Adversary Emulation"],
+    summary="Create Adversary Profile",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def create_adversary_profile(request: ProfileCreateRequest):
+    from src.adversary_emulation.models import AdversaryProfile
+    service = get_adversary_service_instance()
+    profile = AdversaryProfile(
+        id=request.id,
+        name=request.name,
+        tactics=request.tactics,
+        techniques=request.techniques
+    )
+    return service.create_profile(profile)
+
+@app.get(
+    "/api/v1/adversary/profiles/{profile_id}",
+    tags=["Adversary Emulation"],
+    summary="Get Adversary Profile",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_adversary_profile(profile_id: str):
+    service = get_adversary_service_instance()
+    profile = service.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+@app.post(
+    "/api/v1/adversary/campaigns/generate",
+    tags=["Adversary Emulation"],
+    summary="Generate Attack Campaign",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def generate_attack_campaign(request: CampaignGenerateRequest):
+    service = get_adversary_service_instance()
+    try:
+        return service.generate_campaign(request.profile_id, request.target_entity)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post(
+    "/api/v1/adversary/simulate/start",
+    tags=["Adversary Emulation"],
+    summary="Start Campaign Simulation",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def start_campaign_simulation(campaign_id: str):
+    service = get_adversary_service_instance()
+    try:
+        return service.run_simulation(campaign_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get(
+    "/api/v1/adversary/results",
+    tags=["Adversary Emulation"],
+    summary="Get All Simulation Results",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_simulation_results():
+    service = get_adversary_service_instance()
+    return list(service.store.results.values())

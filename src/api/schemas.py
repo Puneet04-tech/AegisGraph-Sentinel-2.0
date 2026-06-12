@@ -2064,3 +2064,18 @@ class SOARAuditResponse(BaseModel):
     timestamp: str
     details: Dict[str, Any]
     status: str
+
+
+# Phase 71: Autonomous Adversary Emulation
+from typing import List
+from pydantic import BaseModel
+
+class ProfileCreateRequest(BaseModel):
+    id: str
+    name: str
+    tactics: List[str]
+    techniques: List[str]
+
+class CampaignGenerateRequest(BaseModel):
+    profile_id: str
+    target_entity: str
