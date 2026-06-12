@@ -7,11 +7,10 @@ authorization decisions, and security incidents.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import json
-import uuid
 
 from .models import (
     AuditEvent,
@@ -451,16 +450,10 @@ class AuditService:
     ) -> Dict[str, Any]:
         """Generate a compliance report for audit period."""
         summary = self.get_summary(start_time, end_time)
-        
+
         # Calculate additional compliance metrics
-        failed_auths = summary.events_by_outcome.get("failed", 0)
         total_auths = summary.events_by_type.get("authentication_attempt", 0)
-        
-        suspicious_events = sum(
-            count for event_type, count in summary.events_by_type.items()
-            if "anomaly" in event_type or "risk" in event_type
-        )
-        
+        failed_auths = summary.events_by_outcome.get("failed", 0)
         return {
             "report_period": summary.time_range,
             "total_events": summary.total_events,
@@ -474,6 +467,10 @@ class AuditService:
                 "stepup_challenges": summary.events_by_type.get("stepup_challenge", 0),
                 "trust_changes": summary.events_by_type.get("trust_change", 0),
                 "session_terminations": summary.events_by_type.get("session_termination", 0),
+                "suspicious_events": sum(
+                    count for event_type, count in summary.events_by_type.items()
+                    if "anomaly" in event_type or "risk" in event_type
+                ),
             },
             "severity_breakdown": summary.events_by_severity,
             "outcome_breakdown": summary.events_by_outcome,

@@ -23,6 +23,7 @@ Pilot Results (HDFC Mumbai, 6 months):
 """
 
 import json
+import logging
 import time
 import threading
 from collections import deque
@@ -33,6 +34,8 @@ from enum import Enum
 import uuid
 import secrets
 import networkx as nx
+
+logger = logging.getLogger(__name__)
 
 
 class HoneypotStatus(Enum):
@@ -220,12 +223,18 @@ class HoneypotEscrowManager:
             self._active_honeypots_by_account[target_account] = honeypot
             self.stats['total_activated'] += 1
         
-        print(f"🍯 HONEYPOT ACTIVATED: {honeypot_id}")
-        print(f"   Transaction: {transaction_id}")
-        print(f"   Target Mule: {target_account}")
-        print(f"   Amount: {currency} {amount:,.2f}")
-        print(f"   Risk Score: {risk_score:.2%}")
-        print(f"   Auto-release: {auto_release_time.strftime('%H:%M:%S')}")
+        logger.info(
+            "Honeypot activated",
+            extra={
+                "honeypot_id": honeypot_id,
+                "transaction_id": transaction_id,
+                "target_account": target_account,
+                "currency": currency,
+                "amount": amount,
+                "risk_score": round(risk_score, 4),
+                "auto_release_time": auto_release_time.strftime("%H:%M:%S"),
+            },
+        )
         
         return honeypot
     
@@ -274,14 +283,16 @@ class HoneypotEscrowManager:
             honeypot.alerts_sent.append(alert)
             honeypot.status = HoneypotStatus.ALERT_SENT
         
-        print(f"🚨 WITHDRAWAL ATTEMPT DETECTED!")
-        print(f"   Honeypot: {honeypot.honeypot_id}")
-        print(f"   Mule Account: {account}")
-        print(f"   Type: {withdrawal_type}")
-        print(f"   Amount: {amount:,.2f}")
-        if location:
-            print(f"   Location: {location.get('address', 'Unknown')}")
-        print(f"   🚓 POLICE ALERT SENT")
+        logger.warning(
+            "Withdrawal attempt detected on honeypot account — police alert sent",
+            extra={
+                "honeypot_id": honeypot.honeypot_id,
+                "account": account,
+                "withdrawal_type": withdrawal_type,
+                "amount": amount,
+                "location": location.get("address", "Unknown") if location else None,
+            },
+        )
         
         return alert
     
@@ -378,9 +389,14 @@ class HoneypotEscrowManager:
                 new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
                 self.stats['average_response_time_minutes'] = new_avg
         
-        print(f"✅ ARREST CONFIRMED: {honeypot_id}")
-        print(f"   Mule: {honeypot.target_account}")
-        print(f"   Amount Recovered: ₹{honeypot.amount:,.2f}")
+        logger.info(
+            "Arrest confirmed for honeypot",
+            extra={
+                "honeypot_id": honeypot_id,
+                "target_account": honeypot.target_account,
+                "amount_recovered": honeypot.amount,
+            },
+        )
         
         with self._lock:
             self.honeypot_history.append(honeypot)
@@ -447,9 +463,13 @@ class HoneypotEscrowManager:
                 if len(network_members) > 5:
                     self.stats['total_networks_dismantled'] += 1
         
-        print(f"🔍 NETWORK TRACED: {honeypot_id}")
-        print(f"   Network Size: {len(network_members)} accounts")
-        print(f"   Members: {', '.join(list(network_members)[:5])}...")
+        logger.info(
+            "Fraud network traced from honeypot",
+            extra={
+                "honeypot_id": honeypot_id,
+                "network_size": len(network_members),
+            },
+        )
         
         return list(network_members)
     
@@ -487,9 +507,14 @@ class HoneypotEscrowManager:
             
             self.stats['total_false_positives'] += 1
         
-        print(f"⚠️ AUTO-RELEASE: {honeypot_id}")
-        print(f"   Reason: {reason}")
-        print(f"   Funds transferred to {honeypot.target_account}")
+        logger.info(
+            "Honeypot auto-released",
+            extra={
+                "honeypot_id": honeypot_id,
+                "reason": reason,
+                "target_account": honeypot.target_account,
+            },
+        )
         
         with self._lock:
             self.honeypot_history.append(honeypot)
