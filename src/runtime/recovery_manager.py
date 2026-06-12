@@ -40,6 +40,7 @@ class RecoveryManager:
         self._resource_manager = resource_manager
         self._config_registry: Any = None
         self._policy_engine: Any = None
+        self._authorization_engine: Any = None
         self._recovery_in_progress: Dict[str, bool] = {}  # Track recovery state per service
 
     def _audit(self, event_type: str, severity: str = "info", **metadata: Any) -> None:
@@ -63,6 +64,9 @@ class RecoveryManager:
     def set_policy_engine(self, policy_engine: Any) -> None:
         self._policy_engine = policy_engine
 
+    def set_authorization_engine(self, authorization_engine: Any) -> None:
+        self._authorization_engine = authorization_engine
+
     def get_configuration_status(self) -> Dict[str, Any]:
         return {
             "configuration_count": len(self._config_registry.list_configs()) if self._config_registry else 0,
@@ -79,11 +83,24 @@ class RecoveryManager:
             metadata={"service": name, "max_attempts": max_attempts},
         )
 
-    async def handle_failure(self, name: str) -> bool:
+    async def handle_failure(self, name: str, authorization_context: Optional[Any] = None) -> bool:
         """
         Coordinates the recovery attempt for a service.
         Returns True if recovery was successfully attempted, False otherwise.
         """
+        if authorization_context is not None and self._authorization_engine is not None:
+            role = self._role_from_context(authorization_context)
+            auth_result = self._authorization_engine.authorize(role, "recovery.execute")
+            if not auth_result.allowed:
+                self._audit(
+                    "recovery_authorization_denied",
+                    "warning",
+                    service=name,
+                    role=role,
+                    reason=auth_result.reason,
+                )
+                return False
+
         # Check if recovery is already in progress for this service
         if self._recovery_in_progress.get(name, False):
             self._logger.info(
@@ -227,3 +244,11 @@ class RecoveryManager:
 
         await run_callback_safely()
         return True
+
+    @staticmethod
+    def _role_from_context(authorization_context: Any) -> str:
+        if isinstance(authorization_context, str):
+            return authorization_context
+        if isinstance(authorization_context, dict):
+            return str(authorization_context.get("role", ""))
+        return str(getattr(authorization_context, "role", ""))
