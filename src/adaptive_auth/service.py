@@ -8,32 +8,30 @@ the main API interface for risk-based authentication and continuous authorizatio
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 import uuid
 
-from .audit import AuditService, get_audit_service
-from .behavior_monitor import BehaviorMonitor, get_behavior_monitor
 from .models import (
     AuthenticationDecision,
     AuthenticationRequest,
     AuthenticationSession,
     AuthenticationStatus,
-    AuthorizationPolicy,
     ChallengeType,
     PolicyAction,
     RiskEvaluationRequest,
     RiskEvaluationResponse,
     RiskLevel,
     RiskScore,
-    SessionTrust,
     TrustLevel,
 )
-from .policy_engine import PolicyEngine, get_policy_engine
+from .audit import AuditService
+from .behavior_monitor import BehaviorMonitor
+from .policy_engine import PolicyEngine
 from .risk_engine import RiskEngine, get_risk_engine
-from .session_evaluator import SessionEvaluator, get_session_evaluator
-from .stepup_auth import StepUpAuthService, get_stepup_auth_service
+from .session_evaluator import SessionEvaluator
+from .stepup_auth import StepUpAuthService
 from .store import AdaptiveAuthStore, get_adaptive_auth_store
 
 
@@ -238,8 +236,8 @@ class AdaptiveAuthService:
                 location=request.location,
             )
         
-        # Evaluate risk
-        profile = self.store.get_or_create_profile(request.user_id)
+        # Evaluate risk (profile preloaded for context)
+        self.store.get_or_create_profile(request.user_id)
         risk_score = self.risk_engine.evaluate_action_risk(
             session=session,
             action=request.action,

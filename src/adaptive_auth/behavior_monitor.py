@@ -11,13 +11,12 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import uuid
 
 from .models import (
     AuthenticationSession,
     BehaviorProfile,
-    RiskLevel,
 )
 from .store import AdaptiveAuthStore, get_adaptive_auth_store
 
@@ -315,7 +314,6 @@ class BehaviorAnalyzer:
         
         # Get velocity limits
         limit_per_minute = profile.velocity_limits.get("actions_per_minute", 10)
-        limit_per_5_min = profile.velocity_limits.get("actions_per_5_minutes", 30)
         
         if actions_last_minute > limit_per_minute:
             return BehaviorAnomaly(

@@ -3,6 +3,8 @@ Pydantic schemas for API request/response validation
 """
 # Schema validation for all fraud detection endpoints
 
+import re
+
 from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices, ConfigDict
 from typing import Optional, List, Dict, Union, Any, Literal
 from src.api.validators import (
@@ -1457,6 +1459,26 @@ class MetricDefinitionRequest(BaseModel):
     category: str
     unit: str
     formula: Optional[str] = None
+
+    @field_validator("formula")
+    @classmethod
+    def validate_formula(cls, v: Optional[str]) -> Optional[str]:
+        """Reject formulas that exceed a safe length or contain disallowed characters.
+
+        Only alphanumeric identifiers, whitespace, and the four basic arithmetic
+        operators (+, -, *, /) and parentheses are permitted.  The power
+        operator (**) is intentionally excluded to prevent arithmetic DoS.
+        """
+        if v is None:
+            return v
+        if len(v) > 256:
+            raise ValueError("Formula must not exceed 256 characters")
+        if not re.match(r'^[\w\s\+\-\*/\.\(\)]+$', v):
+            raise ValueError(
+                "Formula contains invalid characters. "
+                "Only alphanumeric identifiers, +, -, *, /, ., (, ) are allowed."
+            )
+        return v
 
 
 class MetricValueRequest(BaseModel):
