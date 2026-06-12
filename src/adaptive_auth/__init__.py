@@ -95,7 +95,7 @@ from .policy_engine import (
     PolicyDecision,
     AccessDecision,
     get_policy_engine,
-    reset_engine,
+    reset_engine as reset_policy_engine,
 )
 
 # Audit Service
@@ -112,7 +112,7 @@ from .service import (
     AdaptiveAuthService,
     AdaptiveAuthConfig,
     get_adaptive_auth_service,
-    reset_service,
+    reset_service as reset_auth_service,
     # Sync convenience functions
     evaluate_risk_sync,
     create_session_sync,
@@ -166,6 +166,7 @@ __all__ = [
     "ChallengeConfig",
     "ChallengeResponse",
     "get_stepup_auth_service",
+    "reset_service",
     # Policy Engine
     "PolicyEngine",
     "PolicyEvaluator",
@@ -173,6 +174,7 @@ __all__ = [
     "PolicyDecision",
     "AccessDecision",
     "get_policy_engine",
+    "reset_policy_engine",
     # Audit Service
     "AuditService",
     "AuditQuery",
@@ -183,6 +185,7 @@ __all__ = [
     "AdaptiveAuthService",
     "AdaptiveAuthConfig",
     "get_adaptive_auth_service",
+    "reset_auth_service",
     "evaluate_risk_sync",
     "create_session_sync",
 ]
