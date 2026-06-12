@@ -15,6 +15,12 @@ from .task_registry import TaskRegistry
 from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
 from ..security import sanitize_metadata
+from ..security.authorization import (
+    AuthorizationEngine,
+    PermissionRegistry,
+    RoleRegistry,
+    register_default_access_policies,
+)
 from ..audit import log_audit_event
 from ..configuration import ConfigRegistry, ConfigReloadManager, ConfigSnapshot
 from ..policy import (
@@ -40,9 +46,12 @@ class RuntimeState:
     resource_manager: RuntimeResourceManager = field(default_factory=RuntimeResourceManager)
     config_registry: ConfigRegistry = field(default_factory=ConfigRegistry)
     policy_registry: PolicyRegistry = field(default_factory=PolicyRegistry)
+    role_registry: RoleRegistry = field(default_factory=RoleRegistry)
+    permission_registry: PermissionRegistry = field(default_factory=PermissionRegistry)
     dependency_registry: DependencyRegistry = field(default_factory=DependencyRegistry)
     dependency_validator: DependencyValidator = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
+    authorization_engine: AuthorizationEngine = field(init=False)
     config_reload_manager: ConfigReloadManager = field(init=False)
     recovery_manager: Optional[Any] = None
     watchdog: Optional[Any] = None
@@ -61,6 +70,9 @@ class RuntimeState:
         self.lifecycle_events = deque(maxlen=self._max_lifecycle_events)
         self.dependency_validator = DependencyValidator(self.dependency_registry)
         self.policy_engine = PolicyEngine(self.policy_registry)
+        register_default_access_policies(self.role_registry, self.permission_registry)
+        self.authorization_engine = AuthorizationEngine(self.role_registry, self.permission_registry)
+        self.policy_registry.set_authorization_engine(self.authorization_engine)
         self._register_default_policies()
         self.dispatcher = EventDispatcher(
             self._event_bus_ref(),
@@ -72,6 +84,7 @@ class RuntimeState:
             self.config_registry,
             audit_logger=log_audit_event,
             policy_engine=self.policy_engine,
+            authorization_engine=self.authorization_engine,
         )
         self.resource_manager.set_config_registry(self.config_registry)
         self.resource_manager.set_policy_engine(self.policy_engine)
@@ -81,6 +94,9 @@ class RuntimeState:
         self.services.register_service("config_reload_manager", self.config_reload_manager, replace=True)
         self.services.register_service("policy_registry", self.policy_registry, replace=True)
         self.services.register_service("policy_engine", self.policy_engine, replace=True)
+        self.services.register_service("role_registry", self.role_registry, replace=True)
+        self.services.register_service("permission_registry", self.permission_registry, replace=True)
+        self.services.register_service("authorization_engine", self.authorization_engine, replace=True)
         self.services.register_service("dependency_registry", self.dependency_registry, replace=True)
         self.services.register_service("dependency_validator", self.dependency_validator, replace=True)
 
@@ -90,6 +106,8 @@ class RuntimeState:
             recovery_manager.set_config_registry(self.config_registry)
         if hasattr(recovery_manager, "set_policy_engine"):
             recovery_manager.set_policy_engine(self.policy_engine)
+        if hasattr(recovery_manager, "set_authorization_engine"):
+            recovery_manager.set_authorization_engine(self.authorization_engine)
         self.services.register_service("recovery_manager", recovery_manager, replace=True)
 
     def _register_default_policies(self) -> None:
@@ -229,6 +247,8 @@ class RuntimeState:
         with self._dependency_validation_lock:
             dependency_results = list(self.dependency_validation_results)
         dependency_failures = [result for result in dependency_results if not result.valid]
+        role_count = len(self.role_registry.list_roles())
+        permission_count = len(self.permission_registry.list_permissions())
         return {
             "active_task_count": self.tasks.active_count,
             "services": [info.__dict__ for info in self.services.get_initialization_state()],
@@ -248,6 +268,12 @@ class RuntimeState:
                 "enabled": sum(1 for policy in policies if policy.enabled),
                 "names": sorted(policy.name for policy in policies),
             },
+            "authorization": {
+                "role_count": role_count,
+                "permission_count": permission_count,
+            },
+            "role_count": role_count,
+            "permission_count": permission_count,
             "invariants": invariant_check,
             "dependencies": {
                 "rule_count": len(self.dependency_registry.list_rules()),
