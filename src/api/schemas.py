@@ -1604,6 +1604,161 @@ class ScheduledReportRequest(BaseModel):
     format: str = "PDF"
 
 
+# =============================================================================
+# CASE SIMILARITY & SEMANTIC RETRIEVAL SCHEMAS (RAG System)
+# =============================================================================
+
+class CaseSimilarityResult(BaseModel):
+    """Result from similar case retrieval."""
+    case_id: str = Field(description="Similar case identifier")
+    similarity: float = Field(ge=0.0, le=1.0, description="Cosine similarity score [0, 1]")
+    similarity_percent: str = Field(description="Similarity as percentage (e.g., '85.3%')")
+    metadata: Dict[str, Any] = Field(description="Case metadata (date, priority, status, etc.)")
+
+
+class SimilarCaseRequest(BaseModel):
+    """Request to find similar fraud cases."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query_text": "Suspicious transfer to new recipient detected",
+                "k": 5,
+                "threshold": 0.5
+            }
+        }
+    )
+    
+    query_text: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=5000,
+        description="Query text (fraud explanation/description)"
+    )
+    case_id: Optional[str] = Field(
+        default=None,
+        description="Reference case ID (find similar to this case)"
+    )
+    k: int = Field(default=10, ge=1, le=100, description="Number of similar cases to return")
+    threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity threshold (0-1)"
+    )
+
+    status: Optional[str] = Field(
+    default=None,
+    description="Filter by case status"
+    )
+
+    priority: Optional[str] = Field(
+        default=None,
+        description="Filter by case priority"
+    )
+
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Filter cases after this date (YYYY-MM-DD)"
+    )
+
+    end_date: Optional[str] = Field(
+        default=None,
+        description="Filter cases before this date (YYYY-MM-DD)"
+    )
+    
+    @model_validator(mode='after')
+    def validate_query_or_case_id(self):
+        """Ensure either query_text or case_id is provided."""
+        if not self.query_text and not self.case_id:
+            raise ValueError("Either 'query_text' or 'case_id' must be provided")
+        if self.query_text and self.case_id:
+            raise ValueError("Provide either 'query_text' OR 'case_id', not both")
+        return self
+
+
+class SimilarCaseResponse(BaseModel):
+    """Response with similar fraud cases."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "similar_cases": [
+                    {
+                        "case_id": "CASE_456",
+                        "similarity": 0.87,
+                        "similarity_percent": "87.0%",
+                        "metadata": {
+                            "date": "2026-05-15",
+                            "priority": "HIGH",
+                            "status": "RESOLVED",
+                            "summary": "Similar mule-to-mule pattern detected"
+                        }
+                    }
+                ],
+                "total_found": 1,
+                "query_text_used": "Suspicious transfer to new recipient detected",
+                "processing_time_ms": 145.3,
+                "timestamp": "2026-06-10T10:30:00Z"
+            }
+        }
+    )
+    
+    similar_cases: List[CaseSimilarityResult] = Field(
+        description="List of similar cases ranked by similarity (highest first)"
+    )
+    total_found: int = Field(description="Total number of similar cases found")
+    query_text_used: Optional[str] = Field(
+        default=None,
+        description="Query text used for retrieval"
+    )
+    reference_case_id: Optional[str] = Field(
+        default=None,
+        description="Reference case ID used for retrieval"
+    )
+    processing_time_ms: float = Field(description="Time taken to retrieve similar cases")
+    timestamp: str = Field(description="Response timestamp (ISO-8601)")
+
+class GenerateEmbeddingRequest(BaseModel):
+    """Request to generate semantic embedding."""
+
+    text: str = Field(
+        min_length=1,
+        max_length=10000,
+        description="Text to embed"
+    )
+
+
+class GenerateEmbeddingResponse(BaseModel):
+    """Embedding generation response."""
+
+    embedding_dimension: int = Field(
+        description="Dimension of generated embedding"
+    )
+
+    embedding_preview: List[float] = Field(
+        description="First few embedding values for verification"
+    )
+
+    timestamp: str = Field(
+        description="Response timestamp"
+    )
+
+class InvestigationInsightsResponse(BaseModel):
+    """Investigation intelligence response."""
+
+    case_id: str
+
+    similar_case_count: int
+
+    related_cases: List[Dict[str, Any]]
+
+    common_priorities: List[str]
+
+    common_statuses: List[str]
+
+    recommendations: List[str]
+
+    investigation_summary: str   
+    
 class AnalyticsStatsResponse(BaseModel):
     """Response containing analytics statistics."""
     metric_definitions_stored: int
