@@ -164,6 +164,13 @@ from .schemas import (
     CreateCaseRequest,
     FraudCaseResponse,
     UpdateCaseRequest,
+    # Case Similarity (RAG System)
+    SimilarCaseRequest,
+    SimilarCaseResponse,
+    CaseSimilarityResult,
+    GenerateEmbeddingRequest,
+    GenerateEmbeddingResponse,
+    InvestigationInsightsResponse,
     # Entity Resolution (Phase 9)
     EntityLinkRequest,
     EntityLinkResponse,
@@ -3288,6 +3295,194 @@ async def get_case_timeline(case_id: str):
 
 
 # ============================================================================
+# CASE SIMILARITY & SEMANTIC RETRIEVAL (RAG System)
+# ============================================================================
+
+@app.post(
+    "/api/v1/cases/similar-cases",
+    response_model=SimilarCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Find similar fraud cases using semantic retrieval",
+)
+@app.post(
+    "/api/v1/cases/generate-embedding",
+    response_model=GenerateEmbeddingResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate semantic embedding for fraud investigation text",
+)
+async def generate_case_embedding(
+    request: GenerateEmbeddingRequest,
+):
+    """
+    Generate a semantic embedding for arbitrary fraud-related text.
+
+    Useful for:
+    - Investigation workflows
+    - Semantic search validation
+    - Embedding diagnostics
+    - RAG pipeline verification
+    """
+    try:
+        from src.embeddings import get_embedder
+
+        embedder = get_embedder()
+
+        embedding = embedder.embed_text(request.text)
+
+        return GenerateEmbeddingResponse(
+            embedding_dimension=len(embedding),
+            embedding_preview=[
+                float(x)
+                for x in embedding[:10]
+            ],
+            timestamp=datetime.utcnow().isoformat() + "Z",
+        )
+
+    except Exception as e:
+        _api_logger.error(f"Error generating embedding: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating embedding: {str(e)}",
+        )
+@app.get(
+    "/api/v1/cases/investigation-insights/{case_id}",
+    response_model=InvestigationInsightsResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Generate investigation intelligence for a fraud case",
+)
+async def get_investigation_insights(
+    case_id: str,
+):
+    """
+    Generate investigation intelligence for a fraud case.
+
+    Provides:
+    - Related fraud cases
+    - Contextual intelligence
+    - Common investigation attributes
+    - Investigation recommendations
+    """
+    try:
+        from src.case_management.retriever import CaseRetriever
+
+        retriever = CaseRetriever()
+
+        insights = retriever.get_investigation_insights(
+            case_id=case_id,
+        )
+
+        return InvestigationInsightsResponse(**insights)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        _api_logger.error(
+            f"Error generating investigation insights for {case_id}: {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating investigation insights: {str(e)}",
+        )
+    
+async def find_similar_cases(request: SimilarCaseRequest):
+    """
+    Find fraud cases similar to a query using semantic embeddings (RAG).
+    
+    Search can be performed in two ways:
+    1. By text query: Provide `query_text` to search for similar cases
+    2. By reference case: Provide `case_id` to find cases similar to it
+    
+    Results are ranked by semantic similarity (cosine distance).
+    
+    Args:
+        request: SimilarCaseRequest with query parameters
+    
+    Returns:
+        SimilarCaseResponse with ranked similar cases
+    
+    Examples:
+        Text-based search:
+            {
+                "query_text": "Suspicious transfer to new recipient detected",
+                "k": 5,
+                "threshold": 0.5
+            }
+        
+        Case-based search:
+            {
+                "case_id": "CASE_123",
+                "k": 10,
+                "threshold": 0.5
+            }
+    """
+    import time
+    from src.case_management.retriever import CaseRetriever
+    
+    start_time = time.time()
+    
+    try:
+        # Get or create retriever (singleton pattern)
+        retriever = CaseRetriever()
+        
+        # Perform search
+        if request.query_text:
+            results = retriever.find_similar(
+                query_text=request.query_text,
+                k=request.k,
+                threshold=request.threshold,
+            )
+            query_used = request.query_text
+            reference_case = None
+        else:
+            results = retriever.find_similar_by_case(
+                case_id=request.case_id,
+                k=request.k,
+                exclude_self=True,
+                threshold=request.threshold,
+            )
+            query_used = None
+            reference_case = request.case_id
+        
+        # Convert results to response model
+        similar_cases = [
+            CaseSimilarityResult(
+                case_id=r["case_id"],
+                similarity=r["similarity"],
+                similarity_percent=r["similarity_percent"],
+                metadata=r["metadata"],
+            )
+            for r in results
+        ]
+        
+        processing_time = (time.time() - start_time) * 1000  # Convert to ms
+        
+        return SimilarCaseResponse(
+            similar_cases=similar_cases,
+            total_found=len(similar_cases),
+            query_text_used=query_used,
+            reference_case_id=reference_case,
+            processing_time_ms=processing_time,
+            timestamp=datetime.utcnow().isoformat() + "Z",
+        )
+    
+    except Exception as e:
+        _api_logger.error(f"Error finding similar cases: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving similar cases: {str(e)}"
+        )
+
+
+# ============================================================================
 # ENTITY RESOLUTION ENDPOINTS (Phase 9)
 # ============================================================================
 
@@ -6121,3 +6316,84 @@ async def get_soar_dashboard():
     """Get metrics and health status of the SOAR platform."""
     service = get_soar_service_instance()
     return service.get_dashboard_stats()
+
+
+# =============================================================================
+# Autonomous Adversary Emulation Platform (Phase 71)
+# =============================================================================
+from src.api.schemas import ProfileCreateRequest, CampaignGenerateRequest
+
+_adversary_service_instance = None
+
+def get_adversary_service_instance():
+    global _adversary_service_instance
+    if _adversary_service_instance is None:
+        from src.adversary_emulation.service import AdversaryEmulationService
+        _adversary_service_instance = AdversaryEmulationService()
+    return _adversary_service_instance
+
+@app.post(
+    "/api/v1/adversary/profiles",
+    tags=["Adversary Emulation"],
+    summary="Create Adversary Profile",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def create_adversary_profile(request: ProfileCreateRequest):
+    from src.adversary_emulation.models import AdversaryProfile
+    service = get_adversary_service_instance()
+    profile = AdversaryProfile(
+        id=request.id,
+        name=request.name,
+        tactics=request.tactics,
+        techniques=request.techniques
+    )
+    return service.create_profile(profile)
+
+@app.get(
+    "/api/v1/adversary/profiles/{profile_id}",
+    tags=["Adversary Emulation"],
+    summary="Get Adversary Profile",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_adversary_profile(profile_id: str):
+    service = get_adversary_service_instance()
+    profile = service.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+@app.post(
+    "/api/v1/adversary/campaigns/generate",
+    tags=["Adversary Emulation"],
+    summary="Generate Attack Campaign",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def generate_attack_campaign(request: CampaignGenerateRequest):
+    service = get_adversary_service_instance()
+    try:
+        return service.generate_campaign(request.profile_id, request.target_entity)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post(
+    "/api/v1/adversary/simulate/start",
+    tags=["Adversary Emulation"],
+    summary="Start Campaign Simulation",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def start_campaign_simulation(campaign_id: str):
+    service = get_adversary_service_instance()
+    try:
+        return service.run_simulation(campaign_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get(
+    "/api/v1/adversary/results",
+    tags=["Adversary Emulation"],
+    summary="Get All Simulation Results",
+    dependencies=[Depends(require_role(Role.VIEWER))],
+)
+async def get_simulation_results():
+    service = get_adversary_service_instance()
+    return list(service.store.results.values())

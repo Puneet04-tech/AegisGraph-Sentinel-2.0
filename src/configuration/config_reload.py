@@ -20,12 +20,20 @@ class ConfigReloadManager:
         registry: ConfigRegistry,
         audit_logger: Optional[Any] = None,
         policy_engine: Optional[Any] = None,
+        authorization_engine: Optional[Any] = None,
     ) -> None:
         self.registry = registry
         self.audit_logger = audit_logger
         self.policy_engine = policy_engine
+        self.authorization_engine = authorization_engine
 
-    def reload(self, updates: Dict[str, Any]) -> ValidationResult:
+    def reload(self, updates: Dict[str, Any], authorization_context: Optional[Any] = None) -> ValidationResult:
+        auth_result = self._authorize("config.modify", authorization_context)
+        if auth_result is not None and not auth_result.allowed:
+            errors = [f"authorization denied reload: {auth_result.reason}"]
+            self._audit("config_reload_failed", "warning", updates=list(updates), errors=errors)
+            return ValidationResult(valid=False, errors=errors)
+
         if self.policy_engine is not None:
             policy_result = self.policy_engine.evaluate(
                 "config_reload_allowed",
@@ -94,3 +102,17 @@ class ConfigReloadManager:
             )
         except Exception:
             logger.debug("Configuration audit recording failed", exc_info=True)
+
+    def _authorize(self, permission: str, authorization_context: Optional[Any]) -> Optional[Any]:
+        if authorization_context is None or self.authorization_engine is None:
+            return None
+        role = self._role_from_context(authorization_context)
+        return self.authorization_engine.authorize(role, permission)
+
+    @staticmethod
+    def _role_from_context(authorization_context: Any) -> str:
+        if isinstance(authorization_context, str):
+            return authorization_context
+        if isinstance(authorization_context, dict):
+            return str(authorization_context.get("role", ""))
+        return str(getattr(authorization_context, "role", ""))

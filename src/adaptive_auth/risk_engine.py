@@ -7,12 +7,9 @@ for authentication and authorization decisions.
 
 from __future__ import annotations
 
-import hashlib
-import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
-import math
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from .models import (
     AuthenticationSession,

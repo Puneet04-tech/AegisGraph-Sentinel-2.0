@@ -384,6 +384,36 @@ class AuthService:
         """Find or create a user record for an SSO login via the UserStore."""
         return self.user_store.find_or_create_sso_user(provider.value, user_info)
 
+    def refresh_tokens(self, refresh_token: str) -> AuthResult:
+        """Issue a new access/refresh token pair from a valid refresh token.
+
+        Decodes the supplied JWT, confirms it carries ``type == "refresh"``,
+        then delegates to ``_create_auth_result`` to mint fresh tokens.
+        Raises ``AuthenticationError`` on any validation failure so the caller
+        can map it to an appropriate HTTP response.
+        """
+        try:
+            payload = jwt.decode(
+                refresh_token, self.jwt_secret, algorithms=[self.jwt_algorithm]
+            )
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationError("Refresh token has expired")
+        except jwt.InvalidTokenError:
+            raise AuthenticationError("Invalid refresh token")
+
+        if payload.get("type") != "refresh":
+            raise AuthenticationError("Token is not a refresh token")
+
+        user_id = payload.get("sub")
+        if not user_id:
+            raise AuthenticationError("Malformed refresh token: missing subject")
+
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+
+        return self._create_auth_result(record.user_id, record.organization_id)
+
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
         if provider == AuthProvider.OKTA:

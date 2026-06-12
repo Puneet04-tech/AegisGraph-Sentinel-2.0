@@ -348,6 +348,340 @@ class PreventiveRecommendation:
         }
 
 
+# =============================================================================
+# Global Fraud Prediction & Economic Impact Intelligence (Phase 52)
+# =============================================================================
+
+class ThreatCategory(str, Enum):
+    """Categories of fraud threats."""
+    ACCOUNT_TAKEOVER = "ACCOUNT_TAKEOVER"
+    APPLICATION_FRAUD = "APPLICATION_FRAUD"
+    CARD_FRAUD = "CARD_FRAUD"
+    MULE_ACCOUNTS = "MULE_ACCOUNTS"
+    SYNTHETIC_IDENTITY = "SYNTHETIC_IDENTITY"
+    MONEY_LAUNDERING = "MONEY_LAUNDERING"
+    AUTHORIZED_PUSH_PAYMENT = "AUTHORIZED_PUSH_PAYMENT"
+    IDENTITY_THEFT = "IDENTITY_THEFT"
+
+
+class IndustrySector(str, Enum):
+    """Industry sectors for risk analysis."""
+    BANKING = "BANKING"
+    INSURANCE = "INSURANCE"
+    RETAIL = "RETAIL"
+    HEALTHCARE = "HEALTHCARE"
+    TELECOM = "TELECOM"
+    GAMING = "GAMING"
+    CRYPTOCURRENCY = "CRYPTOCURRENCY"
+    ECOMMERCE = "ECOMMERCE"
+    PAYMENTS = "PAYMENTS"
+
+
+class GeographicRegion(str, Enum):
+    """Geographic regions for risk analysis."""
+    NORTH_AMERICA = "NORTH_AMERICA"
+    EUROPE = "EUROPE"
+    ASIA_PACIFIC = "ASIA_PACIFIC"
+    LATIN_AMERICA = "LATIN_AMERICA"
+    MIDDLE_EAST = "MIDDLE_EAST"
+    AFRICA = "AFRICA"
+    GLOBAL = "GLOBAL"
+
+
+class PredictionConfidence(str, Enum):
+    """Prediction confidence levels."""
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+@dataclass
+class FraudPrediction:
+    """Fraud prediction model.
+    
+    Attributes:
+        prediction_id: Unique identifier
+        entity_id: Entity being predicted
+        threat_category: Category of predicted fraud
+        probability: Probability of fraud occurrence (0-1)
+        confidence: Confidence level in prediction
+        predicted_time_window: Time window for predicted fraud
+        risk_factors: Contributing risk factors
+        recommended_actions: Actions to prevent fraud
+        timestamp: When prediction was generated
+    """
+    prediction_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    entity_id: str = ""
+    threat_category: ThreatCategory = ThreatCategory.ACCOUNT_TAKEOVER
+    probability: float = 0.0
+    confidence: PredictionConfidence = PredictionConfidence.MEDIUM
+    predicted_time_window_start: Optional[datetime] = None
+    predicted_time_window_end: Optional[datetime] = None
+    risk_factors: List[Dict[str, Any]] = field(default_factory=list)
+    recommended_actions: List[str] = field(default_factory=list)
+    historical_similarity_score: float = 0.0
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "prediction_id": self.prediction_id,
+            "entity_id": self.entity_id,
+            "threat_category": self.threat_category.value,
+            "probability": self.probability,
+            "confidence": self.confidence.value,
+            "predicted_time_window_start": self.predicted_time_window_start.isoformat() if self.predicted_time_window_start else None,
+            "predicted_time_window_end": self.predicted_time_window_end.isoformat() if self.predicted_time_window_end else None,
+            "risk_factors": self.risk_factors,
+            "recommended_actions": self.recommended_actions,
+            "historical_similarity_score": self.historical_similarity_score,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class EconomicImpact:
+    """Economic impact assessment.
+    
+    Attributes:
+        impact_id: Unique identifier
+        threat_type: Type of threat
+        estimated_financial_impact: Estimated financial loss
+        affected_transactions: Number of affected transactions
+        affected_entities: Number of affected entities
+        recovery_cost: Estimated recovery cost
+        operational_impact: Operational disruption score
+        reputational_impact: Reputational damage score
+        timeline: Impact timeline
+        regional_scope: Geographic scope of impact
+    """
+    impact_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    threat_type: str = ""
+    estimated_financial_impact: float = 0.0
+    currency: str = "USD"
+    affected_transactions: int = 0
+    affected_entities: int = 0
+    recovery_cost: float = 0.0
+    operational_impact: float = 0.0  # 0-1 scale
+    reputational_impact: float = 0.0  # 0-1 scale
+    impact_timeline: Dict[str, Any] = field(default_factory=dict)
+    regional_scope: List[GeographicRegion] = field(default_factory=list)
+    industry_scope: List[IndustrySector] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "impact_id": self.impact_id,
+            "threat_type": self.threat_type,
+            "estimated_financial_impact": self.estimated_financial_impact,
+            "currency": self.currency,
+            "affected_transactions": self.affected_transactions,
+            "affected_entities": self.affected_entities,
+            "recovery_cost": self.recovery_cost,
+            "operational_impact": self.operational_impact,
+            "reputational_impact": self.reputational_impact,
+            "impact_timeline": self.impact_timeline,
+            "regional_scope": [r.value for r in self.regional_scope],
+            "industry_scope": [s.value for s in self.industry_scope],
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class ThreatTrend:
+    """Threat trend analysis.
+    
+    Attributes:
+        trend_id: Unique identifier
+        threat_category: Category of threat
+        trend_direction: Trend direction (INCREASING, DECREASING, STABLE)
+        velocity: Rate of change
+        seasonality: Seasonal patterns
+        geographic_hotspots: Regions with high activity
+        affected_industries: Industries affected
+        forecast: Future trend prediction
+    """
+    trend_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    threat_category: ThreatCategory = ThreatCategory.ACCOUNT_TAKEOVER
+    trend_direction: str = "STABLE"
+    velocity: float = 0.0  # percentage change per period
+    growth_rate: float = 0.0
+    seasonality_patterns: Dict[str, float] = field(default_factory=dict)
+    geographic_hotspots: List[Dict[str, Any]] = field(default_factory=list)
+    affected_industries: List[IndustrySector] = field(default_factory=list)
+    historical_data_points: int = 0
+    forecast_7d: float = 0.0
+    forecast_30d: float = 0.0
+    confidence_interval_95: Dict[str, float] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "trend_id": self.trend_id,
+            "threat_category": self.threat_category.value,
+            "trend_direction": self.trend_direction,
+            "velocity": self.velocity,
+            "growth_rate": self.growth_rate,
+            "seasonality_patterns": self.seasonality_patterns,
+            "geographic_hotspots": self.geographic_hotspots,
+            "affected_industries": [s.value for s in self.affected_industries],
+            "historical_data_points": self.historical_data_points,
+            "forecast_7d": self.forecast_7d,
+            "forecast_30d": self.forecast_30d,
+            "confidence_interval_95": self.confidence_interval_95,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class AttackPrediction:
+    """Attack pattern prediction.
+    
+    Attributes:
+        prediction_id: Unique identifier
+        attack_type: Type of attack
+        predicted_timing: When attack is likely to occur
+        predicted_scale: Expected scale of attack
+        target_profiles: Likely target profiles
+        attack_vector: Likely attack vector
+        success_probability: Probability of attack success
+        potential_damage: Potential damage estimate
+    """
+    prediction_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    attack_type: str = ""
+    predicted_timing: Optional[datetime] = None
+    predicted_timing_confidence: float = 0.5
+    predicted_scale: str = "MEDIUM"  # SMALL, MEDIUM, LARGE, MASSIVE
+    target_profiles: List[Dict[str, Any]] = field(default_factory=list)
+    attack_vectors: List[str] = field(default_factory=list)
+    success_probability: float = 0.0
+    potential_damage_min: float = 0.0
+    potential_damage_max: float = 0.0
+    recommended_mitigations: List[str] = field(default_factory=list)
+    related_campaign_ids: List[str] = field(default_factory=list)
+    confidence: PredictionConfidence = PredictionConfidence.MEDIUM
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "prediction_id": self.prediction_id,
+            "attack_type": self.attack_type,
+            "predicted_timing": self.predicted_timing.isoformat() if self.predicted_timing else None,
+            "predicted_timing_confidence": self.predicted_timing_confidence,
+            "predicted_scale": self.predicted_scale,
+            "target_profiles": self.target_profiles,
+            "attack_vectors": self.attack_vectors,
+            "success_probability": self.success_probability,
+            "potential_damage_min": self.potential_damage_min,
+            "potential_damage_max": self.potential_damage_max,
+            "recommended_mitigations": self.recommended_mitigations,
+            "related_campaign_ids": self.related_campaign_ids,
+            "confidence": self.confidence.value,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class IndustryRisk:
+    """Industry-specific risk assessment.
+    
+    Attributes:
+        risk_id: Unique identifier
+        industry: Industry sector
+        risk_score: Overall risk score (0-100)
+        risk_factors: Contributing risk factors
+        emerging_threats: Emerging threats for the industry
+        benchmark_comparison: Comparison to industry benchmarks
+        recommended_posture: Recommended defensive posture
+    """
+    risk_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    industry: IndustrySector = IndustrySector.BANKING
+    risk_score: float = 50.0
+    risk_factors: List[Dict[str, Any]] = field(default_factory=list)
+    emerging_threats: List[str] = field(default_factory=list)
+    threat_breakdown: Dict[str, float] = field(default_factory=dict)
+    benchmark_score: float = 50.0
+    percentile_rank: float = 50.0
+    historical_trend: List[float] = field(default_factory=list)
+    recommended_posture: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "risk_id": self.risk_id,
+            "industry": self.industry.value,
+            "risk_score": self.risk_score,
+            "risk_factors": self.risk_factors,
+            "emerging_threats": self.emerging_threats,
+            "threat_breakdown": self.threat_breakdown,
+            "benchmark_score": self.benchmark_score,
+            "percentile_rank": self.percentile_rank,
+            "historical_trend": self.historical_trend,
+            "recommended_posture": self.recommended_posture,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class GeographicRisk:
+    """Geographic risk assessment.
+    
+    Attributes:
+        risk_id: Unique identifier
+        region: Geographic region
+        risk_score: Regional risk score (0-100)
+        fraud_density: Fraud incidents per capita
+        threat_actors: Active threat actors in region
+        regulatory_environment: Regulatory risk level
+        economic_factors: Economic risk factors
+    """
+    risk_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    region: GeographicRegion = GeographicRegion.GLOBAL
+    country_codes: List[str] = field(default_factory=list)
+    risk_score: float = 50.0
+    fraud_density: float = 0.0  # incidents per 100,000 population
+    threat_actor_activity: Dict[str, float] = field(default_factory=dict)
+    regulatory_environment_score: float = 50.0
+    economic_risk_factors: Dict[str, float] = field(default_factory=dict)
+    historical_incident_count: int = 0
+    trend_direction: str = "STABLE"
+    risk_contributors: List[Dict[str, Any]] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "risk_id": self.risk_id,
+            "region": self.region.value,
+            "country_codes": self.country_codes,
+            "risk_score": self.risk_score,
+            "fraud_density": self.fraud_density,
+            "threat_actor_activity": self.threat_actor_activity,
+            "regulatory_environment_score": self.regulatory_environment_score,
+            "economic_risk_factors": self.economic_risk_factors,
+            "historical_incident_count": self.historical_incident_count,
+            "trend_direction": self.trend_direction,
+            "risk_contributors": self.risk_contributors,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
 # Import store and engines for singleton getters
 from .store import PredictiveStore, get_predictive_store
 from .simulator import FraudSimulator, get_fraud_simulator
