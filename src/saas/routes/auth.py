@@ -4,6 +4,9 @@ AegisGraph Sentinel Enterprise SaaS Platform
 Supports: Email/Password, SSO, MFA, API Keys
 """
 
+import logging
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer, HTTPBearer
 from typing import Optional, List
@@ -11,6 +14,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, EmailStr, Field
 import secrets
 
+from src.exceptions import AuthenticationError
 from src.saas.auth.service import (
     AuthProvider,
     AuthService,
@@ -24,6 +28,10 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 # Security schemes
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., description="A valid refresh token issued by a previous login")
 
 
 class LoginRequest(BaseModel):
@@ -94,12 +102,54 @@ class APIKeyResponse(BaseModel):
     created_at: datetime
 
 
+logger = logging.getLogger(__name__)
+
 # Initialize auth service
 auth_service = AuthService({
     "jwt_secret": secrets.token_hex(32),
     "access_token_expiry": 3600,
     "refresh_token_expiry": 86400 * 7,
 })
+
+# ---------------------------------------------------------------------------
+# SSO provider registration — credentials loaded from environment variables
+# at startup, not per-request.  The route handler only calls
+# sso_providers.get(provider) to retrieve what was configured here.
+# ---------------------------------------------------------------------------
+_SSO_PROVIDERS = {
+    AuthProvider.GOOGLE: {
+        "client_id": os.getenv("OAUTH_GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("OAUTH_GOOGLE_CLIENT_SECRET"),
+    },
+    AuthProvider.OKTA: {
+        "client_id": os.getenv("OAUTH_OKTA_CLIENT_ID"),
+        "client_secret": os.getenv("OAUTH_OKTA_CLIENT_SECRET"),
+        "okta_domain": os.getenv("OAUTH_OKTA_DOMAIN", ""),
+    },
+    AuthProvider.AZURE_AD: {
+        "client_id": os.getenv("OAUTH_AZURE_CLIENT_ID"),
+        "client_secret": os.getenv("OAUTH_AZURE_CLIENT_SECRET"),
+        "tenant_id": os.getenv("OAUTH_AZURE_TENANT_ID", "common"),
+    },
+}
+
+for _provider, _cfg in _SSO_PROVIDERS.items():
+    if _cfg.get("client_id") and _cfg.get("client_secret"):
+        try:
+            auth_service.add_sso_provider(_provider, _cfg)
+            logger.info("SSO provider registered: %s", _provider.value)
+        except Exception as _exc:
+            logger.warning("Failed to register SSO provider %s: %s", _provider.value, _exc)
+    else:
+        logger.debug("SSO provider %s not configured (missing env vars)", _provider.value)
+
+# Allow-list of permitted redirect URIs for SSO flows.
+# Add your application's callback URLs here or populate via env var.
+_SSO_REDIRECT_ALLOWLIST: List[str] = [
+    uri.strip()
+    for uri in os.getenv("OAUTH_REDIRECT_URIS", "").split(",")
+    if uri.strip()
+]
 
 
 async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)):
@@ -285,21 +335,34 @@ async def list_sso_providers():
 
 
 @router.get("/sso/{provider}/authorize")
-async def sso_authorize(provider: AuthProvider, redirect_uri: str):
-    """Initiate SSO authorization"""
-    auth_service.add_sso_provider(provider, {
-        "client_id": "mock_client_id",
-        "client_secret": "mock_client_secret",
-        "redirect_uri": redirect_uri,
-    })
-    
+async def sso_authorize(
+    provider: AuthProvider,
+    redirect_uri: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Initiate SSO authorization.
+
+    Requires an authenticated session.  The redirect_uri must appear in the
+    OAUTH_REDIRECT_URIS allow-list unless the list is empty (dev mode).
+    """
+    if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri is not in the configured allow-list",
+        )
+
     sso_provider = auth_service.sso_providers.get(provider)
     if not sso_provider:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Provider {provider} not configured",
+            detail=f"SSO provider '{provider.value}' is not configured. "
+                   f"Set OAUTH_{provider.value.upper()}_CLIENT_ID and "
+                   f"OAUTH_{provider.value.upper()}_CLIENT_SECRET environment variables.",
         )
-    
+
+    # Attach the per-request redirect_uri to the provider config so the
+    # authorization URL reflects the caller's callback endpoint.
+    sso_provider.redirect_uri = redirect_uri
     return {"authorization_url": sso_provider.get_authorization_url()}
 
 
@@ -327,15 +390,23 @@ async def sso_callback(request: SSOCallbackRequest):
     )
 
 
-@router.post("/refresh")
-async def refresh_token(refresh_token: str):
-    """Refresh access token"""
-    # In production, validate refresh token and issue new access token
-    return {
-        "access_token": "new_access_token",
-        "refresh_token": "new_refresh_token",
-        "expires_in": 3600,
-    }
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_token(body: RefreshTokenRequest):
+    """Exchange a valid refresh token for a new access/refresh token pair."""
+    try:
+        result = auth_service.refresh_tokens(body.refresh_token)
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        )
+    return LoginResponse(
+        access_token=result.access_token,
+        refresh_token=result.refresh_token,
+        expires_in=auth_service.access_token_expiry,
+        user={"id": result.user_id},
+        organization={"id": result.organization_id},
+    )
 
 
 @router.post("/logout")
