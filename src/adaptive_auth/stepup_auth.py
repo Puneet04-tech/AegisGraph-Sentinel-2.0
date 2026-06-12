@@ -8,7 +8,6 @@ supporting multiple authentication methods and challenge types.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import random
 import string
 import time
@@ -18,9 +17,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from .models import (
-    AuthenticationSession,
     ChallengeType,
-    RiskLevel,
     StepUpChallenge,
 )
 from .store import AdaptiveAuthStore, get_adaptive_auth_store
