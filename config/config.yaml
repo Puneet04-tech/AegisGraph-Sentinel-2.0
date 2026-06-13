@@ -18,7 +18,7 @@ api:
 model:
   type: "HTGNN"
   checkpoint_path: "models/htgnn_best.pt"
-  device: "cuda"  # cuda, cpu, mps
+  device: "cuda"  # Allowed values: "cuda" (NVIDIA GPU), "mps" (Apple Silicon), "cpu". Any other value raises ValueError at startup.
   inference_batch_size: 32
   
   # HTGAT Architecture

@@ -4,9 +4,10 @@ AI Governance API Routes
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from src.api.security import Role, require_role
 from src.ai_governance import (
     ModelRegistry,
     get_model_registry,
@@ -65,11 +66,6 @@ class AuditActionRequest(BaseModel):
     details: Optional[Dict[str, Any]] = None
 
 
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")
@@ -82,14 +78,12 @@ async def health_check():
     }
 
 
-@router.get("/models")
+@router.get("/models", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def list_models(
     status: Optional[str] = None,
     risk_level: Optional[str] = None,
-    api_key: str = Header(None),
 ):
     """List all models in the registry."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     status_enum = ModelStatus(status) if status else None
@@ -103,13 +97,11 @@ async def list_models(
     }
 
 
-@router.post("/models")
+@router.post("/models", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def register_model(
     request: ModelRegisterRequest,
-    api_key: str = Header(None),
 ):
     """Register a new model."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     risk_enum = ModelRisk(request.risk_level)
@@ -131,13 +123,11 @@ async def register_model(
     }
 
 
-@router.get("/models/{model_id}")
+@router.get("/models/{model_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_model(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Get a model by ID."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     model = registry.get_model(model_id)
@@ -147,14 +137,12 @@ async def get_model(
     return {"model": model.to_dict()}
 
 
-@router.patch("/models/{model_id}")
+@router.patch("/models/{model_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def update_model(
     model_id: str,
     request: ModelUpdateRequest,
-    api_key: str = Header(None),
 ):
     """Update a model."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     status_enum = ModelStatus(request.status) if request.status else None
@@ -171,13 +159,11 @@ async def update_model(
     return {"status": "updated"}
 
 
-@router.delete("/models/{model_id}")
+@router.delete("/models/{model_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def deprecate_model(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Deprecate a model."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     success = registry.deprecate_model(model_id)
@@ -188,13 +174,11 @@ async def deprecate_model(
     return {"status": "deprecated"}
 
 
-@router.get("/models/{model_id}/versions")
+@router.get("/models/{model_id}/versions", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_model_versions(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Get all versions of a model."""
-    verify_api_key(api_key)
     registry = get_model_registry()
     
     model = registry.get_model(model_id)
@@ -209,14 +193,12 @@ async def get_model_versions(
     }
 
 
-@router.post("/drift/detect")
+@router.post("/drift/detect", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def detect_drift(
     model_id: str,
     request: DriftDetectRequest,
-    api_key: str = Header(None),
 ):
     """Detect drift for a model."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     drift = governance.drift_engine.detect_drift(
@@ -228,13 +210,11 @@ async def detect_drift(
     return {"drift": drift.to_dict()}
 
 
-@router.get("/models/{model_id}/drift")
+@router.get("/models/{model_id}/drift", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_drift_history(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Get drift history for a model."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     history = governance.drift_engine.get_drift_history(model_id)
@@ -246,14 +226,12 @@ async def get_drift_history(
     }
 
 
-@router.post("/bias/detect")
+@router.post("/bias/detect", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def detect_bias(
     model_id: str,
     request: BiasDetectRequest,
-    api_key: str = Header(None),
 ):
     """Detect bias in a model."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     reports = governance.bias_engine.detect_bias(
@@ -268,13 +246,11 @@ async def detect_bias(
     }
 
 
-@router.get("/models/{model_id}/bias")
+@router.get("/models/{model_id}/bias", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_bias_reports(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Get bias reports for a model."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     reports = governance.bias_engine.get_bias_reports(model_id)
@@ -286,14 +262,12 @@ async def get_bias_reports(
     }
 
 
-@router.post("/explain")
+@router.post("/explain", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def explain_prediction(
     model_id: str,
     request: ExplainRequest,
-    api_key: str = Header(None),
 ):
     """Generate explanation for a prediction."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     explanation = governance.explainability_engine.explain_prediction(
@@ -305,13 +279,11 @@ async def explain_prediction(
     return {"explanation": explanation.to_dict()}
 
 
-@router.post("/audit")
+@router.post("/audit", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def log_audit_action(
     request: AuditActionRequest,
-    api_key: str = Header(None),
 ):
     """Log an audit action."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     record = governance.log_action(
@@ -327,14 +299,12 @@ async def log_audit_action(
     }
 
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_audit_log(
     model_id: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
-    api_key: str = Header(None),
 ):
     """Get audit log."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     entries = governance.get_audit_log(model_id=model_id, limit=limit)
@@ -345,13 +315,11 @@ async def get_audit_log(
     }
 
 
-@router.get("/models/{model_id}/compliance")
+@router.get("/models/{model_id}/compliance", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_compliance_status(
     model_id: str,
-    api_key: str = Header(None),
 ):
     """Get compliance status for a model."""
-    verify_api_key(api_key)
     governance = get_governance_engine()
     
     status = governance.get_compliance_status(model_id)
