@@ -85,12 +85,12 @@ jobs:
           errors = []
           
           # Require Issue Number Link
-          match = re.search(r'Fixes\s*#\s*(\d+)', body, re.IGNORECASE)
+          match = re.search(r'(Fixes|Closes)\s*#\s*(\d+)', body, re.IGNORECASE)
           if not match:
-              errors.append("- **Missing Linked Issue:** You must include a valid issue number link (e.g., `Fixes #123`).")
+              errors.append("- **Missing Linked Issue:** You must include a valid issue number link (e.g., `Fixes #123` or `Closes #123`).")
           else:
               with open("issue_num.txt", "w") as f:
-                  f.write(match.group(1))
+                  f.write(match.group(2))
               
           # Require Screenshot/Visual Evidence unless the PR is backend or infrastructure only
           if not backend_only and not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):

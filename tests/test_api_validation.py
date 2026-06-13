@@ -303,6 +303,60 @@ class TestBiometricsValidation:
             flight_times=[0, 10000]
         )
 
+    def test_biometrics_nan_hold_times(self):
+        """NaN in hold_times must be rejected."""
+        import math
+        with pytest.raises(ValidationError, match="non_finite"):
+            TransactionValidator.validate_biometrics(
+                hold_times=[float('nan')],
+                flight_times=[]
+            )
+
+    def test_biometrics_nan_flight_times(self):
+        """NaN in flight_times must be rejected."""
+        with pytest.raises(ValidationError, match="non_finite"):
+            TransactionValidator.validate_biometrics(
+                hold_times=[],
+                flight_times=[float('nan')]
+            )
+
+    def test_biometrics_positive_inf(self):
+        """Positive infinity must be rejected."""
+        with pytest.raises(ValidationError, match="non_finite"):
+            TransactionValidator.validate_biometrics(
+                hold_times=[float('inf')],
+                flight_times=[]
+            )
+
+    def test_biometrics_negative_inf(self):
+        """Negative infinity must be rejected."""
+        with pytest.raises(ValidationError, match="non_finite"):
+            TransactionValidator.validate_biometrics(
+                hold_times=[float('-inf')],
+                flight_times=[]
+            )
+
+    def test_biometrics_mixed_nan_valid(self):
+        """Array mixing valid values and NaN must be rejected."""
+        with pytest.raises(ValidationError, match="non_finite"):
+            TransactionValidator.validate_biometrics(
+                hold_times=[100, 120, float('nan'), 140],
+                flight_times=[]
+            )
+
+    def test_biometrics_schema_nan_rejected(self):
+        """BiometricsData Pydantic schema must also reject NaN."""
+        import pytest
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError):
+            BiometricsData(hold_times=[float('nan')], flight_times=[200.0])
+
+    def test_biometrics_schema_inf_rejected(self):
+        """BiometricsData Pydantic schema must also reject Inf."""
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError):
+            BiometricsData(hold_times=[100.0], flight_times=[float('inf')])
+
 
 class TestCrossFieldValidation:
     """Test cross-field validation."""

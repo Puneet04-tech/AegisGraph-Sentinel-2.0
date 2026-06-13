@@ -48,3 +48,13 @@ class SecurityException(AegisException):
 class ServiceUnavailableException(AegisException):
     default_code = ErrorCode.SERVICE_UNAVAILABLE
     default_status_code = 503
+
+
+class AuthenticationError(AegisException):
+    default_code = ErrorCode.SECURITY_ERROR
+    default_status_code = 401
+
+
+class AuthorizationError(AegisException):
+    default_code = ErrorCode.SECURITY_ERROR
+    default_status_code = 403

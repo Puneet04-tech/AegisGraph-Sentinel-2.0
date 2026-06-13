@@ -386,6 +386,7 @@ Detailed project documentation is available in the `docs/` directory.
 |-----------|-------------|
 | `system_architecture.md` | Explains overall system architecture, component responsibilities, and transaction lifecycle |
 | `api_cookbook.md` | API examples, request/response samples, and integration guides |
+| `api_reference.md` | Complete API reference with schemas, auth guide, and error codes |
 | `contributor_handbook.md` | Contributor workflow, repository structure, and contribution guidelines |
 | `training_workflow.md` | End-to-end machine learning and HTGNN training pipeline |
 | `testing_guide.md` | Testing procedures, coverage reporting, and debugging guidance |

@@ -1,0 +1,68 @@
+name: PR Limit Enforcement
+
+on:
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  check-limit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-packages: 'requests'
+
+      - name: Run Limit Check
+        id: limit_check
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          python .github/scripts/pr_limit_check.py
+
+      # This runs ONLY if the user has more than 6 open PRs
+      - name: Close, Comment, and Lock PR
+        if: steps.limit_check.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue_number = context.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const creator = context.payload.pull_request.user.login;
+
+            // 1. Leave an educational comment
+            const commentBody = `⚠️ @${creator}, you currently have 6 or more active open Pull Requests in this repository. 
+            
+            To ensure fair review times for everyone during GSSoC, we limit contributors to **6 concurrent open PRs**. 
+            
+            Once the maintainers review and merge/close one of your existing PRs, a slot will open up and you can submit a new one!`;
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: commentBody
+            });
+
+            // 2. Instantly close the PR
+            await github.rest.pulls.update({
+              owner,
+              repo,
+              pull_number: issue_number,
+              state: 'closed'
+            });
+
+            // 3. Lock the PR conversation so they cannot click "Reopen" or spam comments
+            await github.rest.issues.lock({
+              owner,
+              repo,
+              issue_number,
+              lock_reason: 'resolved'
+            });

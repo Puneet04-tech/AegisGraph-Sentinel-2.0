@@ -161,17 +161,29 @@ def count_parameters(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+_VALID_DEVICES = frozenset({"cpu", "cuda", "mps"})
+
+
 def get_device(device: Optional[str] = None) -> torch.device:
     """
     Get torch device (CUDA/MPS/CPU)
-    
+
     Args:
-        device: Device string ('cuda', 'mps', 'cpu', or None for auto)
-    
+        device: Device string ('cuda', 'mps', 'cpu', or None for auto-detect).
+                Invalid values raise ValueError immediately with an actionable
+                message pointing to config/config.yaml.
+
     Returns:
         torch.device
     """
     requested_device = device.strip().lower() if isinstance(device, str) else device
+
+    if requested_device is not None and requested_device not in _VALID_DEVICES:
+        raise ValueError(
+            f"Invalid device {device!r}. Must be one of {sorted(_VALID_DEVICES)}. "
+            "Check the 'model.device' field in config/config.yaml. "
+            "Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only."
+        )
 
     if requested_device == 'cpu':
         return torch.device('cpu')
@@ -191,8 +203,6 @@ def get_device(device: Optional[str] = None) -> torch.device:
             "Requested %s device is unavailable; falling back to best available device",
             requested_device,
         )
-    elif requested_device is not None:
-        raise ValueError(f"Unsupported torch device: {device!r}")
 
     if torch.cuda.is_available():
         return torch.device('cuda')

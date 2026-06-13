@@ -22,19 +22,26 @@ class AdversarialDriftMonitor:
     MLOps service to monitor continuous data distributions using the 
     Kolmogorov-Smirnov (K-S) test. Detects when attackers change their behavior.
     """
-    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4, alert_cooldown=300.0, baselines_path=None):
-    self.p_value_threshold = p_value_threshold
-    self.webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
-    self._alert_workers = max(2, int(alert_workers))
-    self._alert_executor = ThreadPoolExecutor(
-        max_workers=self._alert_workers,
-        thread_name_prefix="drift-alert",
-    )
-    self._closed = False
-    self._last_alert_time: Dict[str, float] = {}
-    self._alert_cooldown = alert_cooldown
+    def __init__(self, p_value_threshold=0.05, webhook_url=None, alert_workers=4, alert_cooldown=300.0):
+        self.p_value_threshold = p_value_threshold
+        resolved_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+        if resolved_url and not resolved_url.startswith("https://"):
+            raise ValueError(
+                f"webhook_url must use HTTPS (got {resolved_url!r}). "
+                "Drift alerts contain model telemetry that must not be sent over plaintext HTTP."
+            )
+        self.webhook_url = resolved_url
+        self._alert_workers = max(2, int(alert_workers))
+        self._alert_executor = ThreadPoolExecutor(
+            max_workers=self._alert_workers,
+            thread_name_prefix="drift-alert",
+        )
+        self._closed = False
+        self._last_alert_time: Dict[str, float] = {}
+        self._alert_cooldown = alert_cooldown
 
-    self.baselines = self._load_training_baselines(baselines_path)
+        # Load or simulate the baseline data (what the model was trained on)
+        self.baselines = self._load_training_baselines()
 
     def close(self):
         """Shut down the alert executor, draining pending work."""
@@ -153,16 +160,24 @@ class AdversarialDriftMonitor:
         return False # No drift
 
 
+def create_monitor(**kwargs) -> "AdversarialDriftMonitor":
+    """Return a configured AdversarialDriftMonitor instance.
+
+    Callers control when the monitor is created, avoiding thread-pool
+    and baseline-generation side effects at import time.
+
+    All keyword arguments are forwarded to AdversarialDriftMonitor.__init__.
+    """
+    return AdversarialDriftMonitor(**kwargs)
+
+
 if __name__ == "__main__":
     print("--- Testing Adversarial Drift Monitor ---")
-    monitor = AdversarialDriftMonitor()
-    
-    print("\n[Scenario 1: Normal Traffic]")
-    # Simulating normal human traffic (matches the 120ms baseline)
-    normal_traffic = np.random.normal(loc=121.0, scale=14.5, size=300)
-    monitor.evaluate_batch("keystroke_flight_time", normal_traffic)
-    
-    print("\n[Scenario 2: Adversarial Bot Attack]")
-    # Simulating bots that figured out the threshold and started typing at exactly 150ms
-    bot_traffic = np.random.normal(loc=150.0, scale=2.0, size=300)
-    monitor.evaluate_batch("keystroke_flight_time", bot_traffic)
+    with AdversarialDriftMonitor() as monitor:
+        print("\n[Scenario 1: Normal Traffic]")
+        normal_traffic = np.random.normal(loc=121.0, scale=14.5, size=300)
+        monitor.evaluate_batch("keystroke_flight_time", normal_traffic)
+
+        print("\n[Scenario 2: Adversarial Bot Attack]")
+        bot_traffic = np.random.normal(loc=150.0, scale=2.0, size=300)
+        monitor.evaluate_batch("keystroke_flight_time", bot_traffic)

@@ -16,6 +16,7 @@ from .event_handlers import (
     on_service_failed,
     on_service_healthy,
     on_watchdog_alert,
+    on_sentinel_alert,
 )
 from .event_types import (
     BackgroundTaskStartedEvent,
@@ -27,6 +28,7 @@ from .event_types import (
     ServiceFailedEvent,
     ServiceHealthyEvent,
     WatchdogAlertEvent,
+    SentinelAlertEvent,
 )
 from .subscriptions import register_default_subscriptions
 
@@ -45,10 +47,12 @@ __all__ = [
     "BackgroundTaskStoppedEvent",
     "RecoveryTriggeredEvent",
     "WatchdogAlertEvent",
+    "SentinelAlertEvent",
     # Handlers (exposed for testing and custom subscriptions)
     "log_event_handler",
     "on_service_healthy",
     "on_service_failed",
     "on_recovery_triggered",
     "on_watchdog_alert",
+    "on_sentinel_alert",
 ]

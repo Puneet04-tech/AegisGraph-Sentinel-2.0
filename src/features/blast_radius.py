@@ -103,7 +103,7 @@ class BlastRadiusAnalyzer:
     def compute(
         self,
         source_node: str,
-        graph: nx.Graph,
+        graph: nx.DiGraph,
         max_depth: int = 3,
     ) -> BlastRadiusReport:
         """
@@ -115,9 +115,12 @@ class BlastRadiusAnalyzer:
         source_node:
             The flagged vertex to start from.
         graph:
-            A NetworkX graph (``DiGraph``, ``Graph``, or their ``Multi``
-            variants).  Edge data is inspected for a ``weight`` attribute
-            (defaults to ``1.0`` when absent).
+            A **directed** NetworkX graph (``DiGraph`` or ``MultiDiGraph``).
+            The algorithm propagates contagion *along* the direction of fund
+            transfers (A → B means B is downstream of A).  Passing an
+            undirected graph would traverse edges in both directions, causing
+            innocent upstream senders to be scored as fraud targets — which
+            is semantically incorrect and raises ``TypeError``.
         max_depth:
             Maximum hop count.  Capped internally at ``HARD_MAX_DEPTH``.
 
@@ -128,9 +131,20 @@ class BlastRadiusAnalyzer:
 
         Raises
         ------
+        TypeError
+            If *graph* is not a directed graph (i.e. ``graph.is_directed()``
+            returns ``False``).
         ValueError
             If *source_node* is not present in *graph*.
         """
+        if not graph.is_directed():
+            raise TypeError(
+                "BlastRadiusAnalyzer.compute() requires a directed graph "
+                "(nx.DiGraph or nx.MultiDiGraph). An undirected graph would "
+                "traverse edges in both directions, scoring innocent upstream "
+                "senders as fraud contagion targets."
+            )
+
         max_depth = min(max_depth, HARD_MAX_DEPTH)
 
         if hasattr(graph, "is_active") and graph.is_active:
@@ -228,15 +242,9 @@ class BlastRadiusAnalyzer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _iter_successors(graph: nx.Graph, node: str):
-        """
-        Yield successor nodes regardless of whether the graph is directed or
-        undirected.  For undirected graphs every neighbor is a "successor".
-        """
-        if isinstance(graph, nx.DiGraph):
-            yield from graph.successors(node)
-        else:
-            yield from graph.neighbors(node)
+    def _iter_successors(graph: nx.DiGraph, node: str):
+        """Yield the direct successors of *node* in a directed graph."""
+        yield from graph.successors(node)
 
     @staticmethod
     def _edge_weight(graph: nx.Graph, u: str, v: str) -> float:
