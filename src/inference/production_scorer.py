@@ -515,15 +515,43 @@ class ExplainabilityEngine:
         subgraph: Dict,
     ) -> Dict[int, np.ndarray]:
         """
-        Extract multi-head attention weights from HTGNN layers.
-        
+        Extract multi-head attention weights from HTGAT layers.
+
         Returns:
-            Dict mapping layer_idx to attention matrices
+            Dict mapping layer index to attention weights.
         """
-        # This would require instrumenting the model to capture attention
-        # For now, return placeholder
-        attention_weights = {}
-        return attention_weights
+        try:
+            model.eval()
+
+            with torch.no_grad():
+
+                outputs = model(
+                    {
+                        'x': subgraph['x'],
+                        'edge_index': subgraph['edge_index'],
+                        'node_type': subgraph['node_type'],
+                        'edge_type': subgraph['edge_type'],
+                        'edge_attr': subgraph['edge_attr'],
+                    },
+                    return_attention_weights=True,
+                )
+
+            attention = outputs.get('attention_weights')
+
+            if attention is None:
+                return {}
+
+            return {
+                0: attention.detach().cpu().numpy()
+            }
+
+        except Exception as exc:
+            logger.error(
+                "Failed to extract attention weights: %s",
+                exc,
+                exc_info=True,
+            )
+            return {}
     
     @staticmethod
     def trace_fraud_paths(

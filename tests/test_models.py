@@ -4,26 +4,21 @@ Unit tests for AegisGraph Sentinel models
 # Working on model unit tests
 
 import os
-
 import pytest
 
-if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
-    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
+RUN_TORCH_TESTS = os.getenv("RUN_TORCH_TESTS", "").lower() == "true"
 
-# Handle optional torch dependency
-try:
-    import torch
-    import numpy as np
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+pytestmark = pytest.mark.skipif(
+    not RUN_TORCH_TESTS,
+    reason="PyTorch tests require RUN_TORCH_TESTS=true"
+)
 
-pytestmark = pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch not installed")
+import torch
+import numpy as np
 
-if TORCH_AVAILABLE:
-    from src.models.htgat import HTGATConv, HTGAT
-    from src.models.temporal_encoding import TemporalEncoding
-    from src.models.risk_model import FraudDetectionModel
+from src.models.htgat import HTGATConv, HTGAT
+from src.models.temporal_encoding import TemporalEncoding
+from src.models.risk_model import FraudDetectionModel
 
 
 class TestHTGATConv:
@@ -105,6 +100,38 @@ class TestHTGAT:
         
         assert out.shape == (num_nodes, 32)
 
+    def test_return_attention_weights(self):
+        """Test HTGAT returns attention weights when requested"""
+
+        model = HTGAT(
+            in_channels=32,
+            hidden_channels=64,
+            out_channels=32,
+            num_node_types=5,
+            num_edge_types=4,
+            num_layers=2,
+            heads=4,
+        )
+
+        num_nodes = 10
+        num_edges = 20
+
+        x = torch.randn(num_nodes, 32)
+        edge_index = torch.randint(0, num_nodes, (2, num_edges))
+        node_type = torch.randint(0, 5, (num_nodes,))
+        edge_type = torch.randint(0, 4, (num_edges,))
+
+        embeddings, (returned_edge_index, attention) = model(
+            x,
+            edge_index,
+            node_type,
+            edge_type,
+            return_attention_weights=True,
+        )
+
+        assert embeddings.shape == (num_nodes, 32)
+        assert returned_edge_index.shape == edge_index.shape
+        assert attention is not None
 
 class TestTemporalEncoding:
     """Test temporal encoding"""
@@ -186,6 +213,38 @@ class TestFraudDetectionModel:
         
         assert 'node_embedding' in output
         assert output['node_embedding'].shape == (num_nodes, 32)
+
+    def test_model_with_attention_weights(self):
+        """Test model returns attention weights when requested"""
+
+        model = FraudDetectionModel(
+            node_feature_dim=32,
+            hidden_dim=64,
+            output_dim=32,
+            num_node_types=5,
+            num_edge_types=4,
+        )
+
+        num_nodes = 10
+        num_edges = 20
+
+        x = torch.randn(num_nodes, 32)
+        edge_index = torch.randint(0, num_nodes, (2, num_edges))
+        node_type = torch.randint(0, 5, (num_nodes,))
+        edge_type = torch.randint(0, 4, (num_edges,))
+        edge_timestamp = torch.rand(num_edges) * 86400
+
+        output = model(
+            x,
+            edge_index,
+            node_type,
+            edge_type,
+            edge_timestamp,
+            return_attention_weights=True,
+        )
+
+        assert "attention_weights" in output
+        assert output["attention_weights"] is not None
 
 
 if __name__ == "__main__":

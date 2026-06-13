@@ -370,7 +370,6 @@ class RateLimiter:
             if (now - window_start).total_seconds() >= 60:
                 del tracking_dict[identifier]
             else:
-                break
                 break  # remaining entries are even newer
 
     def _check_limit(
