@@ -551,6 +551,69 @@ st.markdown(
         border: 1px solid rgba(16, 185, 129, 0.3) !important;
     }
     </style>
+
+    <script>
+    /**
+     * UX Enhancement: Unsaved Content Warning (#1769)
+     * 
+     * This script monitors user inputs across the application and prevents
+     * accidental data loss due to page refreshes or navigation.
+     */
+    (function() {
+        let isDirty = false;
+
+        // Monitor all input changes
+        document.addEventListener('input', function(e) {
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
+                isDirty = true;
+            }
+        });
+
+        // Clear dirty flag on form submission buttons
+        document.addEventListener('click', function(e) {
+            const btn = e.target.closest('button');
+            if (btn) {
+                const text = btn.innerText || "";
+                if (text.includes('Check') || text.includes('Submit') || 
+                    text.includes('Process') || text.includes('Score') || 
+                    text.includes('Analyze') || text.includes('Seal') ||
+                    text.includes('Investigate') || text.includes('Resolve') ||
+                    text.includes('Freeze') || text.includes('Approve') ||
+                    text.includes('Export') || text.includes('Verify')) {
+                    isDirty = false;
+                }
+            }
+        });
+
+        // Browser-level navigation warning (Refresh, Close Tab, Back Button)
+        window.addEventListener('beforeunload', function(e) {
+            if (isDirty) {
+                e.preventDefault();
+                e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+                return e.returnValue;
+            }
+        });
+
+        // Streamlit-specific navigation warning (Sidebar radio buttons)
+        document.addEventListener('mousedown', function(e) {
+            const sidebar = document.querySelector('[data-testid="stSidebar"]');
+            if (sidebar && sidebar.contains(e.target)) {
+                if (isDirty) {
+                    // Check if the click is on a navigation element
+                    const navLabel = e.target.closest('label');
+                    if (navLabel) {
+                        if (!window.confirm("You have entered data that will be lost if you navigate away. Continue?")) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                        } else {
+                            isDirty = false; // Allow navigation
+                        }
+                    }
+                }
+            }
+        }, true);
+    })();
+    </script>
 """,
     unsafe_allow_html=True,
 )
