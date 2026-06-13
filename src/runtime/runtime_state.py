@@ -15,6 +15,7 @@ from .task_registry import TaskRegistry
 from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
 from ..security import sanitize_metadata
+from ..security.incidents import IncidentManager, IncidentRegistry
 from ..security.authorization import (
     AuthorizationEngine,
     PermissionRegistry,
@@ -49,7 +50,9 @@ class RuntimeState:
     role_registry: RoleRegistry = field(default_factory=RoleRegistry)
     permission_registry: PermissionRegistry = field(default_factory=PermissionRegistry)
     dependency_registry: DependencyRegistry = field(default_factory=DependencyRegistry)
+    incident_registry: IncidentRegistry = field(default_factory=IncidentRegistry)
     dependency_validator: DependencyValidator = field(init=False)
+    incident_manager: IncidentManager = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
     authorization_engine: AuthorizationEngine = field(init=False)
     config_reload_manager: ConfigReloadManager = field(init=False)
@@ -86,6 +89,7 @@ class RuntimeState:
             policy_engine=self.policy_engine,
             authorization_engine=self.authorization_engine,
         )
+        self.incident_manager = IncidentManager(self.incident_registry, audit_logger=log_audit_event)
         self.resource_manager.set_config_registry(self.config_registry)
         self.resource_manager.set_policy_engine(self.policy_engine)
         self.health_monitor.set_config_registry(self.config_registry)
@@ -99,6 +103,8 @@ class RuntimeState:
         self.services.register_service("authorization_engine", self.authorization_engine, replace=True)
         self.services.register_service("dependency_registry", self.dependency_registry, replace=True)
         self.services.register_service("dependency_validator", self.dependency_validator, replace=True)
+        self.services.register_service("incident_registry", self.incident_registry, replace=True)
+        self.services.register_service("incident_manager", self.incident_manager, replace=True)
 
     def set_recovery_manager(self, recovery_manager: Any) -> None:
         self.recovery_manager = recovery_manager
@@ -282,5 +288,6 @@ class RuntimeState:
                 "failure_count": len(dependency_failures),
                 "failures": [result.__dict__ for result in dependency_failures],
             },
+            "incidents": self.incident_manager.get_metrics(),
         }
 
