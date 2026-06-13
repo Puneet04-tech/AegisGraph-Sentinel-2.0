@@ -6379,3 +6379,220 @@ async def start_campaign_simulation(campaign_id: str):
 async def get_simulation_results():
     service = get_adversary_service_instance()
     return list(service.store.results.values())
+
+
+# =============================================================================
+# Data Lineage & Provenance Platform (Phase 101)
+# =============================================================================
+from src.data_lineage.service import get_lineage_service
+from src.data_lineage.models import RecordType, SourceType, TrustLevel, ImpactLevel
+
+
+@app.post(
+    "/api/v1/lineage/records",
+    tags=["Data Lineage"],
+    summary="Create a new lineage record",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def create_lineage_record(request: dict):
+    """Create a new data record with lineage tracking."""
+    from src.data_lineage.models import SourceAttribution
+
+    service = get_lineage_service()
+
+    try:
+        record_type = RecordType(request.get("record_type", "intelligence"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid record type")
+
+    source = None
+    if request.get("source"):
+        src_data = request["source"]
+        source = SourceAttribution(
+            source_id=src_data.get("source_id", ""),
+            source_type=SourceType(src_data.get("source_type", "internal_api")),
+            source_name=src_data.get("source_name", ""),
+            trust_level=TrustLevel(src_data.get("trust_level", "trusted")),
+        )
+
+    record = service.create_record(
+        record_type=record_type,
+        data=request.get("data", {}),
+        source=source,
+        created_by="api",
+        tags=request.get("tags", []),
+    )
+
+    return record.to_dict()
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}",
+    tags=["Data Lineage"],
+    summary="Get a lineage record",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_lineage_record(record_id: str):
+    """Get a data record by ID."""
+    service = get_lineage_service()
+    record = service._store.get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    return record.to_dict()
+
+
+@app.post(
+    "/api/v1/lineage/records/{record_id}/link",
+    tags=["Data Lineage"],
+    summary="Link records in lineage",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def link_lineage_records(record_id: str, request: dict):
+    """Link two records with a lineage relationship."""
+    service = get_lineage_service()
+
+    try:
+        impact_level = ImpactLevel(request.get("impact_level", "medium"))
+    except ValueError:
+        impact_level = ImpactLevel.MEDIUM
+
+    success = service.link_records(
+        parent_id=request.get("parent_id"),
+        child_id=record_id,
+        relationship_type=request.get("relationship_type", "derived_from"),
+        impact_level=impact_level,
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to link records")
+
+    return {"status": "success", "message": "Records linked"}
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/provenance",
+    tags=["Data Lineage"],
+    summary="Get provenance chain",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_provenance_chain(record_id: str, max_depth: int = Query(default=10, ge=1, le=50)):
+    """Get the complete provenance chain for a record."""
+    service = get_lineage_service()
+    chain = service.get_provenance_chain(record_id, max_depth=max_depth)
+    if not chain:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    return chain.to_dict()
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/graph",
+    tags=["Data Lineage"],
+    summary="Get dependency graph",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_dependency_graph(
+    record_id: str,
+    max_depth: int = Query(default=10, ge=1, le=50),
+    direction: str = Query(default="downstream", regex="^(downstream|upstream)$"),
+):
+    """Build and return a dependency graph."""
+    service = get_lineage_service()
+    graph = service.build_dependency_graph(record_id, max_depth=max_depth, direction=direction)
+    if not graph:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    return graph.to_dict()
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/impact",
+    tags=["Data Lineage"],
+    summary="Get impact analysis",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_impact_analysis(record_id: str, max_depth: int = Query(default=10, ge=1, le=50)):
+    """Analyze the impact of a data record."""
+    service = get_lineage_service()
+    analysis = service.analyze_impact(record_id, max_depth=max_depth)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    return analysis.to_dict()
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/history",
+    tags=["Data Lineage"],
+    summary="Get record history",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_record_history(record_id: str):
+    """Get the complete traceability history for a record."""
+    service = get_lineage_service()
+    history = service.get_record_history(record_id)
+    if not history:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    return [h.to_dict() for h in history]
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/verify",
+    tags=["Data Lineage"],
+    summary="Verify provenance integrity",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def verify_provenance(record_id: str):
+    """Verify the provenance chain integrity."""
+    service = get_lineage_service()
+    is_valid = service.verify_provenance(record_id)
+    return {"record_id": record_id, "is_valid": is_valid, "verified_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get(
+    "/api/v1/lineage/records/{record_id}/report",
+    tags=["Data Lineage"],
+    summary="Get lineage report",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_lineage_report(
+    record_id: str,
+    include_graph: bool = Query(default=True),
+    include_impact: bool = Query(default=True),
+):
+    """Export a comprehensive lineage report."""
+    service = get_lineage_service()
+    report = service.export_lineage_report(record_id, include_graph=include_graph, include_impact=include_impact)
+    if "error" in report:
+        raise HTTPException(status_code=404, detail=report["error"])
+    return report
+
+
+@app.get(
+    "/api/v1/lineage/stats",
+    tags=["Data Lineage"],
+    summary="Get lineage statistics",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_lineage_stats():
+    """Get lineage system statistics."""
+    service = get_lineage_service()
+    stats = service.get_lineage_stats()
+    return stats.to_dict()
+
+
+@app.delete(
+    "/api/v1/lineage/records/{record_id}",
+    tags=["Data Lineage"],
+    summary="Delete a lineage record",
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def delete_lineage_record(record_id: str):
+    """Delete a lineage record (soft delete)."""
+    service = get_lineage_service()
+    record = service._store.get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+
+    record.is_active = False
+    record.updated_at = datetime.now(timezone.utc).isoformat()
+    service._store.store_record(record)
+
+    return {"status": "success", "message": "Record deleted"}
