@@ -4,6 +4,7 @@ Real-time Fraud Detection Interface
 """
 # Updated: May 17, 2026
 
+import atexit
 import logging
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +69,17 @@ def display_decision_badge(decision: str):
         st.info(f"ℹ️ {status}")
 REQUIRED_CSV_COLUMNS = {"transaction_id", "source_account", "target_account", "amount"}
 COMMAND_CENTER_REFRESH_KEY = "command_center_live_refresh"
-COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("COMMAND_CENTER_WORKERS", 2)))
+
+# Module-level executor for Command Center background I/O.
+# The atexit handler ensures threads are drained when the Streamlit process
+# exits, preventing OS thread leaks on server restarts.  cancel_futures=True
+# discards queued tasks that have not yet started; running tasks are allowed
+# to finish (wait=False means we do not block the shutdown path).
+COMMAND_CENTER_IO_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("COMMAND_CENTER_WORKERS", 2)),
+    thread_name_prefix="aegis-cmd-center",
+)
+atexit.register(COMMAND_CENTER_IO_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 def _cache_data(ttl: int):
@@ -151,7 +162,9 @@ def _api_headers(extra: dict | None = None) -> dict:
     if not key:
         try:
             key = st.secrets.get("AEGIS_UI_API_KEY", "")
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("Failed to access Streamlit secrets: %s", exc)
             key = ""
     headers: dict = {}
     if key:
@@ -4042,3 +4055,21 @@ st.markdown(
     '<p style="text-align: center; color: #94a3b8; font-weight: 500;">© 2026 AegisGraph Sentinel 2.0 | Detecting the Flow, Protecting the Soul 🛡️</p>',
     unsafe_allow_html=True,
 )
+
+# --- ADVANCED CONCURRENCY IMPLEMENTATION FOR GSOC ---
+# Import the custom in-memory ring buffer we created to handle extreme data peaks
+from ring_buffer_concurrency import InMemoryRingBuffer
+
+# Initialize the global telemetry sentinel shield ring buffer array
+sentinel_telemetry_buffer = InMemoryRingBuffer(capacity=1024)
+
+def process_incoming_stream_safely(new_log_data):
+    """
+    Layman Safe Ingestion System: Bypasses immediate heavy graph processing context 
+    by feeding logs straight into our lock-free buffer array.
+    """
+    is_saved = sentinel_telemetry_buffer.enqueue(new_log_data)
+    if not is_saved:
+        print("[Warning] Buffer capacity exceeded threshold! Applying safe backpressure drop.")
+    return is_saved
+# --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---

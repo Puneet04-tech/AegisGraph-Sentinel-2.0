@@ -96,8 +96,8 @@ class WebSocketManager:
             if old is not None:
                 try:
                     await old.websocket.close(code=1000, reason="Replaced by new connection")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to close old WebSocket connection for client %s: %s", client_id, exc)
 
             self.active_connections[client_id] = ConnectionState(websocket)
 
@@ -154,7 +154,8 @@ class WebSocketManager:
         for state in connections:
             try:
                 await state.websocket.send_json(message)
-            except Exception:
+            except Exception as exc:
                 # Ignore write errors; stale cleanup loop will catch dead sockets.
                 pass
 pool_size_limit = 100
+                logger.debug("Failed to broadcast message to WebSocket client: %s", exc)

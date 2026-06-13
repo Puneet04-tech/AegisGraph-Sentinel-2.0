@@ -3,6 +3,8 @@ Pydantic schemas for API request/response validation
 """
 # Schema validation for all fraud detection endpoints
 
+import re
+
 from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices, ConfigDict
 from typing import Optional, List, Dict, Union, Any, Literal
 from src.api.validators import (
@@ -934,3 +936,1146 @@ class CaseDashboardResponse(BaseModel):
     escalated_cases: int
     by_status: Dict[str, int]
     by_priority: Dict[str, int]
+
+
+# ============================================================================
+# ENTITY RESOLUTION SCHEMAS (Phase 9)
+# ============================================================================
+
+class EntityLinkRequest(BaseModel):
+    """Request to link two entities in the knowledge graph."""
+    source_entity_id: Optional[str] = Field(default=None, description="Source entity ID (optional if source_value provided)")
+    source_entity_type: str = Field(default="ACCOUNT", description="Source entity type: ACCOUNT, DEVICE, IP_ADDRESS, PHONE_NUMBER, EMAIL, WALLET, etc.")
+    source_value: Optional[str] = Field(default=None, description="Source entity value (used if source_entity_id not provided)")
+    target_entity_id: Optional[str] = Field(default=None, description="Target entity ID (optional if target_value provided)")
+    target_entity_type: str = Field(default="ACCOUNT", description="Target entity type: ACCOUNT, DEVICE, IP_ADDRESS, PHONE_NUMBER, EMAIL, WALLET, etc.")
+    target_value: Optional[str] = Field(default=None, description="Target entity value (used if target_entity_id not provided)")
+    relationship_type: str = Field(default="SHARED_DEVICE", description="Relationship type: SHARED_DEVICE, SHARED_IP, SHARED_PHONE, SHARED_EMAIL, WALLET_OWNER, etc.")
+    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Relationship confidence score")
+    evidence: Optional[List[str]] = Field(default_factory=list, description="Evidence supporting the relationship")
+
+    @field_validator("source_entity_type", "target_entity_type")
+    @classmethod
+    def validate_entity_type(cls, v: str) -> str:
+        valid_types = {"ACCOUNT", "DEVICE", "IP_ADDRESS", "PHONE_NUMBER", "EMAIL", "WALLET", "BANK_ACCOUNT", "CARD", "TRANSACTION", "LOCATION"}
+        if v.upper() not in valid_types:
+            raise ValueError(f"entity_type must be one of: {valid_types}")
+        return v.upper()
+
+    @field_validator("relationship_type")
+    @classmethod
+    def validate_relationship_type(cls, v: str) -> str:
+        valid_types = {"SHARED_DEVICE", "SHARED_IP", "SHARED_PHONE", "SHARED_EMAIL", "WALLET_OWNER", "WALLET_BENEFICIARY", "TRANSFER_FROM", "TRANSFER_TO", "SAME_PERSON", "FAMILY_MEMBER", "BUSINESS_ASSOCIATE", "CASH_OUT", "MULE_ACCOUNT"}
+        if v.upper() not in valid_types:
+            raise ValueError(f"relationship_type must be one of: {valid_types}")
+        return v.upper()
+
+
+class EntityResponse(BaseModel):
+    """Response containing entity information."""
+    id: str
+    entity_type: str
+    value: str
+    risk_score: float
+    tags: List[str]
+    created_at: str
+    updated_at: str
+
+
+class EntityRelationshipResponse(BaseModel):
+    """Response containing relationship information."""
+    source_id: str
+    target_id: str
+    relationship_type: str
+    confidence_score: float
+    evidence: List[str]
+    created_at: str
+
+
+class EntityLinkResponse(BaseModel):
+    """Response from linking entities."""
+    success: bool
+    relationship: EntityRelationshipResponse
+    source_entity: EntityResponse
+    target_entity: EntityResponse
+    is_new_relationship: bool
+    is_new_source_entity: bool
+    is_new_target_entity: bool
+    processing_time_ms: float
+
+
+class EntityNetworkResponse(BaseModel):
+    """Response containing entity network information."""
+    root_entity_id: str
+    entities: List[Dict[str, Any]]
+    relationships: List[Dict[str, Any]]
+    depth: int
+    total_entities: int
+    total_relationships: int
+    processing_time_ms: float
+
+
+class FraudClusterResponse(BaseModel):
+    """Response containing fraud cluster information."""
+    cluster_id: str
+    entity_ids: List[str]
+    risk_score: float
+    tags: List[str]
+    created_at: str
+    updated_at: str
+    member_count: int
+
+
+class HighRiskRingsResponse(BaseModel):
+    """Response containing high-risk fraud rings."""
+    rings: List[FraudClusterResponse]
+    total_rings: int
+    critical_count: int
+    high_count: int
+    processing_time_ms: float
+
+
+class RiskPropagationNode(BaseModel):
+    """A node affected by risk propagation."""
+    node_id: str
+    entity_type: str
+    propagated_risk: float
+    tier: str
+
+
+class ContagionReportResponse(BaseModel):
+    """Response containing risk contagion report."""
+    source_entity_id: str
+    source_entity_type: str
+    source_risk_score: float
+    source_contagion_score: float
+    total_affected: int
+    max_depth: int
+    critical: List[RiskPropagationNode]
+    high: List[RiskPropagationNode]
+    medium: List[RiskPropagationNode]
+    low: List[RiskPropagationNode]
+    processing_time_ms: float
+
+
+class ClusterDetailResponse(BaseModel):
+    """Response containing detailed cluster information."""
+    cluster: FraudClusterResponse
+    entities: List[EntityResponse]
+    relationships: List[EntityRelationshipResponse]
+    processing_time_ms: float
+
+
+class GraphStatsResponse(BaseModel):
+    """Response containing knowledge graph statistics."""
+    current_entities: int
+    current_relationships: int
+    current_clusters: int
+    cache_utilization: float
+    graph_density: float
+    graph_connected_components: int
+    processing_time_ms: float
+
+
+# =============================================================================
+# Predictive Intelligence Schemas
+# =============================================================================
+
+class SimulationScenarioRequest(BaseModel):
+    """Request to create a simulation scenario."""
+    simulation_type: str
+    source_entity_ids: List[str] = []
+    parameters: Dict[str, Any] = {}
+    use_template: bool = True
+
+
+class SimulationScenarioResponse(BaseModel):
+    """Response containing simulation scenario."""
+    scenario_id: str
+    simulation_type: str
+    source_entity_ids: List[str]
+    parameters: Dict[str, Any]
+    status: str
+    created_at: str
+    created_by: str
+
+
+class SimulationResultResponse(BaseModel):
+    """Response containing simulation result."""
+    scenario_id: str
+    predicted_outcomes: List[Dict[str, Any]]
+    risk_score: float
+    affected_entities: List[str]
+    confidence: float
+    processing_time_ms: float
+    timestamp: str
+
+
+class ForecastRequest(BaseModel):
+    """Request to forecast risk."""
+    entity_id: str
+    current_risk: float
+    forecast_period: str = "DAY_1"
+
+
+class ForecastResultResponse(BaseModel):
+    """Response containing forecast result."""
+    entity_id: str
+    forecast_period: str
+    risk_score: float
+    confidence: float
+    factors: List[Dict[str, Any]]
+    recommendations: List[str]
+    timestamp: str
+
+
+class RiskTrendResponse(BaseModel):
+    """Response containing risk trend forecast."""
+    entity_id: str
+    current_risk: float
+    predicted_risk: float
+    risk_trend: str
+    time_to_peak: Optional[str]
+    confidence: float
+    timestamp: str
+
+
+class CampaignPredictionResponse(BaseModel):
+    """Response containing campaign prediction."""
+    campaign_id: str
+    campaign_name: str
+    predicted_status: str
+    growth_rate: float
+    affected_entities: List[str]
+    peak_time: Optional[str]
+    confidence: float
+    timestamp: str
+
+
+class AttackPathResponse(BaseModel):
+    """Response containing attack path prediction."""
+    source_entity_id: str
+    predicted_path: List[str]
+    probability: float
+    estimated_damage: float
+    confidence: float
+    timestamp: str
+
+
+class RecommendationResponse(BaseModel):
+    """Response containing prevention recommendation."""
+    recommendation_id: str
+    entity_id: str
+    recommendation_type: str
+    priority: str
+    description: str
+    expected_impact: float
+    timestamp: str
+
+
+class PredictiveStatsResponse(BaseModel):
+    """Response containing predictive intelligence statistics."""
+    total_simulations: int
+    total_forecasts: int
+    total_campaigns: int
+    total_recommendations: int
+    current_scenarios: int
+    current_campaigns: int
+    processing_time_ms: float
+
+
+# =============================================================================
+# Multi-Agent SOC Schemas
+# =============================================================================
+
+class InvestigationRequestSchema(BaseModel):
+    """Request to initiate an investigation."""
+    entity_id: Optional[str] = None
+    case_id: Optional[str] = None
+    alert_ids: List[str] = []
+    priority: str = "MEDIUM"
+    context: Dict[str, Any] = {}
+
+
+class InvestigationResponse(BaseModel):
+    """Response containing investigation results."""
+    investigation_id: str
+    entity_id: str
+    status: str
+    risk_score: float
+    findings: List[Dict[str, Any]]
+    recommendations: List[str]
+    timestamp: str
+
+
+class ThreatAnalysisRequest(BaseModel):
+    """Request for threat intelligence analysis."""
+    threat_type: str
+    indicators: List[Dict[str, Any]] = []
+    affected_entities: List[str] = []
+
+
+class ThreatAnalysisResponse(BaseModel):
+    """Response containing threat intelligence report."""
+    report_id: str
+    threat_type: str
+    severity: str
+    confidence: float
+    ttps: List[str]
+    recommendations: List[str]
+    timestamp: str
+
+
+class ForensicAnalysisRequest(BaseModel):
+    """Request for forensic analysis."""
+    target_entity_id: str
+    analysis_type: str
+    evidence_types: List[str] = []
+
+
+class ForensicAnalysisResponse(BaseModel):
+    """Response containing forensic analysis."""
+    analysis_id: str
+    target_entity_id: str
+    analysis_type: str
+    conclusion: str
+    confidence: float
+    artifacts: List[Dict[str, Any]]
+    timestamp: str
+
+
+class FraudRingDetectionRequest(BaseModel):
+    """Request to detect a fraud ring."""
+    seed_entities: List[str]
+    ring_type: str = "unknown"
+
+
+class FraudRingResponse(BaseModel):
+    """Response containing fraud ring analysis."""
+    ring_id: str
+    ring_name: Optional[str]
+    member_count: int
+    ring_score: float
+    ring_type: str
+    financial_impact: float
+    confidence: float
+    timestamp: str
+
+
+class SOCReportRequest(BaseModel):
+    """Request to generate a SOC report."""
+    report_type: str
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+
+
+class SOCReportResponse(BaseModel):
+    """Response containing SOC report."""
+    report_id: str
+    report_type: str
+    period_start: str
+    period_end: str
+    metrics: Dict[str, float]
+    threats_identified: List[Dict[str, Any]]
+    recommendations: List[str]
+    generated_by: str
+    timestamp: str
+
+
+class OrchestrationRequest(BaseModel):
+    """Request to orchestrate a multi-agent workflow."""
+    workflow_name: str
+    tasks: List[Dict[str, Any]] = []
+    priority: str = "MEDIUM"
+
+
+class OrchestrationResponse(BaseModel):
+    """Response containing orchestration plan."""
+    plan_id: str
+    title: str
+    task_count: int
+    estimated_duration_seconds: int
+    status: str
+    timestamp: str
+
+
+class SOCDashboardResponse(BaseModel):
+    """Response containing SOC dashboard data."""
+    overview: Dict[str, Any]
+    trends: Dict[str, Any]
+    performance: Dict[str, Any]
+    alerts_by_severity: Dict[str, int]
+    timestamp: str
+
+
+class SOCStatsResponse(BaseModel):
+    """Response containing SOC statistics."""
+    total_agents: int
+    active_tasks: int
+    completed_tasks: int
+    investigations_stored: int
+    threat_reports_stored: int
+    fraud_rings_stored: int
+    reports_stored: int
+
+
+# =============================================================================
+# Executive Governance Schemas
+# =============================================================================
+
+class DashboardRequest(BaseModel):
+    """Request to generate executive dashboard."""
+    title: str = "Executive Risk Dashboard"
+    period: str = "daily"
+
+
+class DashboardResponse(BaseModel):
+    """Response containing executive dashboard."""
+    dashboard_id: str
+    title: str
+    period: str
+    risk_summary: Dict[str, Any]
+    compliance_summary: Dict[str, Any]
+    performance_summary: Dict[str, Any]
+    key_metrics_count: int
+    alerts_count: int
+    timestamp: str
+
+
+class BoardReportRequest(BaseModel):
+    """Request to generate board report."""
+    period_start: str
+    period_end: str
+    include_sections: List[str] = []
+
+
+class BoardReportResponse(BaseModel):
+    """Response containing board report."""
+    report_id: str
+    title: str
+    period_start: str
+    period_end: str
+    summary: Dict[str, Any]
+    metrics: List[Dict[str, Any]]
+    findings_count: int
+    recommendations_count: int
+    status: str
+    timestamp: str
+
+
+class ComplianceGapAnalysisRequest(BaseModel):
+    """Request for compliance gap analysis."""
+    framework_name: str
+
+
+class ComplianceGapAnalysisResponse(BaseModel):
+    """Response containing gap analysis."""
+    framework: str
+    compliance_percentage: float
+    gaps_identified: int
+    gap_details: List[Dict[str, Any]]
+
+
+class RiskScorecardRequest(BaseModel):
+    """Request to generate risk scorecard."""
+    period: str = "quarterly"
+
+
+class RiskScorecardResponse(BaseModel):
+    """Response containing risk scorecard."""
+    scorecard_id: str
+    period: str
+    overall_risk_score: float
+    risk_level: str
+    risk_categories: Dict[str, float]
+    risk_trend: str
+    key_risks_count: int
+    next_review: Optional[str]
+    timestamp: str
+
+
+class AuditFindingRequest(BaseModel):
+    """Request to create audit finding."""
+    title: str
+    description: str
+    severity: str
+    category: str
+    affected_controls: List[str] = []
+    affected_entities: List[str] = []
+
+
+class AuditFindingResponse(BaseModel):
+    """Response containing audit finding."""
+    finding_id: str
+    title: str
+    severity: str
+    status: str
+    risk_impact: float
+    due_date: Optional[str]
+    timestamp: str
+
+
+class GovernanceReportRequest(BaseModel):
+    """Request to generate governance report."""
+    report_type: str
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+
+
+class GovernanceReportResponse(BaseModel):
+    """Response containing governance report."""
+    report_id: str
+    report_type: str
+    title: str
+    period_start: str
+    period_end: str
+    summary: Dict[str, Any]
+    status: str
+    timestamp: str
+
+
+class GovernanceStatsResponse(BaseModel):
+    """Response containing governance statistics."""
+    metrics_stored: int
+    scorecards_stored: int
+    frameworks_tracked: int
+    findings_stored: int
+    open_findings: int
+    critical_findings: int
+    dashboards_stored: int
+    reports_stored: int
+
+
+# =============================================================================
+# Advanced Analytics & BI Schemas
+# =============================================================================
+
+class MetricDefinitionRequest(BaseModel):
+    """Request to define a metric."""
+    name: str
+    description: str
+    metric_type: str
+    aggregation: str
+    category: str
+    unit: str
+    formula: Optional[str] = None
+
+    @field_validator("formula")
+    @classmethod
+    def validate_formula(cls, v: Optional[str]) -> Optional[str]:
+        """Reject formulas that exceed a safe length or contain disallowed characters.
+
+        Only alphanumeric identifiers, whitespace, and the four basic arithmetic
+        operators (+, -, *, /) and parentheses are permitted.  The power
+        operator (**) is intentionally excluded to prevent arithmetic DoS.
+        """
+        if v is None:
+            return v
+        if len(v) > 256:
+            raise ValueError("Formula must not exceed 256 characters")
+        if not re.match(r'^[\w\s\+\-\*/\.\(\)]+$', v):
+            raise ValueError(
+                "Formula contains invalid characters. "
+                "Only alphanumeric identifiers, +, -, *, /, ., (, ) are allowed."
+            )
+        return v
+
+
+class MetricValueRequest(BaseModel):
+    """Request to record a metric value."""
+    metric_id: str
+    value: float
+    dimensions: Dict[str, str] = {}
+
+
+class KPIRequest(BaseModel):
+    """Request to create a KPI."""
+    name: str
+    description: str
+    metric_id: str
+    target_value: float
+    warning_threshold: float
+    critical_threshold: float
+    category: str
+    owner: Optional[str] = None
+
+
+class KPIResponse(BaseModel):
+    """Response containing KPI data."""
+    kpi_id: str
+    name: str
+    target_value: float
+    current_value: Optional[float]
+    change_percent: Optional[float]
+    status: str
+    category: str
+
+
+class TrendAnalysisRequest(BaseModel):
+    """Request to perform trend analysis."""
+    metric_name: str
+    data_points: List[float]
+    period_start: str
+    period_end: str
+
+
+class TrendAnalysisResponse(BaseModel):
+    """Response containing trend analysis."""
+    analysis_id: str
+    metric_name: str
+    direction: str
+    slope: float
+    volatility: float
+    anomaly_detected: bool
+    forecast_values: List[float]
+    timestamp: str
+
+
+class CorrelationAnalysisRequest(BaseModel):
+    """Request to perform correlation analysis."""
+    variable_a: List[float]
+    variable_b: List[float]
+    variable_a_name: str
+    variable_b_name: str
+
+
+class CorrelationAnalysisResponse(BaseModel):
+    """Response containing correlation analysis."""
+    correlation_id: str
+    variable_a: str
+    variable_b: str
+    correlation_coefficient: float
+    p_value: float
+    significance: str
+    interpretation: str
+    timestamp: str
+
+
+class DashboardRequest(BaseModel):
+    """Request to create BI dashboard."""
+    name: str
+    description: str
+    chart_ids: List[str] = []
+    kpi_ids: List[str] = []
+    refresh_interval: int = 300
+
+
+class DashboardResponse(BaseModel):
+    """Response containing dashboard data."""
+    dashboard_id: str
+    name: str
+    description: str
+    chart_count: int
+    kpi_count: int
+    refresh_interval: int
+    timestamp: str
+
+
+class ChartDataRequest(BaseModel):
+    """Request for chart data."""
+    chart_id: str
+    time_range: str = "30d"
+
+
+class ReportGenerationRequest(BaseModel):
+    """Request to generate a report."""
+    report_type: str
+    content_config: Dict[str, Any] = {}
+    format: str = "PDF"
+
+
+class ReportGenerationResponse(BaseModel):
+    """Response containing generated report."""
+    report_id: str
+    report_type: str
+    format: str
+    generated_at: str
+    page_count: int
+
+
+class ScheduledReportRequest(BaseModel):
+    """Request to create scheduled report."""
+    name: str
+    description: str
+    schedule: str
+    report_type: str
+    content_config: Dict[str, Any] = {}
+    recipients: List[str] = []
+    format: str = "PDF"
+
+
+# =============================================================================
+# CASE SIMILARITY & SEMANTIC RETRIEVAL SCHEMAS (RAG System)
+# =============================================================================
+
+class CaseSimilarityResult(BaseModel):
+    """Result from similar case retrieval."""
+    case_id: str = Field(description="Similar case identifier")
+    similarity: float = Field(ge=0.0, le=1.0, description="Cosine similarity score [0, 1]")
+    similarity_percent: str = Field(description="Similarity as percentage (e.g., '85.3%')")
+    metadata: Dict[str, Any] = Field(description="Case metadata (date, priority, status, etc.)")
+
+
+class SimilarCaseRequest(BaseModel):
+    """Request to find similar fraud cases."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query_text": "Suspicious transfer to new recipient detected",
+                "k": 5,
+                "threshold": 0.5
+            }
+        }
+    )
+    
+    query_text: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=5000,
+        description="Query text (fraud explanation/description)"
+    )
+    case_id: Optional[str] = Field(
+        default=None,
+        description="Reference case ID (find similar to this case)"
+    )
+    k: int = Field(default=10, ge=1, le=100, description="Number of similar cases to return")
+    threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity threshold (0-1)"
+    )
+
+    status: Optional[str] = Field(
+    default=None,
+    description="Filter by case status"
+    )
+
+    priority: Optional[str] = Field(
+        default=None,
+        description="Filter by case priority"
+    )
+
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Filter cases after this date (YYYY-MM-DD)"
+    )
+
+    end_date: Optional[str] = Field(
+        default=None,
+        description="Filter cases before this date (YYYY-MM-DD)"
+    )
+    
+    @model_validator(mode='after')
+    def validate_query_or_case_id(self):
+        """Ensure either query_text or case_id is provided."""
+        if not self.query_text and not self.case_id:
+            raise ValueError("Either 'query_text' or 'case_id' must be provided")
+        if self.query_text and self.case_id:
+            raise ValueError("Provide either 'query_text' OR 'case_id', not both")
+        return self
+
+
+class SimilarCaseResponse(BaseModel):
+    """Response with similar fraud cases."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "similar_cases": [
+                    {
+                        "case_id": "CASE_456",
+                        "similarity": 0.87,
+                        "similarity_percent": "87.0%",
+                        "metadata": {
+                            "date": "2026-05-15",
+                            "priority": "HIGH",
+                            "status": "RESOLVED",
+                            "summary": "Similar mule-to-mule pattern detected"
+                        }
+                    }
+                ],
+                "total_found": 1,
+                "query_text_used": "Suspicious transfer to new recipient detected",
+                "processing_time_ms": 145.3,
+                "timestamp": "2026-06-10T10:30:00Z"
+            }
+        }
+    )
+    
+    similar_cases: List[CaseSimilarityResult] = Field(
+        description="List of similar cases ranked by similarity (highest first)"
+    )
+    total_found: int = Field(description="Total number of similar cases found")
+    query_text_used: Optional[str] = Field(
+        default=None,
+        description="Query text used for retrieval"
+    )
+    reference_case_id: Optional[str] = Field(
+        default=None,
+        description="Reference case ID used for retrieval"
+    )
+    processing_time_ms: float = Field(description="Time taken to retrieve similar cases")
+    timestamp: str = Field(description="Response timestamp (ISO-8601)")
+
+class GenerateEmbeddingRequest(BaseModel):
+    """Request to generate semantic embedding."""
+
+    text: str = Field(
+        min_length=1,
+        max_length=10000,
+        description="Text to embed"
+    )
+
+
+class GenerateEmbeddingResponse(BaseModel):
+    """Embedding generation response."""
+
+    embedding_dimension: int = Field(
+        description="Dimension of generated embedding"
+    )
+
+    embedding_preview: List[float] = Field(
+        description="First few embedding values for verification"
+    )
+
+    timestamp: str = Field(
+        description="Response timestamp"
+    )
+
+class InvestigationInsightsResponse(BaseModel):
+    """Investigation intelligence response."""
+
+    case_id: str
+
+    similar_case_count: int
+
+    related_cases: List[Dict[str, Any]]
+
+    common_priorities: List[str]
+
+    common_statuses: List[str]
+
+    recommendations: List[str]
+
+    investigation_summary: str   
+    
+class AnalyticsStatsResponse(BaseModel):
+    """Response containing analytics statistics."""
+    metric_definitions_stored: int
+    kpis_stored: int
+    trends_stored: int
+    dashboards_stored: int
+    reports_stored: int
+    insights_stored: int
+    unacknowledged_insights: int
+
+# =============================================================================
+# Threat Hunting & Security Analytics Schemas (Phase 34)
+# =============================================================================
+
+class ThreatHuntStartRequest(BaseModel):
+    """Request to start a threat hunt."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the threat hunt")
+    description: str = Field(description="Description of the threat hunt")
+    query_criteria: Dict[str, Any] = Field(default_factory=dict, description="Custom criteria for finding threats")
+
+
+class ThreatHuntStartResponse(BaseModel):
+    """Response containing started hunt details."""
+    model_config = ConfigDict(extra="allow")
+
+    hunt_id: str
+    name: str
+    state: str
+    created_at: str
+
+
+class ThreatQueryRequest(BaseModel):
+    """Request to query threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(description="Entity identifier")
+    entity_type: str = Field(default="user", description="Entity type")
+    amount: float = Field(default=0.0)
+    hour: int = Field(default=12)
+    ip_address: str = Field(default="")
+    device_id: str = Field(default="")
+    device_status: str = Field(default="UNKNOWN")
+    failed_attempts: int = Field(default=0)
+    operation: str = Field(default="")
+    recent_txn_count_1m: int = Field(default=0)
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+    relationships: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreatQueryResponse(BaseModel):
+    """Response containing threat query details."""
+    model_config = ConfigDict(extra="allow")
+
+    entity_id: str
+    entity_type: str
+    score: float
+    severity: str
+    breakdown: Dict[str, float]
+    active_indicators: List[str]
+
+
+class ThreatCorrelateRequest(BaseModel):
+    """Request to correlate threats."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Name of the correlation")
+    entities: List[str] = Field(description="List of entity IDs")
+    indicator_ids: List[str] = Field(description="List of threat indicator IDs")
+
+
+class ThreatCorrelateResponse(BaseModel):
+    """Response containing correlation details."""
+    model_config = ConfigDict(extra="allow")
+
+    correlation_id: str
+    name: str
+    correlation_score: float
+    timestamp: str
+
+
+# =============================================================================
+# Zero Trust Security Schemas (Phase 31)
+# =============================================================================
+
+class ZeroTrustEvaluateRequest(BaseModel):
+    """Request for zero trust evaluation."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    device_id: Optional[str] = Field(default=None, description="Device identifier")
+    session_id: Optional[str] = Field(default=None, description="Session identifier")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    location: Optional[Dict[str, Any]] = Field(default=None, description="Location data")
+    user_agent: Optional[str] = Field(default=None, description="User agent string")
+    resource: Optional[str] = Field(default=None, description="Resource being accessed")
+    action: Optional[str] = Field(default=None, description="Action being performed")
+    authentication_method: Optional[str] = Field(default=None, description="Auth method")
+    authentication_strength: float = Field(default=0.5, ge=0, le=1, description="Auth strength")
+    device_info: Optional[Dict[str, Any]] = Field(default=None, description="Device info for registration")
+
+
+class DeviceRegisterRequest(BaseModel):
+    """Request to register a device."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    device_type: str = Field(description="Device type (mobile, desktop, tablet)")
+    os_version: Optional[str] = Field(default=None, description="OS version")
+    browser: Optional[str] = Field(default=None, description="Browser name")
+    browser_version: Optional[str] = Field(default=None, description="Browser version")
+    screen_resolution: Optional[str] = Field(default=None, description="Screen resolution")
+    timezone: Optional[str] = Field(default=None, description="Device timezone")
+    language: Optional[str] = Field(default=None, description="Language")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    mac_address: Optional[str] = Field(default=None, description="MAC address")
+    serial_number: Optional[str] = Field(default=None, description="Device serial number")
+
+
+class DeviceRegisterResponse(BaseModel):
+    """Response for device registration."""
+    model_config = ConfigDict(extra="allow")
+    
+    device_id: str
+    fingerprint_id: str
+    status: str
+    trust_score: float
+    first_seen: str
+    last_seen: str
+    verification_required: bool = False
+
+
+class SessionAnalyzeRequest(BaseModel):
+    """Request for session risk analysis."""
+    model_config = ConfigDict(extra="forbid")
+    
+    user_id: str = Field(description="User identifier")
+    session_id: Optional[str] = Field(default=None, description="Session identifier")
+    device_id: Optional[str] = Field(default=None, description="Device identifier")
+    ip_address: Optional[str] = Field(default=None, description="IP address")
+    location: Optional[Dict[str, Any]] = Field(default=None, description="Location data")
+    user_agent: Optional[str] = Field(default=None, description="User agent")
+    resource: Optional[str] = Field(default=None, description="Resource being accessed")
+    action: Optional[str] = Field(default=None, description="Action being performed")
+    auth_method: Optional[str] = Field(default=None, description="Auth method")
+    auth_strength: float = Field(default=0.5, ge=0, le=1)
+    session_attributes: Optional[Dict[str, Any]] = Field(default=None, description="Session attributes")
+
+
+class SessionAnalyzeResponse(BaseModel):
+    """Response for session risk analysis."""
+    model_config = ConfigDict(extra="allow")
+    
+    session_id: str
+    user_id: str
+    risk_level: str
+    risk_score: float
+    anomalies_detected: List[str]
+    location_risk: float
+    behavior_deviation: float
+    velocity_anomaly: bool
+    unusual_operations: List[str]
+    recommended_actions: List[str]
+    evaluated_at: str
+
+
+class PolicyResponse(BaseModel):
+    """Response for policy information."""
+    model_config = ConfigDict(extra="allow")
+    
+    policy_id: str
+    name: str
+    description: str
+    priority: int
+    enabled: bool
+    conditions: Dict[str, Any]
+    actions: Dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+# =============================================================================
+# Autonomous SOAR Platform Schemas (Phase 35)
+# =============================================================================
+
+class IncidentCreateRequest(BaseModel):
+    """Request to create a security incident."""
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(description="Incident title")
+    description: str = Field(description="Incident description")
+    severity: str = Field(description="Threat severity (LOW, MEDIUM, HIGH, CRITICAL)")
+    source: str = Field(description="Source of the incident")
+    entities: List[str] = Field(default_factory=list, description="Associated entity IDs")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class IncidentResponse(BaseModel):
+    """Response containing incident details."""
+    model_config = ConfigDict(extra="allow")
+
+    incident_id: str
+    title: str
+    description: str
+    severity: str
+    status: str
+    source: str
+    created_at: str
+    updated_at: str
+    entities: List[str]
+    assigned_analyst: Optional[str] = None
+    tags: List[str]
+    metadata: Dict[str, Any]
+
+
+class PlaybookCreateRequest(BaseModel):
+    """Request to register an automation playbook."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Playbook name")
+    description: str = Field(description="Playbook description")
+    version: str = Field(description="Playbook version")
+    tasks: List[Dict[str, Any]] = Field(description="List of task definitions")
+    rules: Dict[str, Any] = Field(description="Triggers and conditions")
+
+
+class PlaybookExecuteRequest(BaseModel):
+    """Request to execute a playbook."""
+    model_config = ConfigDict(extra="forbid")
+
+    playbook_id: str = Field(description="Playbook ID")
+    incident_id: str = Field(description="Incident ID")
+
+
+class ResponseActionRequest(BaseModel):
+    """Request to run a response action."""
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: str = Field(description="Type of response action")
+    target_id: str = Field(description="Target entity ID")
+    additional_params: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class ResponseActionResponse(BaseModel):
+    """Response containing response action results."""
+    model_config = ConfigDict(extra="allow")
+
+    action_id: str
+    name: str
+    action_type: str
+    status: str
+    target_id: str
+    executed_by: str
+    executed_at: str
+    result: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+
+
+class ContainmentRequest(BaseModel):
+    """Request to trigger a containment action."""
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(description="Type of containment (NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)")
+    target_entity: str = Field(description="Target entity ID")
+    duration_seconds: Optional[int] = Field(default=None, description="Optional auto-release duration")
+
+
+class ContainmentResponse(BaseModel):
+    """Response containing containment details."""
+    model_config = ConfigDict(extra="allow")
+
+    containment_id: str
+    type: str
+    status: str
+    target_entity: str
+    initiated_by: str
+    timestamp: str
+    duration_seconds: Optional[int] = None
+    released_at: Optional[str] = None
+
+
+class SOARDashboardResponse(BaseModel):
+    """Response containing SOAR dashboard statistics."""
+    model_config = ConfigDict(extra="allow")
+
+    total_incidents: int
+    status_distribution: Dict[str, int]
+    severity_distribution: Dict[str, int]
+    active_containments: int
+    running_workflows: int
+    total_audit_records: int
+
+
+class SOARAuditResponse(BaseModel):
+    """Response containing SOAR audit record details."""
+    model_config = ConfigDict(extra="allow")
+
+    record_id: str
+    action: str
+    user_id: str
+    ip_address: str
+    timestamp: str
+    details: Dict[str, Any]
+    status: str
+
+
+# Phase 71: Autonomous Adversary Emulation
+from typing import List
+from pydantic import BaseModel
+
+class ProfileCreateRequest(BaseModel):
+    id: str
+    name: str
+    tactics: List[str]
+    techniques: List[str]
+
+class CampaignGenerateRequest(BaseModel):
+    profile_id: str
+    target_entity: str

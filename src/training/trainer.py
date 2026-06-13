@@ -3,6 +3,7 @@ Training Pipeline for HTGNN Fraud Detection Model
 """
 # Working on model training pipeline improvements
 
+import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -28,6 +29,9 @@ _trainer_logger = logging.getLogger(__name__)
 from .losses import FocalLoss, CombinedLoss
 from ..utils.helpers import get_device
 from ..utils.encryption import get_encryption_handler
+from .adversarial import AdversarialTrainer, RobustnessEvaluator
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -135,7 +139,31 @@ class Trainer:
         if self.mlflow_enabled:
             mlflow.set_tracking_uri(mlflow_config.get('tracking_uri', 'mlruns'))
             mlflow.set_experiment(mlflow_config.get('experiment_name', 'AegisGraph-Sentinel'))
-            print("MLflow tracking enabled")
+            logger.info("MLflow tracking enabled")
+
+        # Adversarial training setup
+        adversarial_config = config.get('adversarial', {})
+        self.adversarial_enabled = adversarial_config.get('enabled', False)
+        self.adversarial_trainer = None
+        self.robustness_evaluator = None
+
+        if self.adversarial_enabled:
+            attack_method = adversarial_config.get('attack_method', 'fgsm')
+            epsilon = adversarial_config.get('epsilon', 0.1)
+            adversarial_weight = adversarial_config.get('adversarial_weight', 0.5)
+
+            self.adversarial_trainer = AdversarialTrainer(
+                model=self.model,
+                attack_method=attack_method,
+                epsilon=epsilon,
+                adversarial_weight=adversarial_weight,
+                device=str(self.device),
+            )
+            self.robustness_evaluator = RobustnessEvaluator(
+                model=self.model,
+                device=str(self.device),
+            )
+            print(f"Adversarial training enabled (method: {attack_method}, epsilon: {epsilon})")
 
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """
@@ -171,8 +199,21 @@ class Trainer:
             )
             
             # Compute loss
-            loss = self.criterion(outputs['risk'], batch['label'].float())
-            
+            if self.adversarial_enabled and self.adversarial_trainer is not None:
+                # Combined standard and adversarial loss
+                loss, loss_std, loss_adv = self.adversarial_trainer.compute_combined_loss(
+                    x=batch['x'],
+                    edge_index=batch['edge_index'],
+                    node_type=batch['node_type'],
+                    edge_type=batch['edge_type'],
+                    edge_timestamp=batch['edge_timestamp'],
+                    labels=batch['label'],
+                    batch=batch.get('batch', None),
+                    criterion=self.criterion,
+                )
+            else:
+                loss = self.criterion(outputs['risk'], batch['label'].float())
+
             # Backward pass
             loss.backward()
             
@@ -266,10 +307,10 @@ class Trainer:
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
         
-        print(f"Training on device: {self.device}")
-        print(f"Total epochs: {num_epochs}")
-        print(f"Early stopping patience: {early_stopping_patience}")
-        print("-" * 80)
+        logger.info("Training on device: %s", self.device)
+        logger.info("Total epochs: %d", num_epochs)
+        logger.info("Early stopping patience: %d", early_stopping_patience)
+        logger.info("-" * 80)
 
         mlflow_config = self.config.get('mlflow', {})
         run_name = mlflow_config.get('run_name', None)
@@ -306,16 +347,19 @@ class Trainer:
                 if self.scheduler is not None:
                     self.scheduler.step()
                 
-                # Print metrics
-                print(f"\nEpoch {epoch+1}/{num_epochs}")
-                print(f"  Train - Loss: {train_metrics['loss']:.4f}, "
-                      f"F1: {train_metrics['f1']:.4f}, "
-                      f"Precision: {train_metrics['precision']:.4f}, "
-                      f"Recall: {train_metrics['recall']:.4f}")
-                print(f"  Val   - Loss: {val_metrics['loss']:.4f}, "
-                      f"F1: {val_metrics['f1']:.4f}, "
-                      f"Precision: {val_metrics['precision']:.4f}, "
-                      f"Recall: {val_metrics['recall']:.4f}")
+                # Log epoch metrics
+                logger.info(
+                    "Epoch %d/%d | Train loss=%.4f f1=%.4f precision=%.4f recall=%.4f",
+                    epoch + 1, num_epochs,
+                    train_metrics['loss'], train_metrics['f1'],
+                    train_metrics['precision'], train_metrics['recall'],
+                )
+                logger.info(
+                    "Epoch %d/%d | Val   loss=%.4f f1=%.4f precision=%.4f recall=%.4f",
+                    epoch + 1, num_epochs,
+                    val_metrics['loss'], val_metrics['f1'],
+                    val_metrics['precision'], val_metrics['recall'],
+                )
 
                 if self.mlflow_enabled:
                     mlflow.log_metrics({
@@ -339,7 +383,7 @@ class Trainer:
                     
                     # Save best model
                     self.save_checkpoint(save_path / 'htgnn_best.pt')
-                    print(f"New best model saved (F1: {self.best_val_f1:.4f})")
+                    logger.info("New best model saved (F1: %.4f)", self.best_val_f1)
 
                     if self.mlflow_enabled and mlflow_config.get('log_artifacts', True):
                         mlflow.pytorch.log_model(self.model, artifact_path="best_model")
@@ -348,10 +392,10 @@ class Trainer:
                 
                 # Early stopping
                 if self.patience_counter >= early_stopping_patience:
-                    print(f"\n Early stopping triggered after {epoch+1} epochs")
+                    logger.info("Early stopping triggered after %d epochs", epoch + 1)
                     break
-                
-                print("-" * 80)
+
+                logger.info("-" * 80)
 
             # Save final model
             self.save_checkpoint(save_path / 'htgnn_final.pt')
@@ -359,9 +403,9 @@ class Trainer:
             # Save training history
             self.save_history(save_path / 'training_history.yaml')
             
-            print("\nTraining completed!")
-            print(f"Best validation F1: {self.best_val_f1:.4f}")
-            print(f"Best validation loss: {self.best_val_loss:.4f}")
+            logger.info("Training completed!")
+            logger.info("Best validation F1: %.4f", self.best_val_f1)
+            logger.info("Best validation loss: %.4f", self.best_val_loss)
 
     def save_checkpoint(self, path: Path):
         """Save model checkpoint with encryption.
@@ -431,6 +475,68 @@ class Trainer:
         """Save training history"""
         with open(path, 'w') as f:
             yaml.dump(self.history, f)
+
+    def evaluate_robustness(
+        self,
+        val_loader: DataLoader,
+        attack_type: str = 'fgsm',
+        epsilons: Optional[List[float]] = None,
+    ) -> Dict[str, any]:
+        """Evaluate model robustness against adversarial attacks.
+
+        Args:
+            val_loader: Validation data loader
+            attack_type: Type of attack ('fgsm' or 'pgd')
+            epsilons: List of epsilon values to test
+
+        Returns:
+            Dictionary with robustness evaluation results
+        """
+        if self.robustness_evaluator is None:
+            raise ValueError("Robustness evaluation requires adversarial training enabled")
+
+        if epsilons is None:
+            epsilons = [0.01, 0.05, 0.1, 0.2]
+
+        all_results = {'epsilons': epsilons}
+
+        # Aggregate over all batches
+        for batch_idx, batch in enumerate(tqdm(val_loader, desc='Evaluating robustness')):
+            batch = self._batch_to_device(batch)
+
+            if attack_type == 'fgsm':
+                results = self.robustness_evaluator.evaluate_fgsm_robustness(
+                    x=batch['x'],
+                    edge_index=batch['edge_index'],
+                    node_type=batch['node_type'],
+                    edge_type=batch['edge_type'],
+                    edge_timestamp=batch['edge_timestamp'],
+                    labels=batch['label'],
+                    epsilons=epsilons,
+                    batch=batch.get('batch', None),
+                )
+            else:
+                results = self.robustness_evaluator.evaluate_pgd_robustness(
+                    x=batch['x'],
+                    edge_index=batch['edge_index'],
+                    node_type=batch['node_type'],
+                    edge_type=batch['edge_type'],
+                    edge_timestamp=batch['edge_timestamp'],
+                    labels=batch['label'],
+                    epsilons=epsilons,
+                    batch=batch.get('batch', None),
+                )
+
+            if batch_idx == 0:
+                all_results['clean_accuracy'] = results['clean_accuracy']
+                all_results['accuracy'] = np.array(results['accuracy'])
+            else:
+                all_results['accuracy'] += np.array(results['accuracy'])
+
+        # Average results over all batches
+        all_results['accuracy'] = all_results['accuracy'] / (batch_idx + 1)
+
+        return all_results
 
     def _batch_to_device(self, batch: dict) -> dict:
         """Move batch tensors to device"""

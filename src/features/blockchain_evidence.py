@@ -547,7 +547,9 @@ class RedisLedger:
                 socket_timeout=2,
             )
             self._client.ping()
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis initialization failed, falling back to journal-only mode: %s", exc)
             self._client = None  # fall back silently; journal is the safety net
 
     def _mark_unavailable(self) -> None:
@@ -571,7 +573,9 @@ class RedisLedger:
             pipe.ltrim(index_key, -self.MAX_EVIDENCE_INDEX_SIZE, -1)
             pipe.incr(f"{self.PREFIX}:stats:total_sealed")
             pipe.execute()
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis save_evidence failed, marking unavailable: %s", exc)
             self._mark_unavailable()
 
     def load_evidence(self, evidence_id: str) -> Optional[dict]:
@@ -581,7 +585,9 @@ class RedisLedger:
         try:
             raw = self._client.get(f"{self.PREFIX}:evidence:{evidence_id}")
             return json.loads(raw) if raw else None
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis load_evidence failed, marking unavailable: %s", exc)
             self._mark_unavailable()
             return None
 
@@ -592,7 +598,9 @@ class RedisLedger:
         try:
             val = self._client.get(f"{self.PREFIX}:stats:total_sealed")
             return int(val) if val else 0
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis total_sealed failed, marking unavailable: %s", exc)
             self._mark_unavailable()
             return 0
 
@@ -610,7 +618,9 @@ class RedisLedger:
                 key = f"{self.PREFIX}:block:{block['block_number']}"
                 self._client.set(key, payload)
                 self._client.expire(key, self.BLOCK_METADATA_TTL)
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis save_block_metadata failed, marking unavailable: %s", exc)
             self._mark_unavailable()
 
     def load_block_metadata(self, block_number: Optional[int] = None) -> Optional[dict]:
@@ -625,7 +635,9 @@ class RedisLedger:
             )
             raw = self._client.get(key)
             return json.loads(raw) if raw else None
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis load_block_metadata failed, marking unavailable: %s", exc)
             self._mark_unavailable()
             return None
 
@@ -1030,9 +1042,15 @@ class BlockchainEvidenceManager:
                 total_time = (time.time() - start_time) * 1000
                 
                 if total_time < 100:  # Target <100ms
-                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms)")
+                    logger.info(
+                        "Blockchain evidence sealed",
+                        extra={"evidence_id": evidence_id, "finality_ms": round(total_time, 1)},
+                    )
                 else:
-                    print(f"BLOCKCHAIN SEALED: {evidence_id} ({total_time:.1f}ms) WARNING Over target")
+                    logger.warning(
+                        "Blockchain evidence sealed — finality exceeded 100ms target",
+                        extra={"evidence_id": evidence_id, "finality_ms": round(total_time, 1)},
+                    )
                 
                 self._evidence_index[evidence_id] = {
                     **evidence_data,
@@ -1290,10 +1308,15 @@ class BlockchainEvidenceManager:
             },
         }
 
-        print(f"LEGAL EXPORT GENERATED: {evidence_id}")
-        print(f"   Case: {case_number}")
-        print(f"   Block: {block_number}")
-        print(f"   Verified by {len(attestations)} nodes")
+        logger.info(
+            "Legal export generated",
+            extra={
+                "evidence_id": evidence_id,
+                "case": case_number,
+                "block": block_number,
+                "attestations": len(attestations),
+            },
+        )
 
         return {
             'package': package,
@@ -1371,7 +1394,9 @@ class BlockchainEvidenceManager:
                         consensus_timestamp=datetime.now(timezone.utc).isoformat(),
                         finality_time_ms=0.0,
                     ))
-                except Exception:
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).debug("Redis evidence sealing failed, falling back to journal: %s", exc)
                     pass  # Fall back to journal
                 
                 # Always store in journal as fallback
@@ -1591,8 +1616,10 @@ class BlockchainEvidenceManager:
                 block['timestamp'],
             )
             return block['hash'] == expected_hash
-            
-        except Exception:
+
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("Integrity verification failed: %s", exc)
             return False
     
     def get_statistics(self) -> Dict:

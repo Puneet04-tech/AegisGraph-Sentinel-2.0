@@ -35,11 +35,33 @@ class RuntimeResourceManager:
         self.queue_budget = QueueBudget(self.limits)
         self.backpressure = BackpressureController(self.limits)
         self._config_registry: Any = None
+        self._policy_engine: Any = None
 
     def set_config_registry(self, registry: Any) -> None:
         self._config_registry = registry
 
+    def set_policy_engine(self, policy_engine: Any) -> None:
+        self._policy_engine = policy_engine
+
+    def _resource_policy_allows(self, **context: Any) -> bool:
+        if self._policy_engine is None:
+            return True
+        result = self._policy_engine.evaluate("resource_throttled", context)
+        if result.allowed:
+            return True
+        logger.warning("Runtime resource admission denied by policy: %s", result.reason)
+        _audit_resource_event("policy_violation", policy=result.policy_name, reason=result.reason)
+        return False
+
     def register_task(self, task_id: Any) -> bool:
+        if not self._resource_policy_allows(
+            resource="task",
+            active_tasks=self.task_budget.current_count,
+            max_tasks=self.limits.max_runtime_tasks,
+            resource_throttled=self.task_budget.current_count >= self.limits.max_runtime_tasks,
+            backpressure_state=self.backpressure.state,
+        ):
+            return False
         accepted = self.task_budget.register_task(task_id)
         if not accepted:
             logger.warning("Runtime task registration denied by resource budget")
@@ -53,6 +75,14 @@ class RuntimeResourceManager:
         self.queue_budget.update(current_size, max_size)
 
     def can_accept_event(self) -> bool:
+        if not self._resource_policy_allows(
+            resource="event",
+            queue_utilization=self.queue_budget.utilization,
+            task_budget_exceeded=self.task_budget.is_exceeded(),
+            resource_throttled=self.queue_budget.is_overloaded() or self.task_budget.is_exceeded(),
+            backpressure_state=self.backpressure.state,
+        ):
+            return False
         accepted = self.backpressure.can_accept_event(
             queue_utilization=self.queue_budget.utilization,
             task_budget_exceeded=self.task_budget.is_exceeded(),
