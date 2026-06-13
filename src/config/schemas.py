@@ -1,10 +1,9 @@
 """Typed configuration schemas used by the settings loader."""
 
 from __future__ import annotations
-from pydantic import Field, model_validator
-
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -85,6 +84,28 @@ class APISettings(ConfigBaseModel):
                 "Unsafe CORS configuration: wildcard origins cannot be used "
                 "while credentialed requests are enabled"
             )
+        return value
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def validate_origin_format(cls, value: List[str]) -> List[str]:
+        for origin in value:
+            parsed = urlparse(origin)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError(
+                    f"Invalid CORS origin {origin!r}: scheme must be 'http' or 'https', "
+                    f"got {parsed.scheme!r}. Check AEGIS_ALLOWED_ORIGINS / CORS_ORIGINS."
+                )
+            if not parsed.netloc:
+                raise ValueError(
+                    f"Invalid CORS origin {origin!r}: missing host. "
+                    "A CORS origin must be '<scheme>://<host>[:<port>]' with no path."
+                )
+            if parsed.path and parsed.path != "/":
+                raise ValueError(
+                    f"Invalid CORS origin {origin!r}: must not include a path component "
+                    f"(got {parsed.path!r}). Remove the path from the origin."
+                )
         return value
 
 

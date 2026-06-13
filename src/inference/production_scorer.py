@@ -67,11 +67,19 @@ class _ThreadSafeCache:
 class ProductionRiskScorer:
     """
     Production-grade fraud scorer using HTGNN.
-    
+
     Decision Logic:
     - score ≥ 0.9: BLOCK (high confidence fraud)
     - 0.6 ≤ score < 0.9: REVIEW (needs analyst)
     - score < 0.6: ALLOW (normal transaction)
+
+    Lifecycle:
+    Use as a context manager or call `.close()` explicitly when done.
+    Failing to do so will emit a ResourceWarning and may leave threads
+    alive past the object's logical lifetime::
+
+        with ProductionRiskScorer(model, graph_constructor) as scorer:
+            result = scorer.score_transaction(request)
     """
     
     def __init__(
@@ -280,6 +288,15 @@ class ProductionRiskScorer:
         return False
 
     def __del__(self):
+        if getattr(self, "_executor", None) is not None:
+            import warnings
+            warnings.warn(
+                f"{type(self).__name__} was garbage-collected without being explicitly "
+                "closed. Use it as a context manager ('with' statement) or call "
+                ".close() when done to ensure threads are drained properly.",
+                ResourceWarning,
+                stacklevel=2,
+            )
         try:
             self.close()
         except Exception as exc:
@@ -498,15 +515,43 @@ class ExplainabilityEngine:
         subgraph: Dict,
     ) -> Dict[int, np.ndarray]:
         """
-        Extract multi-head attention weights from HTGNN layers.
-        
+        Extract multi-head attention weights from HTGAT layers.
+
         Returns:
-            Dict mapping layer_idx to attention matrices
+            Dict mapping layer index to attention weights.
         """
-        # This would require instrumenting the model to capture attention
-        # For now, return placeholder
-        attention_weights = {}
-        return attention_weights
+        try:
+            model.eval()
+
+            with torch.no_grad():
+
+                outputs = model(
+                    {
+                        'x': subgraph['x'],
+                        'edge_index': subgraph['edge_index'],
+                        'node_type': subgraph['node_type'],
+                        'edge_type': subgraph['edge_type'],
+                        'edge_attr': subgraph['edge_attr'],
+                    },
+                    return_attention_weights=True,
+                )
+
+            attention = outputs.get('attention_weights')
+
+            if attention is None:
+                return {}
+
+            return {
+                0: attention.detach().cpu().numpy()
+            }
+
+        except Exception as exc:
+            logger.error(
+                "Failed to extract attention weights: %s",
+                exc,
+                exc_info=True,
+            )
+            return {}
     
     @staticmethod
     def trace_fraud_paths(

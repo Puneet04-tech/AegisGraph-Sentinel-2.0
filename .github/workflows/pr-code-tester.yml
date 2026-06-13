@@ -101,13 +101,18 @@ jobs:
           
           # 2. Extract unique directories that are being targeted/modified
           impacted_dirs = set()
+          impacted_files = set()
           for f in changed_files:
               if f.endswith('.py') and '/' in f:
                   # E.g., extracts 'src/inference' from 'src/inference/scorer.py'
                   parent_dir = os.path.dirname(f)
                   impacted_dirs.add(os.path.basename(parent_dir))
+          # E.g., extracts 'scorer' from 'src/inference/scorer.py'
+          file_basename = os.path.basename(f).replace('.py', '')
+          impacted_files.add(file_basename)
           
           print(f"Impacted structural component keywords: {list(impacted_dirs)}")
+          print(f"Impacted file basenames: {list(impacted_files)}")
           
           # 3. Universal Test Search Engine
           matched_test_files = []
@@ -128,7 +133,10 @@ jobs:
                           # Match Strategy B: Does test file name match an issue label keyword (e.g. test_performance.py)?
                           label_match = any(l.replace('type:', '') in file_lower for l in labels if l)
                           
-                          if dir_match or label_match:
+                          # Match Strategy C: Does test file name match source file basename (e.g. edge_cases.py -> test_edge_cases.py)?
+                          file_match = any(b in file_lower for b in impacted_files if b)
+                          
+                          if dir_match or label_match or file_match:
                               if file_path not in matched_test_files:
                                   matched_test_files.append(file_path)
           

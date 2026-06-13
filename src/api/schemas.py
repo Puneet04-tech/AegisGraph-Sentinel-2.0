@@ -3,6 +3,7 @@ Pydantic schemas for API request/response validation
 """
 # Schema validation for all fraud detection endpoints
 
+import math
 import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices, ConfigDict
@@ -28,6 +29,8 @@ class BiometricsData(BaseModel):
         """Validate biometric array constraints."""
         if len(v) > 1000:
             raise ValueError("Biometric arrays cannot exceed 1000 elements")
+        if any(not math.isfinite(x) for x in v):
+            raise ValueError("Biometric values must not contain NaN or Inf")
         if any(x < 0 or x > 10000 for x in v):
             raise ValueError("Biometric values must be between 0 and 10000 milliseconds")
         return v
