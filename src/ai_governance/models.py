@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import uuid  # noqa: F401
 
 
 class ModelStatus(Enum):
@@ -57,7 +57,7 @@ class Model:
     deployed_at: Optional[datetime] = None
     metrics: Dict[str, float] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "model_id": self.model_id,
@@ -86,7 +86,7 @@ class ModelDrift:
     severity: str
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     details: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "drift_id": self.drift_id,
@@ -110,7 +110,7 @@ class BiasReport:
     is_fair: bool
     affected_groups: List[str] = field(default_factory=list)
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "report_id": self.report_id,
@@ -134,7 +134,7 @@ class ModelExplanation:
     explanation_method: str
     confidence: float
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "explanation_id": self.explanation_id,
@@ -156,7 +156,7 @@ class AuditRecord:
     user: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     details: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "audit_id": self.audit_id,
