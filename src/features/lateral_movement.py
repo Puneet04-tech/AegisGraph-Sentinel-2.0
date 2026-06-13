@@ -1,3 +1,4 @@
+import logging
 import threading
 import time as _time
 
@@ -8,6 +9,8 @@ import networkx as nx
 import numpy as np
 
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # Optional Redis import for production scaling
 try:
@@ -54,16 +57,16 @@ class LateralMovementDetector:
         self._centrality_cache_version = 0
 
         if self.use_neo4j:
-            print("LateralMovementDetector: Using active Neo4j Graph Database Backend.")
+            logger.info("LateralMovementDetector: Using active Neo4j Graph Database Backend.")
         elif self.use_redis:
-            print("LateralMovementDetector: Connected to Redis Backend for multi-worker scaling.")
+            logger.info("LateralMovementDetector: Connected to Redis Backend for multi-worker scaling.")
             self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
             self._graph_cache = OrderedDict()
             self._graph_cache_version = None
             self._graph_cache_max_size = 1024
             self.redis_client.setnx("aegis:graph:version", 0)
         else:
-            print("LateralMovementDetector: Using Thread-Safe In-Memory Backend (Single Worker).")
+            logger.info("LateralMovementDetector: Using Thread-Safe In-Memory Backend (Single Worker).")
             # In-memory fallbacks protected by a Mutex lock
             self._lock = threading.Lock()
             self._node_access_order = OrderedDict()
