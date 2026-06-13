@@ -4,9 +4,10 @@ AI Decision Intelligence Fabric API Routes
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from src.api.security import Role, require_role
 from src.decision_fabric import (
     DecisionEngine,
     get_decision_engine,
@@ -33,11 +34,6 @@ class AuditRequest(BaseModel):
     details: Optional[Dict[str, Any]] = None
 
 
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")
@@ -50,13 +46,11 @@ async def health_check():
     }
 
 
-@router.post("/evaluate")
+@router.post("/evaluate", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def evaluate_decision(
     request: EvaluateRequest,
-    api_key: str = Header(None),
 ):
     """Evaluate a decision."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     try:
@@ -73,14 +67,12 @@ async def evaluate_decision(
     return {"decision": decision.to_dict()}
 
 
-@router.get("/history")
+@router.get("/history", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_decision_history(
     decision_type: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
-    api_key: str = Header(None),
 ):
     """Get decision history."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     dtype = None
@@ -98,13 +90,11 @@ async def get_decision_history(
     }
 
 
-@router.get("/explain/{decision_id}")
+@router.get("/explain/{decision_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def explain_decision(
     decision_id: str,
-    api_key: str = Header(None),
 ):
     """Get explanation for a decision."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     explanation = engine.explain_decision(decision_id)
@@ -114,14 +104,12 @@ async def explain_decision(
     return {"explanation": explanation.to_dict()}
 
 
-@router.get("/recommend")
+@router.get("/recommend", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_recommendations(
     context: Dict[str, Any],
     decision_type: str = Query(...),
-    api_key: str = Header(None),
 ):
     """Get decision recommendations."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     try:
@@ -144,13 +132,11 @@ async def get_recommendations(
     }
 
 
-@router.post("/audit")
+@router.post("/audit", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def log_audit(
     request: AuditRequest,
-    api_key: str = Header(None),
 ):
     """Log a decision audit."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     audit = engine.log_audit(
@@ -166,13 +152,11 @@ async def log_audit(
     }
 
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_audit_log(
     decision_id: Optional[str] = None,
-    api_key: str = Header(None),
 ):
     """Get audit log."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     log = engine.get_audit_log(decision_id=decision_id)
@@ -183,10 +167,9 @@ async def get_audit_log(
     }
 
 
-@router.get("/governance/stats")
-async def get_governance_stats(api_key: str = Header(None)):
+@router.get("/governance/stats", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
+async def get_governance_stats():
     """Get governance statistics."""
-    verify_api_key(api_key)
     engine = get_decision_engine()
     
     decisions = list(engine.decisions.values())

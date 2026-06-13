@@ -11,11 +11,8 @@ Comprehensive validation for:
 - Rate limiting (per account, API key, IP)
 """
 
-from collections import OrderedDict
-
-
+import math
 from collections import OrderedDict, defaultdict
-
 from datetime import datetime, timezone, timedelta
 from typing import Tuple, Optional, List, Dict, Any
 import threading
@@ -292,6 +289,13 @@ class TransactionValidator:
                 )
 
             for val in arr:
+                if not math.isfinite(val):
+                    raise ValidationError(
+                        field=arr_name,
+                        value=val,
+                        constraint="non_finite",
+                        suggestion=f"{arr_name} values must not contain NaN or Inf",
+                    )
                 if val < 0 or val > 10000:
                     raise ValidationError(
                         field=arr_name,
@@ -366,7 +370,6 @@ class RateLimiter:
             if (now - window_start).total_seconds() >= 60:
                 del tracking_dict[identifier]
             else:
-                break
                 break  # remaining entries are even newer
 
     def _check_limit(

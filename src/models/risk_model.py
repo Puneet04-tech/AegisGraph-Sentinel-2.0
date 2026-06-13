@@ -102,6 +102,7 @@ class FraudDetectionModel(nn.Module):
         edge_attr: Optional[torch.Tensor] = None,
         batch: Optional[torch.LongTensor] = None,
         return_embedding: bool = False,
+        return_attention_weights: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass
@@ -144,15 +145,20 @@ class FraudDetectionModel(nn.Module):
             if edge_timestamp is None:
                 raise ValueError("FraudDetectionModel.forward requires edge_attr or edge_timestamp")
             edge_attr = self.temporal_encoder(edge_timestamp)
-        
-        # Apply HTGAT
-        node_embeddings = self.htgat(
+
+        htgat_output = self.htgat(
             x=x,
             edge_index=edge_index,
             node_type=node_type,
             edge_type=edge_type,
             edge_attr=edge_attr,
+            return_attention_weights=return_attention_weights,
         )
+
+        if return_attention_weights:
+            node_embeddings, (_, attention_weights) = htgat_output
+        else:
+            node_embeddings = htgat_output
         
         # Graph-level pooling
         if batch is None:
@@ -173,6 +179,9 @@ class FraudDetectionModel(nn.Module):
             'risk': risk,
             'graph_embedding': graph_embedding,
         }
+
+        if return_attention_weights:
+            result['attention_weights'] = attention_weights
         
         if return_embedding:
             result['node_embedding'] = node_embeddings
@@ -302,6 +311,8 @@ class MultiTaskFraudModel(nn.Module):
         edge_type: torch.LongTensor,
         edge_timestamp: torch.Tensor,
         batch: Optional[torch.LongTensor] = None,
+        return_embedding: bool = False,
+        return_attention_weights: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for multi-task model
@@ -317,14 +328,19 @@ class MultiTaskFraudModel(nn.Module):
         # Encode temporal information
         edge_attr = self.temporal_encoder(edge_timestamp)
         
-        # Apply HTGAT
-        node_embeddings = self.htgat(
+        htgat_output = self.htgat(
             x=x,
             edge_index=edge_index,
             node_type=node_type,
             edge_type=edge_type,
             edge_attr=edge_attr,
+            return_attention_weights=return_attention_weights,
         )
+
+        if return_attention_weights:
+            node_embeddings, (_, attention_weights) = htgat_output
+        else:
+            node_embeddings = htgat_output
         
         # Graph-level pooling
         attention_scores = self.pool_attention(node_embeddings)
