@@ -193,4 +193,4 @@ def require_role(*allowed_roles: Role):
 
         return role
 
-    return dependency
+    return dependencyenable_rate_limiting = True
