@@ -6379,3 +6379,248 @@ async def start_campaign_simulation(campaign_id: str):
 async def get_simulation_results():
     service = get_adversary_service_instance()
     return list(service.store.results.values())
+
+
+# =============================================================================
+# Campaign Attribution Platform (Phase 102)
+# =============================================================================
+from src.campaign_attribution.service import get_campaign_service
+from src.campaign_attribution.models import ActorType, CampaignStatus, ConfidenceLevel
+
+
+@app.post(
+    "/api/v1/campaigns",
+    tags=["Campaign Attribution"],
+    summary="Create a new campaign",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def create_campaign(request: dict):
+    """Create a new fraud campaign."""
+    service = get_campaign_service()
+    campaign = service.create_campaign(
+        name=request.get("name", ""),
+        description=request.get("description", ""),
+        target_sectors=request.get("target_sectors", []),
+        target_geographies=request.get("target_geographies", []),
+        attack_vectors=request.get("attack_vectors", []),
+        tags=request.get("tags", []),
+    )
+    return campaign.to_dict()
+
+
+@app.get(
+    "/api/v1/campaigns/{campaign_id}",
+    tags=["Campaign Attribution"],
+    summary="Get campaign by ID",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_campaign(campaign_id: str):
+    """Get a campaign by ID."""
+    service = get_campaign_service()
+    campaign = service._store.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign.to_dict()
+
+
+@app.post(
+    "/api/v1/campaigns/{campaign_id}/attribute",
+    tags=["Campaign Attribution"],
+    summary="Attribute campaign to actor",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def attribute_campaign(campaign_id: str, request: dict):
+    """Attribute a campaign to a threat actor."""
+    service = get_campaign_service()
+
+    try:
+        confidence = ConfidenceLevel(request.get("confidence", "unknown"))
+    except ValueError:
+        confidence = ConfidenceLevel.UNKNOWN
+
+    attribution = service.attribute_campaign(
+        campaign_id=campaign_id,
+        actor_id=request.get("actor_id"),
+        confidence=confidence,
+        evidence=request.get("evidence", []),
+        method=request.get("method", "automated"),
+    )
+
+    if not attribution:
+        raise HTTPException(status_code=400, detail="Failed to attribute campaign")
+
+    return attribution.to_dict()
+
+
+@app.get(
+    "/api/v1/campaigns/{campaign_id}/profile",
+    tags=["Campaign Attribution"],
+    summary="Get threat profile",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_threat_profile(campaign_id: str):
+    """Generate and get threat profile."""
+    service = get_campaign_service()
+    profile = service.generate_threat_profile("campaign", campaign_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return profile.to_dict()
+
+
+@app.get(
+    "/api/v1/campaigns/{campaign_id}/risk",
+    tags=["Campaign Attribution"],
+    summary="Get risk assessment",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_risk_assessment(campaign_id: str):
+    """Get risk assessment for a campaign."""
+    service = get_campaign_service()
+    assessment = service.assess_risk("campaign", campaign_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return assessment.to_dict()
+
+
+@app.post(
+    "/api/v1/actors",
+    tags=["Campaign Attribution"],
+    summary="Create a threat actor",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def create_actor(request: dict):
+    """Create a new threat actor."""
+    service = get_campaign_service()
+
+    try:
+        actor_type = ActorType(request.get("actor_type", "unknown"))
+    except ValueError:
+        actor_type = ActorType.UNKNOWN
+
+    actor = service.create_actor(
+        name=request.get("name", ""),
+        actor_type=actor_type,
+        description=request.get("description", ""),
+        motivation=request.get("motivation", []),
+        capabilities=request.get("capabilities", []),
+        tags=request.get("tags", []),
+    )
+    return actor.to_dict()
+
+
+@app.get(
+    "/api/v1/actors/{actor_id}",
+    tags=["Campaign Attribution"],
+    summary="Get actor by ID",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_actor(actor_id: str):
+    """Get a threat actor by ID."""
+    service = get_campaign_service()
+    actor = service._store.get_actor(actor_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="Actor not found")
+    return actor.to_dict()
+
+
+@app.get(
+    "/api/v1/actors/{actor_id}/profile",
+    tags=["Campaign Attribution"],
+    summary="Get actor threat profile",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_actor_profile(actor_id: str):
+    """Generate and get actor threat profile."""
+    service = get_campaign_service()
+    profile = service.generate_threat_profile("actor", actor_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Actor not found")
+    return profile.to_dict()
+
+
+@app.get(
+    "/api/v1/campaigns",
+    tags=["Campaign Attribution"],
+    summary="Search campaigns",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def search_campaigns(
+    status: Optional[str] = Query(default=None),
+    sector: Optional[str] = Query(default=None),
+):
+    """Search campaigns by criteria."""
+    service = get_campaign_service()
+
+    campaign_status = None
+    if status:
+        try:
+            campaign_status = CampaignStatus(status)
+        except ValueError:
+            pass
+
+    campaigns = service.search_campaigns(status=campaign_status, sector=sector)
+    return [c.to_dict() for c in campaigns]
+
+
+@app.get(
+    "/api/v1/actors",
+    tags=["Campaign Attribution"],
+    summary="Search actors",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def search_actors(
+    actor_type: Optional[str] = Query(default=None),
+    is_active: Optional[bool] = Query(default=None),
+):
+    """Search actors by criteria."""
+    service = get_campaign_service()
+
+    act_type = None
+    if actor_type:
+        try:
+            act_type = ActorType(actor_type)
+        except ValueError:
+            pass
+
+    actors = service.search_actors(actor_type=act_type, is_active=is_active)
+    return [a.to_dict() for a in actors]
+
+
+@app.get(
+    "/api/v1/campaigns/stats",
+    tags=["Campaign Attribution"],
+    summary="Get campaign statistics",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_campaign_stats():
+    """Get campaign attribution statistics."""
+    service = get_campaign_service()
+    stats = service.get_campaign_statistics()
+    return stats.to_dict()
+
+
+@app.post(
+    "/api/v1/campaigns/correlate",
+    tags=["Campaign Attribution"],
+    summary="Correlate campaigns",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def correlate_campaigns(request: dict):
+    """Correlate multiple campaigns."""
+    service = get_campaign_service()
+    campaign_ids = request.get("campaign_ids", [])
+    return service.correlate_campaigns(campaign_ids)
+
+
+@app.get(
+    "/api/v1/campaigns/discover",
+    tags=["Campaign Attribution"],
+    summary="Discover campaigns by indicators",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def discover_campaigns(indicators: str = Query(..., description="Comma-separated indicators")):
+    """Discover campaigns by indicators."""
+    service = get_campaign_service()
+    indicator_list = [i.strip() for i in indicators.split(",")]
+    campaigns = service.discover_campaign(indicator_list)
+    return [c.to_dict() for c in campaigns]
