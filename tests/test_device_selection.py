@@ -40,5 +40,5 @@ def test_auto_device_prefers_cuda_when_available(monkeypatch):
 
 
 def test_invalid_device_name_is_rejected():
-    with pytest.raises(ValueError, match="Unsupported torch device"):
+    with pytest.raises(ValueError, match="Invalid device"):
         get_device("quantum")

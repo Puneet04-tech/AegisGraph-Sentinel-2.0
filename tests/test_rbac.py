@@ -148,3 +148,210 @@ def test_viewer_routes_authorization(rbac_client: TestClient, key_name: str, exp
     headers = {"X-API-Key": ROLE_KEYS[key_name]}
     response = rbac_client.get("/api/v1/model/info", headers=headers)
     assert response.status_code == 200, f"{key_name} should pass Viewer gate with 200"
+
+
+# ────────────────────────────────────────────────────────────
+# Issue #634: Explicit Admin vs Analyst RBAC scenarios
+# ────────────────────────────────────────────────────────────
+
+# Admin-only endpoints: honeypot management, memory diagnostics,
+# blockchain export (legal proceedings), and case status mutations.
+_ADMIN_ONLY_ENDPOINTS = [
+    # Honeypot admin endpoints
+    ("GET",  "/api/v1/honeypot/active"),
+    ("GET",  "/api/v1/honeypot/stats"),
+    # Memory diagnostics
+    ("GET",  "/api/v1/monitoring/memory"),
+    # Blockchain legal export (requires additional tokens; auth gate fires first)
+    ("POST", "/api/v1/blockchain/export"),
+    # Privileged case status mutation
+    ("PATCH", "/api/v1/cases/any-case-id"),
+]
+
+# Analyst-accessible read/detect endpoints (Issue #634 § 6)
+_ANALYST_READABLE_ENDPOINTS = [
+    ("POST", "/api/v1/fraud/check"),
+    ("GET",  "/api/v1/model/info"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), _ADMIN_ONLY_ENDPOINTS)
+def test_admin_can_access_admin_only_endpoints(
+    rbac_client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    """Issue #634: Admin keys must NOT receive 403 on admin-only endpoints.
+
+    The downstream handler may still return 4xx/5xx for missing bodies or
+    unconfigured services, but the RBAC gate itself must let admin through.
+    """
+    headers = {"X-API-Key": ROLE_KEYS["ADMIN"]}
+    if method == "GET":
+        resp = rbac_client.get(path, headers=headers)
+    elif method == "POST":
+        resp = rbac_client.post(path, headers=headers, json={})
+    else:  # PATCH
+        resp = rbac_client.patch(path, headers=headers, json={})
+    assert resp.status_code != 403, (
+        f"ADMIN key should pass the RBAC gate for {method} {path}; "
+        f"got {resp.status_code}. Body: {resp.text}"
+    )
+
+
+@pytest.mark.parametrize(("method", "path"), _ADMIN_ONLY_ENDPOINTS)
+def test_analyst_gets_403_on_admin_only_endpoints(
+    rbac_client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    """Issue #634: Analyst keys must receive 403 on admin-only endpoints."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    if method == "GET":
+        resp = rbac_client.get(path, headers=headers)
+    elif method == "POST":
+        resp = rbac_client.post(path, headers=headers, json={})
+    else:  # PATCH
+        resp = rbac_client.patch(path, headers=headers, json={})
+    assert resp.status_code == 403, (
+        f"ANALYST key should be blocked with 403 on {method} {path}; "
+        f"got {resp.status_code}. Body: {resp.text}"
+    )
+
+
+@pytest.mark.parametrize(("method", "path"), _ADMIN_ONLY_ENDPOINTS)
+def test_unauthenticated_gets_401_on_admin_only_endpoints(
+    rbac_client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    """Issue #634: Requests without any API key must receive 401."""
+    if method == "GET":
+        resp = rbac_client.get(path)
+    elif method == "POST":
+        resp = rbac_client.post(path, json={})
+    else:  # PATCH
+        resp = rbac_client.patch(path, json={})
+    assert resp.status_code == 401, (
+        f"Unauthenticated request to {method} {path} should be 401; "
+        f"got {resp.status_code}. Body: {resp.text}"
+    )
+
+
+@pytest.mark.parametrize(("method", "path"), _ANALYST_READABLE_ENDPOINTS)
+def test_analyst_can_access_analyst_endpoints(
+    rbac_client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    """Issue #634 § 6: Analyst keys must not be blocked on read/detect endpoints."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    if method == "GET":
+        resp = rbac_client.get(path, headers=headers)
+    else:
+        resp = rbac_client.post(path, headers=headers, json={})
+    assert resp.status_code not in (401, 403), (
+        f"ANALYST key should not be blocked by RBAC on {method} {path}; "
+        f"got {resp.status_code}. Body: {resp.text}"
+    )
+
+
+# ────────────────────────────────────────────────────────────
+# require_any_role and require_admin helper smoke tests
+# ────────────────────────────────────────────────────────────
+
+def test_require_any_role_accepts_analyst_on_analyst_endpoint(
+    rbac_client: TestClient,
+) -> None:
+    """require_any_role is a transparent alias: analyst passes an analyst gate."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    # /api/v1/model/info is gated at VIEWER level (analyst inherits viewer)
+    resp = rbac_client.get("/api/v1/model/info", headers=headers)
+    assert resp.status_code == 200
+
+
+def test_require_admin_blocks_analyst(
+    rbac_client: TestClient,
+) -> None:
+    """require_admin() blocks analyst keys — honeypot/active is the canonical admin route."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    resp = rbac_client.get("/api/v1/honeypot/active", headers=headers)
+    assert resp.status_code == 403
+
+
+def test_require_admin_allows_super_admin(
+    rbac_client: TestClient,
+) -> None:
+    """require_admin() accepts SUPER_ADMIN via role inheritance."""
+    headers = {"X-API-Key": ROLE_KEYS["SUPER_ADMIN"]}
+    resp = rbac_client.get("/api/v1/monitoring/memory", headers=headers)
+    # SUPER_ADMIN inherits ADMIN; gate passes. Downstream may be 200 or 500.
+    assert resp.status_code != 403, (
+        f"SUPER_ADMIN should not receive 403 on /api/v1/monitoring/memory; "
+        f"got {resp.status_code}. Body: {resp.text}"
+    )
+
+
+def test_error_response_contains_message_field(
+    rbac_client: TestClient,
+) -> None:
+    """Issue #634: 403 response must include a JSON error.message field."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    resp = rbac_client.get("/api/v1/honeypot/active", headers=headers)
+    assert resp.status_code == 403
+    body = resp.json()
+    # The exception handlers in register_exception_handlers() wrap the detail
+    # under {"error": {"code": ..., "message": ...}}.
+    assert "error" in body, f"Expected 'error' key in response body: {body}"
+    error_block = body["error"]
+    assert "message" in error_block, f"Expected 'message' in error block: {error_block}"
+
+
+def test_analyst_gets_403_on_verbose_health(rbac_client: TestClient) -> None:
+    """Issue #634: Verbose health info is admin-only; Analyst must get 403."""
+    headers = {"X-API-Key": ROLE_KEYS["ANALYST"]}
+    resp = rbac_client.get("/api/v1/health?verbose=true", headers=headers)
+    assert resp.status_code == 403, (
+        f"ANALYST should be blocked on verbose health; got {resp.status_code}. Body: {resp.text}"
+    )
+    resp2 = rbac_client.get("/health?verbose=true", headers=headers)
+    assert resp2.status_code == 403, (
+        f"ANALYST should be blocked on /health?verbose=true; got {resp2.status_code}. Body: {resp2.text}"
+    )
+
+
+def test_admin_can_access_verbose_health(rbac_client: TestClient) -> None:
+    """Issue #634: Admin must pass verbose health RBAC gate."""
+    headers = {"X-API-Key": ROLE_KEYS["ADMIN"]}
+    resp = rbac_client.get("/api/v1/health?verbose=true", headers=headers)
+    assert resp.status_code not in (401, 403), (
+        f"ADMIN should pass verbose health RBAC gate; got {resp.status_code}. Body: {resp.text}"
+    )
+    resp2 = rbac_client.get("/health?verbose=true", headers=headers)
+    assert resp2.status_code not in (401, 403), (
+        f"ADMIN should pass /health?verbose=true RBAC gate; got {resp2.status_code}. Body: {resp2.text}"
+    )
+
+
+def test_unauthenticated_gets_401_on_verbose_health(rbac_client: TestClient) -> None:
+    """Issue #634: Unauthenticated request to verbose health must be 401."""
+    resp = rbac_client.get("/api/v1/health?verbose=true")
+    assert resp.status_code == 401, (
+        f"Unauthenticated verbose health should be 401; got {resp.status_code}. Body: {resp.text}"
+    )
+    resp2 = rbac_client.get("/health?verbose=true")
+    assert resp2.status_code == 401, (
+        f"Unauthenticated /health?verbose=true should be 401; got {resp2.status_code}. Body: {resp2.text}"
+    )
+
+
+def test_health_without_verbose_is_public(rbac_client: TestClient) -> None:
+    """Non-verbose health endpoint must not require authentication."""
+    resp = rbac_client.get("/api/v1/health")
+    assert resp.status_code == 200, (
+        f"Non-verbose health should be public; got {resp.status_code}. Body: {resp.text}"
+    )
+    resp2 = rbac_client.get("/health")
+    assert resp2.status_code == 200, (
+        f"Non-verbose health should be public; got {resp2.status_code}. Body: {resp2.text}"
+    )

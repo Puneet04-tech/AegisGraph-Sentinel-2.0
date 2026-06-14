@@ -1,0 +1,239 @@
+# Default values for AegisGraph Sentinel Enterprise
+# This file provides default values for the Helm chart
+
+replicaCount: 3
+
+image:
+  repository: aegisgraph/sentinel-api
+  tag: "2.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  grpcPort: 50051
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: api.aegisgraph.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api
+    - host: dashboard.aegisgraph.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: dashboard
+  tls:
+    - secretName: aegisgraph-tls
+      hosts:
+        - api.aegisgraph.com
+        - dashboard.aegisgraph.com
+
+resources:
+  api:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+      nvidia.com/gpu: 1
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+      nvidia.com/gpu: 1
+  worker:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  node.kubernetes.io/lifecycle: on-demand
+
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "gpu-workload"
+    effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: aegisgraph-sentinel
+              component: api
+          topologyKey: kubernetes.io/hostname
+
+# Application configuration
+config:
+  api:
+    url: "https://api.aegisgraph.com"
+    logLevel: "INFO"
+    device: "cuda"
+    debug: false
+  database:
+    host: "postgresql"
+    port: 5432
+    name: "aegisgraph"
+    poolSize: 20
+  redis:
+    host: "redis-master"
+    port: 6379
+    db: 0
+  neo4j:
+    uri: "bolt://neo4j:7687"
+  kafka:
+    bootstrapServers: "kafka:9092"
+    topicTransactions: "transactions"
+    topicFraudAlerts: "fraud_alerts"
+  ml:
+    modelPath: "/models/htgnn_best.pt"
+    batchSize: 32
+    maxLatencyMs: 200
+  security:
+    authEnabled: true
+    rateLimitPerMinute: 1000
+
+# Security settings
+security:
+  apiKey: ""
+  jwtSecret: ""
+  neo4jPassword: ""
+  redisPassword: ""
+
+# Persistence settings
+persistence:
+  enabled: true
+  storageClass: "gp3"
+  models:
+    size: 50Gi
+    accessMode: ReadWriteMany
+  data:
+    size: 100Gi
+    accessMode: ReadWriteMany
+
+# Monitoring
+monitoring:
+  enabled: true
+  prometheus:
+    port: 9090
+    path: "/metrics"
+  grafana:
+    adminUser: "admin"
+    adminPassword: ""
+
+# PostgreSQL dependency
+postgresql:
+  enabled: true
+  auth:
+    database: "aegisgraph"
+    username: "aegisgraph"
+  primary:
+    persistence:
+      size: 100Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+
+# Redis dependency
+redis:
+  enabled: true
+  auth:
+    enabled: true
+  master:
+    persistence:
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+# Neo4j
+neo4j:
+  enabled: true
+  fullnameOverride: neo4j
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 8Gi
+    requests:
+      cpu: 1000m
+      memory: 4Gi
+  persistence:
+    size: 200Gi
+
+# Kafka
+kafka:
+  enabled: true
+  replicaCount: 3
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+# Streamlit Dashboard
+dashboard:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: aegisgraph/sentinel-dashboard
+    tag: "2.0.0"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+# PodDisruptionBudget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# PodDisruptionBudget for workers
+workerPodDisruptionBudget:
+  enabled: true
+  minAvailable: 1
