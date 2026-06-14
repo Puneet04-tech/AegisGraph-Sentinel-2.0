@@ -120,3 +120,33 @@ def test_score_batch_processes_transactions_in_bounded_chunks(monkeypatch):
     assert executors[-1].submitted == len(transactions)
     assert executors[-1].peak_pending == 2
     assert batch_sizes == [2, 2, 1]
+
+def test_fraud_score_supports_attention_reports():
+
+    score = FraudScore(
+        transaction_id="txn-1",
+        risk_score=0.8,
+        decision="REVIEW",
+        confidence=0.9,
+        explanation="test",
+        breakdown={"graph_risk": 0.8},
+        influential_neighbors=[],
+        top_relationships=[
+            {
+                "source_node": "acct_A",
+                "target_node": "device_X",
+                "attention_score": 0.94,
+            }
+        ],
+        high_risk_nodes=["acct_A", "device_X"],
+        attention_summary="acct_A -> device_X",
+        model_version="2.0",
+        inference_time_ms=1.0,
+        graph_size=5,
+    )
+
+    payload = score.to_dict()
+
+    assert "top_relationships" in payload
+    assert "high_risk_nodes" in payload
+    assert "attention_summary" in payload
