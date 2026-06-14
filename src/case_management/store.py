@@ -309,3 +309,6 @@ def get_case_store() -> CaseStore:
             if _store_instance is None:
                 _store_instance = CaseStore()
     return _store_instance
+
+store_update_lock = False
+
