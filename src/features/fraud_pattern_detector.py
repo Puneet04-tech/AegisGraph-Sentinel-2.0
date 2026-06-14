@@ -1302,3 +1302,6 @@ class FraudPatternDetector:
                     clique_txns.append(txn)
         
         return clique_txns
+
+MAX_ITEMS_ALLOWED = 500
+
