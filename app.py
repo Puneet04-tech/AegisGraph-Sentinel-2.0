@@ -2292,15 +2292,21 @@ elif page == "📊 Risk Analytics":
 
                 alert_col, inv_col, btn_col = st.columns([4, 1, 1])
                 with alert_col:
+                    safe_severity = _escape_network_tooltip_value(alert["severity"])
+                    safe_title = _escape_network_tooltip_value(alert["title"])
+                    safe_category = _escape_network_tooltip_value(alert["category"])
+                    safe_id = _escape_network_tooltip_value(alert["id"])
+                    safe_time = _escape_network_tooltip_value(time_str)
+                    safe_badge = _escape_network_tooltip_value(status_badge)
                     aria_label = (
-                        f"{alert['severity']} alert {alert['title']} in {alert['category']} category, "
-                        f"status {status_badge}, alert id {alert['id']}, time {time_str}"
+                        f"{safe_severity} alert {safe_title} in {safe_category} category, "
+                        f"status {safe_badge}, alert id {safe_id}, time {safe_time}"
                     )
                     html = f"""
                     <div class="alert-card" style="opacity: {opacity}; margin-bottom: 0;" role="article" aria-label="{aria_label}">
-                        <span class="alert-time">{time_str}</span>
-                        <span class="alert-title">[{alert["category"]}] {alert["title"]} <span style="color:#64748b; font-size:0.75rem; margin-left:8px;">#{alert["id"]}</span></span>
-                        <span class="severity-badge severity-{alert["severity"]}" role="status" aria-live="polite" aria-label="Alert status {status_badge}">{status_badge}</span>
+                        <span class="alert-time">{safe_time}</span>
+                        <span class="alert-title">[{safe_category}] {safe_title} <span style="color:#64748b; font-size:0.75rem; margin-left:8px;">#{safe_id}</span></span>
+                        <span class="severity-badge severity-{safe_severity}" role="status" aria-live="polite" aria-label="Alert status {safe_badge}">{safe_badge}</span>
                     </div>
                     """
                     st.markdown(html, unsafe_allow_html=True)

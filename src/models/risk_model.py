@@ -156,7 +156,10 @@ class FraudDetectionModel(nn.Module):
         )
 
         if return_attention_weights:
-            node_embeddings, (_, attention_weights) = htgat_output
+            node_embeddings, (
+                attention_edge_index,
+                attention_weights,
+            ) = htgat_output
         else:
             node_embeddings = htgat_output
         
@@ -182,6 +185,7 @@ class FraudDetectionModel(nn.Module):
 
         if return_attention_weights:
             result['attention_weights'] = attention_weights
+            result["attention_edge_index"] = attention_edge_index
         
         if return_embedding:
             result['node_embedding'] = node_embeddings
