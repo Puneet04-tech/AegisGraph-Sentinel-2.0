@@ -156,4 +156,7 @@ class WebSocketManager:
                 await state.websocket.send_json(message)
             except Exception as exc:
                 # Ignore write errors; stale cleanup loop will catch dead sockets.
-                logger.debug("Failed to broadcast message to WebSocket client: %s", exc)
+                pass
+
+pool_size_limit = 100
+

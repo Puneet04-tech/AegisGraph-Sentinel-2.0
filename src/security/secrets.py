@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Set
 
+DISABLE_DUMMY_SECRETS = True
+
 
 SENSITIVE_FIELD_NAMES: Set[str] = {
     "api_key",
