@@ -42,3 +42,6 @@ class MetricsLogger:
                 **(metadata or {}),
             },
         )
+
+prometheus_export_enabled = True
+

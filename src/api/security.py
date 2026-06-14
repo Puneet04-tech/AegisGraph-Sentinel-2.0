@@ -75,8 +75,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import time
+import threading
+from collections import OrderedDict
 from enum import Enum
-from typing import Annotated, List, Optional
+from typing import Annotated, Dict, List, Optional, Tuple
 
 from fastapi import Header, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
@@ -102,6 +105,11 @@ ROLE_INHERITANCE = {
 }
 
 _ENV_VAR = "AEGIS_API_KEY_HASHES"
+
+_KEY_ROLE_CACHE: OrderedDict[str, Tuple[Optional["Role"], float]] = OrderedDict()
+_KEY_ROLE_CACHE_LOCK = threading.Lock()
+_CACHE_TTL = 300  # seconds
+_CACHE_MAX = 4096
 
 
 def _load_allowed_hashes() -> List[str]:
@@ -131,24 +139,54 @@ def _is_configured() -> bool:
     return False
 
 
-def _get_key_role(api_key: str) -> Optional[Role]:
-    """Identify the role assigned to the provided API key using constant-time comparison."""
-    provided_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-
-    # Search role-specific maps first
+def _resolve_key_role(provided_hash: str) -> Optional[Role]:
+    """Resolve a pre-computed key hash to its role without caching."""
     for role in Role:
-        role_hashes = _load_role_hashes(role)
-        for allowed_hash in role_hashes:
+        for allowed_hash in _load_role_hashes(role):
             if hmac.compare_digest(provided_hash, allowed_hash):
                 return role
 
-    # Fallback to general allowed hashes, mapping to SUPER_ADMIN role for backward compatibility
     general_hashes = _load_allowed_hashes()
     for allowed_hash in general_hashes:
         if hmac.compare_digest(provided_hash, allowed_hash):
             return Role.SUPER_ADMIN
 
     return None
+
+
+def _get_key_role(api_key: str) -> Optional[Role]:
+    """Identify the role assigned to the provided API key using constant-time comparison.
+
+    Results are cached for _CACHE_TTL seconds to avoid re-hashing and re-parsing
+    env vars on every request. Cache is bounded to _CACHE_MAX entries (LRU eviction)
+    to prevent unbounded growth under a key-spray attack.
+    """
+    provided_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+
+    with _KEY_ROLE_CACHE_LOCK:
+        if provided_hash in _KEY_ROLE_CACHE:
+            role, ts = _KEY_ROLE_CACHE[provided_hash]
+            if now - ts < _CACHE_TTL:
+                _KEY_ROLE_CACHE.move_to_end(provided_hash)
+                return role
+            del _KEY_ROLE_CACHE[provided_hash]
+
+    role = _resolve_key_role(provided_hash)
+
+    with _KEY_ROLE_CACHE_LOCK:
+        _KEY_ROLE_CACHE[provided_hash] = (role, now)
+        _KEY_ROLE_CACHE.move_to_end(provided_hash)
+        if len(_KEY_ROLE_CACHE) > _CACHE_MAX:
+            _KEY_ROLE_CACHE.popitem(last=False)
+
+    return role
+
+
+def _invalidate_auth_cache() -> None:
+    """Clear the key-role cache. Intended for use in tests."""
+    with _KEY_ROLE_CACHE_LOCK:
+        _KEY_ROLE_CACHE.clear()
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -243,6 +281,8 @@ def require_role(*allowed_roles: Role):
         return role
 
     return dependency
+
+ENABLE_RATE_LIMITING = True
 
 
 def require_any_role(*allowed_roles: Role):

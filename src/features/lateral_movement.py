@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 
 from ..config import get_settings
+from ..utils.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -56,24 +57,30 @@ class LateralMovementDetector:
         self._centrality_cache_max = 1024
         self._centrality_cache_version = 0
 
+        # Always initialize in-memory fallback structures to guarantee safety if Redis fails dynamically
+        self._lock = threading.Lock()
+        self._node_access_order = OrderedDict()
+        self.centrality_history = defaultdict(
+            lambda: deque(maxlen=self.history_size)
+        )
+        self.active_graph = nx.DiGraph()
+
         if self.use_neo4j:
             logger.info("LateralMovementDetector: Using active Neo4j Graph Database Backend.")
         elif self.use_redis:
             logger.info("LateralMovementDetector: Connected to Redis Backend for multi-worker scaling.")
-            self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
-            self._graph_cache = OrderedDict()
-            self._graph_cache_version = None
-            self._graph_cache_max_size = 1024
-            self.redis_client.setnx("aegis:graph:version", 0)
+            try:
+                self.redis_client = get_redis_client(self.redis_url)
+                self.redis_client.ping()
+                self._graph_cache = OrderedDict()
+                self._graph_cache_version = None
+                self._graph_cache_max_size = 1024
+                self.redis_client.setnx("aegis:graph:version", 0)
+            except Exception as e:
+                logger.warning(f"LateralMovementDetector: Redis initialization failed: {e}. Falling back to In-Memory Backend.")
+                self.use_redis = False
         else:
             logger.info("LateralMovementDetector: Using Thread-Safe In-Memory Backend (Single Worker).")
-            # In-memory fallbacks protected by a Mutex lock
-            self._lock = threading.Lock()
-            self._node_access_order = OrderedDict()
-            self.centrality_history = defaultdict(
-                lambda: deque(maxlen=self.history_size)
-            )
-            self.active_graph = nx.DiGraph()
 
     def update_graph(self, src_account, dst_account, amount: float = 1.0, timestamp: Optional[float] = None):
         """Updates the network topology dynamically across all workers."""
@@ -91,23 +98,27 @@ class LateralMovementDetector:
             return
 
         if self.use_redis:
-            # Atomic cross-worker edge weight increment plus version bump for cache invalidation.
-            pipe = self.redis_client.pipeline(transaction=True)
-            pipe.hincrby(f"aegis:edges:{src_account}", dst_account, 1)
-            pipe.hincrby(f"aegis:reverse:{dst_account}", src_account, 1)
-            pipe.sadd("aegis:nodes", src_account, dst_account)
-            pipe.incr("aegis:graph:version")
-            pipe.execute()
-        else:
-            # Thread-safe in-memory update
-            with self._lock:
-                if self.active_graph.has_edge(src_account, dst_account):
-                    self.active_graph[src_account][dst_account]['weight'] += 1
-                else:
-                    self.active_graph.add_edge(src_account, dst_account, weight=1)
-                self._touch_node(src_account)
-                self._touch_node(dst_account)
-                self._prune_lru_nodes()
+            try:
+                # Atomic cross-worker edge weight increment plus version bump for cache invalidation.
+                pipe = self.redis_client.pipeline(transaction=True)
+                pipe.hincrby(f"aegis:edges:{src_account}", dst_account, 1)
+                pipe.hincrby(f"aegis:reverse:{dst_account}", src_account, 1)
+                pipe.sadd("aegis:nodes", src_account, dst_account)
+                pipe.incr("aegis:graph:version")
+                pipe.execute()
+                return
+            except Exception as e:
+                print(f"Redis update_graph error: {e}. Falling back to in-memory.")
+
+        # Thread-safe in-memory update
+        with self._lock:
+            if self.active_graph.has_edge(src_account, dst_account):
+                self.active_graph[src_account][dst_account]['weight'] += 1
+            else:
+                self.active_graph.add_edge(src_account, dst_account, weight=1)
+            self._touch_node(src_account)
+            self._touch_node(dst_account)
+            self._prune_lru_nodes()
 
     def _touch_node(self, node_id):
         """Mark a node as recently used for in-memory graph retention."""
@@ -137,48 +148,52 @@ class LateralMovementDetector:
         if not self.use_redis:
             return self.active_graph
 
-        current_version = int(self.redis_client.get("aegis:graph:version") or 0)
-        if self._graph_cache_version != current_version:
-            self._graph_cache.clear()
-            self._graph_cache_version = current_version
+        try:
+            current_version = int(self.redis_client.get("aegis:graph:version") or 0)
+            if self._graph_cache_version != current_version:
+                self._graph_cache.clear()
+                self._graph_cache_version = current_version
 
-        cached = self._graph_cache.get(account_id)
-        if cached and cached[0] == current_version:
+            cached = self._graph_cache.get(account_id)
+            if cached and cached[0] == current_version:
+                self._graph_cache.move_to_end(account_id)
+                return cached[1]
+
+            G = nx.DiGraph()
+            frontier = {account_id}
+            visited = {account_id}
+
+            for _ in range(max_hops):
+                next_frontier = set()
+                for node in frontier:
+                    outgoing = self.redis_client.hgetall(f"aegis:edges:{node}")
+                    for dst, weight in outgoing.items():
+                        G.add_edge(node, dst, weight=float(weight))
+                        if dst not in visited:
+                            next_frontier.add(dst)
+
+                    incoming = self.redis_client.hgetall(f"aegis:reverse:{node}")
+                    for src, weight in incoming.items():
+                        G.add_edge(src, node, weight=float(weight))
+                        if src not in visited:
+                            next_frontier.add(src)
+
+                visited.update(next_frontier)
+                frontier = next_frontier
+                if not frontier:
+                    break
+
+            if not G.has_node(account_id):
+                G.add_node(account_id)
+
+            self._graph_cache[account_id] = (current_version, G)
             self._graph_cache.move_to_end(account_id)
-            return cached[1]
-
-        G = nx.DiGraph()
-        frontier = {account_id}
-        visited = {account_id}
-
-        for _ in range(max_hops):
-            next_frontier = set()
-            for node in frontier:
-                outgoing = self.redis_client.hgetall(f"aegis:edges:{node}")
-                for dst, weight in outgoing.items():
-                    G.add_edge(node, dst, weight=float(weight))
-                    if dst not in visited:
-                        next_frontier.add(dst)
-
-                incoming = self.redis_client.hgetall(f"aegis:reverse:{node}")
-                for src, weight in incoming.items():
-                    G.add_edge(src, node, weight=float(weight))
-                    if src not in visited:
-                        next_frontier.add(src)
-
-            visited.update(next_frontier)
-            frontier = next_frontier
-            if not frontier:
-                break
-
-        if not G.has_node(account_id):
-            G.add_node(account_id)
-
-        self._graph_cache[account_id] = (current_version, G)
-        self._graph_cache.move_to_end(account_id)
-        while len(self._graph_cache) > self._graph_cache_max_size:
-            self._graph_cache.popitem(last=False)
-        return G
+            while len(self._graph_cache) > self._graph_cache_max_size:
+                self._graph_cache.popitem(last=False)
+            return G
+        except Exception as e:
+            print(f"Redis _get_approx_graph error: {e}. Falling back to in-memory graph.")
+            return self.active_graph
 
     def _calculate_approx_centrality(self, account_id):
         """Calculates localized betweenness centrality safely with caching."""
@@ -190,6 +205,18 @@ class LateralMovementDetector:
                 self._centrality_cache.move_to_end(account_id)
                 return value
 
+        # Try to fetch from Redis Cache if enabled
+        if self.use_redis:
+            redis_cache_key = f"aegis:cache:centrality:{account_id}"
+            try:
+                cached_val = self.redis_client.get(redis_cache_key)
+                if cached_val is not None:
+                    result = float(cached_val)
+                    self._centrality_cache[account_id] = (result, now)
+                    return result
+            except Exception as e:
+                print(f"Redis cache lookup error: {e}. Falling back to direct calculation.")
+
         if self.use_neo4j or self.use_redis:
             G = self._get_approx_graph(account_id)
         else:
@@ -198,17 +225,25 @@ class LateralMovementDetector:
 
         num_nodes = G.number_of_nodes()
         if num_nodes < 3:
-            self._centrality_cache[account_id] = (0.0, now)
-            return 0.0
+            result = 0.0
+        else:
+            k_approx = min(50, num_nodes)
+            centralities = nx.betweenness_centrality(
+                G,
+                k=k_approx,
+                normalized=True,
+                weight='weight'
+            )
+            result = centralities.get(account_id, 0.0)
 
-        k_approx = min(50, num_nodes)
-        centralities = nx.betweenness_centrality(
-            G,
-            k=k_approx,
-            normalized=True,
-            weight='weight'
-        )
-        result = centralities.get(account_id, 0.0)
+        # Store in Redis Cache with 24 hours TTL
+        if self.use_redis:
+            redis_cache_key = f"aegis:cache:centrality:{account_id}"
+            try:
+                self.redis_client.setex(redis_cache_key, 86400, result)
+            except Exception as e:
+                print(f"Redis cache save error: {e}")
+
         self._centrality_cache[account_id] = (result, now)
         self._centrality_cache.move_to_end(account_id)
         while len(self._centrality_cache) > self._centrality_cache_max:
@@ -220,15 +255,20 @@ class LateralMovementDetector:
         current_score = self._calculate_approx_centrality(account_id)
 
         # 1. Store and retrieve history safely
+        history = None
         if self.use_redis:
             history_key = f"aegis:history:{account_id}"
-            self.redis_client.lpush(history_key, current_score)
-            self.redis_client.ltrim(history_key, 0, self.history_size - 1)
-            
-            # Fetch and reverse so oldest is first
-            history = [float(x) for x in self.redis_client.lrange(history_key, 0, -1)]
-            history.reverse()
-        else:
+            try:
+                self.redis_client.lpush(history_key, current_score)
+                self.redis_client.ltrim(history_key, 0, self.history_size - 1)
+                
+                # Fetch and reverse so oldest is first
+                history = [float(x) for x in self.redis_client.lrange(history_key, 0, -1)]
+                history.reverse()
+            except Exception as e:
+                print(f"Redis history operation error: {e}. Falling back to in-memory baseline.")
+
+        if history is None:
             with self._lock:
                 history_deque = self.centrality_history[account_id]
                 history_deque.append(current_score)
