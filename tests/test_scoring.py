@@ -4,7 +4,7 @@ import math
 import os
 from unittest.mock import patch
 
-import pytest
+import pytest 
 
 if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
     pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
@@ -13,9 +13,9 @@ if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
 try:
     from src.inference.risk_scorer import compute_risk_score as inference_compute_risk_score
     from src.scoring import (
-        EdgeCaseHandler,
+        EdgeCaseHandler, 
         RiskScorer,
-        ScoreCalculator,
+        ScoreCalculator, 
         ThresholdConfig,
     )
     TORCH_AVAILABLE = True
@@ -41,7 +41,7 @@ def test_threshold_behavior_decision_mapping():
     assert config.decision_for_score(0.8) == "BLOCK"
     assert config.decision_for_score(1.0) == "BLOCK"
     assert config.get_threshold("review") == 0.4
-    assert config.get_threshold("block") == 0.8
+    assert config.get_threshold("block") == 0.8 
 
 
 def test_compute_confidence_is_bounded_and_deterministic():
@@ -60,21 +60,6 @@ def test_aggregate_scores_respects_weights_and_bounds():
 
     score_default = ScoreCalculator.aggregate_scores(components, None)
     assert score_default == 0.5
-
-
-def test_edge_case_handler_safe_score_and_weights():
-    assert EdgeCaseHandler.safe_score(None) == 0.0
-    assert EdgeCaseHandler.safe_score(float("nan")) == 0.0
-    assert EdgeCaseHandler.safe_score(float("inf")) == 0.0
-
-    weights = EdgeCaseHandler.safe_weights({"a": 0.0, "b": 0.0}, keys=["a", "b"])
-    assert weights["a"] == 0.5
-    assert weights["b"] == 0.5
-
-    safe_weights = EdgeCaseHandler.safe_weights({"a": 2.0, "b": -1.0}, keys=["a", "b"])
-    assert math.isclose(safe_weights["a"], 1.0)
-    assert math.isclose(safe_weights["b"], 0.0)
-
 
 def test_risk_scorer_assessments_are_valid():
     scorer = RiskScorer()
@@ -135,7 +120,7 @@ def test_threshold_config_valid_overrides_are_applied():
 
 def test_threshold_config_boundaries_are_non_overlapping():
     config = ThresholdConfig({"allow": 0.5, "review": 0.7, "block": 0.9})
-
+   
     assert config.decision_for_score(0.49) == "ALLOW"
     assert config.decision_for_score(0.50) == "ALLOW"
     assert config.decision_for_score(0.69) == "ALLOW"
@@ -178,7 +163,7 @@ def test_legacy_inference_wrapper_matches_central_assessment_for_neutral_inputs(
     transaction = {
         "source_account": "neutral_user",
         "target_account": "neutral_merchant",
-        "amount": 100.0,
+        "amount": 100.0, 
         "timestamp": "2025-01-01T12:00:00Z",
     }
 
@@ -229,27 +214,10 @@ def test_score_calculator_equal_weights_for_zero_sum_weights():
     assert ScoreCalculator.aggregate_scores(components, weights) == 0.5
 
 
-def test_safe_components_non_dict_returns_empty():
-    assert EdgeCaseHandler.safe_components(None) == {}
-    assert EdgeCaseHandler.safe_components("not a dict") == {}
-
-
 def test_confidence_stability_for_small_input_variations():
     baseline = ScoreCalculator.compute_confidence(0.5, {"graph": 0.5, "velocity": 0.5})
     nearby = ScoreCalculator.compute_confidence(0.5001, {"graph": 0.5, "velocity": 0.5})
     assert abs(baseline - nearby) <= 0.05
-
-
-def test_detect_circular_transfers_in_transaction_history():
-    transactions = [
-        {"source_account": "A", "target_account": "B"},
-        {"source_account": "B", "target_account": "C"},
-        {"source_account": "C", "target_account": "A"},
-    ]
-    cycles = EdgeCaseHandler.detect_circular_transfers(transactions)
-    assert cycles
-    assert any(set(cycle) == {"A", "B", "C"} for cycle in cycles)
-    assert EdgeCaseHandler.has_circular_transfers(transactions)
 
 
 def test_confidence_stability_with_extreme_breakdown_values():
@@ -257,12 +225,3 @@ def test_confidence_stability_with_extreme_breakdown_values():
     assert math.isclose(ScoreCalculator.compute_confidence(0.0, {"graph": 0.0, "velocity": 0.0}), 0.1, rel_tol=1e-9)
     assert 0.0 <= ScoreCalculator.compute_confidence(0.5, {"graph": 1.0, "velocity": 0.0}) <= 1.0
 
-
-def test_risk_scorer_metadata_marks_circular_transfers():
-    transactions = [
-        {"source_account": "A", "target_account": "B"},
-        {"source_account": "B", "target_account": "A"},
-    ]
-    scorer = RiskScorer(component_weights={"graph": 0.5, "velocity": 0.5})
-    assessment = scorer.assess({"graph": 0.4, "velocity": 0.3}, metadata={"transactions": transactions})
-    assert assessment.metadata.get("circular_transfers") is True

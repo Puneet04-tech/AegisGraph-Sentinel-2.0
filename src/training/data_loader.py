@@ -1,6 +1,9 @@
 import hashlib
+import logging
 import os
 from typing import Optional, Any
+
+logger = logging.getLogger(__name__)
 
 # NOTE:
 # Tests monkeypatch `src.training.data_loader.torch.load`, so this module
@@ -87,7 +90,7 @@ class AegisGraphLoader:
         Creates a temporal NeighborLoader. 
         Samples 15 neighbors for the 1st hop, and 10 for the 2nd hop.
         """
-        print("Initializing Temporal Graph Sampler...")
+        logger.info("Initializing Temporal Graph Sampler")
         
         from torch_geometric.loader import NeighborLoader
 
@@ -109,21 +112,22 @@ class AegisGraphLoader:
         return loader
 
 if __name__ == "__main__":
-    # Local verification block
-    print("--- Testing Aegis Temporal DataLoader ---")
+    import sys
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+    logger.info("Testing Aegis Temporal DataLoader")
     try:
         sampler = AegisGraphLoader(batch_size=32)
         train_loader = sampler.get_train_loader()
-        
-        # Fetch a single batch to verify memory constraints
+
         batch = next(iter(train_loader))
-        
-        print("\nSuccess! First batch sampled successfully:")
-        print(f"Batch Account Nodes: {batch['account'].batch_size}")
-        print(f"Total Subgraph Nodes (Accounts): {batch['account'].num_nodes}")
-        print(f"Total Subgraph Nodes (Devices): {batch['device'].num_nodes}")
-        print("\nBatch Object Details:")
-        print(batch)
-        
+
+        logger.info(
+            "First batch sampled successfully — accounts: %d, devices: %d",
+            batch['account'].num_nodes,
+            batch['device'].num_nodes,
+        )
+        logger.debug("Batch details: %s", batch)
+
     except Exception as e:
-        print(f"\nError: {e}")
+        logger.error("DataLoader test failed: %s", e)

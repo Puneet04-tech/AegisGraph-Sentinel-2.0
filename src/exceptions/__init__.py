@@ -2,6 +2,8 @@
 
 from .base_exceptions import (
     AegisException,
+    AuthenticationError,
+    AuthorizationError,
     ProcessingException,
     SecurityException,
     ServiceUnavailableException,
@@ -13,6 +15,8 @@ from .handlers import register_exception_handlers, register_observability_middle
 
 __all__ = [
     "AegisException",
+    "AuthenticationError",
+    "AuthorizationError",
     "ErrorCode",
     "ProcessingException",
     "SecurityException",

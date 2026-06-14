@@ -1,0 +1,82 @@
+# AegisGraph Sentinel - Redis Cluster for Caching
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: aegisgraph
+spec:
+  serviceName: redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "/data/nodes.conf"]
+        ports:
+        - name: redis
+          containerPort: 6379
+        - name: cluster
+          containerPort: 16379
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aegisgraph-secrets
+              key: REDIS_PASSWORD
+        args:
+        - "--requirepass $(REDIS_PASSWORD)"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        livenessProbe:
+          tcpSocket:
+            port: redis
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "-a", "$(REDIS_PASSWORD)", "ping"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-data-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "gp3"
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: aegisgraph
+spec:
+  selector:
+    app: redis
+    # Enable when needing single primary
+    # redis.redis.io/replica-of: "$(redis-master-0.redis-master:6379)"
+  ports:
+  - name: redis
+    port: 6379

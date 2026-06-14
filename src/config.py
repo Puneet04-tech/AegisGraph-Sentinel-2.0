@@ -1,8 +1,11 @@
 import os
 import secrets
+import logging
 from pathlib import Path
 from typing import Literal, Optional
-from pydantic import BaseModel, SecretStr, Field, field_validator
+from pydantic import BaseModel, SecretStr, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 # Base Directory of the Project
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -46,6 +49,7 @@ class AppSettings(BaseModel):
 
     # Security & Third-Party Secrets
     # Must be set explicitly in production. Development uses generated key.
+    secret_key_was_generated: bool = Field(default=False, exclude=True)
     SECRET_KEY: SecretStr = Field(
         default_factory=lambda: SecretStr(
             os.getenv("SECRET_KEY") or generate_secure_key()
@@ -53,38 +57,55 @@ class AppSettings(BaseModel):
     )
     SLACK_WEBHOOK_URL: Optional[str] = Field(default_factory=lambda: os.getenv("SLACK_WEBHOOK_URL"))
 
+    def is_generated_secret_key(self) -> bool:
+        """Return True if the SECRET_KEY was auto-generated."""
+        return self.secret_key_was_generated
+
     # ML Model Registry Paths
     MODEL_DIR: Path = BASE_DIR / "models"
     BIOMETRICS_LSTM_ONNX_PATH: Path = BASE_DIR / "models" / "biometrics_lstm.onnx"
     HTGNN_MODEL_PATH: Path = BASE_DIR / "models" / "htgnn_model.pt"
 
-    @field_validator("SECRET_KEY", mode="after")
-    @classmethod
-    def validate_secret_key_in_production(cls, v: SecretStr, info) -> SecretStr:
+    @model_validator(mode="after")
+    def validate_secret_key_configuration(self) -> "AppSettings":
         """Enforce strong SECRET_KEY in production environments.
 
         In production (ENV=prod), SECRET_KEY must be explicitly configured.
         Using default generated keys in production enables trivial JWT forgery
         because the key is not cryptographically bound to the deployment.
 
-        Args:
-            v: The SECRET_KEY value
-            info: Pydantic validation context with other field values
+        In non-production environments, logs a warning when using auto-generated keys.
 
         Returns:
-            SecretStr: The validated secret key
+            AppSettings: The validated settings instance
 
         Raises:
             ValueError: If running in production without explicit SECRET_KEY
         """
-        env = info.data.get("ENV", "dev")
-
-        # Only enforce in production
-        if env != "prod":
-            return v
-
-        # Check if SECRET_KEY was explicitly set
         secret_from_env = os.getenv("SECRET_KEY")
+        was_generated = secret_from_env is None
+
+        # Set the flag to track if key was generated
+        self.secret_key_was_generated = was_generated
+
+        # In non-production, warn if using generated key
+        if self.ENV != "prod" and was_generated:
+            logger.warning(
+                "No SECRET_KEY configured. Using auto-generated development key. "
+                "This key will change on each restart, invalidating any existing tokens. "
+                "Set SECRET_KEY environment variable for persistent sessions.",
+                extra={
+                    "event_type": "config_generated_secret_key",
+                    "environment": self.ENV,
+                    "generated_key": True,
+                }
+            )
+
+        # Only enforce explicit key in production
+        if self.ENV != "prod":
+            return self
+
+        # Production requires explicit SECRET_KEY
         if not secret_from_env:
             raise ValueError(
                 "SECRET_KEY must be explicitly set when ENV='prod'. "
@@ -101,7 +122,7 @@ class AppSettings(BaseModel):
                 "Use 'python -c \"import secrets; print(secrets.token_hex(32))\"' to generate a secure key."
             )
 
-        return v
+        return self
 
 # Instantiate a single global settings object to import across modules
 settings = AppSettings()

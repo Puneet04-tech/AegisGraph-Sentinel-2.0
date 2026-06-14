@@ -121,9 +121,11 @@ class EdgeCaseHandler:
             if start_node in visited:
                 continue
             dfs(start_node, [start_node], {start_node})
-            visited.add(start_node)
+            for cycle in cycles:
+                visited.update(cycle)
+            visited.add(start_node)  
 
-        return cycles
+        return cycles 
 
     @staticmethod
     def has_circular_transfers(

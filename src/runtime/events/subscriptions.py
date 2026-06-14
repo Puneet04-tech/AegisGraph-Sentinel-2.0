@@ -14,6 +14,7 @@ from .event_handlers import (
     on_service_failed,
     on_service_healthy,
     on_watchdog_alert,
+    on_sentinel_alert,
 )
 from .event_types import (
     RecoveryTriggeredEvent,
@@ -21,6 +22,7 @@ from .event_types import (
     ServiceFailedEvent,
     ServiceHealthyEvent,
     WatchdogAlertEvent,
+    SentinelAlertEvent,
 )
 
 
@@ -47,3 +49,6 @@ async def register_default_subscriptions(bus: RuntimeEventBus) -> None:
 
     # ── Watchdog ─────────────────────────────────────────────────────────
     await bus.subscribe(WatchdogAlertEvent, on_watchdog_alert)
+
+    # ── Webhooks ──────────────────────────────────────────────────────────
+    await bus.subscribe(SentinelAlertEvent, on_sentinel_alert)
