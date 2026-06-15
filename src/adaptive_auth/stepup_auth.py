@@ -20,7 +20,7 @@ from .models import (
     ChallengeType,
     StepUpChallenge,
 )
-from .store import AdaptiveAuthStore, get_adaptive_auth_store
+from .store import AdaptiveAuthStore, LRUCache, get_adaptive_auth_store
 
 
 @dataclass
@@ -99,8 +99,8 @@ class StepUpAuthService:
         self.store = store
         self._configs = self.DEFAULT_CONFIGS.copy()
         self._totp_secrets: Dict[str, str] = {}  # user_id -> secret
-        self._verification_codes: Dict[str, str] = {}  # challenge_id -> code
-        self._callback_pending: Dict[str, Dict[str, Any]] = {}  # challenge_id -> callback info
+        self._verification_codes: LRUCache = LRUCache(maxsize=50000)
+        self._callback_pending: LRUCache = LRUCache(maxsize=50000)
     
     def configure_challenge(
         self,
@@ -214,6 +214,9 @@ class StepUpAuthService:
             challenge.status = "failed"
             challenge.failure_reason = "Maximum attempts exceeded"
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
             return ChallengeResponse(
                 challenge_id=challenge_id,
                 success=False,
@@ -231,7 +234,10 @@ class StepUpAuthService:
             challenge.status = "completed"
             challenge.completed_at = datetime.now(timezone.utc)
             self.store.update_challenge(challenge)
-            
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
+
             # Update session trust
             session = self.store.get_session_unsafe(challenge.session_id)
             if session:
