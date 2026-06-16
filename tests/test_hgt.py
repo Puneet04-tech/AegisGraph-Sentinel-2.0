@@ -1,8 +1,12 @@
+import os
 import pytest
 import torch
 from src.models.hgt import HGTConv, HGT
 from src.models.htgat import HTGAT
 from src.models.risk_model import FraudDetectionModel
+
+if os.getenv("RUN_TORCH_TESTS", "").lower() != "true":
+    pytest.skip("PyTorch tests require RUN_TORCH_TESTS=true", allow_module_level=True)
 
 def test_hgt_conv_forward():
     in_channels = 32
