@@ -1,9 +1,8 @@
 """
-API routes for Issue #1021 - Geospatial Encryption.
+API routes for Issue #1022 - Real-Time Update Pipeline.
 """
 
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from src.api.security import Role, require_role
@@ -30,14 +29,14 @@ class LocationUpdateRequestModel(BaseModel):
     dependencies=[Depends(require_role(Role.ANALYST))]
 )
 async def submit_location_update(request: LocationUpdateRequestModel):
-    """Submits location update and stores encrypted coordinates."""
-    tracking_service.process_location_update(
+    """Enqueues location update to the async queue for non-blocking processing."""
+    await tracking_service.add_update_to_queue(
         asset_id=request.asset_id,
         lat=request.latitude,
         lon=request.longitude,
         accuracy=request.accuracy
     )
-    return {"status": "success", "asset_id": request.asset_id}
+    return {"status": "queued", "asset_id": request.asset_id}
 
 
 @router.get(
@@ -54,7 +53,6 @@ async def get_asset_location(asset_id: str, user_id: str = "analyst_1"):
     tenant_id = "default_tenant"
     tenant_key = cryptor.get_tenant_key(tenant_id)
 
-    # Access logging audit trail
     audit_logger.log_access(user_id, "read_current_location", asset_id, tenant_id)
 
     try:
@@ -71,6 +69,21 @@ async def get_asset_location(asset_id: str, user_id: str = "analyst_1"):
         "last_updated": asset.last_updated.isoformat() if asset.last_updated else None,
         "accuracy": asset.accuracy
     }
+
+
+@router.websocket("/stream")
+async def stream_geospatial_updates(websocket: WebSocket):
+    """WebSocket endpoint to broadcast compressed real-time coordinates updates."""
+    await websocket.accept()
+    tracking_service.websocket_listeners.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in tracking_service.websocket_listeners:
+            tracking_service.websocket_listeners.remove(websocket)
 
 
 def register_routes(app):
