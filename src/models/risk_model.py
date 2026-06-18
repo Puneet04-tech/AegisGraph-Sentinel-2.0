@@ -48,6 +48,7 @@ class FraudDetectionModel(nn.Module):
         dropout: float = 0.3,
         temporal_dim: int = 16,
         pooling: str = 'attention',
+        model_type: str = 'htgat',
     ):
         super().__init__()
         
@@ -55,22 +56,37 @@ class FraudDetectionModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.pooling = pooling
+        self.model_type = model_type.lower()
         
         # Temporal encoding
         self.temporal_encoder = TemporalEncoding(temporal_dim)
         
-        # HTGAT backbone
-        self.htgat = HTGAT(
-            in_channels=node_feature_dim,
-            hidden_channels=hidden_dim,
-            out_channels=output_dim,
-            num_node_types=num_node_types,
-            num_edge_types=num_edge_types,
-            num_layers=num_layers,
-            heads=heads,
-            dropout=dropout,
-            edge_dim=temporal_dim,
-        )
+        # Backbone selection
+        if self.model_type == 'hgt':
+            from .hgt import HGT
+            self.htgat = HGT(
+                in_channels=node_feature_dim,
+                hidden_channels=hidden_dim,
+                out_channels=output_dim,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                edge_dim=temporal_dim,
+            )
+        else:
+            self.htgat = HTGAT(
+                in_channels=node_feature_dim,
+                hidden_channels=hidden_dim,
+                out_channels=output_dim,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                edge_dim=temporal_dim,
+            )
         
         # Graph-level pooling
         if pooling == 'attention':
@@ -244,22 +260,39 @@ class MultiTaskFraudModel(nn.Module):
         temporal_dim: int = 16,
         num_fraud_types: int = 3,
         predict_node_risk: bool = True,
+        model_type: str = 'htgat',
     ):
         super().__init__()
         
-        # Shared HTGAT backbone
+        self.model_type = model_type.lower()
+        
+        # Shared backbone
         self.temporal_encoder = TemporalEncoding(temporal_dim)
-        self.htgat = HTGAT(
-            in_channels=node_feature_dim,
-            hidden_channels=hidden_dim,
-            out_channels=output_dim,
-            num_node_types=num_node_types,
-            num_edge_types=num_edge_types,
-            num_layers=num_layers,
-            heads=heads,
-            dropout=dropout,
-            edge_dim=temporal_dim,
-        )
+        if self.model_type == 'hgt':
+            from .hgt import HGT
+            self.htgat = HGT(
+                in_channels=node_feature_dim,
+                hidden_channels=hidden_dim,
+                out_channels=output_dim,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                edge_dim=temporal_dim,
+            )
+        else:
+            self.htgat = HTGAT(
+                in_channels=node_feature_dim,
+                hidden_channels=hidden_dim,
+                out_channels=output_dim,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                edge_dim=temporal_dim,
+            )
         
         # Graph-level pooling
         self.pool_attention = nn.Sequential(

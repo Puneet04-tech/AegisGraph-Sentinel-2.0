@@ -16,6 +16,7 @@ from .health_monitor import RuntimeHealthMonitor
 from .resources import RuntimeResourceManager
 from ..security import sanitize_metadata
 from ..security.incidents import IncidentManager, IncidentRegistry
+from ..security.threats import AbuseTracker, ThreatDetector, ThreatMetrics, ThreatRegistry
 from ..security.authorization import (
     AuthorizationEngine,
     PermissionRegistry,
@@ -51,8 +52,12 @@ class RuntimeState:
     permission_registry: PermissionRegistry = field(default_factory=PermissionRegistry)
     dependency_registry: DependencyRegistry = field(default_factory=DependencyRegistry)
     incident_registry: IncidentRegistry = field(default_factory=IncidentRegistry)
+    threat_registry: ThreatRegistry = field(default_factory=ThreatRegistry)
+    abuse_tracker: AbuseTracker = field(default_factory=AbuseTracker)
     dependency_validator: DependencyValidator = field(init=False)
     incident_manager: IncidentManager = field(init=False)
+    threat_detector: ThreatDetector = field(init=False)
+    threat_metrics: ThreatMetrics = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
     authorization_engine: AuthorizationEngine = field(init=False)
     config_reload_manager: ConfigReloadManager = field(init=False)
@@ -90,6 +95,13 @@ class RuntimeState:
             authorization_engine=self.authorization_engine,
         )
         self.incident_manager = IncidentManager(self.incident_registry, audit_logger=log_audit_event)
+        self.threat_detector = ThreatDetector(
+            self.threat_registry,
+            self.abuse_tracker,
+            incident_manager=self.incident_manager,
+            audit_logger=log_audit_event,
+        )
+        self.threat_metrics = ThreatMetrics(self.threat_registry, self.abuse_tracker)
         self.resource_manager.set_config_registry(self.config_registry)
         self.resource_manager.set_policy_engine(self.policy_engine)
         self.health_monitor.set_config_registry(self.config_registry)
@@ -105,6 +117,10 @@ class RuntimeState:
         self.services.register_service("dependency_validator", self.dependency_validator, replace=True)
         self.services.register_service("incident_registry", self.incident_registry, replace=True)
         self.services.register_service("incident_manager", self.incident_manager, replace=True)
+        self.services.register_service("threat_registry", self.threat_registry, replace=True)
+        self.services.register_service("abuse_tracker", self.abuse_tracker, replace=True)
+        self.services.register_service("threat_detector", self.threat_detector, replace=True)
+        self.services.register_service("threat_metrics", self.threat_metrics, replace=True)
 
     def set_recovery_manager(self, recovery_manager: Any) -> None:
         self.recovery_manager = recovery_manager
@@ -255,6 +271,7 @@ class RuntimeState:
         dependency_failures = [result for result in dependency_results if not result.valid]
         role_count = len(self.role_registry.list_roles())
         permission_count = len(self.permission_registry.list_permissions())
+        threat_metrics = self.threat_metrics.as_dict()
         return {
             "active_task_count": self.tasks.active_count,
             "services": [info.__dict__ for info in self.services.get_initialization_state()],
@@ -289,5 +306,9 @@ class RuntimeState:
                 "failures": [result.__dict__ for result in dependency_failures],
             },
             "incidents": self.incident_manager.get_metrics(),
+            "threats": threat_metrics,
+            "threat_count": threat_metrics["active_threat_count"],
+            "severity_counts": threat_metrics["severity_counts"],
+            "tracked_events": threat_metrics["tracked_event_counts"],
         }
 

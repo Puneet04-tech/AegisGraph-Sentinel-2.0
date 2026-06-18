@@ -8,10 +8,13 @@ the main API interface for risk-based authentication and continuous authorizatio
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     AuthenticationDecision,
@@ -107,12 +110,11 @@ class AdaptiveAuthService:
     
     async def _reassess_active_sessions(self) -> None:
         """Reassess all active sessions."""
-        for session in self.store._sessions.values():
-            if session.status.value == "active" and not session.is_expired():
-                try:
-                    await self.assess_session(session.session_id)
-                except Exception:
-                    pass
+        for session_id in self.store.get_active_session_ids():
+            try:
+                await self.assess_session(session_id)
+            except Exception as e:
+                logger.warning("Session reassessment failed for %s: %s", session_id, e)
     
     # ========== Authentication Evaluation ==========
     

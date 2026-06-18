@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import json
 
 from .models import (
@@ -59,8 +59,8 @@ class AuditService:
     def __init__(self, store: AdaptiveAuthStore):
         self.store = store
         self._audit_log: List[AuditEvent] = []
-        self._events_by_user: Dict[str, List[str]] = {}
-        self._events_by_session: Dict[str, List[str]] = {}
+        self._events_by_user: Dict[str, Set[str]] = {}
+        self._events_by_session: Dict[str, Set[str]] = {}
         self._max_events = 100000
     
     def log_event(
@@ -100,14 +100,14 @@ class AuditService:
         
         # Index by user
         if user_id not in self._events_by_user:
-            self._events_by_user[user_id] = []
-        self._events_by_user[user_id].append(event.event_id)
-        
+            self._events_by_user[user_id] = set()
+        self._events_by_user[user_id].add(event.event_id)
+
         # Index by session
         if session_id:
             if session_id not in self._events_by_session:
-                self._events_by_session[session_id] = []
-            self._events_by_session[session_id].append(event.event_id)
+                self._events_by_session[session_id] = set()
+            self._events_by_session[session_id].add(event.event_id)
         
         # Cleanup old events if needed
         self._cleanup_old_events()
@@ -124,16 +124,18 @@ class AuditService:
             
             # Clean up indexes
             for event in removed:
-                if event.user_id in self._events_by_user:
-                    try:
-                        self._events_by_user[event.user_id].remove(event.event_id)
-                    except ValueError:
-                        pass
-                if event.session_id and event.session_id in self._events_by_session:
-                    try:
-                        self._events_by_session[event.session_id].remove(event.event_id)
-                    except ValueError:
-                        pass
+                user_ids = self._events_by_user.get(event.user_id)
+                if user_ids is not None:
+                    user_ids.discard(event.event_id)
+                    if not user_ids:
+                        del self._events_by_user[event.user_id]
+
+                if event.session_id:
+                    session_ids = self._events_by_session.get(event.session_id)
+                    if session_ids is not None:
+                        session_ids.discard(event.event_id)
+                        if not session_ids:
+                            del self._events_by_session[event.session_id]
     
     def log_authentication_attempt(
         self,
@@ -301,11 +303,11 @@ class AuditService:
         
         # Apply filters
         if query.user_id:
-            event_ids = self._events_by_user.get(query.user_id, [])
+            event_ids = self._events_by_user.get(query.user_id, set())
             events = [e for e in events if e.event_id in event_ids]
-        
+
         if query.session_id:
-            event_ids = self._events_by_session.get(query.session_id, [])
+            event_ids = self._events_by_session.get(query.session_id, set())
             events = [e for e in events if e.event_id in event_ids]
         
         if query.event_type:
@@ -326,8 +328,8 @@ class AuditService:
         if query.resource:
             events = [e for e in events if query.resource in e.resource]
         
-        # Sort by timestamp descending
-        events.sort(key=lambda e: e.timestamp, reverse=True)
+        # _audit_log is append-only in chronological order; reverse is O(N)
+        events = list(reversed(events))
         
         # Apply pagination
         return events[query.offset:query.offset + query.limit]

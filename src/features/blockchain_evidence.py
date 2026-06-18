@@ -986,6 +986,16 @@ class BlockchainEvidenceManager:
             'model_hash': self.model_hash,
         }
         
+        # Check if Hyperledger Fabric is configured
+        fabric_profile = os.getenv("FABRIC_CONNECTION_PROFILE")
+        if fabric_profile:
+            try:
+                from src.blockchain_evidence.gateway import FabricGatewayClient
+                client = FabricGatewayClient(fabric_profile)
+                client.invoke_chaincode("aegischannel", "evidencecc", "SealEvidence", [evidence_id, transaction_hash])
+            except Exception as e:
+                logger.error(f"Fabric SDK invocation failed: {e}")
+
         if self.enable_blockchain:
             # Add to all nodes (simulates consensus)
             consensus_start = time.time()

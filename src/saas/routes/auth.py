@@ -59,6 +59,7 @@ class MFAEnrollmentResponse(BaseModel):
 class MFATokenRequest(BaseModel):
     user_id: str
     mfa_token: str
+    totp_code: str
 
 
 class SSOProviderRequest(BaseModel):
@@ -261,7 +262,7 @@ async def verify_mfa(request: MFATokenRequest):
     result = auth_service.verify_mfa(
         user_id=request.user_id,
         mfa_token=request.mfa_token,
-        token=request.mfa_token,
+        token=request.totp_code,
     )
     
     if not result.success:

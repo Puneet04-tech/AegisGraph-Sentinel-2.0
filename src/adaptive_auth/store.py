@@ -8,9 +8,9 @@ risk scores, behavior profiles, and authentication state.
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import uuid
 
 from .models import (
@@ -66,7 +66,14 @@ class LRUCache(OrderedDict):
     
     def pop(self, key: str, *args) -> Any:
         with self._lock:
-            return super().pop(key, *args)
+            try:
+                value = dict.__getitem__(self, key)
+                OrderedDict.__delitem__(self, key)
+                return value
+            except KeyError:
+                if args:
+                    return args[0]
+                raise
     
     def clear(self) -> None:
         with self._lock:
@@ -85,7 +92,9 @@ class AdaptiveAuthStore:
         self._profiles: LRUCache = LRUCache(maxsize=max_profiles)
         self._policies: Dict[str, AuthorizationPolicy] = {}
         self._decisions: LRUCache = LRUCache(maxsize=max_sessions)
-        self._challenges: Dict[str, StepUpChallenge] = {}
+        self._risk_scores: LRUCache = LRUCache(maxsize=max_sessions * 10)
+        self._challenges: LRUCache = LRUCache(maxsize=50000)
+        self._user_sessions: Dict[str, Set[str]] = defaultdict(set)
         self._lock = threading.RLock()
         
         # Initialize default policies
@@ -133,8 +142,9 @@ class AdaptiveAuthStore:
         )
         
         self._sessions[session_id] = session
+        self._user_sessions[user_id].add(session_id)
         return session
-    
+
     def get_session(self, session_id: str) -> Optional[AuthenticationSession]:
         """Get session by ID with O(1) lookup."""
         session = self._sessions.get(session_id)
@@ -161,32 +171,40 @@ class AdaptiveAuthStore:
             session.status = SessionStatus.TERMINATED
             session.metadata["termination_reason"] = reason
             session.metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
+            self._user_sessions.get(session.user_id, set()).discard(session_id)
             return True
         return False
     
     def get_user_sessions(self, user_id: str) -> List[AuthenticationSession]:
         """Get all active sessions for a user."""
-        sessions = []
         now = datetime.now(timezone.utc)
-        for session in self._sessions.values():
-            if session.user_id == user_id and session.status == SessionStatus.ACTIVE:
-                if session.expires_at > now:
-                    sessions.append(session)
+        sessions = []
+        for session_id in list(self._user_sessions.get(user_id, set())):
+            session = self._sessions.get(session_id)
+            if session and session.status == SessionStatus.ACTIVE and session.expires_at > now:
+                sessions.append(session)
         return sessions
-    
+
     def cleanup_expired_sessions(self) -> int:
         """Remove expired sessions. Returns count of removed sessions."""
-        count = 0
         now = datetime.now(timezone.utc)
-        expired = []
-        for session_id, session in self._sessions.items():
-            if session.expires_at <= now:
-                expired.append(session_id)
-        for session_id in expired:
+        expired = [
+            (sid, s) for sid, s in list(self._sessions.items())
+            if s.expires_at <= now
+        ]
+        for session_id, session in expired:
             del self._sessions[session_id]
-            count += 1
-        return count
+            self._user_sessions.get(session.user_id, set()).discard(session_id)
+        return len(expired)
     
+    def get_active_session_ids(self) -> List[str]:
+        """Return a snapshot of active, non-expired session IDs."""
+        return [
+            sid
+            for sid, session in list(self._sessions.items())
+            if session.status == SessionStatus.ACTIVE and not session.is_expired()
+        ]
+
     # Behavior Profile Management
     def get_or_create_profile(self, user_id: str) -> BehaviorProfile:
         """Get existing profile or create new one."""
@@ -212,25 +230,26 @@ class AdaptiveAuthStore:
     def store_risk_score(self, risk_score: RiskScore) -> None:
         """Store a risk score for a session."""
         key = f"{risk_score.session_id}:{risk_score.timestamp.isoformat()}"
-        self._decisions[key] = risk_score
-    
+        self._risk_scores[key] = risk_score
+
     def get_latest_risk_score(self, session_id: str) -> Optional[RiskScore]:
         """Get the most recent risk score for a session."""
         latest = None
         latest_time = None
-        for key, score in self._decisions.items():
+        for key, score in list(self._risk_scores.items()):
             if key.startswith(session_id + ":"):
                 if latest_time is None or score.timestamp > latest_time:
                     latest = score
                     latest_time = score.timestamp
         return latest
-    
+
     def get_risk_scores(self, session_id: str, limit: int = 10) -> List[RiskScore]:
         """Get recent risk scores for a session."""
-        scores = []
-        for key, score in self._decisions.items():
-            if key.startswith(session_id + ":"):
-                scores.append((score.timestamp, score))
+        scores = [
+            (score.timestamp, score)
+            for key, score in list(self._risk_scores.items())
+            if key.startswith(session_id + ":")
+        ]
         scores.sort(key=lambda x: x[0], reverse=True)
         return [s[1] for s in scores[:limit]]
     
@@ -304,6 +323,16 @@ class AdaptiveAuthStore:
                     challenges.append(challenge)
         return challenges
     
+    def cleanup_expired_challenges(self) -> int:
+        """Remove expired challenges. Returns count removed."""
+        expired = [
+            cid for cid, c in list(self._challenges.items())
+            if c.is_expired() or c.status in ("completed", "failed", "cancelled", "expired")
+        ]
+        for cid in expired:
+            self._challenges.pop(cid, None)
+        return len(expired)
+
     # Decision Storage
     def store_decision(self, decision: AuthenticationDecision) -> None:
         """Store an authentication decision."""
@@ -331,6 +360,7 @@ class AdaptiveAuthStore:
                 if c.status == "pending" and not c.is_expired()
             ),
             "total_decisions": len(self._decisions),
+            "total_risk_scores": len(self._risk_scores),
         }
 
 

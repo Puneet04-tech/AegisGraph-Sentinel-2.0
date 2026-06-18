@@ -217,24 +217,27 @@ class RiskScorer:
     
     def _compute_graph_risk(self, graph_data: dict) -> float:
         """Compute risk using HTGNN model"""
-        # Move data to device
-        x = torch.tensor(graph_data['x'], dtype=torch.float32).to(self.device)
-        edge_index = torch.tensor(graph_data['edge_index'], dtype=torch.long).to(self.device)
-        node_type = torch.tensor(graph_data['node_type'], dtype=torch.long).to(self.device)
-        edge_type = torch.tensor(graph_data['edge_type'], dtype=torch.long).to(self.device)
-        edge_timestamp = torch.tensor(graph_data['edge_timestamp'], dtype=torch.float32).to(self.device)
-        
-        # Forward pass
-        outputs = self.model(
-            x=x,
-            edge_index=edge_index,
-            node_type=node_type,
-            edge_type=edge_type,
-            edge_timestamp=edge_timestamp,
-        )
-        
-        risk = outputs['risk'].item()
-        return risk
+        with torch.no_grad():
+            x = torch.tensor(graph_data['x'], dtype=torch.float32).to(self.device)
+            edge_index = torch.tensor(graph_data['edge_index'], dtype=torch.long).to(self.device)
+            node_type = torch.tensor(graph_data['node_type'], dtype=torch.long).to(self.device)
+            edge_type = torch.tensor(graph_data['edge_type'], dtype=torch.long).to(self.device)
+            edge_timestamp = torch.tensor(graph_data['edge_timestamp'], dtype=torch.float32).to(self.device)
+            
+            outputs = self.model(
+                x=x,
+                edge_index=edge_index,
+                node_type=node_type,
+                edge_type=edge_type,
+                edge_timestamp=edge_timestamp,
+            )
+            
+            risk = outputs['risk'].detach().cpu().numpy().item() if hasattr(outputs['risk'], 'detach') else float(outputs['risk'])
+            
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+                
+            return risk
     
     def _compute_velocity_risk(
         self,

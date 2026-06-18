@@ -244,6 +244,43 @@ class TestGraphEntropyCalculator:
         assert structural['clustering_coefficient'] > 0
         assert structural['structural_entropy'] > 0
 
+    def test_directed_entropy_includes_incoming_neighbors(self):
+        """Directed fraud flow should include both senders and receivers around a node."""
+        import networkx as nx
+
+        calculator = GraphEntropyCalculator()
+        graph = nx.DiGraph()
+        graph.add_edges_from([
+            ('source_1', 'M'),
+            ('source_2', 'M'),
+            ('M', 'destination'),
+        ])
+
+        profile = calculator._build_neighborhood_profile('M', graph)
+
+        assert profile['direct_neighbors'] == {'source_1', 'source_2', 'destination'}
+        assert calculator._get_k_hop_neighbors('M', graph, 1) == {
+            'source_1',
+            'source_2',
+            'destination',
+        }
+
+    def test_directed_structural_entropy_uses_directed_density(self):
+        """Directed neighbor density should not use the undirected possible-edge denominator."""
+        import networkx as nx
+
+        calculator = GraphEntropyCalculator()
+        graph = nx.DiGraph()
+        graph.add_edges_from([
+            ('A', 'B'),
+            ('A', 'C'),
+            ('B', 'C'),
+        ])
+
+        structural = calculator.compute_structural_entropy('A', graph)
+
+        assert structural['clustering_coefficient'] == 0.5
+
 
 class TestFeatureIntegration:
     """Test integration of multiple features"""
