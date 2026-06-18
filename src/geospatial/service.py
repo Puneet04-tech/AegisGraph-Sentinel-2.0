@@ -1,5 +1,5 @@
 """
-Services for Issue #1024 - Drift Correction and Kalman Filtering.
+Services for Issue #1025 - Route Optimization and Prediction.
 """
 
 import asyncio
@@ -13,9 +13,10 @@ import httpx
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple, Any, Set, List
 import numpy as np
+import networkx as nx
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from src.geospatial.models import LocationUpdate, Asset, Geofence, GeofenceBreach
+from src.geospatial.models import LocationUpdate, Asset, Geofence, GeofenceBreach, Route
 
 logger = logging.getLogger("geospatial")
 
@@ -112,7 +113,6 @@ class KalmanTracker:
             [0.0, 1.0, 0.0, 0.0]
         ])
 
-        # Measurement noise covariance
         noise_factor = (accuracy / max(0.1, signal_strength)) * 0.00001
         R = np.eye(2, dtype=float) * noise_factor
 
@@ -366,6 +366,80 @@ class GeospatialTrackingService:
                 c = not c
             j = i
         return c
+
+
+class RouteOptimizationEngine:
+    """Provides grid routing, A* route optimization, traffic simulation, and route anomaly checking."""
+    def __init__(self):
+        self.graph = nx.grid_2d_graph(20, 20)
+        self.node_positions = {}
+        for node in self.graph.nodes:
+            self.node_positions[node] = (19.076 + node[0]*0.001, 72.877 + node[1]*0.001)
+
+        for u, v in self.graph.edges:
+            self.graph[u][v]["weight"] = 1.0
+            self.graph[u][v]["traffic_multiplier"] = 1.0
+
+    def set_traffic_multiplier(self, u: Tuple[int, int], v: Tuple[int, int], multiplier: float):
+        if self.graph.has_edge(u, v):
+            self.graph[u][v]["traffic_multiplier"] = multiplier
+
+    def optimize_route(self, asset_id: str, source: Tuple[int, int], target: Tuple[int, int]) -> Route:
+        def heuristic(a, b):
+            return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+
+        def weight_func(u, v, d):
+            return d["weight"] * d["traffic_multiplier"]
+
+        path = nx.astar_path(self.graph, source, target, heuristic=heuristic, weight=weight_func)
+        coords = [self.node_positions[node] for node in path]
+        
+        total_cost = 0.0
+        for i in range(len(path) - 1):
+            edge_data = self.graph[path[i]][path[i+1]]
+            total_cost += edge_data["weight"] * edge_data["traffic_multiplier"]
+
+        eta = total_cost * 1.5
+
+        return Route(
+            route_id=f"R_{int(time_timestamp_ms())}",
+            asset_id=asset_id,
+            points=coords,
+            optimized_points=coords,
+            eta_minutes=eta
+        )
+
+    def predict_next_location(self, tracker: KalmanTracker, dt: float = 10.0) -> Tuple[float, float]:
+        lat, lon = tracker.get_position()
+        v_lat, v_lon = tracker.get_velocity()
+        return lat + v_lat * dt, lon + v_lon * dt
+
+    def detect_route_deviation(self, current_lat: float, current_lon: float, route: Route, threshold_meters: float = 100.0) -> bool:
+        if not route.points:
+            return False
+
+        min_dist = float("inf")
+        for i in range(len(route.points) - 1):
+            p1 = route.points[i]
+            p2 = route.points[i+1]
+            dist = self._point_to_segment_distance(current_lat, current_lon, p1[0], p1[1], p2[0], p2[1])
+            if dist < min_dist:
+                min_dist = dist
+
+        return min_dist > threshold_meters
+
+    def _point_to_segment_distance(self, px, py, x1, y1, x2, y2) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return GeospatialTrackingService.calculate_distance(px, py, x1, y1)
+
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx*dx + dy*dy)
+        t = max(0.0, min(1.0, t))
+        
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        return GeospatialTrackingService.calculate_distance(px, py, proj_x, proj_y)
 
 
 def time_timestamp_ms() -> int:

@@ -106,3 +106,37 @@ def test_api_endpoints_integration(api_client):
         "signal_strength": 1.0
     })
     assert response.status_code == 200
+
+
+def test_route_optimization_and_prediction(api_client):
+    tracking_service.assets.clear()
+    tracking_service.geofences.clear()
+
+    # Test route optimization
+    response = api_client.post("/api/v1/geospatial/routes/optimize", json={
+        "asset_id": "asset_route",
+        "source": [0, 0],
+        "target": [2, 2]
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["asset_id"] == "asset_route"
+    assert "points" in data
+    assert len(data["points"]) > 0
+    assert data["eta_minutes"] > 0
+
+    # Test prediction
+    from src.geospatial.service import KalmanTracker
+    tracking_service.active_trackers["asset_predict"] = KalmanTracker(19.0760, 72.8777)
+
+    response_pred = api_client.get("/api/v1/geospatial/assets/asset_predict/predict?dt=15.0")
+    assert response_pred.status_code == 200
+    pred_data = response_pred.json()
+    assert pred_data["asset_id"] == "asset_predict"
+    assert "predicted_latitude" in pred_data
+    assert "predicted_longitude" in pred_data
+    assert pred_data["dt"] == 15.0
+
+    # Test prediction for non-existent asset
+    response_missing = api_client.get("/api/v1/geospatial/assets/non_existent_asset/predict")
+    assert response_missing.status_code == 404

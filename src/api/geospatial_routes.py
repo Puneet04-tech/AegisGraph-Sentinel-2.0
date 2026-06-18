@@ -8,14 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel
 
 from src.api.security import Role, require_role
-from src.geospatial.models import Geofence, GeofenceBreach
-from src.geospatial.service import GeospatialCryptor, AccessAuditLogger, GeospatialTrackingService
+from src.geospatial.models import Geofence, GeofenceBreach, Route
+from src.geospatial.service import GeospatialCryptor, AccessAuditLogger, GeospatialTrackingService, RouteOptimizationEngine
 
 router = APIRouter(prefix="/api/v1/geospatial", tags=["Geospatial Tracking"])
 
 cryptor = GeospatialCryptor()
 audit_logger = AccessAuditLogger()
 tracking_service = GeospatialTrackingService(cryptor, audit_logger)
+route_engine = RouteOptimizationEngine()
 
 
 class LocationUpdateRequestModel(BaseModel):
@@ -203,6 +204,54 @@ async def stream_geospatial_updates(websocket: WebSocket):
     finally:
         if websocket in tracking_service.websocket_listeners:
             tracking_service.websocket_listeners.remove(websocket)
+
+
+class OptimizeRouteRequestModel(BaseModel):
+    asset_id: str
+    source: List[int]
+    target: List[int]
+
+
+@router.post(
+    "/routes/optimize",
+    summary="Optimize route for asset",
+    response_model=Route,
+    dependencies=[Depends(require_role(Role.ANALYST))]
+)
+async def optimize_route(request: OptimizeRouteRequestModel):
+    """Calculates A* optimized route on 2D grid with traffic multipliers."""
+    if len(request.source) != 2 or len(request.target) != 2:
+        raise HTTPException(status_code=400, detail="Source and target must be 2D grid coordinates")
+    try:
+        source_tuple = (request.source[0], request.source[1])
+        target_tuple = (request.target[0], request.target[1])
+        route = route_engine.optimize_route(request.asset_id, source_tuple, target_tuple)
+        return route
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get(
+    "/assets/{asset_id}/predict",
+    summary="Predict asset next location using Kalman Filter tracker",
+    dependencies=[Depends(require_role(Role.ANALYST))]
+)
+async def predict_asset_location(asset_id: str, dt: float = 10.0):
+    """Predicts next location using Kalman tracking state."""
+    tracker = tracking_service.active_trackers.get(asset_id)
+    if not tracker:
+        raise HTTPException(status_code=404, detail="No active tracker found for asset")
+    
+    try:
+        lat, lon = route_engine.predict_next_location(tracker, dt)
+        return {
+            "asset_id": asset_id,
+            "predicted_latitude": lat,
+            "predicted_longitude": lon,
+            "dt": dt
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def register_routes(app):

@@ -1,9 +1,9 @@
 """
-Models for Issue #1024 - Drift Correction and Calibration.
+Models for Issue #1025 - Route Optimization and Prediction.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 from pydantic import BaseModel, Field
 
 
@@ -52,3 +52,13 @@ class GeofenceBreach(BaseModel):
     encrypted_lat: bytes
     encrypted_lon: bytes
     resolved: bool = False
+
+
+class Route(BaseModel):
+    """Represents a planned or optimized route."""
+    route_id: str
+    asset_id: str
+    points: List[Tuple[float, float]] = Field(default_factory=list)
+    optimized_points: List[Tuple[float, float]] = Field(default_factory=list)
+    eta_minutes: float = 0.0
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
