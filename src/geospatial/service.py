@@ -1,5 +1,5 @@
 """
-Services for Issue #1022 - Real-Time Update Pipeline.
+Services for Issue #1023 - Geofencing and Webhooks.
 """
 
 import asyncio
@@ -9,11 +9,12 @@ import logging
 import math
 import os
 import zlib
+import httpx
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple, Any, Set
+from typing import Dict, Optional, Tuple, Any, Set, List
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from src.geospatial.models import LocationUpdate, Asset
+from src.geospatial.models import LocationUpdate, Asset, Geofence, GeofenceBreach
 
 logger = logging.getLogger("geospatial")
 
@@ -42,6 +43,21 @@ class GeospatialCryptor:
         decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
         return struct_unpack_double(decrypted_data)
 
+    def encrypt_string(self, text: str, tenant_key: bytes) -> bytes:
+        """Encrypt string data."""
+        aesgcm = AESGCM(tenant_key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, text.encode("utf-8"), None)
+        return nonce + ciphertext
+
+    def decrypt_string(self, encrypted_data: bytes, tenant_key: bytes) -> str:
+        """Decrypt string data."""
+        nonce = encrypted_data[:12]
+        ciphertext = encrypted_data[12:]
+        aesgcm = AESGCM(tenant_key)
+        decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
+        return decrypted_data.decode("utf-8")
+
 
 def struct_pack_double(val: float) -> bytes:
     import struct
@@ -63,19 +79,25 @@ class AccessAuditLogger:
 
 
 class GeospatialTrackingService:
-    """Tracking service with coordinates encryption, async queue batching, delta filtering, and WebSocket push."""
+    """Tracking service with coordinates encryption, queue batching, and geofencing."""
     def __init__(self, cryptor: GeospatialCryptor, audit_logger: AccessAuditLogger):
         self.cryptor = cryptor
         self.audit_logger = audit_logger
         self.assets: Dict[str, Asset] = {}
+        self.geofences: Dict[str, Geofence] = {}
+        self.breach_history: List[GeofenceBreach] = []
+        self.geofence_states: Dict[str, Dict[str, bool]] = {}  # asset_id -> {geofence_id: is_inside}
         
         # Async Queue & Batching
         self.update_queue = asyncio.Queue()
         self._batch_processor_task = None
         self.batch_processing_active = False
 
-        # Active websocket connections
+        # WebSockets listeners
         self.websocket_listeners: Set[Any] = set()
+
+        # Webhook endpoints
+        self.webhook_urls: List[str] = []
 
     def start_batch_processing(self):
         """Start background queue batch processing loop."""
@@ -106,22 +128,18 @@ class GeospatialTrackingService:
         while self.batch_processing_active:
             try:
                 updates = []
-                # Fetch first item
                 item = await self.update_queue.get()
                 updates.append(item)
                 self.update_queue.task_done()
 
-                # Coalesce additional items in queue up to a limit
                 while not self.update_queue.empty() and len(updates) < 50:
                     item = self.update_queue.get_nowait()
                     updates.append(item)
                     self.update_queue.task_done()
 
-                # Process batch of updates
                 for asset_id, lat, lon, accuracy in updates:
                     await self._process_location_update(asset_id, lat, lon, accuracy)
 
-                # Delay slightly to allow batching
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
                 break
@@ -130,7 +148,7 @@ class GeospatialTrackingService:
                 await asyncio.sleep(1)
 
     async def _process_location_update(self, asset_id: str, lat: float, lon: float, accuracy: float):
-        """Directly processes location update with delta filtering."""
+        """Directly processes location update with delta filtering and geofence checks."""
         tenant_id = "default_tenant"
         tenant_key = self.cryptor.get_tenant_key(tenant_id)
 
@@ -139,7 +157,6 @@ class GeospatialTrackingService:
 
         asset = self.assets[asset_id]
         
-        # Audit logging
         self.audit_logger.log_access("system", "write_update", asset_id, tenant_id)
 
         # Delta Filtering
@@ -154,7 +171,7 @@ class GeospatialTrackingService:
         should_push = True
         if last_lat is not None and last_lon is not None:
             dist = self.calculate_distance(last_lat, last_lon, lat, lon)
-            if dist < 1.5:  # Filter out minor updates < 1.5m
+            if dist < 1.5:
                 should_push = False
 
         # Update
@@ -163,9 +180,74 @@ class GeospatialTrackingService:
         asset.last_updated = datetime.now(timezone.utc)
         asset.accuracy = accuracy
 
+        # Geofence evaluation
+        await self._evaluate_geofences_for_asset(asset_id, lat, lon, tenant_key)
+
         # Real-time WebSocket Push
         if should_push:
             await self._broadcast_update(asset_id, lat, lon, accuracy)
+
+    async def _evaluate_geofences_for_asset(self, asset_id: str, lat: float, lon: float, tenant_key: bytes):
+        """Evaluate geofence status for an asset and trigger entry/exit transition breach events."""
+        if asset_id not in self.geofence_states:
+            self.geofence_states[asset_id] = {}
+
+        states = self.geofence_states[asset_id]
+
+        for fence_id, fence in self.geofences.items():
+            is_inside = False
+            if fence.boundary_type == "circle":
+                c_lat = self.cryptor.decrypt_coordinate(fence.encrypted_center_lat, tenant_key)
+                c_lon = self.cryptor.decrypt_coordinate(fence.encrypted_center_lon, tenant_key)
+                dist = self.calculate_distance(lat, lon, c_lat, c_lon)
+                is_inside = (dist <= fence.radius_meters)
+            elif fence.boundary_type == "polygon":
+                coord_str = self.cryptor.decrypt_string(fence.encrypted_coordinates, tenant_key)
+                poly_pts = json.loads(coord_str)
+                is_inside = self.point_in_polygon(lat, lon, poly_pts)
+
+            was_inside = states.get(fence_id, None)
+            states[fence_id] = is_inside
+
+            if was_inside is not None and was_inside != is_inside:
+                # Transition detected!
+                breach_type = "EXIT" if was_inside and not is_inside else "ENTER"
+                breach = GeofenceBreach(
+                    alert_id=f"B_{int(time_timestamp_ms())}",
+                    asset_id=asset_id,
+                    geofence_id=fence_id,
+                    breach_type=breach_type,
+                    encrypted_lat=self.cryptor.encrypt_coordinate(lat, tenant_key),
+                    encrypted_lon=self.cryptor.encrypt_coordinate(lon, tenant_key)
+                )
+                self.breach_history.append(breach)
+                
+                # Webhook & WebSocket notification
+                await self._trigger_webhook(breach, lat, lon)
+                await self._broadcast_breach(breach, lat, lon)
+
+    def register_geofence(self, fence: Geofence):
+        self.geofences[fence.geofence_id] = fence
+
+    def register_webhook(self, url: str):
+        self.webhook_urls.append(url)
+
+    async def _trigger_webhook(self, breach: GeofenceBreach, lat: float, lon: float):
+        payload = {
+            "alert_id": breach.alert_id,
+            "asset_id": breach.asset_id,
+            "geofence_id": breach.geofence_id,
+            "breach_type": breach.breach_type,
+            "timestamp": breach.timestamp.isoformat(),
+            "latitude": lat,
+            "longitude": lon
+        }
+        async with httpx.AsyncClient() as client:
+            for url in self.webhook_urls:
+                try:
+                    await client.post(url, json=payload, timeout=2.0)
+                except Exception as e:
+                    logger.warning(f"Failed to post webhook to {url}: {e}")
 
     async def _broadcast_update(self, asset_id: str, lat: float, lon: float, accuracy: float):
         payload = {
@@ -178,8 +260,20 @@ class GeospatialTrackingService:
         }
         await self._send_compressed_websocket(payload)
 
+    async def _broadcast_breach(self, breach: GeofenceBreach, lat: float, lon: float):
+        payload = {
+            "type": "GEOFENCE_BREACH",
+            "alert_id": breach.alert_id,
+            "asset_id": breach.asset_id,
+            "geofence_id": breach.geofence_id,
+            "breach_type": breach.breach_type,
+            "latitude": lat,
+            "longitude": lon,
+            "timestamp": breach.timestamp.isoformat()
+        }
+        await self._send_compressed_websocket(payload)
+
     async def _send_compressed_websocket(self, payload: dict):
-        """Compress WebSocket payloads using zlib."""
         json_str = json.dumps(payload)
         compressed_bytes = zlib.compress(json_str.encode("utf-8"))
         for ws in list(self.websocket_listeners):
@@ -190,7 +284,6 @@ class GeospatialTrackingService:
 
     @staticmethod
     def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Calculate the Haversine distance in meters between two points."""
         R = 6371000.0
         phi1 = math.radians(lat1)
         phi2 = math.radians(lat2)
@@ -200,3 +293,21 @@ class GeospatialTrackingService:
         a = math.sin(d_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         return R * c
+
+    @staticmethod
+    def point_in_polygon(x: float, y: float, poly: List[List[float]]) -> bool:
+        num = len(poly)
+        i = 0
+        j = num - 1
+        c = False
+        for i in range(num):
+            if ((poly[i][1] > y) != (poly[j][1] > y)) and \
+                    (x < (poly[j][0] - poly[i][0]) * (y - poly[i][1]) / (poly[j][1] - poly[i][1]) + poly[i][0]):
+                c = not c
+            j = i
+        return c
+
+
+def time_timestamp_ms() -> int:
+    import time
+    return int(time.time() * 1000)
