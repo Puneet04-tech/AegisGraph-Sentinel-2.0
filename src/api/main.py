@@ -125,6 +125,7 @@ from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWa
 from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
+from .geospatial_routes import register_routes as register_geospatial_routes
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1683,6 +1684,7 @@ app.add_middleware(SecurityHeadersMiddleware, hsts=_hsts_enabled)
 
 # Register adaptive authentication routes
 register_adaptive_auth_routes(app)
+register_geospatial_routes(app)
 
 
 @app.get("/", tags=["Health"])

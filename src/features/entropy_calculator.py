@@ -232,7 +232,7 @@ class GraphEntropyCalculator:
             if len(direct_neighbors) < 2:
                 return {"structural_entropy": 0.0, "clustering_coefficient": 0.0}
 
-            if graph.is_directed():
+            if hasattr(graph, "is_directed") and graph.is_directed():
                 possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1)
             else:
                 possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1) / 2
