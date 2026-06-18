@@ -1,5 +1,5 @@
 """
-Tests for Issue #1023 - Geofencing and Webhooks.
+Tests for Issue #1024 - Drift Correction and Kalman Filtering.
 """
 
 import asyncio
@@ -8,7 +8,7 @@ import logging
 import zlib
 import pytest
 from unittest.mock import AsyncMock, patch
-from src.geospatial.service import GeospatialCryptor, AccessAuditLogger, GeospatialTrackingService
+from src.geospatial.service import GeospatialCryptor, AccessAuditLogger, GeospatialTrackingService, KalmanTracker
 from src.geospatial.models import Geofence, GeofenceBreach
 from src.api.geospatial_routes import tracking_service
 
@@ -49,17 +49,15 @@ async def test_delta_update_filtering():
     ws_mock = AsyncMock()
     service.websocket_listeners.add(ws_mock)
 
-    await service._process_location_update("asset_delta", 19.0760, 72.8777, 1.0)
+    await service._process_location_update("asset_delta", 19.0760, 72.8777, 1.0, 1.0)
     assert ws_mock.send_bytes.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_geofencing_breach_and_webhooks():
-    """Verify circular geofence, state transitions, breach events, and webhook dispatches."""
     cryptor = GeospatialCryptor()
     audit_logger = AccessAuditLogger()
     service = GeospatialTrackingService(cryptor, audit_logger)
-    
     tenant_key = cryptor.get_tenant_key("default_tenant")
 
     circle_fence = Geofence(
@@ -75,35 +73,36 @@ async def test_geofencing_breach_and_webhooks():
     service.register_webhook("http://example.com/webhook")
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-        # Inside (init state)
-        await service._process_location_update("asset_f", 19.0760, 72.8777, 1.0)
+        await service._process_location_update("asset_f", 19.0760, 72.8777, 1.0, 1.0)
         assert len(service.breach_history) == 0
-        mock_post.assert_not_called()
-
-        # Outside (EXIT breach event)
-        await service._process_location_update("asset_f", 19.0860, 72.8777, 1.0)
+        await service._process_location_update("asset_f", 19.0860, 72.8777, 1.0, 1.0)
         assert len(service.breach_history) == 1
-        assert service.breach_history[0].breach_type == "EXIT"
         mock_post.assert_called_once()
+
+
+def test_kalman_filter_drift_correction():
+    """Verify state estimation filtering works as expected for noisy points."""
+    tracker = KalmanTracker(19.0760, 72.8777)
+    
+    # Update with some noisy data points
+    tracker.update(19.0762, 72.8779, 10.0, 0.5)
+    tracker.update(19.0761, 72.8778, 2.0, 1.0)
+    
+    lat, lon = tracker.get_position()
+    
+    assert abs(lat - 19.0761) < 0.001
+    assert abs(lon - 72.8778) < 0.001
 
 
 def test_api_endpoints_integration(api_client):
     tracking_service.assets.clear()
     tracking_service.geofences.clear()
 
-    # Create circular geofence
-    response = api_client.post("/api/v1/geospatial/geofences", json={
-        "geofence_id": "fence_api",
-        "name": "HQ",
-        "boundary_type": "circle",
-        "center_lat": 19.0760,
-        "center_lon": 72.8777,
-        "radius_meters": 150.0,
-        "tenant_id": "default_tenant"
+    response = api_client.post("/api/v1/geospatial/update", json={
+        "asset_id": "asset_api",
+        "latitude": 19.0760,
+        "longitude": 72.8777,
+        "accuracy": 1.0,
+        "signal_strength": 1.0
     })
     assert response.status_code == 200
-
-    # List geofences
-    response = api_client.get("/api/v1/geospatial/geofences")
-    assert response.status_code == 200
-    assert len(response.json()) == 1

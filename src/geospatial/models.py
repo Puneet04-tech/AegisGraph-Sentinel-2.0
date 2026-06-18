@@ -1,9 +1,9 @@
 """
-Models for Issue #1023 - Geofencing.
+Models for Issue #1024 - Drift Correction and Calibration.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -15,16 +15,19 @@ class LocationUpdate(BaseModel):
     encrypted_longitude: bytes
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     accuracy: float = 1.0
+    signal_strength: float = 1.0
 
 
 class Asset(BaseModel):
-    """Represents an asset with encrypted coordinates."""
+    """Represents an asset with calibration parameters."""
     asset_id: str
     name: str
     encrypted_last_lat: Optional[bytes] = None
     encrypted_last_lon: Optional[bytes] = None
     last_updated: Optional[datetime] = None
     accuracy: float = 1.0
+    calibration_bias_lat: float = 0.0
+    calibration_bias_lon: float = 0.0
 
 
 class Geofence(BaseModel):

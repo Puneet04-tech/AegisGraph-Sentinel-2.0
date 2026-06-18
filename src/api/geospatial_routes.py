@@ -1,5 +1,5 @@
 """
-API routes for Issue #1023 - Geofencing.
+API routes for Issue #1024 - Drift Correction and Kalman Filtering.
 """
 
 import json
@@ -23,6 +23,7 @@ class LocationUpdateRequestModel(BaseModel):
     latitude: float
     longitude: float
     accuracy: float = 1.0
+    signal_strength: float = 1.0
 
 
 class GeofenceRequestModel(BaseModel):
@@ -51,7 +52,8 @@ async def submit_location_update(request: LocationUpdateRequestModel):
         asset_id=request.asset_id,
         lat=request.latitude,
         lon=request.longitude,
-        accuracy=request.accuracy
+        accuracy=request.accuracy,
+        signal_strength=request.signal_strength
     )
     return {"status": "queued", "asset_id": request.asset_id}
 

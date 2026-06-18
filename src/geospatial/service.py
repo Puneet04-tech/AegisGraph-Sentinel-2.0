@@ -1,5 +1,5 @@
 """
-Services for Issue #1023 - Geofencing and Webhooks.
+Services for Issue #1024 - Drift Correction and Kalman Filtering.
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import zlib
 import httpx
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple, Any, Set, List
+import numpy as np
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from src.geospatial.models import LocationUpdate, Asset, Geofence, GeofenceBreach
@@ -78,25 +79,75 @@ class AccessAuditLogger:
         )
 
 
+class KalmanTracker:
+    """Kalman filter for tracking 2D positions (lat/lon) and velocities."""
+    def __init__(self, initial_lat: float, initial_lon: float):
+        self.x = np.array([initial_lat, initial_lon, 0.0, 0.0], dtype=float)
+        self.P = np.eye(4, dtype=float) * 10.0
+        self.Q = np.eye(4, dtype=float) * 0.0001
+        self.Q[2, 2] = 0.001
+        self.Q[3, 3] = 0.001
+        self.last_update_time = datetime.now(timezone.utc)
+
+    def update(self, observed_lat: float, observed_lon: float, accuracy: float, signal_strength: float):
+        now = datetime.now(timezone.utc)
+        dt = (now - self.last_update_time).total_seconds()
+        self.last_update_time = now
+
+        if dt <= 0:
+            dt = 0.1
+
+        F = np.array([
+            [1.0, 0.0, dt,  0.0],
+            [0.0, 1.0, 0.0, dt ],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+        
+        self.x = F.dot(self.x)
+        self.P = F.dot(self.P).dot(F.T) + self.Q
+
+        H = np.array([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0]
+        ])
+
+        # Measurement noise covariance
+        noise_factor = (accuracy / max(0.1, signal_strength)) * 0.00001
+        R = np.eye(2, dtype=float) * noise_factor
+
+        z = np.array([observed_lat, observed_lon])
+        y = z - H.dot(self.x)
+        S = H.dot(self.P).dot(H.T) + R
+        K = self.P.dot(H.T).dot(np.linalg.inv(S))
+        
+        self.x = self.x + K.dot(y)
+        self.P = (np.eye(4) - K.dot(H)).dot(self.P)
+
+    def get_position(self) -> Tuple[float, float]:
+        return self.x[0], self.x[1]
+
+    def get_velocity(self) -> Tuple[float, float]:
+        return self.x[2], self.x[3]
+
+
 class GeospatialTrackingService:
-    """Tracking service with coordinates encryption, queue batching, and geofencing."""
+    """Tracking service with coordinates encryption, queue batching, geofencing, and Kalman drift correction."""
     def __init__(self, cryptor: GeospatialCryptor, audit_logger: AccessAuditLogger):
         self.cryptor = cryptor
         self.audit_logger = audit_logger
         self.assets: Dict[str, Asset] = {}
+        self.active_trackers: Dict[str, KalmanTracker] = {}
         self.geofences: Dict[str, Geofence] = {}
         self.breach_history: List[GeofenceBreach] = []
-        self.geofence_states: Dict[str, Dict[str, bool]] = {}  # asset_id -> {geofence_id: is_inside}
+        self.geofence_states: Dict[str, Dict[str, bool]] = {}
         
         # Async Queue & Batching
         self.update_queue = asyncio.Queue()
         self._batch_processor_task = None
         self.batch_processing_active = False
 
-        # WebSockets listeners
         self.websocket_listeners: Set[Any] = set()
-
-        # Webhook endpoints
         self.webhook_urls: List[str] = []
 
     def start_batch_processing(self):
@@ -118,10 +169,10 @@ class GeospatialTrackingService:
             except asyncio.CancelledError:
                 pass
 
-    async def add_update_to_queue(self, asset_id: str, lat: float, lon: float, accuracy: float):
+    async def add_update_to_queue(self, asset_id: str, lat: float, lon: float, accuracy: float, signal_strength: float = 1.0):
         """Enqueue update for non-blocking processing."""
         self.start_batch_processing()
-        await self.update_queue.put((asset_id, lat, lon, accuracy))
+        await self.update_queue.put((asset_id, lat, lon, accuracy, signal_strength))
 
     async def _process_queue_loop(self):
         """Processes incoming location updates in batches asynchronously."""
@@ -137,8 +188,8 @@ class GeospatialTrackingService:
                     updates.append(item)
                     self.update_queue.task_done()
 
-                for asset_id, lat, lon, accuracy in updates:
-                    await self._process_location_update(asset_id, lat, lon, accuracy)
+                for asset_id, lat, lon, accuracy, signal_strength in updates:
+                    await self._process_location_update(asset_id, lat, lon, accuracy, signal_strength)
 
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
@@ -147,8 +198,8 @@ class GeospatialTrackingService:
                 logger.error(f"Error in queue processing loop: {e}")
                 await asyncio.sleep(1)
 
-    async def _process_location_update(self, asset_id: str, lat: float, lon: float, accuracy: float):
-        """Directly processes location update with delta filtering and geofence checks."""
+    async def _process_location_update(self, asset_id: str, lat: float, lon: float, accuracy: float, signal_strength: float):
+        """Directly processes location update with calibration and Kalman Filtering."""
         tenant_id = "default_tenant"
         tenant_key = self.cryptor.get_tenant_key(tenant_id)
 
@@ -158,6 +209,18 @@ class GeospatialTrackingService:
         asset = self.assets[asset_id]
         
         self.audit_logger.log_access("system", "write_update", asset_id, tenant_id)
+
+        # 1. Calibration Offset Correction
+        calibrated_lat = lat - asset.calibration_bias_lat
+        calibrated_lon = lon - asset.calibration_bias_lon
+
+        # 2. Kalman Filter smoothing
+        if asset_id not in self.active_trackers:
+            self.active_trackers[asset_id] = KalmanTracker(calibrated_lat, calibrated_lon)
+        
+        tracker = self.active_trackers[asset_id]
+        tracker.update(calibrated_lat, calibrated_lon, accuracy, signal_strength)
+        est_lat, est_lon = tracker.get_position()
 
         # Delta Filtering
         last_lat, last_lon = None, None
@@ -170,25 +233,24 @@ class GeospatialTrackingService:
 
         should_push = True
         if last_lat is not None and last_lon is not None:
-            dist = self.calculate_distance(last_lat, last_lon, lat, lon)
+            dist = self.calculate_distance(last_lat, last_lon, est_lat, est_lon)
             if dist < 1.5:
                 should_push = False
 
         # Update
-        asset.encrypted_last_lat = self.cryptor.encrypt_coordinate(lat, tenant_key)
-        asset.encrypted_last_lon = self.cryptor.encrypt_coordinate(lon, tenant_key)
+        asset.encrypted_last_lat = self.cryptor.encrypt_coordinate(est_lat, tenant_key)
+        asset.encrypted_last_lon = self.cryptor.encrypt_coordinate(est_lon, tenant_key)
         asset.last_updated = datetime.now(timezone.utc)
         asset.accuracy = accuracy
 
         # Geofence evaluation
-        await self._evaluate_geofences_for_asset(asset_id, lat, lon, tenant_key)
+        await self._evaluate_geofences_for_asset(asset_id, est_lat, est_lon, tenant_key)
 
         # Real-time WebSocket Push
         if should_push:
-            await self._broadcast_update(asset_id, lat, lon, accuracy)
+            await self._broadcast_update(asset_id, est_lat, est_lon, accuracy)
 
     async def _evaluate_geofences_for_asset(self, asset_id: str, lat: float, lon: float, tenant_key: bytes):
-        """Evaluate geofence status for an asset and trigger entry/exit transition breach events."""
         if asset_id not in self.geofence_states:
             self.geofence_states[asset_id] = {}
 
@@ -210,7 +272,6 @@ class GeospatialTrackingService:
             states[fence_id] = is_inside
 
             if was_inside is not None and was_inside != is_inside:
-                # Transition detected!
                 breach_type = "EXIT" if was_inside and not is_inside else "ENTER"
                 breach = GeofenceBreach(
                     alert_id=f"B_{int(time_timestamp_ms())}",
@@ -222,7 +283,6 @@ class GeospatialTrackingService:
                 )
                 self.breach_history.append(breach)
                 
-                # Webhook & WebSocket notification
                 await self._trigger_webhook(breach, lat, lon)
                 await self._broadcast_breach(breach, lat, lon)
 
