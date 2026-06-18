@@ -32,8 +32,9 @@ class TestVerifyMfa:
             mfa_enabled=True, mfa_secret=secret,
         )
         svc = _make_service([user])
+        mfa_challenge = svc.authenticate_user("a@example.com", "password").mfa_token
         totp_token = pyotp.TOTP(secret).now()
-        result = svc.verify_mfa("u1", mfa_token="any", token=totp_token)
+        result = svc.verify_mfa("u1", mfa_token=mfa_challenge, token=totp_token)
         assert result.success is True
         assert result.organization_id == "org_a"
 
@@ -44,9 +45,39 @@ class TestVerifyMfa:
             mfa_enabled=True, mfa_secret=secret,
         )
         svc = _make_service([user])
-        result = svc.verify_mfa("u2", mfa_token="any", token="000000")
+        mfa_challenge = svc.authenticate_user("b@example.com", "password").mfa_token
+        result = svc.verify_mfa("u2", mfa_token=mfa_challenge, token="000000")
         assert result.success is False
         assert "Invalid MFA token" in result.error
+
+    def test_missing_login_challenge_rejected(self):
+        secret = pyotp.random_base32()
+        user = UserRecord(
+            user_id="u8", organization_id="org_h", email="h@example.com",
+            mfa_enabled=True, mfa_secret=secret,
+        )
+        svc = _make_service([user])
+        totp_token = pyotp.TOTP(secret).now()
+        result = svc.verify_mfa("u8", mfa_token="not-issued-by-login", token=totp_token)
+        assert result.success is False
+        assert "challenge" in result.error.lower()
+
+    def test_mfa_challenge_is_single_use(self):
+        secret = pyotp.random_base32()
+        user = UserRecord(
+            user_id="u9", organization_id="org_i", email="i@example.com",
+            mfa_enabled=True, mfa_secret=secret,
+        )
+        svc = _make_service([user])
+        mfa_challenge = svc.authenticate_user("i@example.com", "password").mfa_token
+        totp_token = pyotp.TOTP(secret).now()
+
+        first = svc.verify_mfa("u9", mfa_token=mfa_challenge, token=totp_token)
+        second = svc.verify_mfa("u9", mfa_token=mfa_challenge, token=totp_token)
+
+        assert first.success is True
+        assert second.success is False
+        assert "challenge" in second.error.lower()
 
     def test_unknown_user_rejected(self):
         svc = _make_service()
@@ -71,9 +102,10 @@ class TestVerifyMfa:
         user_a = UserRecord("ua", "org_a", "a@x.com", mfa_enabled=True, mfa_secret=secret_a)
         user_b = UserRecord("ub", "org_b", "b@x.com", mfa_enabled=True, mfa_secret=secret_b)
         svc = _make_service([user_a, user_b])
+        mfa_challenge = svc.authenticate_user("b@x.com", "password").mfa_token
         token_for_a = pyotp.TOTP(secret_a).now()
         # token generated for user A must not authenticate user B
-        result = svc.verify_mfa("ub", mfa_token="any", token=token_for_a)
+        result = svc.verify_mfa("ub", mfa_token=mfa_challenge, token=token_for_a)
         assert result.success is False
 
 

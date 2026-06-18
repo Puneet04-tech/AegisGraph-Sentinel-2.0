@@ -8,8 +8,10 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 import pyotp
 import bcrypt
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
@@ -164,6 +166,9 @@ class AuthService:
         self.refresh_token_expiry = config.get("refresh_token_expiry", 86400 * 7)  # 7 days
 
         self.user_store: UserStore = user_store or InMemoryUserStore()
+        self._mfa_challenges: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._mfa_challenge_ttl = int(config.get("mfa_challenge_ttl", 300))
+        self._mfa_challenge_max = int(config.get("mfa_challenge_max", 4096))
 
         # SSO providers
         self.sso_providers: Dict[str, 'SSOProvider'] = {}
@@ -262,7 +267,7 @@ class AuthService:
         org_id = organization_id or record.organization_id
 
         if record.mfa_enabled:
-            mfa_token = secrets.token_hex(16)
+            mfa_token = self._create_mfa_challenge(record.user_id)
             return AuthResult(
                 success=True,
                 user_id=record.user_id,
@@ -327,6 +332,41 @@ class AuthService:
 
         return self._create_auth_result(record, org_id, provider=provider)
 
+    def _create_mfa_challenge(self, user_id: str) -> str:
+        """Create a bounded, short-lived MFA challenge token for first-factor continuity."""
+        now = time.monotonic()
+        self._prune_mfa_challenges(now)
+
+        challenge = secrets.token_urlsafe(32)
+        self._mfa_challenges[challenge] = (user_id, now + self._mfa_challenge_ttl)
+        self._mfa_challenges.move_to_end(challenge)
+
+        while len(self._mfa_challenges) > self._mfa_challenge_max:
+            self._mfa_challenges.popitem(last=False)
+
+        return challenge
+
+    def _prune_mfa_challenges(self, now: Optional[float] = None) -> None:
+        """Remove expired MFA challenges."""
+        current = time.monotonic() if now is None else now
+        expired = [
+            challenge
+            for challenge, (_, expires_at) in self._mfa_challenges.items()
+            if expires_at <= current
+        ]
+        for challenge in expired:
+            self._mfa_challenges.pop(challenge, None)
+
+    def _consume_mfa_challenge(self, user_id: str, mfa_token: str) -> bool:
+        """Consume a valid MFA challenge token for the expected user."""
+        self._prune_mfa_challenges()
+        challenge = self._mfa_challenges.pop(mfa_token, None)
+        if challenge is None:
+            return False
+
+        challenge_user_id, _ = challenge
+        return secrets.compare_digest(challenge_user_id, user_id)
+
     def verify_mfa(self, user_id: str, mfa_token: str, token: str) -> AuthResult:
         """Verify TOTP MFA token and complete authentication.
 
@@ -340,6 +380,9 @@ class AuthService:
 
         if not record.mfa_enabled or not record.mfa_secret:
             return AuthResult(success=False, error="MFA is not configured for this user")
+
+        if not self._consume_mfa_challenge(user_id, mfa_token):
+            return AuthResult(success=False, error="Invalid or expired MFA challenge")
 
         if not self.verify_mfa_token(record.mfa_secret, token):
             return AuthResult(success=False, error="Invalid MFA token")
