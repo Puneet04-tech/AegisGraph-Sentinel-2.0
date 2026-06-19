@@ -107,9 +107,9 @@ jobs:
                   # E.g., extracts 'src/inference' from 'src/inference/scorer.py'
                   parent_dir = os.path.dirname(f)
                   impacted_dirs.add(os.path.basename(parent_dir))
-          # E.g., extracts 'scorer' from 'src/inference/scorer.py'
-          file_basename = os.path.basename(f).replace('.py', '')
-          impacted_files.add(file_basename)
+              # E.g., extracts 'scorer' from 'src/inference/scorer.py'
+              file_basename = os.path.basename(f).replace('.py', '')
+              impacted_files.add(file_basename)
           
           print(f"Impacted structural component keywords: {list(impacted_dirs)}")
           print(f"Impacted file basenames: {list(impacted_files)}")
