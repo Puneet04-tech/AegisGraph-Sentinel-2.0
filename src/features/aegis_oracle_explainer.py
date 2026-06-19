@@ -43,6 +43,45 @@ class AegisOracleExplainer:
             'device_anomaly': "Unusual device or location pattern detected: {evidence}",
         }
     
+    def _classify_confidence(self, confidence: float) -> str:
+        """Classify confidence into human-readable levels."""
+
+        if confidence >= 0.90:
+            return "HIGH"
+        elif confidence >= 0.70:
+            return "MEDIUM"
+        return "LOW"
+
+
+    def _generate_confidence_reasoning(
+        self,
+        confidence: float,
+        risk_score: float,
+        causal_factors: List[Dict],
+    ) -> List[str]:
+        """Generate explanation for confidence score."""
+
+        reasons = []
+
+        if confidence >= 0.90:
+            reasons.append("Model confidence is very strong.")
+
+        elif confidence >= 0.70:
+            reasons.append("Model confidence is moderate.")
+
+        else:
+            reasons.append("Model confidence is limited.")
+
+        if risk_score >= 0.90:
+            reasons.append("Risk score exceeds fraud threshold.")
+
+        if len(causal_factors) >= 3:
+            reasons.append(
+                "Multiple independent fraud indicators support the decision."
+            )
+
+        return reasons
+    
     def generate_explanation(
         self,
         transaction: Dict,
@@ -76,7 +115,12 @@ class AegisOracleExplainer:
             innovations_triggered or [],
             attention_weights or {}
         )
-        
+        confidence_level = self._classify_confidence(confidence)
+        confidence_reasoning = self._generate_confidence_reasoning(
+            confidence,
+            risk_score,
+            causal_factors,
+        )
         # Generate main explanation narrative
         main_narrative = self._generate_narrative(
             transaction,
@@ -113,6 +157,8 @@ class AegisOracleExplainer:
             'decision': decision,
             'risk_score': f"{risk_score:.1%}",
             'confidence': f"{confidence:.1%}",
+            'confidence_level': confidence_level,
+            'confidence_reasoning': confidence_reasoning,
             'main_narrative': main_narrative,
             'detailed_reasoning': detailed_reasoning,
             'causal_factors': causal_factors,
