@@ -132,7 +132,8 @@ def _estimate_csv_rows(uploaded_file) -> int:
     """Count CSV rows in bounded chunks without materializing the file."""
     uploaded_file.seek(0)
     total_rows = 0
-    for chunk in pd.read_csv(uploaded_file, chunksize=BATCH_CHUNK_SIZE):
+    for i in range(0, len(st.session_state["batch_df"]), BATCH_CHUNK_SIZE):
+        chunk = st.session_state["batch_df"].iloc[i:i+BATCH_CHUNK_SIZE]
         total_rows += len(chunk)
         if total_rows >= BATCH_MAX_ROWS:
             break
@@ -142,7 +143,7 @@ def _estimate_csv_rows(uploaded_file) -> int:
 
 def _schedule_live_refresh(interval_ms: int = 1500) -> None:
     """Request a non-blocking dashboard refresh when the helper is available."""
-    if st_autorefresh is not None:
+    if st_autorefresh is not None and st.session_state.get("page") == "🧭 Command Center":
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
@@ -681,6 +682,7 @@ with st.sidebar:
             "ℹ️ System Brief",
         ],
     )
+    st.session_state["page"] = page
 
     st.markdown("---")
 
@@ -725,6 +727,10 @@ with st.sidebar:
 # Page: Dashboard
 if page == "🧭 Command Center":
     st.header("🧭 Real-Time Command Center")
+
+    # Display last updated timestamp
+    last_updated_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(f"<p style='text-align: right; color: #94a3b8;'>Last updated: {last_updated_time}</p>", unsafe_allow_html=True)
 
     # Live Mode Toggle
     live_mode = st.toggle(
@@ -1095,8 +1101,18 @@ elif page == "📁 Batch Triage":
 
     st.info("💡 Process multiple transactions at once for bulk fraud detection")
 
-    # File Upload
+    if "batch_results" not in st.session_state:
+        st.session_state["batch_results"] = None
+    if "batch_df" not in st.session_state:
+        st.session_state["batch_df"] = None
+
     uploaded_file = st.file_uploader("Upload CSV file with transactions", type=["csv"])
+    if uploaded_file is not None:
+        st.session_state["batch_df"] = pd.read_csv(uploaded_file)
+        st.session_state["batch_results"] = None
+        if st.session_state.get("last_uploaded_name") != uploaded_file.name:
+            st.session_state["batch_results"] = None
+            st.session_state["last_uploaded_name"] = uploaded_file.name
 
     if uploaded_file is not None:
         try:
@@ -1107,7 +1123,7 @@ elif page == "📁 Batch Triage":
                 st.stop()
 
             uploaded_file.seek(0)
-            preview_df = pd.read_csv(uploaded_file, nrows=BATCH_PREVIEW_ROWS)
+            preview_df = st.session_state["batch_df"].head(BATCH_PREVIEW_ROWS)
             uploaded_file.seek(0)
 
             missing_cols = _validate_csv_columns(preview_df)
@@ -1119,7 +1135,7 @@ elif page == "📁 Batch Triage":
                 )
                 st.stop()
 
-            estimated_rows = _estimate_csv_rows(uploaded_file)
+            estimated_rows = len(st.session_state["batch_df"])
             uploaded_file.seek(0)
 
             st.success(
@@ -1144,7 +1160,8 @@ elif page == "📁 Batch Triage":
                 total_rows = max(min(estimated_rows, BATCH_MAX_ROWS), 1)
 
                 uploaded_file.seek(0)
-                for chunk in pd.read_csv(uploaded_file, chunksize=BATCH_CHUNK_SIZE):
+                for i in range(0, len(st.session_state["batch_df"]), BATCH_CHUNK_SIZE):
+                    chunk = st.session_state["batch_df"].iloc[i:i+BATCH_CHUNK_SIZE]
                     for _, row in chunk.iterrows():
                         if processed_rows >= BATCH_MAX_ROWS:
                             break

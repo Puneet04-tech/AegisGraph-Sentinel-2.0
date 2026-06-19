@@ -24,12 +24,13 @@ import warnings
 
 logger = logging.getLogger(__name__)
 
+librosa = None
 try:
-    import librosa
     import scipy.signal as signal
     from scipy import fft
-    AUDIO_LIBS_AVAILABLE = True
-except ImportError:
+    import importlib.util
+    AUDIO_LIBS_AVAILABLE = importlib.util.find_spec("librosa") is not None
+except Exception:
     AUDIO_LIBS_AVAILABLE = False
     warnings.warn("Audio analysis libraries not available. Install librosa for full functionality.")
 
@@ -117,6 +118,9 @@ class VoiceStressAnalyzer:
         # Normalize
         audio = audio / (np.max(np.abs(audio)) + 1e-8)
 
+        # Apply noise reduction preprocessing step
+        audio = self.reduce_noise(audio, sr)
+
         audio_profile = self._prepare_audio_profile(audio, sr)
 
         # Extract features from shared precomputed audio statistics.
@@ -142,6 +146,9 @@ class VoiceStressAnalyzer:
 
     def _prepare_audio_profile(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
         """Precompute reusable clip statistics so feature extractors do one shared pass."""
+        global librosa
+        if librosa is None:
+            import librosa
         frame_length = max(int(0.03 * sr), 1)
         hop_length = max(frame_length // 2, 1)
 
@@ -274,6 +281,42 @@ class VoiceStressAnalyzer:
             'snr_stress': snr_stress,
         }
     
+
+    def reduce_noise(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply spectral subtraction noise reduction using librosa."""
+        if not AUDIO_LIBS_AVAILABLE or audio is None or audio.size == 0:
+            return audio
+        try:
+            import librosa
+            noise_len = min(int(0.25 * sr), len(audio))
+            if noise_len < 512:
+                return audio
+            
+            n_fft = 512
+            hop_length = n_fft // 4
+            
+            stft_signal = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+            abs_signal = np.abs(stft_signal)
+            
+            stft_noise = librosa.stft(audio[:noise_len], n_fft=n_fft, hop_length=hop_length)
+            mean_noise = np.mean(np.abs(stft_noise), axis=1, keepdims=True)
+            
+            subtracted = abs_signal - 2.0 * mean_noise
+            subtracted = np.maximum(subtracted, 0.02 * abs_signal)
+            
+            phase = np.angle(stft_signal)
+            stft_clean = subtracted * np.exp(1j * phase)
+            clean_audio = librosa.istft(stft_clean, hop_length=hop_length)
+            
+            if len(clean_audio) > len(audio):
+                clean_audio = clean_audio[:len(audio)]
+            elif len(clean_audio) < len(audio):
+                clean_audio = np.pad(clean_audio, (0, len(audio) - len(clean_audio)))
+            return clean_audio
+        except Exception as e:
+            logger.error(f"Noise reduction failed: {e}")
+            return audio
+
     def _extract_pitch_features(
         self,
         audio: np.ndarray,
@@ -498,18 +541,22 @@ class VoiceStressAnalyzer:
         try:
             # Load audio from file path into numpy array
             if AUDIO_LIBS_AVAILABLE:
+                global librosa
+                if librosa is None:
+                    import librosa
                 audio, sr = librosa.load(audio_file, sr=sample_rate, duration=self.max_seconds)
             else:
                 logger.warning("Audio libraries not available, returning mock features")
                 audio = None
                 sr = sample_rate
-                features = self.extract_features(audio, sr)
-                if self.user_baseline is None:
-                    self.user_baseline = {'f0_mean': features.f0_mean, 'speech_rate': features.speech_rate}
-                else:
-                    alpha = 0.3
-                    self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
-                    self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
+
+            features = self.extract_features(audio, sr)
+            if self.user_baseline is None:
+                self.user_baseline = {'f0_mean': features.f0_mean, 'speech_rate': features.speech_rate}
+            else:
+                alpha = 0.3
+                self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
+                self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
 
             result = self.detect_stress(features, self.user_baseline)
             

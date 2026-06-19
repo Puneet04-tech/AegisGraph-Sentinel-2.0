@@ -99,3 +99,52 @@ def test_unsupported_type_dict_returns_fallback(calc):
 
 def test_random_string_returns_fallback(calc):
     assert calc._normalize_timestamp("abc-xyz-123", 77.0) == 77.0 
+
+# --- Unix timestamp as string ---
+def test_unix_timestamp_string(calc):
+    result = calc._normalize_timestamp("1700000000", 0.0)
+    assert result == 1700000000.0
+
+
+# --- RFC 3339 with space instead of T ---
+def test_rfc3339_space_separator(calc):
+    result = calc._normalize_timestamp("2024-01-01 12:00:00+00:00", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+# --- Common date formats ---
+def test_dot_separated_date(calc):
+    result = calc._normalize_timestamp("2024.01.01", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+def test_slash_separated_date_dmy(calc):
+    result = calc._normalize_timestamp("01/01/2024", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+def test_slash_separated_date_mdy(calc):
+    result = calc._normalize_timestamp("01/15/2024", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+def test_dash_separated_date_dmy(calc):
+    result = calc._normalize_timestamp("01-01-2024", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+def test_month_name_short(calc):
+    result = calc._normalize_timestamp("Jan 01 2024", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0
+
+
+def test_month_name_full(calc):
+    result = calc._normalize_timestamp("January 01 2024", 0.0)
+    assert isinstance(result, float)
+    assert result > 0.0 

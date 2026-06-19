@@ -27,7 +27,8 @@ class AegisGraphLoader:
     Prevents Out-Of-Memory (OOM) errors and data leakage (future peeking).
     """
     
-    def __init__(self, graph_path: Optional[str] = None, batch_size: int = 128):
+    def __init__(self, graph_path: Optional[str] = None, batch_size: int = 128, chunk_size: int = 1000):
+        self.chunk_size = chunk_size
         self.graph_path = graph_path or os.getenv("AEGIS_GRAPH_PATH", 'synthetic_aegis_graph.pt')
         self.batch_size = batch_size
         self.data = self._load_and_prep_graph()

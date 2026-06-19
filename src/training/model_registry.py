@@ -12,8 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-import pickle
-
 from .storage_backends import LocalBackend, StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -47,16 +45,10 @@ class ModelRegistry:
             raise ValueError(f"Invalid artifact_path {artifact_path} outside of registry_dir {self.registry_dir}")
 
         # Atomic write: save to temp file, compute checksum, then rename.
-        # Torch can be unstable in the CI runner; fall back to pickle if torch.save fails.
         tmp_path = artifact_path.with_suffix(".tmp")
-        try:
-            import torch  # type: ignore
+        import torch  # type: ignore
 
-            torch.save(checkpoint, tmp_path)
-        except Exception as exc:
-            logger.warning("Torch save failed (%s); falling back to pickle serialization", exc)
-            with open(tmp_path, "wb") as fh:
-                pickle.dump(checkpoint, fh)
+        torch.save(checkpoint, tmp_path)
 
         with open(tmp_path, "rb") as f:
             artifact_sha256 = hashlib.sha256(f.read()).hexdigest()
@@ -148,23 +140,13 @@ class ModelRegistry:
                 return False
 
         try:
-            # Lazy torch import to avoid CI environments where torch initialisation is unstable.
             import torch  # type: ignore
 
             checkpoint = torch.load(artifact_path, map_location=device, weights_only=True)
             model.load_state_dict(checkpoint["model_state"])
         except Exception as exc:
-            # Fall back to pickle if torch load fails due to CI/runtime issues.
-            try:
-                with open(artifact_path, "rb") as fh:
-                    checkpoint = pickle.load(fh)
-                if isinstance(checkpoint, dict) and "model_state" in checkpoint and hasattr(model, "load_state_dict"):
-                    model.load_state_dict(checkpoint["model_state"])
-                else:
-                    return False
-            except Exception:
-                logger.warning("Failed to load champion checkpoint from %s: %s", artifact_path, exc)
-                return False
+            logger.warning("Failed to load champion checkpoint from %s: %s", artifact_path, exc)
+            return False
 
         return True
 

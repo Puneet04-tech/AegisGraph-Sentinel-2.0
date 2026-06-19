@@ -134,11 +134,22 @@ class Neo4jGraphProvider:
                 self.enabled = False
                 self._driver = None
 
+    MAX_SAFE_SUBGRAPH_HOPS = 5
+
+    def _normalize_max_hops(self, max_hops: int) -> int:
+        """Return a safe integer hop count for Cypher relationship length syntax."""
+        if isinstance(max_hops, bool) or not isinstance(max_hops, int):
+            raise ValueError("max_hops must be an integer")
+        return min(max(max_hops, 1), self.MAX_SAFE_SUBGRAPH_HOPS)
+
     def _cache_key(self, account_id: str, max_hops: int) -> str:
-        # Cache is keyed only by account_id (tests assert this behavior).
-        # max_hops is still part of the query semantics, but is intentionally
-        # not used in the cache key to keep cache invalidation simple.
-        return account_id
+        return f"{account_id}:{max_hops}"
+
+    def _invalidate_subgraph_cache_for(self, account_id: str) -> None:
+        prefix = f"{account_id}:"
+        for key in list(self._subgraph_cache):
+            if key == account_id or key.startswith(prefix):
+                self._subgraph_cache.pop(key, None)
 
     def _get_cached_subgraph(self, account_id: str, max_hops: int, now: float) -> Optional[nx.DiGraph]:
         key = self._cache_key(account_id, max_hops)
@@ -265,10 +276,8 @@ class Neo4jGraphProvider:
                     timestamp=timestamp,
                 )
             # Invalidate any cached local subgraphs for the involved accounts.
-            # Cache keys are expected to be only the account_id (tests assert this),
-            # so remove direct entries for both accounts.
-            self._subgraph_cache.pop(src_account, None)
-            self._subgraph_cache.pop(dst_account, None)
+            self._invalidate_subgraph_cache_for(src_account)
+            self._invalidate_subgraph_cache_for(dst_account)
         except Exception as e:
             logger.error(f"Failed to record transaction {src_account} -> {dst_account} in Neo4j: {e}")
 
@@ -279,8 +288,7 @@ class Neo4jGraphProvider:
         Extract the k-hop local transaction network around an account ID from Neo4j,
         reconstructing it as a directed NetworkX DiGraph.
         """
-        if max_hops < 1:
-            max_hops = 1
+        max_hops = self._normalize_max_hops(max_hops)
         if not self.is_active:
             G = nx.DiGraph()
             G.add_node(account_id)
