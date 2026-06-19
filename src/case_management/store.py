@@ -190,7 +190,7 @@ class CaseStore:
     # ------------------------------------------------------------------
 
     def add_comment(
-        self, case_id: str, analyst_id: str, text: str
+        self, case_id: str, analyst_id: str, text: str, tenant_id: str = "default",
     ) -> CaseComment:
         with self._lock:
             case = self._get_or_raise(case_id)
