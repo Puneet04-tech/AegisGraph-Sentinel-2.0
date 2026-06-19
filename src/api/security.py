@@ -83,6 +83,9 @@ from typing import Annotated, Dict, List, Optional, Tuple
 
 from fastapi import Header, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
+import json
+import base64
+from fastapi.security import OAuth2PasswordBearer
 
 
 class Role(str, Enum):
@@ -191,18 +194,39 @@ def _invalidate_auth_cache() -> None:
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/token", auto_error=False)
+SECRET_KEY = os.getenv("AEGIS_JWT_SECRET", "super-secret-default-key")
+
+def create_access_token(data: dict) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+    signature = base64.urlsafe_b64encode(hmac.new(SECRET_KEY.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()).decode().rstrip("=")
+    return f"{header}.{payload}.{signature}"
+
+def decode_access_token(token: str) -> Optional[dict]:
+    try:
+        header, payload, signature = token.split(".")
+        expected_sig = base64.urlsafe_b64encode(hmac.new(SECRET_KEY.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()).decode().rstrip("=")
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        padded_payload = payload + "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded_payload).decode())
+    except Exception:
+        return None
+
+
 def require_api_key(
-    x_api_key: str = Security(api_key_header),
+    x_api_key: Optional[str] = Security(api_key_header),
+    token: Optional[str] = Security(oauth2_scheme),
 ) -> None:
     """FastAPI dependency that gates a route behind a generic API key check.
-
-    Preserved for backward compatibility. Checks general and role-specific keys.
-
-    Raises:
-        HTTPException 503: No API keys configured.
-        HTTPException 401: X-API-Key header missing.
-        HTTPException 403: Invalid API key.
+    Supports both API Keys and OAuth2 Bearer tokens.
     """
+    if token:
+        payload = decode_access_token(token)
+        if payload and "role" in payload:
+            return None
+
     if not _is_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -216,7 +240,7 @@ def require_api_key(
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-API-Key header",
+            detail="Missing X-API-Key or Bearer token",
         )
 
     role = _get_key_role(x_api_key)
@@ -247,25 +271,30 @@ def require_role(*allowed_roles: Role):
         HTTPException 403: Insufficient permissions for the requested role.
     """
     def dependency(
-        x_api_key: str = Security(api_key_header),
+        x_api_key: Optional[str] = Security(api_key_header),
+        token: Optional[str] = Security(oauth2_scheme),
     ) -> Role:
-        if not _is_configured():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="API key authentication is not configured.",
-            )
-
-        if not x_api_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing X-API-Key header",
-            )
-
-        role = _get_key_role(x_api_key)
+        role = None
+        if token:
+            payload = decode_access_token(token)
+            if payload and "role" in payload:
+                try:
+                    role = Role(payload["role"])
+                except ValueError:
+                    pass
+        
+        if role is None and x_api_key:
+            if not _is_configured():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="API key authentication is not configured.",
+                )
+            role = _get_key_role(x_api_key)
+            
         if role is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key",
+                detail="Missing or invalid authentication credentials",
             )
 
         has_access = any(
