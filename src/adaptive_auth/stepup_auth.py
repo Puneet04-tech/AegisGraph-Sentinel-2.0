@@ -99,8 +99,8 @@ class StepUpAuthService:
         self.store = store
         self._configs = self.DEFAULT_CONFIGS.copy()
         self._totp_secrets: LRUCache = LRUCache(maxsize=100000)  # user_id -> secret
-        self._verification_codes: Dict[str, str] = {}  # challenge_id -> code
-        self._callback_pending: Dict[str, Dict[str, Any]] = {}  # challenge_id -> callback info
+        self._verification_codes: LRUCache = LRUCache(maxsize=100000)  # challenge_id -> code
+        self._callback_pending: LRUCache = LRUCache(maxsize=100000)  # challenge_id -> callback info
 
     def configure_challenge(
         self,
@@ -202,6 +202,9 @@ class StepUpAuthService:
         if challenge.is_expired():
             challenge.status = "expired"
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
             return ChallengeResponse(
                 challenge_id=challenge_id,
                 success=False,
@@ -234,6 +237,9 @@ class StepUpAuthService:
             challenge.status = "completed"
             challenge.completed_at = datetime.now(timezone.utc)
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
 
             # Update session trust
             session = self.store.get_session_unsafe(challenge.session_id)
@@ -256,6 +262,13 @@ class StepUpAuthService:
         else:
             remaining = challenge.max_attempts - challenge.attempts
             self.store.update_challenge(challenge)
+            if remaining <= 0:
+                challenge.status = "failed"
+                challenge.failure_reason = "Maximum attempts exceeded"
+                self.store.update_challenge(challenge)
+                self._verification_codes.pop(challenge_id, None)
+                self._verification_codes.pop(f"{challenge_id}_otp", None)
+                self._callback_pending.pop(challenge_id, None)
 
             return ChallengeResponse(
                 challenge_id=challenge_id,
@@ -359,6 +372,9 @@ class StepUpAuthService:
         if challenge and challenge.status == "pending":
             challenge.status = "cancelled"
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
             return True
         return False
 
