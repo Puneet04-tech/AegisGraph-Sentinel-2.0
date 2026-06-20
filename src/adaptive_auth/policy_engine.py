@@ -8,6 +8,7 @@ trust levels, risk scores, and contextual factors.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -496,14 +497,17 @@ class PolicyEngine:
 
 # Global engine instance
 _engine: Optional[PolicyEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_policy_engine() -> PolicyEngine:
     """Get the global policy engine instance."""
     global _engine
     if _engine is None:
-        store = get_adaptive_auth_store()
-        _engine = PolicyEngine(store)
+        with _engine_lock:
+            if _engine is None:
+                store = get_adaptive_auth_store()
+                _engine = PolicyEngine(store)
     return _engine
 
 

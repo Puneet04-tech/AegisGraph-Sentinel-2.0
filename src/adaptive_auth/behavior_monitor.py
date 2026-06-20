@@ -8,6 +8,7 @@ behavioral profiles for risk assessment.
 from __future__ import annotations
 
 import statistics
+import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -550,14 +551,17 @@ class BehaviorMonitor:
 
 # Global monitor instance
 _monitor: Optional[BehaviorMonitor] = None
+_monitor_lock = threading.Lock()
 
 
 def get_behavior_monitor() -> BehaviorMonitor:
     """Get the global behavior monitor instance."""
     global _monitor
     if _monitor is None:
-        store = get_adaptive_auth_store()
-        _monitor = BehaviorMonitor(store)
+        with _monitor_lock:
+            if _monitor is None:
+                store = get_adaptive_auth_store()
+                _monitor = BehaviorMonitor(store)
     return _monitor
 
 

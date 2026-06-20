@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 import json
+import threading
 
 from .models import (
     AuditEvent,
@@ -537,14 +538,17 @@ class AuditService:
 
 # Global audit service instance
 _audit_service: Optional[AuditService] = None
+_audit_service_lock = threading.Lock()
 
 
 def get_audit_service() -> AuditService:
     """Get the global audit service instance."""
     global _audit_service
     if _audit_service is None:
-        store = get_adaptive_auth_store()
-        _audit_service = AuditService(store)
+        with _audit_service_lock:
+            if _audit_service is None:
+                store = get_adaptive_auth_store()
+                _audit_service = AuditService(store)
     return _audit_service
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import string
+import threading
 
 import pyotp
 from dataclasses import dataclass, field
@@ -409,14 +410,17 @@ class StepUpAuthService:
 
 # Global service instance
 _service: Optional[StepUpAuthService] = None
+_service_lock = threading.Lock()
 
 
 def get_stepup_auth_service() -> StepUpAuthService:
     """Get the global step-up auth service instance."""
     global _service
     if _service is None:
-        store = get_adaptive_auth_store()
-        _service = StepUpAuthService(store)
+        with _service_lock:
+            if _service is None:
+                store = get_adaptive_auth_store()
+                _service = StepUpAuthService(store)
     return _service
 
 

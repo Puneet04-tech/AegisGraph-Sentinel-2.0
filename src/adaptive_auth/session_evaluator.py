@@ -7,6 +7,7 @@ providing continuous trust assessment based on user behavior and actions.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -433,14 +434,17 @@ class SessionEvaluator:
 
 # Global evaluator instance
 _evaluator: Optional[SessionEvaluator] = None
+_evaluator_lock = threading.Lock()
 
 
 def get_session_evaluator() -> SessionEvaluator:
     """Get the global session evaluator instance."""
     global _evaluator
     if _evaluator is None:
-        store = get_adaptive_auth_store()
-        _evaluator = SessionEvaluator(store)
+        with _evaluator_lock:
+            if _evaluator is None:
+                store = get_adaptive_auth_store()
+                _evaluator = SessionEvaluator(store)
     return _evaluator
 
 

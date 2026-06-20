@@ -7,6 +7,7 @@ for authentication and authorization decisions.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -511,14 +512,17 @@ class RiskEngine:
 
 # Global engine instance
 _engine: Optional[RiskEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_risk_engine() -> RiskEngine:
     """Get the global risk engine instance."""
     global _engine
     if _engine is None:
-        store = get_adaptive_auth_store()
-        _engine = RiskEngine(store)
+        with _engine_lock:
+            if _engine is None:
+                store = get_adaptive_auth_store()
+                _engine = RiskEngine(store)
     return _engine
 
 

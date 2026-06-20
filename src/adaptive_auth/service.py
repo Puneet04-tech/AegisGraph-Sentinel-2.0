@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -562,13 +563,16 @@ class AdaptiveAuthService:
 
 # Global service instance
 _service: Optional[AdaptiveAuthService] = None
+_service_lock = threading.Lock()
 
 
 def get_adaptive_auth_service() -> AdaptiveAuthService:
     """Get the global adaptive auth service instance."""
     global _service
     if _service is None:
-        _service = AdaptiveAuthService()
+        with _service_lock:
+            if _service is None:
+                _service = AdaptiveAuthService()
     return _service
 
 
