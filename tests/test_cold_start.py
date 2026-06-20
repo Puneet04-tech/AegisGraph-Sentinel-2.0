@@ -34,14 +34,34 @@ def client(api_module, monkeypatch):
 
 
 def test_app_imports_without_heavy_libs():
+    orig_torch = sys.modules.get("torch")
+    orig_librosa = sys.modules.get("librosa")
+    orig_api = sys.modules.get("src.api.main")
+
     sys.modules.pop("torch", None)
     sys.modules.pop("librosa", None)
     sys.modules.pop("src.api.main", None)
 
-    import src.api.main  # noqa: F401
+    try:
+        import src.api.main  # noqa: F401
 
-    assert "torch" not in sys.modules
-    assert "librosa" not in sys.modules
+        assert "torch" not in sys.modules
+        assert "librosa" not in sys.modules
+    finally:
+        if orig_torch is not None:
+            sys.modules["torch"] = orig_torch
+        else:
+            sys.modules.pop("torch", None)
+
+        if orig_librosa is not None:
+            sys.modules["librosa"] = orig_librosa
+        else:
+            sys.modules.pop("librosa", None)
+
+        if orig_api is not None:
+            sys.modules["src.api.main"] = orig_api
+        else:
+            sys.modules.pop("src.api.main", None)
 
 
 def test_innovation_services_not_constructed_at_startup(client):
