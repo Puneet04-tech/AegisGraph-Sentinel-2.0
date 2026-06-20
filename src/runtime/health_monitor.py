@@ -56,37 +56,38 @@ class RuntimeHealthMonitor:
             )
 
     def mark_healthy(self, name: str) -> None:
-        """Mark a registered service as healthy, resetting its failures."""
-        with self._lock:
-            service = self._services.get(name)
+    """Mark a registered service as healthy, resetting its failures."""
+    with self._lock:
+        service = self._services.get(name)
 
-            if service is None:
-                # Proactively register if not already done
-                service = ServiceHealth(
-                    name=name,
-                    status="healthy",
-                    last_heartbeat=time.time(),
-                )
-                self._services[name] = service
-
-            service.status = "healthy"
-            service.failures = 0
-            service.last_error = None
-            service.last_heartbeat = time.time()
-
-            self._logger.info(
-                f"Service marked healthy: {name}",
-                event_type="health_service_healthy",
-                metadata={"service": name},
+        if service is None:
+            # Proactively register if not already done
+            service = ServiceHealth(
+                name=name,
+                status="healthy",
+                last_heartbeat=time.time(),
             )
+            self._services[name] = service
 
-        if self._dispatcher is not None:
-            self._dispatcher.dispatch(
-                ServiceHealthyEvent(
-                    source="health_monitor",
-                    payload={"service": name},
-                )
+        service.status = "healthy"
+        service.failures = 0
+        service.restart_attempts = 0   
+        service.last_error = None
+        service.last_heartbeat = time.time()
+
+        self._logger.info(
+            f"Service marked healthy: {name}",
+            event_type="health_service_healthy",
+            metadata={"service": name},
+        )
+
+    if self._dispatcher is not None:
+        self._dispatcher.dispatch(
+            ServiceHealthyEvent(
+                source="health_monitor",
+                payload={"service": name},
             )
+        )
 
     def mark_failed(self, name: str, error: Optional[str] = None) -> None:
         """Mark a service as failed, incrementing failures and determining status."""

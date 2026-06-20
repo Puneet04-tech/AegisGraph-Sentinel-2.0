@@ -541,18 +541,22 @@ class VoiceStressAnalyzer:
         try:
             # Load audio from file path into numpy array
             if AUDIO_LIBS_AVAILABLE:
+                global librosa
+                if librosa is None:
+                    import librosa
                 audio, sr = librosa.load(audio_file, sr=sample_rate, duration=self.max_seconds)
             else:
                 logger.warning("Audio libraries not available, returning mock features")
                 audio = None
                 sr = sample_rate
-                features = self.extract_features(audio, sr)
-                if self.user_baseline is None:
-                    self.user_baseline = {'f0_mean': features.f0_mean, 'speech_rate': features.speech_rate}
-                else:
-                    alpha = 0.3
-                    self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
-                    self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
+
+            features = self.extract_features(audio, sr)
+            if self.user_baseline is None:
+                self.user_baseline = {'f0_mean': features.f0_mean, 'speech_rate': features.speech_rate}
+            else:
+                alpha = 0.3
+                self.user_baseline['f0_mean'] = (alpha * features.f0_mean + (1 - alpha) * self.user_baseline['f0_mean'])
+                self.user_baseline['speech_rate'] = (alpha * features.speech_rate + (1 - alpha) * self.user_baseline['speech_rate'])
 
             result = self.detect_stress(features, self.user_baseline)
             
