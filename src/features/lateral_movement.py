@@ -138,6 +138,8 @@ class LateralMovementDetector:
         self.active_graph.remove_nodes_from(nodes_to_remove)
         for node in nodes_to_remove:
             self._node_access_order.pop(node, None)
+            if hasattr(self, "centrality_history"):
+                self.centrality_history.pop(node, None)
 
     def _get_approx_graph(self, account_id, max_hops=2):
         """Reconstructs a bounded local graph around an account (Redis mode)."""
