@@ -37,6 +37,7 @@ def test_compute_risk_score_reuses_betweenness_centrality(monkeypatch):
         centrality_baseline={},
         centrality_window_size=3,
     )
+    import sys
     monkeypatch.setattr("src.api.main.state", state)
     risk_mod._CENTRALITY_CACHE.clear()
 

@@ -60,8 +60,12 @@ def test_app_imports_without_heavy_libs():
 
         if orig_api is not None:
             sys.modules["src.api.main"] = orig_api
+            if "src.api" in sys.modules:
+                setattr(sys.modules["src.api"], "main", orig_api)
         else:
             sys.modules.pop("src.api.main", None)
+            if "src.api" in sys.modules and hasattr(sys.modules["src.api"], "main"):
+                delattr(sys.modules["src.api"], "main")
 
 
 def test_innovation_services_not_constructed_at_startup(client):

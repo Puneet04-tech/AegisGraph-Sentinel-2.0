@@ -83,3 +83,7 @@ def test_aegis_model_explainer_defers_gnn_explainer_construction(monkeypatch):
             if k not in orig_modules:
                 sys.modules.pop(k, None)
         sys.modules.update(orig_modules)
+        if "src.inference" in sys.modules and "src.inference.explainer" in sys.modules:
+            setattr(sys.modules["src.inference"], "explainer", sys.modules["src.inference.explainer"])
+        elif "src.inference" in sys.modules and hasattr(sys.modules["src.inference"], "explainer"):
+            delattr(sys.modules["src.inference"], "explainer")
