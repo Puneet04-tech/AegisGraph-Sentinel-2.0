@@ -87,9 +87,16 @@ class LateralMovementDetector:
         # Some unit tests construct the detector via `__new__` without running
         # `__init__`. Guard internal caches so update_graph remains usable.
         if hasattr(self, "_centrality_cache") and self._centrality_cache is not None:
-            self._centrality_cache.clear()
-        if hasattr(self, "_centrality_cache_version"):
-            self._centrality_cache_version += 1
+            lock = getattr(self, "_lock", None)
+            if lock is not None:
+                with lock:
+                    self._centrality_cache.clear()
+                    if hasattr(self, "_centrality_cache_version"):
+                        self._centrality_cache_version += 1
+            else:
+                self._centrality_cache.clear()
+                if hasattr(self, "_centrality_cache_version"):
+                    self._centrality_cache_version += 1
 
         if self.graph_service is not None and getattr(self.graph_service, "is_active", False):
             # Neo4j Active Provider execution
@@ -198,12 +205,22 @@ class LateralMovementDetector:
     def _calculate_approx_centrality(self, account_id):
         """Calculates localized betweenness centrality safely with caching."""
         now = _time.time()
-        cached = self._centrality_cache.get(account_id)
-        if cached is not None:
-            value, ts = cached
-            if now - ts < self._centrality_cache_ttl:
-                self._centrality_cache.move_to_end(account_id)
-                return value
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                cached = self._centrality_cache.get(account_id)
+                if cached is not None:
+                    value, ts = cached
+                    if now - ts < self._centrality_cache_ttl:
+                        self._centrality_cache.move_to_end(account_id)
+                        return value
+        else:
+            cached = self._centrality_cache.get(account_id)
+            if cached is not None:
+                value, ts = cached
+                if now - ts < self._centrality_cache_ttl:
+                    self._centrality_cache.move_to_end(account_id)
+                    return value
 
         # Try to fetch from Redis Cache if enabled
         if self.use_redis:
@@ -212,7 +229,11 @@ class LateralMovementDetector:
                 cached_val = self.redis_client.get(redis_cache_key)
                 if cached_val is not None:
                     result = float(cached_val)
-                    self._centrality_cache[account_id] = (result, now)
+                    if lock is not None:
+                        with lock:
+                            self._centrality_cache[account_id] = (result, now)
+                    else:
+                        self._centrality_cache[account_id] = (result, now)
                     return result
             except Exception as e:
                 print(f"Redis cache lookup error: {e}. Falling back to direct calculation.")
@@ -220,7 +241,10 @@ class LateralMovementDetector:
         if self.use_neo4j or self.use_redis:
             G = self._get_approx_graph(account_id)
         else:
-            with self._lock:
+            if lock is not None:
+                with lock:
+                    G = self.active_graph.copy()
+            else:
                 G = self.active_graph.copy()
 
         num_nodes = G.number_of_nodes()
@@ -244,10 +268,17 @@ class LateralMovementDetector:
             except Exception as e:
                 print(f"Redis cache save error: {e}")
 
-        self._centrality_cache[account_id] = (result, now)
-        self._centrality_cache.move_to_end(account_id)
-        while len(self._centrality_cache) > self._centrality_cache_max:
-            self._centrality_cache.popitem(last=False)
+        if lock is not None:
+            with lock:
+                self._centrality_cache[account_id] = (result, now)
+                self._centrality_cache.move_to_end(account_id)
+                while len(self._centrality_cache) > self._centrality_cache_max:
+                    self._centrality_cache.popitem(last=False)
+        else:
+            self._centrality_cache[account_id] = (result, now)
+            self._centrality_cache.move_to_end(account_id)
+            while len(self._centrality_cache) > self._centrality_cache_max:
+                self._centrality_cache.popitem(last=False)
         return result
 
     def analyze_account(self, account_id):
