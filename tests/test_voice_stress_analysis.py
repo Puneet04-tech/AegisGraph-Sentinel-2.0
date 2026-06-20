@@ -67,3 +67,34 @@ def test_extract_features_reuses_shared_audio_profile(monkeypatch):
     assert hilbert_calls["count"] == 1
     assert peaks_calls["count"] == 1
     assert mfcc_calls["count"] == 1
+
+
+def test_analyze_voice_extracts_features_when_audio_libs_available(monkeypatch):
+    assert voice_mod is not None
+
+    analyzer = voice_mod.VoiceStressAnalyzer(sample_rate=16000, max_seconds=2)
+    extracted = voice_mod.VoiceFeatures(
+        f0_mean=140.0,
+        f0_std=12.0,
+        f0_range=45.0,
+        jitter=0.01,
+        shimmer=0.04,
+        speech_rate=4.2,
+        prosody_entropy=3.1,
+        snr=22.0,
+        background_voices=1,
+    )
+
+    class FakeLibrosa:
+        def load(self, *args, **kwargs):
+            return np.ones(1600, dtype=float), 16000
+
+    monkeypatch.setattr(voice_mod, "AUDIO_LIBS_AVAILABLE", True)
+    monkeypatch.setattr(voice_mod, "librosa", FakeLibrosa(), raising=False)
+    monkeypatch.setattr(analyzer, "extract_features", lambda audio, sr: extracted)
+
+    result = analyzer.analyze_voice("sample.wav", sample_rate=16000)
+
+    assert result["classification"] in {"NORMAL", "MILD_STRESS", "SEVERE_COERCION"}
+    assert result["features"]["f0_mean"] == 140.0
+    assert analyzer.user_baseline == {"f0_mean": 140.0, "speech_rate": 4.2}
