@@ -55,12 +55,15 @@ def test_health_monitor_transitions():
     assert snapshot["test_service"].failures == 3
     assert snapshot["test_service"].last_error == "err3"
     assert monitor.get_overall_status() == "unhealthy"
+    monitor.increment_restart_attempts("test_service")
+    assert monitor.get_health_snapshot()["test_service"].restart_attempts == 1
 
     # Reset back to healthy
     monitor.mark_healthy("test_service")
     snapshot = monitor.get_health_snapshot()
     assert snapshot["test_service"].status == "healthy"
     assert snapshot["test_service"].failures == 0
+    assert snapshot["test_service"].restart_attempts == 0
     assert snapshot["test_service"].last_error is None
     assert monitor.get_overall_status() == "healthy"
 
