@@ -39,7 +39,7 @@ class GraphEntropyCalculator:
         """Return incoming and outgoing neighbors for directed graphs, normal neighbors otherwise."""
         if graph is None or not graph.has_node(node):
             return set()
-        if graph.is_directed():
+        if hasattr(graph, "is_directed") and graph.is_directed():
             return set(graph.predecessors(node)) | set(graph.successors(node))
         return set(graph.neighbors(node))
 
@@ -48,7 +48,7 @@ class GraphEntropyCalculator:
         if graph is None or not graph.has_node(node):
             return 0.0
 
-        if graph.is_directed():
+        if hasattr(graph, "is_directed") and graph.is_directed():
             in_count = len(set(graph.predecessors(node)))
             out_count = len(set(graph.successors(node)))
             counts = [count for count in (in_count, out_count) if count > 0]
@@ -232,7 +232,7 @@ class GraphEntropyCalculator:
             if len(direct_neighbors) < 2:
                 return {"structural_entropy": 0.0, "clustering_coefficient": 0.0}
 
-            if graph.is_directed():
+            if hasattr(graph, "is_directed") and graph.is_directed():
                 possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1)
             else:
                 possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1) / 2
