@@ -366,13 +366,16 @@ class AdaptiveAuthStore:
 
 # Global store instance
 _store: Optional[AdaptiveAuthStore] = None
+_store_lock = threading.Lock()
 
 
 def get_adaptive_auth_store() -> AdaptiveAuthStore:
     """Get the global adaptive auth store instance."""
     global _store
     if _store is None:
-        _store = AdaptiveAuthStore()
+        with _store_lock:
+            if _store is None:
+                _store = AdaptiveAuthStore()
     return _store
 
 
