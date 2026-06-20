@@ -207,6 +207,8 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertTrue(subgraph.has_edge("ACC1", "ACC2"))
             self.assertEqual(subgraph["ACC1"]["ACC2"]["weight"], 25000.0)
             self.assertEqual(subgraph["ACC1"]["ACC2"]["timestamp"], 98765.4)
+            query = mock_session.run.call_args.args[0]
+            self.assertIn("[r:TRANSFER*1..2]", query)
 
             # Test TTL caching: a secondary query immediately after should hit in-memory cache and not invoke driver session
             mock_session.reset_mock()
@@ -214,6 +216,28 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             
             self.assertIs(cached_subgraph, subgraph)
             mock_session.run.assert_not_called()
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_subgraph_hop_depth_is_sanitized(self, mock_neo4j_lib) -> None:
+        """Verify max_hops is validated and capped before being embedded in Cypher."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.__iter__.return_value = []
+
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+        mock_session.run.return_value = mock_result
+
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True, cache_ttl_seconds=10)
+
+            provider.get_approx_subgraph("ACC1", max_hops=99)
+            query = mock_session.run.call_args.args[0]
+            self.assertIn("[r:TRANSFER*1..5]", query)
+
+            with self.assertRaises(ValueError):
+                provider.get_approx_subgraph("ACC2", max_hops="2")
 
     @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_subgraph_cache_evicts_lru_entry(self, mock_neo4j_lib) -> None:

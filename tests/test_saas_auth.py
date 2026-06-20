@@ -32,8 +32,10 @@ class TestVerifyMfa:
             mfa_enabled=True, mfa_secret=secret,
         )
         svc = _make_service([user])
+        # Simulate the login step issuing a pending-MFA token.
+        mfa_token = svc.mfa_pending_store.issue("u1")
         totp_token = pyotp.TOTP(secret).now()
-        result = svc.verify_mfa("u1", mfa_token="any", token=totp_token)
+        result = svc.verify_mfa("u1", mfa_token=mfa_token, token=totp_token)
         assert result.success is True
         assert result.organization_id == "org_a"
 
@@ -44,7 +46,8 @@ class TestVerifyMfa:
             mfa_enabled=True, mfa_secret=secret,
         )
         svc = _make_service([user])
-        result = svc.verify_mfa("u2", mfa_token="any", token="000000")
+        mfa_token = svc.mfa_pending_store.issue("u2")
+        result = svc.verify_mfa("u2", mfa_token=mfa_token, token="000000")
         assert result.success is False
         assert "Invalid MFA token" in result.error
 
@@ -71,10 +74,45 @@ class TestVerifyMfa:
         user_a = UserRecord("ua", "org_a", "a@x.com", mfa_enabled=True, mfa_secret=secret_a)
         user_b = UserRecord("ub", "org_b", "b@x.com", mfa_enabled=True, mfa_secret=secret_b)
         svc = _make_service([user_a, user_b])
+        # Issue a valid pending-MFA token for ub so the check reaches TOTP
+        # verification — the point is that A's TOTP must not verify for B.
+        mfa_token = svc.mfa_pending_store.issue("ub")
         token_for_a = pyotp.TOTP(secret_a).now()
-        # token generated for user A must not authenticate user B
-        result = svc.verify_mfa("ub", mfa_token="any", token=token_for_a)
+        result = svc.verify_mfa("ub", mfa_token=mfa_token, token=token_for_a)
         assert result.success is False
+        
+    def test_missing_mfa_token_rejected_even_with_valid_totp(self):
+        """The core fix (#1388): a correct TOTP must NOT authenticate without
+        a valid pending-MFA token from the login step."""
+        secret = pyotp.random_base32()
+        user = UserRecord(
+            user_id="u_bind", organization_id="org_x", email="x@example.com",
+            mfa_enabled=True, mfa_secret=secret,
+        )
+        svc = _make_service([user])
+        totp_token = pyotp.TOTP(secret).now()
+        # No token issued — simulates calling /mfa/verify without /login.
+        result = svc.verify_mfa("u_bind", mfa_token="forged", token=totp_token)
+        assert result.success is False
+        assert "MFA session" in result.error
+
+    def test_mfa_token_is_single_use(self):
+        """A pending-MFA token must not be reusable after a successful verify."""
+        secret = pyotp.random_base32()
+        user = UserRecord(
+            user_id="u_once", organization_id="org_y", email="y@example.com",
+            mfa_enabled=True, mfa_secret=secret,
+        )
+        svc = _make_service([user])
+        mfa_token = svc.mfa_pending_store.issue("u_once")
+        first = svc.verify_mfa("u_once", mfa_token=mfa_token,
+                            token=pyotp.TOTP(secret).now())
+        assert first.success is True
+        # Reusing the same token must fail.
+        second = svc.verify_mfa("u_once", mfa_token=mfa_token, 
+                            token=pyotp.TOTP(secret).now())
+        assert second.success is False
+        assert "MFA session" in second.error
 
 
 class TestAuthenticateUser:
