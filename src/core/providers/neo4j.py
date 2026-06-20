@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -86,6 +87,7 @@ class Neo4jGraphProvider:
 
         self._driver: Optional[neo4j.Driver] = None
         self._subgraph_cache: OrderedDict[str, Tuple[float, nx.DiGraph]] = OrderedDict()
+        self._lock = threading.RLock()
 
         if not NEO4J_AVAILABLE and enabled:
             logger.warning(
@@ -147,50 +149,55 @@ class Neo4jGraphProvider:
 
     def _invalidate_subgraph_cache_for(self, account_id: str) -> None:
         prefix = f"{account_id}:"
-        for key in list(self._subgraph_cache):
-            if key == account_id or key.startswith(prefix):
-                self._subgraph_cache.pop(key, None)
+        with self._lock:
+            for key in list(self._subgraph_cache):
+                if key == account_id or key.startswith(prefix):
+                    self._subgraph_cache.pop(key, None)
 
     def _get_cached_subgraph(self, account_id: str, max_hops: int, now: float) -> Optional[nx.DiGraph]:
         key = self._cache_key(account_id, max_hops)
-        cached_entry = self._subgraph_cache.get(key)
-        if not cached_entry:
-            return None
+        with self._lock:
+            cached_entry = self._subgraph_cache.get(key)
+            if not cached_entry:
+                return None
 
-        cache_time, cached_graph = cached_entry
-        if now - cache_time >= self.cache_ttl_seconds:
-            self._subgraph_cache.pop(key, None)
-            return None
+            cache_time, cached_graph = cached_entry
+            if now - cache_time >= self.cache_ttl_seconds:
+                self._subgraph_cache.pop(key, None)
+                return None
 
-        self._subgraph_cache.move_to_end(key)
-        return cached_graph
+            self._subgraph_cache.move_to_end(key)
+            return cached_graph
 
 
     def _store_cached_subgraph(self, account_id: str, graph: nx.DiGraph, now: float) -> None:
-        self._cleanup_expired_subgraph_cache(now)
-
-        self._subgraph_cache[account_id] = (now, graph)
-        self._subgraph_cache.move_to_end(account_id)
+        with self._lock:
+            self._cleanup_expired_subgraph_cache(now)
+            self._subgraph_cache[account_id] = (now, graph)
+            self._subgraph_cache.move_to_end(account_id)
 
     def _store_cached_subgraph(self, account_id: str, max_hops: int, graph: nx.DiGraph, now: float) -> None:
         key = self._cache_key(account_id, max_hops)
-        self._subgraph_cache[key] = (now, graph)
-        self._subgraph_cache.move_to_end(key)
+        with self._lock:
+            self._cleanup_expired_subgraph_cache(now)
+            self._subgraph_cache[key] = (now, graph)
+            self._subgraph_cache.move_to_end(key)
 
+            while len(self._subgraph_cache) > self.cache_max_entries:
+                self._subgraph_cache.popitem(last=False)
 
-        while len(self._subgraph_cache) > self.cache_max_entries:
-            self._subgraph_cache.popitem(last=False)
     def _cleanup_expired_subgraph_cache(self, now: float) -> None:
         """Remove expired cache entries proactively."""
-        expired_keys = [
-            account_id
-            for account_id, (cache_time, _)
-            in self._subgraph_cache.items()
-            if now - cache_time >= self.cache_ttl_seconds
-        ]
+        with self._lock:
+            expired_keys = [
+                account_id
+                for account_id, (cache_time, _)
+                in self._subgraph_cache.items()
+                if now - cache_time >= self.cache_ttl_seconds
+            ]
 
-        for account_id in expired_keys:
-            self._subgraph_cache.pop(account_id, None)
+            for account_id in expired_keys:
+                self._subgraph_cache.pop(account_id, None)
 
 
     @property
