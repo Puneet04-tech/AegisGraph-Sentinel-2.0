@@ -8,11 +8,12 @@ risk scores, behavior profiles, and authentication state.
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 import uuid
 
+from ..lru_cache import LRUCache
 from .models import (
     AuthenticationSession,
     AuthenticationDecision,
@@ -24,60 +25,6 @@ from .models import (
     StepUpChallenge,
     TrustLevel,
 )
-
-
-class LRUCache(OrderedDict):
-    """Thread-safe LRU cache with configurable max size."""
-    
-    def __init__(self, maxsize: int = 10000, *args, **kwds):
-        self.maxsize = maxsize
-        super().__init__(*args, **kwds)
-        self._lock = threading.RLock()
-    
-    def __getitem__(self, key: str):
-        with self._lock:
-            value = super().__getitem__(key)
-            self.move_to_end(key)
-            return value
-    
-    def __setitem__(self, key: str, value: Any):
-        with self._lock:
-            if key in self:
-                self.move_to_end(key)
-            super().__setitem__(key, value)
-            if len(self) > self.maxsize:
-                oldest = next(iter(self))
-                del self[oldest]
-    
-    def __delitem__(self, key: str):
-        with self._lock:
-            super().__delitem__(key)
-    
-    def __contains__(self, key: str) -> bool:
-        with self._lock:
-            return super().__contains__(key)
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        with self._lock:
-            try:
-                return self[key]
-            except KeyError:
-                return default
-    
-    def pop(self, key: str, *args) -> Any:
-        with self._lock:
-            try:
-                value = dict.__getitem__(self, key)
-                OrderedDict.__delitem__(self, key)
-                return value
-            except KeyError:
-                if args:
-                    return args[0]
-                raise
-    
-    def clear(self) -> None:
-        with self._lock:
-            super().clear()
 
 
 class AdaptiveAuthStore:
@@ -95,6 +42,7 @@ class AdaptiveAuthStore:
         self._risk_scores: LRUCache = LRUCache(maxsize=max_sessions * 10)
         self._challenges: LRUCache = LRUCache(maxsize=50000)
         self._user_sessions: Dict[str, Set[str]] = defaultdict(set)
+        self._session_challenges: Dict[str, Set[str]] = defaultdict(set)
         self._lock = threading.RLock()
         
         # Initialize default policies
@@ -141,8 +89,9 @@ class AdaptiveAuthStore:
             trust=trust,
         )
         
-        self._sessions[session_id] = session
-        self._user_sessions[user_id].add(session_id)
+        with self._lock:
+            self._sessions[session_id] = session
+            self._user_sessions[user_id].add(session_id)
         return session
 
     def get_session(self, session_id: str) -> Optional[AuthenticationSession]:
@@ -166,36 +115,39 @@ class AdaptiveAuthStore:
     
     def terminate_session(self, session_id: str, reason: str = "") -> bool:
         """Terminate a session."""
-        session = self._sessions.get(session_id)
-        if session:
-            session.status = SessionStatus.TERMINATED
-            session.metadata["termination_reason"] = reason
-            session.metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
-            self._user_sessions.get(session.user_id, set()).discard(session_id)
-            return True
-        return False
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session:
+                session.status = SessionStatus.TERMINATED
+                session.metadata["termination_reason"] = reason
+                session.metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
+                self._user_sessions.get(session.user_id, set()).discard(session_id)
+                return True
+            return False
     
     def get_user_sessions(self, user_id: str) -> List[AuthenticationSession]:
         """Get all active sessions for a user."""
         now = datetime.now(timezone.utc)
         sessions = []
-        for session_id in list(self._user_sessions.get(user_id, set())):
-            session = self._sessions.get(session_id)
-            if session and session.status == SessionStatus.ACTIVE and session.expires_at > now:
-                sessions.append(session)
+        with self._lock:
+            for session_id in list(self._user_sessions.get(user_id, set())):
+                session = self._sessions.get(session_id)
+                if session and session.status == SessionStatus.ACTIVE and session.expires_at > now:
+                    sessions.append(session)
         return sessions
 
     def cleanup_expired_sessions(self) -> int:
         """Remove expired sessions. Returns count of removed sessions."""
         now = datetime.now(timezone.utc)
-        expired = [
-            (sid, s) for sid, s in list(self._sessions.items())
-            if s.expires_at <= now
-        ]
-        for session_id, session in expired:
-            del self._sessions[session_id]
-            self._user_sessions.get(session.user_id, set()).discard(session_id)
-        return len(expired)
+        with self._lock:
+            expired = [
+                (sid, s) for sid, s in list(self._sessions.items())
+                if s.expires_at <= now
+            ]
+            for session_id, session in expired:
+                del self._sessions[session_id]
+                self._user_sessions.get(session.user_id, set()).discard(session_id)
+            return len(expired)
     
     def get_active_session_ids(self) -> List[str]:
         """Return a snapshot of active, non-expired session IDs."""
@@ -300,9 +252,14 @@ class AdaptiveAuthStore:
             user_id=user_id,
             challenge_type=ChallengeType(challenge_type),
         )
-        self._challenges[challenge.challenge_id] = challenge
+        self.add_challenge(challenge)
         return challenge
-    
+
+    def add_challenge(self, challenge: StepUpChallenge) -> None:
+        """Store a challenge and index it by session."""
+        self._challenges[challenge.challenge_id] = challenge
+        self._session_challenges[challenge.session_id].add(challenge.challenge_id)
+
     def get_challenge(self, challenge_id: str) -> Optional[StepUpChallenge]:
         """Get a challenge by ID."""
         challenge = self._challenges.get(challenge_id)
@@ -317,20 +274,25 @@ class AdaptiveAuthStore:
     def get_session_challenges(self, session_id: str) -> List[StepUpChallenge]:
         """Get all active challenges for a session."""
         challenges = []
-        for challenge in self._challenges.values():
-            if challenge.session_id == session_id and challenge.status == "pending":
-                if not challenge.is_expired():
-                    challenges.append(challenge)
+        for cid in list(self._session_challenges.get(session_id, set())):
+            challenge = self._challenges.get(cid)
+            if challenge and challenge.status == "pending" and not challenge.is_expired():
+                challenges.append(challenge)
         return challenges
-    
+
     def cleanup_expired_challenges(self) -> int:
         """Remove expired challenges. Returns count removed."""
         expired = [
-            cid for cid, c in list(self._challenges.items())
+            (cid, c) for cid, c in list(self._challenges.items())
             if c.is_expired() or c.status in ("completed", "failed", "cancelled", "expired")
         ]
-        for cid in expired:
+        for cid, challenge in expired:
             self._challenges.pop(cid, None)
+            session_challenges = self._session_challenges.get(challenge.session_id)
+            if session_challenges is not None:
+                session_challenges.discard(cid)
+                if not session_challenges:
+                    del self._session_challenges[challenge.session_id]
         return len(expired)
 
     # Decision Storage
