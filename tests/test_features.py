@@ -338,7 +338,8 @@ class TestFeatureIntegration:
     def test_all_entropy_features_share_one_neighborhood_snapshot(self, monkeypatch):
         """Test multi-feature entropy reuse avoids repeated neighborhood walks."""
         calculator = GraphEntropyCalculator()
-        sentinel_graph = object()
+        # Mock graph with is_directed method
+        sentinel_graph = type('MockGraph', (), {'is_directed': lambda self: False})()
         build_calls = []
         profile = {
             'direct_neighbors': {'B', 'C'},
