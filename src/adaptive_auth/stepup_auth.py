@@ -7,6 +7,7 @@ supporting multiple authentication methods and challenge types.
 
 from __future__ import annotations
 
+import hmac
 import secrets
 import string
 
@@ -161,7 +162,7 @@ class StepUpAuthService:
                 challenge.metadata["otp_to_send"] = otp  # In production, sent via SMS/email
 
         # Store challenge
-        self.store._challenges[challenge.challenge_id] = challenge
+        self.store.add_challenge(challenge)
 
         # Update session with active challenge
         session = self.store.get_session_unsafe(session_id)
@@ -195,6 +196,15 @@ class StepUpAuthService:
                 challenge_id=challenge_id,
                 success=False,
                 message="Challenge not found or expired",
+                remaining_attempts=0,
+            )
+
+        # Reject challenges in a terminal state to prevent replay
+        if challenge.status != "pending":
+            return ChallengeResponse(
+                challenge_id=challenge_id,
+                success=False,
+                message="Challenge is no longer active",
                 remaining_attempts=0,
             )
 
@@ -234,6 +244,9 @@ class StepUpAuthService:
             challenge.status = "completed"
             challenge.completed_at = datetime.now(timezone.utc)
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
 
             # Update session trust
             session = self.store.get_session_unsafe(challenge.session_id)
@@ -278,11 +291,11 @@ class StepUpAuthService:
 
         elif challenge_type == ChallengeType.SMS_OTP:
             stored_otp = self._verification_codes.get(f"{challenge.challenge_id}_otp")
-            return stored_otp == response
+            return hmac.compare_digest(stored_otp or "", response or "")
 
         elif challenge_type == ChallengeType.EMAIL_OTP:
             stored_otp = self._verification_codes.get(f"{challenge.challenge_id}_otp")
-            return stored_otp == response
+            return hmac.compare_digest(stored_otp or "", response or "")
 
         elif challenge_type == ChallengeType.PUSH_NOTIFICATION:
             return response.lower() == "approved"
@@ -296,10 +309,12 @@ class StepUpAuthService:
         elif challenge_type == ChallengeType.SECURITY_QUESTIONS:
             correct_answers = challenge.metadata.get("correct_answers", {})
             provided_answers = context.get("answers", {}) if context else {}
+            all_match = True
             for question, correct in correct_answers.items():
-                if provided_answers.get(question, "").lower() != correct.lower():
-                    return False
-            return True
+                provided = provided_answers.get(question, "").lower()
+                if not hmac.compare_digest(provided, correct.lower()):
+                    all_match = False
+            return all_match
 
         elif challenge_type == ChallengeType.CALLBACK:
             return context and context.get("callback_verified", False)
@@ -359,6 +374,9 @@ class StepUpAuthService:
         if challenge and challenge.status == "pending":
             challenge.status = "cancelled"
             self.store.update_challenge(challenge)
+            self._verification_codes.pop(challenge_id, None)
+            self._verification_codes.pop(f"{challenge_id}_otp", None)
+            self._callback_pending.pop(challenge_id, None)
             return True
         return False
 
