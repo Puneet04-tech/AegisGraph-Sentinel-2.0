@@ -93,8 +93,60 @@ class InMemoryUserStore(UserStore):
         new_org = secrets.token_hex(8)
         self.add(UserRecord(user_id=new_id, organization_id=new_org, email=email))
         return new_id, new_org
+    
+class MFAPendingStore(ABC):
+    """Abstract store for pending-MFA session tokens.
 
+    When a user passes the password step but has MFA enabled, the server
+    issues a short-lived, single-use token recording "password verified,
+    MFA pending". ``/mfa/verify`` must validate this token before checking
+    the TOTP code, binding the second factor to a completed first factor.
 
+    Concrete implementations would back this with Redis or a database that
+    supports TTL. An in-memory implementation is provided for unit testing
+    and local development.
+    """
+
+    @abstractmethod
+    def issue(self, user_id: str) -> str:
+        """Generate, store, and return a new pending-MFA token for *user_id*."""
+
+    @abstractmethod
+    def consume(self, user_id: str, mfa_token: str) -> bool:
+        """Validate and single-use-consume a pending-MFA token.
+
+        Return True iff a token exists for *user_id*, matches *mfa_token*,
+        and has not expired. The entry is removed on any attempt (single-use),
+        so a wrong or expired token cannot be retried.
+        """
+        
+class InMemoryMFAPendingStore(MFAPendingStore):
+    """Thread-unsafe in-memory pending-MFA store for development and testing.
+
+    Do **not** use in production — tokens are not persisted across restarts
+    and there is no concurrency protection.
+    """
+
+    def __init__(self, ttl_seconds: int = 300) -> None:
+        self._ttl_seconds = ttl_seconds
+        # user_id -> (mfa_token, expires_at)
+        self._pending: Dict[str, Tuple[str, datetime]] = {}
+
+    def issue(self, user_id: str) -> str:
+        mfa_token = secrets.token_hex(16)
+        expires_at = datetime.utcnow() + timedelta(seconds=self._ttl_seconds)
+        self._pending[user_id] = (mfa_token, expires_at)
+        return mfa_token
+
+    def consume(self, user_id: str, mfa_token: str) -> bool:
+        entry = self._pending.pop(user_id, None)
+        if entry is None:
+            return False
+        stored_token, expires_at = entry
+        if datetime.utcnow() > expires_at:
+            return False
+        return secrets.compare_digest(stored_token, mfa_token)
+    
 class AuthProvider(str, Enum):
     """Supported authentication providers"""
     LOCAL = "local"
@@ -103,8 +155,7 @@ class AuthProvider(str, Enum):
     OKTA = "okta"
     AZURE_AD = "azure_ad"
     SAML = "saml"
-
-
+    
 class AuthMethod(str, Enum):
     """Authentication methods"""
     PASSWORD = "password"
@@ -146,7 +197,12 @@ class TokenPayload:
 class AuthService:
     """Enterprise authentication service"""
 
-    def __init__(self, config: Dict[str, Any], user_store: Optional[UserStore] = None):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        user_store: Optional[UserStore] = None,
+        mfa_pending_store: Optional["MFAPendingStore"] = None,
+    ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
         # as a last-resort fallback so tests without config don't crash.
@@ -164,6 +220,9 @@ class AuthService:
         self.refresh_token_expiry = config.get("refresh_token_expiry", 86400 * 7)  # 7 days
 
         self.user_store: UserStore = user_store or InMemoryUserStore()
+        self.mfa_pending_store: MFAPendingStore = (
+            mfa_pending_store or InMemoryMFAPendingStore()
+        )
 
         # SSO providers
         self.sso_providers: Dict[str, 'SSOProvider'] = {}
@@ -262,7 +321,7 @@ class AuthService:
         org_id = organization_id or record.organization_id
 
         if record.mfa_enabled:
-            mfa_token = secrets.token_hex(16)
+            mfa_token = self.mfa_pending_store.issue(record.user_id)
             return AuthResult(
                 success=True,
                 user_id=record.user_id,
@@ -332,7 +391,8 @@ class AuthService:
 
         Fetches the per-user MFA secret from the ``UserStore``.  Returns
         ``success=False`` when the user is not found, MFA is not configured
-        for the user, or the TOTP token is incorrect.
+        for the user, the pending-MFA session token is missing/expired, or the
+        TOTP token is incorrect.
         """
         record = self.user_store.get_by_id(user_id)
         if record is None:
@@ -340,6 +400,12 @@ class AuthService:
 
         if not record.mfa_enabled or not record.mfa_secret:
             return AuthResult(success=False, error="MFA is not configured for this user")
+        
+        if not self.mfa_pending_store.consume(user_id, mfa_token):
+            return AuthResult(
+                success=False,
+                error="Invalid or expired MFA session",
+            )
 
         if not self.verify_mfa_token(record.mfa_secret, token):
             return AuthResult(success=False, error="Invalid MFA token")
