@@ -162,7 +162,7 @@ async def get_analytics(
     verify_api_key(api_key)
     simulator = get_threat_simulator()
     
-    analytics = simulator.simulator.simulator.evaluate_threat(run_id)
+    analytics = simulator.evaluate_threat(run_id)
     
     return {"analytics": analytics.to_dict()}
 
