@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Header, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
+from src.api.security import verify_api_key
 from src.threat_simulation import (
     ThreatSimulator,
     get_threat_simulator,
@@ -17,22 +18,49 @@ from src.threat_simulation import (
 router = APIRouter(prefix="/api/v1/simulation", tags=["simulation"])
 
 
+class SimulationParameters(BaseModel):
+    """Validated simulation scenario parameters."""
+    transaction_amount: Optional[float] = Field(
+        default=None, ge=0.01, le=1_000_000_000.0,
+        description="Transaction amount in USD (0.01 to 1e9)",
+    )
+    account_id: Optional[str] = Field(
+        default=None, min_length=1, max_length=64,
+        pattern=r"^[A-Za-z0-9_\-\.]+$",
+        description="Account identifier (alphanumeric, underscore, hyphen, dot)",
+    )
+    timestamp: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 timestamp (e.g., 2026-06-21T12:00:00Z)",
+    )
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            raise ValueError(
+                "timestamp must be a valid ISO-8601 string "
+                "(e.g., 2026-06-21T12:00:00Z)"
+            )
+        return v
+
+
 class StartSimulationRequest(BaseModel):
     """Request to start a simulation."""
-    scenario_id: str
-    actor_id: str
+    scenario_id: str = Field(..., min_length=1, max_length=128,
+                             description="Non-empty scenario identifier")
+    actor_id: str = Field(..., min_length=1, max_length=128,
+                          description="Non-empty threat actor identifier")
+    parameters: Optional[SimulationParameters] = None
 
 
 class CompleteSimulationRequest(BaseModel):
     """Request to complete a simulation."""
     results: Optional[Dict[str, Any]] = None
-
-
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")
@@ -107,7 +135,7 @@ async def get_results(
 
 @router.get("/runs")
 async def list_runs(
-    scenario_id: Optional[str] = None,
+    scenario_id: Optional[str] = Query(default=None, min_length=1, max_length=128, description="Filter by scenario ID"),
     api_key: str = Header(None),
 ):
     """List simulation runs."""
