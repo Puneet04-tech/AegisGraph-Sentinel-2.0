@@ -4093,6 +4093,6 @@ def process_incoming_stream_safely(new_log_data):
     """
     is_saved = sentinel_telemetry_buffer.enqueue(new_log_data)
     if not is_saved:
-        print("[Warning] Buffer capacity exceeded threshold! Applying safe backpressure drop.")
+        logger.warning("Buffer capacity exceeded threshold! Applying safe backpressure drop.")
     return is_saved
 # --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---
