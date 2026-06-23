@@ -1108,6 +1108,11 @@ elif page == "📁 Batch Triage":
 
     uploaded_file = st.file_uploader("Upload CSV file with transactions", type=["csv"])
     if uploaded_file is not None:
+        if getattr(uploaded_file, "size", 0) > MAX_BATCH_UPLOAD_BYTES:
+            st.error(
+                f"File too large. Maximum allowed size is {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB."
+            )
+            st.stop()
         st.session_state["batch_df"] = pd.read_csv(uploaded_file)
         st.session_state["batch_results"] = None
         if st.session_state.get("last_uploaded_name") != uploaded_file.name:
@@ -1116,12 +1121,6 @@ elif page == "📁 Batch Triage":
 
     if uploaded_file is not None:
         try:
-            if getattr(uploaded_file, "size", 0) > MAX_BATCH_UPLOAD_BYTES:
-                st.error(
-                    f"File too large. Maximum allowed size is {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB."
-                )
-                st.stop()
-
             uploaded_file.seek(0)
             preview_df = st.session_state["batch_df"].head(BATCH_PREVIEW_ROWS)
             uploaded_file.seek(0)
