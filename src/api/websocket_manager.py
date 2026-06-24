@@ -155,8 +155,7 @@ class WebSocketManager:
             try:
                 await state.websocket.send_json(message)
             except Exception as exc:
-                # Ignore write errors; stale cleanup loop will catch dead sockets.
-                pass
+                logger.warning("Broadcast send failed: %s", exc)
 
 pool_size_limit = 100
 

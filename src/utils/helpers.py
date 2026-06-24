@@ -51,6 +51,47 @@ def validate_dataset_splits(config: dict) -> list:
 
     return errors
 
+REQUIRED_CONFIG_SECTIONS = (
+    "system",
+    "api",
+    "model",
+    "graph",
+    "features",
+    "risk_scoring",
+    "training",
+    "data_generation",
+    "database",
+    "security",
+    "monitoring",
+    "deployment",
+    "advanced_features",
+    "centrality_analysis",
+)
+
+def validate_required_sections(config: dict) -> list:
+    """Validate that all required top-level config sections are present.
+
+    Returns a list of error strings (empty if valid), mirroring
+    validate_dataset_splits so load_config can aggregate and raise.
+    """
+    errors = []
+
+    if not isinstance(config, dict):
+        errors.append(
+            "Configuration root must be a mapping/dict, got "
+            f"{type(config).__name__}"
+        )
+        return errors
+
+    missing = [s for s in REQUIRED_CONFIG_SECTIONS if s not in config]
+    if missing:
+        errors.append(
+            "Missing required configuration sections: "
+            + ", ".join(missing)
+        )
+
+    return errors
+
 def load_config(config_path: str = "config/config.yaml") -> dict:
     """
     Load configuration from YAML file
@@ -68,8 +109,14 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
 
-    errors = validate_dataset_splits(config)
+    section_errors = validate_required_sections(config)
+    if section_errors:
+        raise ConfigValidationError(
+            "Configuration validation failed:\n"
+            + "\n".join(f"  - {e}" for e in section_errors)
+        )
 
+    errors = validate_dataset_splits(config)
     if errors:
         raise ConfigValidationError(
             "Dataset split validation failed:\n"
