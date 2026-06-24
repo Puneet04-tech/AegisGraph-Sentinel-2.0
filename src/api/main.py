@@ -22,27 +22,9 @@ from functools import partial
 from pathlib import Path
 from itertools import islice
 from threading import Lock
-from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-class LRUCache(OrderedDict):
-    """A simple LRU cache to prevent memory leaks in global dictionaries."""
-    def __init__(self, maxsize=10000, *args, **kwds):
-        self.maxsize = maxsize
-        super().__init__(*args, **kwds)
-        
-    def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-        
-    def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        if len(self) > self.maxsize:
-            oldest = next(iter(self))
-            del self[oldest]
+from ..lru_cache import LRUCache
 
 import networkx as nx
 import numpy as np
@@ -50,6 +32,7 @@ import uvicorn
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
 
@@ -1556,6 +1539,7 @@ import os
 SWAGGER_ENABLED = os.getenv("SWAGGER_ENABLED", "true").lower() == "true"
 
 # Initialize FastAPI app
+
 app = FastAPI(
     title="AegisGraph Sentinel 2.0 API",
     description=(
@@ -1598,6 +1582,41 @@ app = FastAPI(
     openapi_url="/openapi.json" if SWAGGER_ENABLED else None,
     lifespan=lifespan
 )
+
+TRANSACTION_DECISIONS = REGISTRY._names_to_collectors.get("aegis_transaction_decisions_total") or Counter(
+    "aegis_transaction_decisions_total",
+    "Total transaction decisions made by AegisGraph",
+    ["decision"]
+)
+API_LATENCY = REGISTRY._names_to_collectors.get("aegis_api_latency_seconds") or Histogram(
+    "aegis_api_latency_seconds",
+    "API request latency in seconds",
+    ["endpoint"]
+)
+ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") or Gauge(
+    "aegis_active_honeypots",
+    "Number of currently active honeypots"
+)
+
+@app.middleware("http")
+async def prometheus_latency_middleware(request: Request, call_next):
+    endpoint = request.url.path
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    API_LATENCY.labels(endpoint=endpoint).observe(duration)
+    return response
+
+@app.get("/metrics", tags=["System"])
+async def metrics():
+    try:
+        manager = await get_honeypot_manager()
+        active_count = len(manager.get_active_honeypots())
+        ACTIVE_HONEYPOTS.set(active_count)
+    except Exception:
+        pass
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 # CORS middleware
 #

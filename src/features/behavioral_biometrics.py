@@ -183,6 +183,30 @@ class KeystrokeDynamicsAnalyzer:
             baseline_wpm = user_baseline.get('wpm', self.baseline_wpm)
             baseline_hold_cv = user_baseline.get('hold_time_cv', 0.18)
         
+        # Z-Score Outlier Detection
+        if user_baseline is not None:
+            hold_mean_b = user_baseline.get('hold_time_mean', self.baseline_hold_time)
+            hold_std_b = user_baseline.get('hold_time_std', 15.0)
+            flight_mean_b = user_baseline.get('flight_time_mean', 80.0)
+            flight_std_b = user_baseline.get('flight_time_std', 20.0)
+            
+            hold_z = abs(features.get('hold_time_mean', self.baseline_hold_time) - hold_mean_b) / (hold_std_b + 1e-8)
+            flight_z = abs(features.get('flight_time_mean', 80.0) - flight_mean_b) / (flight_std_b + 1e-8)
+            
+            avg_z = (hold_z + flight_z) / 2.0
+            is_outlier = avg_z > 2.0
+            
+            if is_outlier:
+                return {
+                    'stress_score': min(avg_z / 4.0, 1.0),
+                    'is_stressed': True,
+                    'hold_cv_stress': min(hold_z / 3.0, 1.0),
+                    'wpm_stress': 0.5,
+                    'error_stress': 0.5,
+                    'rhythm_stress': 0.5,
+                    'flight_cv_stress': min(flight_z / 3.0, 1.0),
+                }
+
         # Stress indicators
         
         # 1. Increased hold time variability

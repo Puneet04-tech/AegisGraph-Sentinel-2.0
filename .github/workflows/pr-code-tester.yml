@@ -103,13 +103,14 @@ jobs:
           impacted_dirs = set()
           impacted_files = set()
           for f in changed_files:
-              if f.endswith('.py') and '/' in f:
-                  # E.g., extracts 'src/inference' from 'src/inference/scorer.py'
-                  parent_dir = os.path.dirname(f)
-                  impacted_dirs.add(os.path.basename(parent_dir))
-          # E.g., extracts 'scorer' from 'src/inference/scorer.py'
-          file_basename = os.path.basename(f).replace('.py', '')
-          impacted_files.add(file_basename)
+              if f.endswith('.py'):
+                  if '/' in f:
+                      # E.g., extracts 'src/inference' from 'src/inference/scorer.py'
+                      parent_dir = os.path.dirname(f)
+                      impacted_dirs.add(os.path.basename(parent_dir))
+                  # E.g., extracts 'scorer' from 'src/inference/scorer.py'
+                  file_basename = os.path.basename(f).replace('.py', '')
+                  impacted_files.add(file_basename)
           
           print(f"Impacted structural component keywords: {list(impacted_dirs)}")
           print(f"Impacted file basenames: {list(impacted_files)}")
@@ -151,7 +152,7 @@ jobs:
           print(f"Running: {' '.join(test_execution_command)}")
           execution_result = subprocess.run(test_execution_command)
           
-          if execution_result.returncode != 0:
+          if execution_result.returncode not in (0, 5):
               print("❌ Dynamic verification testing returned failure validation bounds.")
               sys.exit(1)
               

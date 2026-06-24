@@ -277,7 +277,7 @@ class VelocityCalculator:
         total_amount = sum(t.amount for t in transactions)
         total_time = transactions[-1].timestamp - transactions[0].timestamp
         
-        if total_time == 0:
+        if total_time == 0: 
             return 0.0
         
         return total_amount / total_time
@@ -333,12 +333,43 @@ class VelocityCalculator:
                 return fallback
 
         if isinstance(value, str):
+            value = value.strip()
+            if not value: 
+                return fallback
+ 
+            # Try Unix timestamp string e.g. "1700000000"
             try:
-                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return float(value)
+            except ValueError:
+                pass
+
+            # Try ISO 8601 / RFC 3339 (with T or space separator)
+            try:
+                normalized = value.replace('Z', '+00:00').replace(' ', 'T')
+                dt = datetime.fromisoformat(normalized)
                 dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
                 return float(dt.timestamp())
             except ValueError:
-                return fallback
+                pass
+
+            # Try common date formats
+            for fmt in (
+                "%Y.%m.%d",
+                "%d/%m/%Y",
+                "%m/%d/%Y",
+                "%d-%m-%Y",
+                "%b %d %Y",
+                "%B %d %Y",
+                "%d %b %Y",
+            ):
+                try:
+                    dt = datetime.strptime(value, fmt)
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    return float(dt.timestamp())
+                except ValueError:
+                    continue
+
+            return fallback 
 
         return fallback
 

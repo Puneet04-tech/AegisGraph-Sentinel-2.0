@@ -76,6 +76,7 @@ class SessionReassessRequest(BaseModel):
     "/evaluate",
     summary="Evaluate authentication risk",
     description="Evaluate risk for a login attempt or session action",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def evaluate_risk(
     request: RiskEvaluationRequestModel,
@@ -118,6 +119,7 @@ async def evaluate_risk(
     "/challenge",
     summary="Initiate step-up authentication challenge",
     description="Start a step-up authentication challenge for a session",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def initiate_challenge(
     session_id: str,
@@ -144,6 +146,7 @@ async def initiate_challenge(
     "/verify",
     summary="Verify step-up challenge response",
     description="Verify the user's response to a step-up challenge",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def verify_challenge(
     challenge_id: str,
@@ -169,6 +172,7 @@ async def verify_challenge(
     "/session/{session_id}",
     summary="Get session information",
     description="Retrieve information about an active session",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def get_session(
     session_id: str,
@@ -185,6 +189,7 @@ async def get_session(
     "/session/reassess",
     summary="Reassess session",
     description="Trigger a reassessment of a session's trust and risk level",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def reassess_session(
     session_id: str,
@@ -211,6 +216,7 @@ async def reassess_session(
     "/policies",
     summary="List authorization policies",
     description="Get all authorization policies",
+    dependencies=[Depends(require_role(Role.VIEWER))],
 )
 async def list_policies(
     enabled_only: bool = Query(False, description="Only return enabled policies"),
@@ -261,6 +267,7 @@ async def create_policy(
     "/audit",
     summary="Query audit events",
     description="Query authentication and authorization audit events",
+    dependencies=[Depends(require_role(Role.AUDITOR))],
 )
 async def get_audit_events(
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
@@ -287,6 +294,7 @@ async def get_audit_events(
     "/audit/summary",
     summary="Get audit summary",
     description="Get a summary of recent audit events",
+    dependencies=[Depends(require_role(Role.AUDITOR))],
 )
 async def get_audit_summary(
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
@@ -321,6 +329,7 @@ async def get_audit_summary(
     "/stats",
     summary="Get service statistics",
     description="Get statistics about the adaptive authentication service",
+    dependencies=[Depends(require_role(Role.VIEWER))],
 )
 async def get_stats(
     service: AdaptiveAuthService = Depends(get_adaptive_auth_service),
@@ -333,6 +342,7 @@ async def get_stats(
     "/challenge-types",
     summary="Get available challenge types",
     description="Get list of available step-up authentication challenge types",
+    dependencies=[Depends(require_role(Role.VIEWER))],
 )
 async def get_challenge_types(
     service: AdaptiveAuthService = Depends(get_adaptive_auth_service),

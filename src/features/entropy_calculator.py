@@ -35,6 +35,14 @@ class GraphEntropyCalculator:
     def __init__(self, neighborhood_size: int = 2):
         self.neighborhood_size = neighborhood_size
 
+    def _direct_neighbors(self, graph: nx.Graph, node: str) -> Set[str]:
+        """Return incoming and outgoing neighbors for directed graphs, normal neighbors otherwise."""
+        if graph is None or not graph.has_node(node):
+            return set()
+        if graph.is_directed():
+            return set(graph.predecessors(node)) | set(graph.successors(node))
+        return set(graph.neighbors(node))
+
     def calculate_neighbor_entropy(self, graph: nx.Graph, node: str) -> float:
         """Compatibility wrapper used by tests and legacy code."""
         if graph is None or not graph.has_node(node):
@@ -181,7 +189,7 @@ class GraphEntropyCalculator:
         for _ in range(max_depth):
             next_frontier = set()
             for current in frontier:
-                current_neighbors = set(graph.neighbors(current))
+                current_neighbors = self._direct_neighbors(graph, current)
                 next_frontier.update(current_neighbors - visited)
             if not next_frontier:
                 break
@@ -198,7 +206,7 @@ class GraphEntropyCalculator:
         return subgraph.number_of_edges()
 
     def _build_neighborhood_profile(self, node: str, graph: nx.Graph) -> Dict[str, object]:
-        direct_neighbors = set(graph.neighbors(node)) if graph is not None and graph.has_node(node) else set()
+        direct_neighbors = self._direct_neighbors(graph, node)
         k_hop_neighbors = self._get_k_hop_neighbors(node, graph)
         subgraph_nodes = set(k_hop_neighbors)
         subgraph_nodes.add(node)
@@ -224,7 +232,10 @@ class GraphEntropyCalculator:
             if len(direct_neighbors) < 2:
                 return {"structural_entropy": 0.0, "clustering_coefficient": 0.0}
 
-            possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1) / 2
+            if graph.is_directed():
+                possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1)
+            else:
+                possible_edges = len(direct_neighbors) * (len(direct_neighbors) - 1) / 2
             edges_between = float(profile["edges_between_neighbors"])
             clustering = edges_between / possible_edges if possible_edges else 0.0
             structural_entropy = -math.log2(clustering) if clustering > 0 else 0.0
