@@ -995,14 +995,6 @@ def _initialize_model_components() -> None:
 _initialize_model_components()
 
 
-def _get_metrics_lock() -> asyncio.Lock:
-    metrics_lock = getattr(state, "metrics_lock", None)
-    if metrics_lock is None:
-        metrics_lock = asyncio.Lock()
-        state.metrics_lock = metrics_lock
-    return metrics_lock
-
-
 async def _honeypot_auto_release_loop(interval_seconds: int = 60):
     await honeypot_auto_release_loop(
         lambda: state.services.optional_get("honeypot_manager"),
@@ -1727,7 +1719,7 @@ async def get_stats():
     
     Returns detailed statistics about processed transactions
     """
-    async with _get_metrics_lock():
+    async with state.metrics_lock:
         uptime = time.time() - state.start_time
         
         avg_risk = (state.total_risk_score / state.requests_processed 
@@ -1991,7 +1983,7 @@ async def check_transaction(
                 },
             )
 
-        async with _get_metrics_lock():
+        async with state.metrics_lock:
             # Update statistics AFTER amount-scaling override so stats
             # always reflect the final decision returned to the caller.
             state.requests_processed += 1
