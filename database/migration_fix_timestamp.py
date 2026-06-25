@@ -4,7 +4,7 @@ Ensures transactions have single, accurate timestamp field with no data loss.
 """
 
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Callable, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -207,17 +207,26 @@ class TransactionTimestampFixer:
         key_lower = key.lower()
         return any(variant in key_lower for variant in self.TIMESTAMP_VARIANTS)
 
-    def fix_batch(self, transactions: List[Dict]) -> List[Dict]:
+    def fix_batch(self, transactions: List[Dict], progress_callback: Optional[Callable[[int, int, float], None]] = None) -> List[Dict]:
         """
-        Fix timestamp fields in batch of transactions.
+        Fix timestamp fields in batch of transactions with progress tracking.
 
         Args:
             transactions: List of transaction dictionaries
+            progress_callback: Optional callback function taking (current, total, percentage)
 
         Returns:
             List of fixed transactions
         """
         fixed_transactions = []
+        total_tx = len(transactions)
+        
+        if total_tx == 0:
+            logger.info("No transactions to process in this batch.")
+            return []
+
+        # Log milestone periodically (e.g., every 10% or at least every 1000 items)
+        log_interval = max(1, total_tx // 10) if total_tx < 10000 else 1000
 
         for i, transaction in enumerate(transactions):
             try:
@@ -227,12 +236,27 @@ class TransactionTimestampFixer:
                 logger.error(f"Failed to fix transaction {i}: {str(e)}")
                 # Keep original if fix fails
                 fixed_transactions.append(transaction)
+            
+            current = i + 1
+            percentage = (current / total_tx) * 100
+            
+            #  Log percentage completion periodically
+            if current % log_interval == 0 or current == total_tx:
+                logger.info(f"Migration Progress: {current}/{total_tx} ({percentage:.1f}%) complete.")
+            
+            #  Support optional callback functions for progress updates
+            if progress_callback is not None:
+                progress_callback(current, total_tx, percentage)
 
+        #  Provide summary statistics during execution
         logger.info(
             f"Batch fix complete: {self.fixed_count} fixed, "
-            f"{self.error_count} errors, {self.skipped_count} skipped"
+            f"{self.error_count} errors, {self.skipped_count} skipped. "
+            f"Total processed: {total_tx}"
         )
+        
         return fixed_transactions
+
 
     def reset_stats(self):
         """Reset migration statistics."""
