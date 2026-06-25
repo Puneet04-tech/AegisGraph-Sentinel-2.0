@@ -30,6 +30,7 @@ import random
 import numpy as np
 import networkx as nx
 from src.inference.model_comparison import build_model_explanation_comparison
+from src.timeline.doubly_linked_list import DoublyLinkedList
 
 def _get_timestamp() -> str:
     """Return a strict ISO 8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ) for the API."""
@@ -738,7 +739,7 @@ if page == "🧭 Command Center":
     )
 
     if "live_events" not in st.session_state:
-        st.session_state.live_events = []
+        st.session_state.live_events = DoublyLinkedList(max_size=15)
     if "live_event_future" not in st.session_state:
         st.session_state.live_event_future = None
     if "live_event_txn" not in st.session_state:
@@ -754,8 +755,7 @@ if page == "🧭 Command Center":
         if live_event_future is not None and live_event_future.done():
             event = live_event_future.result()
             if event is not None:
-                st.session_state.live_events.insert(0, event)
-                st.session_state.live_events = st.session_state.live_events[:15]
+                st.session_state.live_events.appendleft(event)
             st.session_state.live_event_future = None
             st.session_state.live_event_txn = None
 
