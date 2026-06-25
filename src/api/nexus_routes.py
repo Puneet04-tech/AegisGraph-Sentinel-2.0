@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel
 
+from src.api.security import verify_api_key
 from src.nexus_platform import (
     NexusPlatform,
     get_nexus_platform,
@@ -29,13 +30,6 @@ class LayerStatusUpdateRequest(BaseModel):
     status: str
     metrics: Optional[Dict[str, float]] = None
     error: Optional[str] = None
-
-
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")
