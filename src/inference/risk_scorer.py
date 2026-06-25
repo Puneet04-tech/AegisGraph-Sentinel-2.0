@@ -491,9 +491,12 @@ def compute_risk_score(
                 with lock:
                     G = subgraph_cache.get(source_account)
                 if G is None:
-                    G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
+                    G_candidate = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
                     with lock:
-                        subgraph_cache[source_account] = G
+                        G = subgraph_cache.get(source_account)
+                        if G is None:
+                            subgraph_cache[source_account] = G_candidate
+                            G = G_candidate
             else:
                 G = transaction_graph.get_approx_subgraph(source_account, max_hops=2)
         else:
