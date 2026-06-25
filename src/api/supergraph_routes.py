@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel
 
+from src.api.security import verify_api_key
 from src.threat_supergraph import (
     ThreatSupergraphEngine,
     get_supergraph_engine,
@@ -57,13 +58,6 @@ class CorrelationRequest(BaseModel):
     correlation_type: str
     confidence: str = "POSSIBLE"
     evidence: Optional[List[str]] = None
-
-
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel
 
+from src.api.security import verify_api_key
 from src.knowledge_os import (
     KnowledgeEngine,
     get_knowledge_engine,
@@ -44,13 +45,6 @@ class GraphCreateRequest(BaseModel):
     """Request to create a graph."""
     name: str
     entry_ids: List[str] = []
-
-
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")

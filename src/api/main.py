@@ -108,6 +108,7 @@ from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .geospatial_routes import register_routes as register_geospatial_routes
+from .archival_routes import register_routes as register_archival_routes
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -996,14 +997,6 @@ def _initialize_model_components() -> None:
 _initialize_model_components()
 
 
-def _get_metrics_lock() -> asyncio.Lock:
-    metrics_lock = getattr(state, "metrics_lock", None)
-    if metrics_lock is None:
-        metrics_lock = asyncio.Lock()
-        state.metrics_lock = metrics_lock
-    return metrics_lock
-
-
 async def _honeypot_auto_release_loop(interval_seconds: int = 60):
     await honeypot_auto_release_loop(
         lambda: state.services.optional_get("honeypot_manager"),
@@ -1309,11 +1302,20 @@ def _start_runtime_background_tasks():
         name="honeypot_auto_release",
         owner="innovation.honeypot",
     )
+    # Start the daily archival scheduler (Issue #1477)
+    from ..archival.scheduler import start_archival_daemon
+    start_archival_daemon()
 
 
 async def _stop_runtime_background_tasks():
     _api_logger.info("Shutting down AegisGraph Sentinel 2.0...", event_type="shutdown_start")
     await state.tasks.cancel_all_tasks(timeout_seconds=10.0)
+    # Gracefully stop the archival scheduler daemon (Issue #1477)
+    try:
+        from ..archival.scheduler import get_archival_scheduler
+        get_archival_scheduler().stop(timeout=5.0)
+    except Exception:
+        pass
     _api_logger.info("Background tasks stopped cleanly", event_type="shutdown_complete")
 
 
@@ -1668,6 +1670,9 @@ app.add_middleware(SecurityHeadersMiddleware, hsts=_hsts_enabled)
 register_adaptive_auth_routes(app)
 register_geospatial_routes(app)
 
+# Register archival routes (Issue #1477 — automated data archival strategy)
+register_archival_routes(app)
+
 
 @app.get("/", tags=["Health"])
 async def root():
@@ -1729,7 +1734,7 @@ async def get_stats():
     
     Returns detailed statistics about processed transactions
     """
-    async with _get_metrics_lock():
+    async with state.metrics_lock:
         uptime = time.time() - state.start_time
         
         avg_risk = (state.total_risk_score / state.requests_processed 
@@ -1993,7 +1998,7 @@ async def check_transaction(
                 },
             )
 
-        async with _get_metrics_lock():
+        async with state.metrics_lock:
             # Update statistics AFTER amount-scaling override so stats
             # always reflect the final decision returned to the caller.
             state.requests_processed += 1

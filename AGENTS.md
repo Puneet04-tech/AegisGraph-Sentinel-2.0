@@ -25,8 +25,9 @@ AegisGraph Sentinel 2.0 is a real-time fraud detection platform using HTGNN (Het
 - Kubernetes for orchestration
 
 ## Current Authentication
-- Simple API key-based auth (`X-API-Key` header)
-- `SUPER_ADMIN` as default key
+- API key-based auth via `X-API-Key` header
+- Key is configured via the `AEGIS_API_KEY` environment variable (see `.env.example`)
+- Default for local development: `dev-insecure-change-me-in-production`
 
 ## Enterprise SaaS Roadmap
 1. **S1**: Production Cloud Infrastructure (AWS, Azure, GCP, Terraform, Kubernetes)
