@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel
 
+from src.api.security import verify_api_key
 from src.agent_swarm import (
     AgentOrchestrator,
     get_orchestrator,
@@ -55,13 +56,6 @@ class MessageRequest(BaseModel):
     message_type: str
     content: Dict[str, Any]
     correlation_id: Optional[str] = None
-
-
-def verify_api_key(x_api_key: str = Header(None)) -> str:
-    """Verify API key."""
-    if x_api_key != "SUPER_ADMIN":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
 
 
 @router.get("/health")

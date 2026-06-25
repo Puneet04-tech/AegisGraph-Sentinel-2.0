@@ -191,6 +191,37 @@ def _invalidate_auth_cache() -> None:
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+API_KEY_ENV_VAR = "AEGIS_API_KEY"
+
+
+def verify_api_key(x_api_key: str = Header(None)) -> str:
+    """Verify API key against the AEGIS_API_KEY environment variable.
+
+    Replaces the legacy hardcoded ``SUPER_ADMIN`` check used in route files.
+    Operators configure the service by exporting ``AEGIS_API_KEY`` as an
+    environment variable.
+
+    Raises:
+        HTTPException 503: ``AEGIS_API_KEY`` is not configured.
+        HTTPException 401: The provided key does not match.
+    """
+    valid_key = os.getenv(API_KEY_ENV_VAR, "")
+    if not valid_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"API key authentication is not configured. Set the "
+                f"{API_KEY_ENV_VAR} environment variable."
+            ),
+        )
+    if x_api_key != valid_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+    return x_api_key
+
+
 def require_api_key(
     x_api_key: str = Security(api_key_header),
 ) -> None:

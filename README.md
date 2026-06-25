@@ -379,6 +379,7 @@ print(f"Verified: {response.json()['verified']}")
 - [API Documentation](docs/api.md)
 - [Model Training Guide](docs/training.md)
 - [Deployment Guide](docs/deployment.md)
+- [Graph Investigation Playbooks](docs/graph-investigation-playbooks.md)
 
 Detailed project documentation is available in the `docs/` directory.
 
@@ -390,6 +391,7 @@ Detailed project documentation is available in the `docs/` directory.
 | `contributor_handbook.md` | Contributor workflow, repository structure, and contribution guidelines |
 | `training_workflow.md` | End-to-end machine learning and HTGNN training pipeline |
 | `testing_guide.md` | Testing procedures, coverage reporting, and debugging guidance |
+| `graph-investigation-playbooks.md` | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
 
 These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
 ## 🧪 Testing
