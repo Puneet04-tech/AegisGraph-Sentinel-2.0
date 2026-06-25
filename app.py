@@ -30,6 +30,7 @@ import random
 import numpy as np
 import networkx as nx
 from src.inference.model_comparison import build_model_explanation_comparison
+from src.timeline.doubly_linked_list import DoublyLinkedList
 
 def _get_timestamp() -> str:
     """Return a strict ISO 8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ) for the API."""
@@ -738,7 +739,7 @@ if page == "🧭 Command Center":
     )
 
     if "live_events" not in st.session_state:
-        st.session_state.live_events = []
+        st.session_state.live_events = DoublyLinkedList(max_size=15)
     if "live_event_future" not in st.session_state:
         st.session_state.live_event_future = None
     if "live_event_txn" not in st.session_state:
@@ -754,8 +755,7 @@ if page == "🧭 Command Center":
         if live_event_future is not None and live_event_future.done():
             event = live_event_future.result()
             if event is not None:
-                st.session_state.live_events.insert(0, event)
-                st.session_state.live_events = st.session_state.live_events[:15]
+                st.session_state.live_events.appendleft(event)
             st.session_state.live_event_future = None
             st.session_state.live_event_txn = None
 
@@ -1108,6 +1108,11 @@ elif page == "📁 Batch Triage":
 
     uploaded_file = st.file_uploader("Upload CSV file with transactions", type=["csv"])
     if uploaded_file is not None:
+        if getattr(uploaded_file, "size", 0) > MAX_BATCH_UPLOAD_BYTES:
+            st.error(
+                f"File too large. Maximum allowed size is {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB."
+            )
+            st.stop()
         st.session_state["batch_df"] = pd.read_csv(uploaded_file)
         st.session_state["batch_results"] = None
         if st.session_state.get("last_uploaded_name") != uploaded_file.name:
@@ -1116,12 +1121,6 @@ elif page == "📁 Batch Triage":
 
     if uploaded_file is not None:
         try:
-            if getattr(uploaded_file, "size", 0) > MAX_BATCH_UPLOAD_BYTES:
-                st.error(
-                    f"File too large. Maximum allowed size is {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB."
-                )
-                st.stop()
-
             uploaded_file.seek(0)
             preview_df = st.session_state["batch_df"].head(BATCH_PREVIEW_ROWS)
             uploaded_file.seek(0)
@@ -1154,6 +1153,7 @@ elif page == "📁 Batch Triage":
             if st.button("Process All Transactions", use_container_width=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                error_placeholder = st.empty()
 
                 results = []
                 processed_rows = 0
@@ -1165,10 +1165,6 @@ elif page == "📁 Batch Triage":
                     for _, row in chunk.iterrows():
                         if processed_rows >= BATCH_MAX_ROWS:
                             break
-
-                        status_text.text(
-                            f"Processing {processed_rows + 1}/{total_rows}..."
-                        )
 
                         txn = _build_batch_transaction(row, processed_rows)
 
@@ -1206,7 +1202,7 @@ elif page == "📁 Batch Triage":
                                     }
                                 )
                             else:
-                                st.error(
+                                error_placeholder.error(
                                     f"API Error for {txn['transaction_id']}: Status {response.status_code}"
                                 )
                                 results.append(
@@ -1224,7 +1220,7 @@ elif page == "📁 Batch Triage":
                                     }
                                 )
                         except Exception as e:
-                            st.error(
+                            error_placeholder.error(
                                 f"Error processing {txn.get('transaction_id', 'unknown')}: {str(e)}"
                             )
                             results.append(
@@ -1245,7 +1241,9 @@ elif page == "📁 Batch Triage":
                             )
 
                         processed_rows += 1
-                        progress_bar.progress(min(processed_rows / total_rows, 1.0))
+
+                    progress_bar.progress(min(processed_rows / total_rows, 1.0))
+                    status_text.text(f"Processing {processed_rows}/{total_rows}...")
 
                     if processed_rows >= BATCH_MAX_ROWS:
                         break
@@ -4093,6 +4091,6 @@ def process_incoming_stream_safely(new_log_data):
     """
     is_saved = sentinel_telemetry_buffer.enqueue(new_log_data)
     if not is_saved:
-        print("[Warning] Buffer capacity exceeded threshold! Applying safe backpressure drop.")
+        logger.warning("Buffer capacity exceeded threshold! Applying safe backpressure drop.")
     return is_saved
 # --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---
