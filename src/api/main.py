@@ -119,6 +119,8 @@ from src.phase_63_enterprise_security_decision_intelligence_platform.api import 
 from src.phase_64_autonomous_threat_simulation_platform.api import router as phase64_router
 from src.phase_66_autonomous_compliance_validation_platform.api import router as phase66_router
 from src.phase_67_global_threat_forecasting_engine.api import router as phase67_router
+from .simulation_routes import router as simulation_router
+
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1694,6 +1696,9 @@ app.include_router(phase63_router)
 app.include_router(phase64_router)
 app.include_router(phase66_router)
 app.include_router(phase67_router)
+# Register Simulation routes (Issue #1505)
+app.include_router(simulation_router)
+
 
 
 @app.get("/", tags=["Health"])
