@@ -3,14 +3,18 @@ Helper utilities for AegisGraph Sentinel
 """
 # Working on utility functions for the project
 
+from __future__ import annotations
+
 import yaml
-import torch
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import TYPE_CHECKING, Dict, Any, Optional
 import logging
 from datetime import datetime, timezone
 import functools
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +191,7 @@ def set_seed(seed: int = 42):
     import random
     random.seed(seed)
     np.random.seed(seed)
+    import torch
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
@@ -195,7 +200,7 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
 
 
-def count_parameters(model: torch.nn.Module) -> int:
+def count_parameters(model: "torch.nn.Module") -> int:
     """
     Count trainable parameters in a PyTorch model
     
@@ -205,13 +210,14 @@ def count_parameters(model: torch.nn.Module) -> int:
     Returns:
         Number of trainable parameters
     """
+    import torch
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 _VALID_DEVICES = frozenset({"cpu", "cuda", "mps"})
 
 
-def get_device(device: Optional[str] = None) -> torch.device:
+def get_device(device: Optional[str] = None) -> "torch.device":
     """
     Get torch device (CUDA/MPS/CPU)
 
@@ -223,6 +229,7 @@ def get_device(device: Optional[str] = None) -> torch.device:
     Returns:
         torch.device
     """
+    import torch
     requested_device = device.strip().lower() if isinstance(device, str) else device
 
     if requested_device is not None and requested_device not in _VALID_DEVICES:
