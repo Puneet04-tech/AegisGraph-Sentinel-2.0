@@ -108,6 +108,7 @@ from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .archival_routes import register_routes as register_archival_routes
+from .digital_twin_routes import router as digital_twin_router
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1670,6 +1671,9 @@ register_adaptive_auth_routes(app)
 
 # Register archival routes (Issue #1477 — automated data archival strategy)
 register_archival_routes(app)
+
+# Register Digital Twin routes (Issue #1498)
+app.include_router(digital_twin_router)
 
 
 @app.get("/", tags=["Health"])
