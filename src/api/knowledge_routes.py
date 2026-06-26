@@ -4,10 +4,10 @@ Knowledge Operating System API Routes
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from src.api.security import verify_api_key
+from src.api.security import require_role, Role
 from src.knowledge_os import (
     KnowledgeEngine,
     get_knowledge_engine,
@@ -57,13 +57,11 @@ async def health_check():
     }
 
 
-@router.post("/store")
+@router.post("/store", dependencies=[Depends(require_role(Role.ANALYST))])
 async def store_knowledge(
     request: StoreRequest,
-    api_key: str = Header(None),
 ):
     """Store a new knowledge entry."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     try:
@@ -92,13 +90,11 @@ async def store_knowledge(
     }
 
 
-@router.post("/search")
+@router.post("/search", dependencies=[Depends(require_role(Role.ANALYST))])
 async def search_knowledge(
     request: SearchRequest,
-    api_key: str = Header(None),
 ):
     """Search knowledge entries."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     ktype = None
@@ -129,13 +125,11 @@ async def search_knowledge(
     }
 
 
-@router.get("/retrieve/{entry_id}")
+@router.get("/retrieve/{entry_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def retrieve_knowledge(
     entry_id: str,
-    api_key: str = Header(None),
 ):
     """Retrieve a knowledge entry."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     entry = engine.get_entry(entry_id)
@@ -145,15 +139,13 @@ async def retrieve_knowledge(
     return {"entry": entry.to_dict()}
 
 
-@router.get("/entries")
+@router.get("/entries", dependencies=[Depends(require_role(Role.ANALYST))])
 async def list_entries(
     knowledge_type: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100),
-    api_key: str = Header(None),
 ):
     """List all knowledge entries."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     entries = list(engine.entries.values())
@@ -178,16 +170,14 @@ async def list_entries(
     }
 
 
-@router.patch("/entries/{entry_id}")
+@router.patch("/entries/{entry_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def update_entry(
     entry_id: str,
     status: Optional[str] = None,
     content: Optional[str] = None,
     tags: Optional[List[str]] = None,
-    api_key: str = Header(None),
 ):
     """Update a knowledge entry."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     st = KnowledgeStatus(status) if status else None
@@ -205,13 +195,11 @@ async def update_entry(
     return {"status": "updated"}
 
 
-@router.post("/graph/create")
+@router.post("/graph/create", dependencies=[Depends(require_role(Role.ANALYST))])
 async def create_graph(
     request: GraphCreateRequest,
-    api_key: str = Header(None),
 ):
     """Create a knowledge graph."""
-    verify_api_key(api_key)
     
     engine = get_knowledge_engine()
     graph_manager = KnowledgeGraphManager(engine)
@@ -227,13 +215,11 @@ async def create_graph(
     }
 
 
-@router.get("/graph/{graph_id}")
+@router.get("/graph/{graph_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def get_graph(
     graph_id: str,
-    api_key: str = Header(None),
 ):
     """Get a knowledge graph."""
-    verify_api_key(api_key)
     
     engine = get_knowledge_engine()
     graph_manager = KnowledgeGraphManager(engine)
@@ -245,13 +231,11 @@ async def get_graph(
     return {"graph": graph.to_dict()}
 
 
-@router.post("/correlate")
+@router.post("/correlate", dependencies=[Depends(require_role(Role.ANALYST))])
 async def correlate_entries(
     entry_ids: List[str],
-    api_key: str = Header(None),
 ):
     """Correlate knowledge entries."""
-    verify_api_key(api_key)
     
     engine = get_knowledge_engine()
     graph_manager = KnowledgeGraphManager(engine)
@@ -264,15 +248,13 @@ async def correlate_entries(
     }
 
 
-@router.get("/recommendations")
+@router.get("/recommendations", dependencies=[Depends(require_role(Role.ANALYST))])
 async def get_recommendations(
     user_id: str = Query(...),
     context: Optional[Dict[str, Any]] = None,
     limit: int = Query(default=5, ge=1, le=20),
-    api_key: str = Header(None),
 ):
     """Get knowledge recommendations."""
-    verify_api_key(api_key)
     
     engine = get_knowledge_engine()
     retrieval = KnowledgeRetrievalEngine(engine)
@@ -289,13 +271,11 @@ async def get_recommendations(
     }
 
 
-@router.get("/related/{entry_id}")
+@router.get("/related/{entry_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def get_related(
     entry_id: str,
-    api_key: str = Header(None),
 ):
     """Get related knowledge entries."""
-    verify_api_key(api_key)
     engine = get_knowledge_engine()
     
     related = engine.get_related(entry_id)
