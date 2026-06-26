@@ -113,6 +113,12 @@ from .adaptive_auth_routes import register_routes as register_adaptive_auth_rout
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
 from .decision_routes import router as decision_router
+from src.phase_61_autonomous_security_knowledge_graph_engine.api import router as phase61_router
+from src.phase_62_cross_domain_investigation_orchestrator.api import router as phase62_router
+from src.phase_63_enterprise_security_decision_intelligence_platform.api import router as phase63_router
+from src.phase_64_autonomous_threat_simulation_platform.api import router as phase64_router
+from src.phase_66_autonomous_compliance_validation_platform.api import router as phase66_router
+from src.phase_67_global_threat_forecasting_engine.api import router as phase67_router
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1681,6 +1687,13 @@ register_archival_routes(app)
 app.include_router(agent_router)
 # Register Decision Intelligence routes (Issue #1496)
 app.include_router(decision_router)
+# Register Phase 61-67 module routes (Issue #1508)
+app.include_router(phase61_router)
+app.include_router(phase62_router)
+app.include_router(phase63_router)
+app.include_router(phase64_router)
+app.include_router(phase66_router)
+app.include_router(phase67_router)
 
 
 @app.get("/", tags=["Health"])
