@@ -584,19 +584,18 @@ def compute_risk_score(
                     with lock:
                         if source_account not in centrality_baseline:
                             centrality_baseline[source_account] = []
-                        
-                        baseline_history = centrality_baseline[source_account]
-                    
-                    if len(baseline_history) >= 3:
-                        baseline_avg = np.mean(baseline_history)
-                        baseline_std = np.std(baseline_history) if len(baseline_history) > 1 else 0.001
-                        
+                        baseline_snapshot = list(centrality_baseline[source_account])
+
+                    if len(baseline_snapshot) >= 3:
+                        baseline_avg = np.mean(baseline_snapshot)
+                        baseline_std = np.std(baseline_snapshot) if len(baseline_snapshot) > 1 else 0.001
+
                         # Spike detection: configurable thresholds (from thresholds.yaml)
                         spike_threshold = max(
                             baseline_avg + config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER * baseline_std,
                             baseline_avg * config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
                         )
-                        
+
                         if current_score > spike_threshold and baseline_avg > 0:
                             lateral_movement_detected = True
                             lateral_movement_reason = f"Lateral movement detected: {source_account} betweenness centrality spiked from baseline {baseline_avg:.4f} to {current_score:.4f} (MITRE ATT&CK TA0008)"
@@ -609,12 +608,14 @@ def compute_risk_score(
                                     "current_score": current_score,
                                 },
                             )
-                    
+
                     # Update baseline (rolling window, thread-safe)
                     with lock:
-                        baseline_history.append(current_score)
-                        if len(baseline_history) > centrality_window_size:
-                            baseline_history.pop(0)
+                        live_history = centrality_baseline.get(source_account, [])
+                        live_history.append(current_score)
+                        if len(live_history) > centrality_window_size:
+                            live_history.pop(0)
+                        centrality_baseline[source_account] = live_history
                         
             except Exception as e:
                 pass
