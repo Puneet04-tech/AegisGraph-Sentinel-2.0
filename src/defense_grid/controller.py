@@ -9,6 +9,9 @@ from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 import threading
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -79,10 +82,22 @@ class DefenseGridController:
         Returns:
             Processing result
         """
+        if not isinstance(threat_data, dict):
+            logger.error("Invalid threat_data type. Expected dict, got %s", type(threat_data))
+            return {"error": "Invalid threat data structure", "status": "REJECTED"}
+            
         threat_id = threat_data.get("threat_id", str(uuid.uuid4()))
-        threat_type = threat_data.get("type", "")
+        threat_type = threat_data.get("type")
+        if not threat_type:
+            logger.warning("Threat data missing required field: 'type'. Threat ID: %s", threat_id)
+            return {"error": "Missing 'type' field", "status": "REJECTED"}
+            
         severity = threat_data.get("severity", "MEDIUM")
         affected_entities = threat_data.get("affected_entities", [])
+        
+        if not isinstance(affected_entities, list):
+            logger.warning("Invalid 'affected_entities' format. Expected list. Threat ID: %s", threat_id)
+            affected_entities = []
         
         start_time = datetime.now(timezone.utc)
         
