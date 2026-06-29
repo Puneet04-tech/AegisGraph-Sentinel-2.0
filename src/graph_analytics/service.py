@@ -5,8 +5,11 @@ Graph Analytics Service - Core business logic
 from __future__ import annotations
 
 import threading
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     GraphNode,
@@ -41,24 +44,28 @@ class GraphService:
         properties: Optional[Dict[str, Any]] = None,
         risk_score: float = 0.0,
         tags: Optional[List[str]] = None,
-    ) -> GraphNode:
+    ) -> Optional[GraphNode]:
         """Add an entity to the graph."""
         with self._lock:
             try:
-                node_type = NodeType(entity_type)
-            except ValueError:
-                node_type = NodeType.ENTITY
+                try:
+                    node_type = NodeType(entity_type)
+                except ValueError:
+                    node_type = NodeType.ENTITY
 
-            node = GraphNode(
-                node_id=entity_id,
-                node_type=node_type,
-                label=label,
-                properties=properties or {},
-                risk_score=risk_score,
-                tags=tags or [],
-            )
-            self._store.add_node(node)
-            return node
+                node = GraphNode(
+                    node_id=entity_id,
+                    node_type=node_type,
+                    label=label,
+                    properties=properties or {},
+                    risk_score=risk_score,
+                    tags=tags or [],
+                )
+                self._store.add_node(node)
+                return node
+            except Exception as e:
+                logger.error("Failed to add entity %s: %s", entity_id, e, exc_info=True)
+                return None
 
     def link_entities(
         self,
@@ -70,26 +77,30 @@ class GraphService:
     ) -> Optional[GraphEdge]:
         """Link two entities in the graph."""
         with self._lock:
-            source = self._store.get_node(source_id)
-            target = self._store.get_node(target_id)
-
-            if not source or not target:
-                return None
-
             try:
-                edge_type = EdgeType(relationship)
-            except ValueError:
-                edge_type = EdgeType.LINKED_TO
+                source = self._store.get_node(source_id)
+                target = self._store.get_node(target_id)
 
-            edge = GraphEdge(
-                source_id=source_id,
-                target_id=target_id,
-                edge_type=edge_type,
-                weight=weight,
-                properties=properties or {},
-            )
-            self._store.add_edge(edge)
-            return edge
+                if not source or not target:
+                    return None
+
+                try:
+                    edge_type = EdgeType(relationship)
+                except ValueError:
+                    edge_type = EdgeType.LINKED_TO
+
+                edge = GraphEdge(
+                    source_id=source_id,
+                    target_id=target_id,
+                    edge_type=edge_type,
+                    weight=weight,
+                    properties=properties or {},
+                )
+                self._store.add_edge(edge)
+                return edge
+            except Exception as e:
+                logger.error("Failed to link entities %s -> %s: %s", source_id, target_id, e, exc_info=True)
+                return None
 
     def discover_relationships(
         self,
@@ -97,7 +108,11 @@ class GraphService:
         max_depth: int = 3,
     ) -> List[GraphNode]:
         """Discover relationships for an entity."""
-        return self._store.bfs_traverse(entity_id, max_depth=max_depth)
+        try:
+            return self._store.bfs_traverse(entity_id, max_depth=max_depth)
+        except Exception as e:
+            logger.error("Failed to discover relationships for %s: %s", entity_id, e, exc_info=True)
+            return []
 
     def detect_fraud_rings(
         self,
@@ -105,8 +120,12 @@ class GraphService:
         algorithm: AlgorithmType = AlgorithmType.LOUVAIN,
     ) -> List[CommunityDetection]:
         """Detect fraud rings using community detection."""
-        communities = self._store.detect_communities(algorithm)
-        return [c for c in communities if c.size >= min_size]
+        try:
+            communities = self._store.detect_communities(algorithm)
+            return [c for c in communities if c.size >= min_size]
+        except Exception as e:
+            logger.error("Failed to detect fraud rings with %s: %s", algorithm, e, exc_info=True)
+            return []
 
     def propagate_risk(
         self,
@@ -115,7 +134,11 @@ class GraphService:
         decay: float = 0.8,
     ) -> RiskPropagation:
         """Propagate risk through connected entities."""
-        return self._store.propagate_risk(source_id, max_depth, decay)
+        try:
+            return self._store.propagate_risk(source_id, max_depth, decay)
+        except Exception as e:
+            logger.error("Failed to propagate risk from %s: %s", source_id, e, exc_info=True)
+            return RiskPropagation(source_id=source_id, affected_nodes={}, timestamp=datetime.now(timezone.utc))
 
     def analyze_paths(
         self,
@@ -123,30 +146,38 @@ class GraphService:
         target_id: str,
     ) -> Optional[PathAnalysis]:
         """Analyze paths between two entities."""
-        path = self._store.find_shortest_path(source_id, target_id)
-        if not path:
+        try:
+            path = self._store.find_shortest_path(source_id, target_id)
+            if not path:
+                return None
+
+            edges = []
+            total_weight = 0.0
+            for i in range(len(path) - 1):
+                edge_list = self._store.get_edges_between(path[i], path[i + 1])
+                if edge_list:
+                    edges.append(edge_list[0])
+                    total_weight += edge_list[0].weight
+
+            return PathAnalysis(
+                source_id=source_id,
+                target_id=target_id,
+                path=path,
+                path_length=len(path) - 1,
+                total_weight=total_weight,
+                edges=edges,
+            )
+        except Exception as e:
+            logger.error("Failed to analyze paths from %s to %s: %s", source_id, target_id, e, exc_info=True)
             return None
-
-        edges = []
-        total_weight = 0.0
-        for i in range(len(path) - 1):
-            edge_list = self._store.get_edges_between(path[i], path[i + 1])
-            if edge_list:
-                edges.append(edge_list[0])
-                total_weight += edge_list[0].weight
-
-        return PathAnalysis(
-            source_id=source_id,
-            target_id=target_id,
-            path=path,
-            path_length=len(path) - 1,
-            total_weight=total_weight,
-            edges=edges,
-        )
 
     def calculate_entity_centrality(self, entity_id: str) -> CentralityMetrics:
         """Calculate centrality metrics for an entity."""
-        return self._store.calculate_centrality(entity_id)
+        try:
+            return self._store.calculate_centrality(entity_id)
+        except Exception as e:
+            logger.error("Failed to calculate centrality for %s: %s", entity_id, e, exc_info=True)
+            return CentralityMetrics(node_id=entity_id, degree_centrality=0.0, betweenness_centrality=0.0, closeness_centrality=0.0, page_rank=0.0)
 
     def get_entity_network(self, entity_id: str, depth: int = 2) -> Dict[str, Any]:
         """Get the full network around an entity."""
@@ -200,19 +231,30 @@ class GraphService:
         max_depth: int = 3,
     ) -> Dict[str, Any]:
         """Analyze the influence of an entity."""
-        nodes = self._store.dfs_traverse(entity_id, max_depth=max_depth)
-        metrics = self._store.calculate_centrality(entity_id)
+        try:
+            nodes = self._store.dfs_traverse(entity_id, max_depth=max_depth)
+            metrics = self._store.calculate_centrality(entity_id)
 
-        total_risk = sum(n.risk_score for n in nodes)
-        avg_risk = total_risk / len(nodes) if nodes else 0.0
+            total_risk = sum(n.risk_score for n in nodes)
+            avg_risk = total_risk / len(nodes) if nodes else 0.0
 
-        return {
-            "entity_id": entity_id,
-            "influence_score": metrics.page_rank,
-            "reachable_entities": len(nodes),
-            "average_risk": avg_risk,
-            "max_depth": max_depth,
-        }
+            return {
+                "entity_id": entity_id,
+                "influence_score": metrics.page_rank,
+                "reachable_entities": len(nodes),
+                "average_risk": avg_risk,
+                "max_depth": max_depth,
+            }
+        except Exception as e:
+            logger.error("Failed to analyze influence for %s: %s", entity_id, e, exc_info=True)
+            return {
+                "entity_id": entity_id,
+                "influence_score": 0.0,
+                "reachable_entities": 0,
+                "average_risk": 0.0,
+                "max_depth": max_depth,
+                "error": str(e)
+            }
 
     def search_by_properties(
         self,
