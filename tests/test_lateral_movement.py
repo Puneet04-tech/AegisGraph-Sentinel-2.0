@@ -58,5 +58,4 @@ def test_lateral_movement_simulation():
     assert sim.high_value_assets_at_risk == 1
 
 if __name__ == "__main__":
-    test_lateral_movement_simulation()
-    print("✅ Lateral Movement Simulation test passed successfully!")
+    pytest.main(["-v", __file__])
