@@ -51,6 +51,10 @@ class EventDispatcher:
     def started(self) -> bool:
         return self._started
 
+    @property
+    def _running(self) -> bool:
+        return self._started
+
     async def start(self) -> None:
         if self._started or self._stopping:
             return

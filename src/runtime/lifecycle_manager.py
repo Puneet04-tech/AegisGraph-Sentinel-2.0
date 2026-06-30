@@ -81,7 +81,6 @@ class LifecycleManager:
                     raise RuntimeError("Dispatcher failed to start during runtime startup")
                 self._logger.info("Event dispatcher started", event_type="dispatcher_started")
 
-            completed_steps: List[str] = []
             try:
                 for step in self._startup_steps:
                     await self._run_step(step, phase="startup")
@@ -90,7 +89,10 @@ class LifecycleManager:
                 self._logger.error(
                     f"Startup failed at step '{step.name}': {exc}",
                     event_type="runtime_startup_failed",
-                    metadata={"failed_step": step.name, "completed_steps": completed_steps},
+                    metadata={
+                        "failed_step": step.name,
+                        "completed_steps": completed_steps,
+                    },
                 )
                 await self._rollback_startup(completed_steps)
                 raise
