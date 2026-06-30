@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import SecurityAgentMarketplaceAgentRegistration, SecurityAgentMarketplaceOrchestrationSession, SecurityAgentMarketplaceAgentCapability
 from .store import SecurityAgentMarketplaceStore
@@ -12,7 +12,7 @@ class SecurityAgentMarketplaceService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class SecurityAgentMarketplaceService:
     def create_agentregistration(self, tenant_id: str, record_id: str, agent_id: str, agent_name: str, capabilities: List[str], status: str) -> SecurityAgentMarketplaceAgentRegistration:
         item = SecurityAgentMarketplaceAgentRegistration(
             record_id=record_id, tenant_id=tenant_id, agent_id=agent_id, agent_name=agent_name, capabilities=capabilities, status=status,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_agentregistration(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'AgentRegistration'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class SecurityAgentMarketplaceService:
     def create_orchestrationsession(self, tenant_id: str, record_id: str, session_id: str, active_agents: List[str], task_status: str, messages_exchanged: int) -> SecurityAgentMarketplaceOrchestrationSession:
         item = SecurityAgentMarketplaceOrchestrationSession(
             record_id=record_id, tenant_id=tenant_id, session_id=session_id, active_agents=active_agents, task_status=task_status, messages_exchanged=messages_exchanged,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_orchestrationsession(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'OrchestrationSession'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class SecurityAgentMarketplaceService:
     def create_agentcapability(self, tenant_id: str, record_id: str, capability_id: str, name: str, cost_per_token: float, governance_level: str) -> SecurityAgentMarketplaceAgentCapability:
         item = SecurityAgentMarketplaceAgentCapability(
             record_id=record_id, tenant_id=tenant_id, capability_id=capability_id, name=name, cost_per_token=cost_per_token, governance_level=governance_level,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_agentcapability(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'AgentCapability'.upper()}", {"record_id": record_id})

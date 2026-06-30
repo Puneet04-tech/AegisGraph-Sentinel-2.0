@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import DecisionIntelligencePlatformDecisionContext, DecisionIntelligencePlatformExplainabilityReport, DecisionIntelligencePlatformRiskRecommendation
 from .store import DecisionIntelligencePlatformStore
@@ -12,7 +12,7 @@ class DecisionIntelligencePlatformService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class DecisionIntelligencePlatformService:
     def create_decisioncontext(self, tenant_id: str, record_id: str, decision_id: str, action_taken: str, rationales: List[str], confidence: float) -> DecisionIntelligencePlatformDecisionContext:
         item = DecisionIntelligencePlatformDecisionContext(
             record_id=record_id, tenant_id=tenant_id, decision_id=decision_id, action_taken=action_taken, rationales=rationales, confidence=confidence,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_decisioncontext(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'DecisionContext'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class DecisionIntelligencePlatformService:
     def create_explainabilityreport(self, tenant_id: str, record_id: str, report_id: str, model_name: str, feature_importances: Dict[str, float], explanation_text: str) -> DecisionIntelligencePlatformExplainabilityReport:
         item = DecisionIntelligencePlatformExplainabilityReport(
             record_id=record_id, tenant_id=tenant_id, report_id=report_id, model_name=model_name, feature_importances=feature_importances, explanation_text=explanation_text,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_explainabilityreport(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'ExplainabilityReport'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class DecisionIntelligencePlatformService:
     def create_riskrecommendation(self, tenant_id: str, record_id: str, recommendation_id: str, threat_vector: str, recommended_action: str, risk_score: float) -> DecisionIntelligencePlatformRiskRecommendation:
         item = DecisionIntelligencePlatformRiskRecommendation(
             record_id=record_id, tenant_id=tenant_id, recommendation_id=recommendation_id, threat_vector=threat_vector, recommended_action=recommended_action, risk_score=risk_score,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_riskrecommendation(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'RiskRecommendation'.upper()}", {"record_id": record_id})

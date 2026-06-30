@@ -127,6 +127,7 @@ class Neo4jGraphProvider:
                 )
                 # Verify connectivity immediately
                 self._driver.verify_connectivity()
+                self._initialize_schema()
                 logger.info(f"Successfully connected to Neo4j database at {self.uri}")
             except Exception as e:
                 logger.error(
@@ -135,6 +136,16 @@ class Neo4jGraphProvider:
                 )
                 self.enabled = False
                 self._driver = None
+
+    def _initialize_schema(self) -> None:
+        """Create required indexes on first connect if they do not already exist."""
+        try:
+            with self._driver.session() as session:
+                session.run(
+                    "CREATE INDEX account_id_index IF NOT EXISTS FOR (a:Account) ON (a.id)"
+                )
+        except Exception as e:
+            logger.warning("Failed to initialize Neo4j schema indexes: %s", e)
 
     MAX_SAFE_SUBGRAPH_HOPS = 5
 
@@ -300,11 +311,9 @@ class Neo4jGraphProvider:
 
         limit = self.DEFAULT_SUBGRAPH_LIMIT
         hop_pattern = f"[r:TRANSFER*1..{max_hops}]"
-        # Neighborhood Sampling (GraphSAGE-style) to limit memory overhead
         query = (
             f"MATCH (a:Account {{id: $account_id}})\n"
             f"MATCH path = (a)-{hop_pattern}-(b:Account)\n"
-            f"WITH path, b LIMIT 50\n" # Limit branching factor per query to prevent memory exhaustion
             f"RETURN path\n"
             f"LIMIT $limit"
         )

@@ -7,7 +7,7 @@ Orchestrates identity federation across multiple providers.
 import hashlib
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .models import (
@@ -294,7 +294,7 @@ class FederationManager:
         # Update user with provider link
         user.provider_id = provider_id
         user.provider_user_id = provider_user_id
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         
         if provider_token:
             user.profile_data["provider_token"] = provider_token
@@ -344,7 +344,7 @@ class FederationManager:
         # Clear provider link
         user.provider_id = ""
         user.provider_user_id = ""
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         
         self._store.update_user(user)
         

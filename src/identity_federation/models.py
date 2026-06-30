@@ -4,7 +4,7 @@ Identity Federation Data Models
 Defines all data structures for the Identity Federation Platform.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field, validator
@@ -176,7 +176,7 @@ class FederationSession(BaseModel):
     
     @property
     def is_expired(self) -> bool:
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
 
 class AuthenticationRequest(BaseModel):

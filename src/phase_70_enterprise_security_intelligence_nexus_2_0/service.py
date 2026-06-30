@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import SecurityIntelligenceNexusGlobalIntelligenceHubState, SecurityIntelligenceNexusUnifiedAnalyticsReport, SecurityIntelligenceNexusIntelligenceRoute
 from .store import SecurityIntelligenceNexusStore
@@ -12,7 +12,7 @@ class SecurityIntelligenceNexusService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class SecurityIntelligenceNexusService:
     def create_globalintelligencehubstate(self, tenant_id: str, record_id: str, hub_id: str, connected_domains: List[str], ingestion_rate: float, is_healthy: bool) -> SecurityIntelligenceNexusGlobalIntelligenceHubState:
         item = SecurityIntelligenceNexusGlobalIntelligenceHubState(
             record_id=record_id, tenant_id=tenant_id, hub_id=hub_id, connected_domains=connected_domains, ingestion_rate=ingestion_rate, is_healthy=is_healthy,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_globalintelligencehubstate(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'GlobalIntelligenceHubState'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class SecurityIntelligenceNexusService:
     def create_unifiedanalyticsreport(self, tenant_id: str, record_id: str, report_id: str, generated_by: str, domain_coverage: Dict[str, float], threat_count: int) -> SecurityIntelligenceNexusUnifiedAnalyticsReport:
         item = SecurityIntelligenceNexusUnifiedAnalyticsReport(
             record_id=record_id, tenant_id=tenant_id, report_id=report_id, generated_by=generated_by, domain_coverage=domain_coverage, threat_count=threat_count,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_unifiedanalyticsreport(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'UnifiedAnalyticsReport'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class SecurityIntelligenceNexusService:
     def create_intelligenceroute(self, tenant_id: str, record_id: str, route_id: str, source_domain: str, target_domain: str, priority: str) -> SecurityIntelligenceNexusIntelligenceRoute:
         item = SecurityIntelligenceNexusIntelligenceRoute(
             record_id=record_id, tenant_id=tenant_id, route_id=route_id, source_domain=source_domain, target_domain=target_domain, priority=priority,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_intelligenceroute(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'IntelligenceRoute'.upper()}", {"record_id": record_id})

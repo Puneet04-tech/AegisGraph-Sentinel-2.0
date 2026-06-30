@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import SecurityGovernanceCommandCenterModelGovernanceRecord, SecurityGovernanceCommandCenterPromptAuditRecord, SecurityGovernanceCommandCenterRiskMonitorState
 from .store import SecurityGovernanceCommandCenterStore
@@ -12,7 +12,7 @@ class SecurityGovernanceCommandCenterService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class SecurityGovernanceCommandCenterService:
     def create_modelgovernancerecord(self, tenant_id: str, record_id: str, model_id: str, model_version: str, bias_score: float, is_approved: bool) -> SecurityGovernanceCommandCenterModelGovernanceRecord:
         item = SecurityGovernanceCommandCenterModelGovernanceRecord(
             record_id=record_id, tenant_id=tenant_id, model_id=model_id, model_version=model_version, bias_score=bias_score, is_approved=is_approved,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_modelgovernancerecord(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'ModelGovernanceRecord'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class SecurityGovernanceCommandCenterService:
     def create_promptauditrecord(self, tenant_id: str, record_id: str, audit_id: str, prompt_hash: str, risk_level: str, policy_violations: List[str]) -> SecurityGovernanceCommandCenterPromptAuditRecord:
         item = SecurityGovernanceCommandCenterPromptAuditRecord(
             record_id=record_id, tenant_id=tenant_id, audit_id=audit_id, prompt_hash=prompt_hash, risk_level=risk_level, policy_violations=policy_violations,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_promptauditrecord(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'PromptAuditRecord'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class SecurityGovernanceCommandCenterService:
     def create_riskmonitorstate(self, tenant_id: str, record_id: str, state_id: str, total_governed_models: int, anomalies_count: int, last_checked: str) -> SecurityGovernanceCommandCenterRiskMonitorState:
         item = SecurityGovernanceCommandCenterRiskMonitorState(
             record_id=record_id, tenant_id=tenant_id, state_id=state_id, total_governed_models=total_governed_models, anomalies_count=anomalies_count, last_checked=last_checked,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_riskmonitorstate(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'RiskMonitorState'.upper()}", {"record_id": record_id})

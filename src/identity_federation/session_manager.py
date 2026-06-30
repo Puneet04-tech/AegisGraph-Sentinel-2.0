@@ -5,7 +5,7 @@ Manages federation sessions with secure session handling.
 """
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .models import (
@@ -67,7 +67,7 @@ class SessionManager:
             Created FederationSession
         """
         session_id = self._generate_session_id()
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl or self._default_ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl or self._default_ttl)
         
         # Determine token type
         token_type = TokenType.ACCESS_TOKEN
@@ -160,8 +160,8 @@ class SessionManager:
         if not session or session.state != SessionState.ACTIVE:
             return False
         
-        session.expires_at = datetime.utcnow() + timedelta(seconds=ttl or self._default_ttl)
-        session.last_activity = datetime.utcnow()
+        session.expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl or self._default_ttl)
+        session.last_activity = datetime.now(timezone.utc)
         self._store.update_session(session)
         
         return True
@@ -201,7 +201,7 @@ class SessionManager:
         if not session or session.state != SessionState.ACTIVE:
             return False
         
-        session.last_activity = datetime.utcnow()
+        session.last_activity = datetime.now(timezone.utc)
         self._store.update_session(session)
         
         return True
@@ -246,7 +246,7 @@ class SessionManager:
             Created anonymous FederationSession
         """
         session_id = self._generate_session_id()
-        expires_at = datetime.utcnow() + timedelta(minutes=10)  # Short TTL for pending auth
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)  # Short TTL for pending auth
         
         session = FederationSession(
             id=session_id,
@@ -285,7 +285,7 @@ class SessionManager:
         session.user_id = user_id
         session.metadata.pop("pending_auth", None)
         session.metadata.pop("request_id", None)
-        session.expires_at = datetime.utcnow() + timedelta(seconds=self._default_ttl)
+        session.expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._default_ttl)
         
         self._store.update_session(session)
         return session

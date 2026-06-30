@@ -3351,7 +3351,7 @@ async def generate_case_embedding(
                 float(x)
                 for x in embedding[:10]
             ],
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
         )
 
     except Exception as e:
@@ -3485,7 +3485,7 @@ async def find_similar_cases(request: SimilarCaseRequest):
             query_text_used=query_used,
             reference_case_id=reference_case,
             processing_time_ms=processing_time,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
         )
     
     except Exception as e:

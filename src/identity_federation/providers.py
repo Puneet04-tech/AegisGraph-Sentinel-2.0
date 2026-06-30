@@ -6,7 +6,7 @@ Manages registration and discovery of identity providers.
 
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from .models import (
     IdentityProvider,
@@ -129,7 +129,7 @@ class IdentityProviderRegistry:
         provider = self._store.get_provider(provider_id)
         if provider:
             provider.enabled = True
-            provider.updated_at = datetime.utcnow()
+            provider.updated_at = datetime.now(timezone.utc)
             self._store.update_provider(provider)
             return True
         return False
@@ -139,7 +139,7 @@ class IdentityProviderRegistry:
         provider = self._store.get_provider(provider_id)
         if provider:
             provider.enabled = False
-            provider.updated_at = datetime.utcnow()
+            provider.updated_at = datetime.now(timezone.utc)
             self._store.update_provider(provider)
             return True
         return False

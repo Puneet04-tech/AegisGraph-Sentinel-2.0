@@ -214,7 +214,7 @@ def verify_api_key(x_api_key: str = Header(None)) -> str:
                 f"{API_KEY_ENV_VAR} environment variable."
             ),
         )
-    if x_api_key != valid_key:
+    if not hmac.compare_digest(x_api_key or "", valid_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",

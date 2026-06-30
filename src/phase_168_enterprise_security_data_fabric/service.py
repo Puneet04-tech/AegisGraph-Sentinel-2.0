@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import EnterpriseSecurityDataFabricRecord, EnterpriseSecurityDataFabricEvent, EnterpriseSecurityDataFabricAlert
 from .store import EnterpriseSecurityDataFabricStore
@@ -16,7 +16,7 @@ class EnterpriseSecurityDataFabricService:
             tenant_id=tenant_id,
             name=name,
             status=status,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             metadata=metadata or {}
         )
         self.store.save_record(tenant_id, record)
@@ -26,7 +26,7 @@ class EnterpriseSecurityDataFabricService:
             record_id=record_id,
             event_type="CREATED",
             severity="INFO",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             details={"name": name, "status": status}
         )
         self.store.save_event(event)
@@ -46,7 +46,7 @@ class EnterpriseSecurityDataFabricService:
             title=title,
             severity=severity,
             is_active=True,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_alert(tenant_id, alert)
         return alert
