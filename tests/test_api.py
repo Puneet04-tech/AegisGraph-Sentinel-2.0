@@ -137,34 +137,14 @@ class TestHealthEndpoint:
     """Test health check endpoint"""
     
     def test_health_check_public_is_minimal(self):
-        """Test /health endpoint returns only sanitized public fields"""
+        """Health check now requires authentication - unauthenticated requests return 401."""
         response = client.get("/health")
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["service"] == "AegisGraph Sentinel"
-        assert "model_loaded" not in data
-        assert "graph_loaded" not in data
-        assert "innovations_available" not in data
-        assert "requests_processed" not in data
-        assert "uptime_seconds" in data
-        assert "version" in data
+        assert response.status_code == 401
 
     def test_api_v1_health_public_is_minimal(self):
-        """Test /api/v1/health returns only sanitized public fields"""
+        """Health check v1 now requires authentication - unauthenticated requests return 401."""
         response = client.get("/api/v1/health")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["service"] == "AegisGraph Sentinel"
-        assert "model_loaded" not in data
-        assert "graph_loaded" not in data
-        assert "innovations_available" not in data
-        assert "requests_processed" not in data
-        assert "uptime_seconds" in data
-        assert "version" in data
+        assert response.status_code == 401
 
     def test_verbose_health_requires_auth(self, monkeypatch):
         """Verbose health requests must be rejected without an API key."""
@@ -974,7 +954,7 @@ class TestCORSandSecurity:
     def test_allowed_origin_gets_acao_header(self):
         """A request from an allowed origin should be echoed back."""
         response = client.get(
-            "/health",
+            "/health/liveness",
             headers={"Origin": "http://localhost:8501"},
         )
         assert response.status_code == 200
@@ -983,7 +963,7 @@ class TestCORSandSecurity:
     def test_disallowed_origin_does_not_get_acao_header(self):
         """A request from an unlisted origin should not be granted CORS access."""
         response = client.get(
-            "/health",
+            "/health/liveness",
             headers={"Origin": "https://attacker.example"},
         )
         assert response.status_code == 200
@@ -993,7 +973,7 @@ class TestCORSandSecurity:
     def test_credentials_allowed_for_listed_origin(self):
         """When the origin matches, credentials should be allowed."""
         response = client.get(
-            "/health",
+            "/health/liveness",
             headers={"Origin": "http://localhost:8501"},
         )
         assert response.headers.get("access-control-allow-credentials") == "true"
@@ -1002,7 +982,7 @@ class TestCORSandSecurity:
         """OPTIONS preflight from a listed origin should advertise the
         narrowed method set, not '*'."""
         response = client.options(
-            "/health",
+            "/health/liveness",
             headers={
                 "Origin": "http://localhost:8501",
                 "Access-Control-Request-Method": "POST",
@@ -1022,14 +1002,14 @@ class TestCORSandSecurity:
         )
 
     def test_rate_limiting(self):
-        """Test rate limiting (if implemented)"""
-        # Make multiple rapid requests
+        """Test rate limiting on liveness probe"""
+        # Make multiple rapid requests to liveness probe
         responses = []
         for i in range(10):
-            response = client.get("/health")
+            response = client.get("/health/liveness")
             responses.append(response.status_code)
         
-        # All should succeed (rate limiting not implemented yet)
+        # All should succeed (rate limiting allows 100 requests per IP)
         assert all(code == 200 for code in responses)
 
 
