@@ -63,15 +63,44 @@ class AdversarialDriftMonitor:
         except Exception as exc:
             logger.error("AdversarialDriftMonitor cleanup failed: %s", exc)
 
-    def _load_training_baselines(self):
-        """Loads baseline distributions. Mocked here for CI/CD testing."""
-        logger.info("Loading training baselines for drift monitoring...")
-        return {
-            # E.g., Humans type with an average flight time of ~120ms with some variance
-            "keystroke_flight_time": np.random.normal(loc=120.0, scale=15.0, size=1000),
-            # E.g., Normal network graph centrality scores are heavily right-skewed (near zero)
-            "graph_centrality": np.random.exponential(scale=0.05, size=1000)
-        }
+    def _load_training_baselines(self, baselines_path=None):
+    """
+    Load baseline distributions saved during model training.
+
+    Args:
+        baselines_path: Path to a .npy or .json file produced by the
+                        training pipeline.  When None the monitor falls
+                        back to a fixed-seed synthetic baseline that is
+                        suitable for CI/CD but must NOT be used in
+                        production without real training data.
+    """
+    if baselines_path is not None:
+        try:
+            if baselines_path.endswith(".json"):
+                with open(baselines_path, "r") as f:
+                    raw = json.load(f)
+                logger.info("Loaded drift baselines from %s", baselines_path)
+                return {k: np.array(v) for k, v in raw.items()}
+            else:
+                data = np.load(baselines_path, allow_pickle=True).item()
+                logger.info("Loaded drift baselines from %s", baselines_path)
+                return {k: np.array(v) for k, v in data.items()}
+        except Exception as e:
+            logger.error(
+                "Failed to load baselines from %s: %s. Falling back to synthetic baseline.",
+                baselines_path,
+                e,
+            )
+
+    logger.warning(
+        "No baselines_path provided — using fixed-seed synthetic baseline. "
+        "This is only suitable for CI/CD. Supply real training data in production."
+    )
+    rng = np.random.default_rng(seed=42)
+    return {
+        "keystroke_flight_time": rng.normal(loc=120.0, scale=15.0, size=1000),
+        "graph_centrality": rng.exponential(scale=0.05, size=1000),
+    }
 
     def trigger_alert(self, feature_name, p_value, stat, drift_type="Adversarial Adaptation"):
         """Fires a high-priority webhook alert to the MLOps team."""
