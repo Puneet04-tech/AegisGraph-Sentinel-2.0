@@ -64,6 +64,7 @@ class CaseStore:
         analyst_id: str,
         priority: CasePriority = CasePriority.MEDIUM,
         tags: Optional[List[str]] = None,
+        tenant_id: str = "default",
     ) -> FraudCase:
         with self._lock:
             case = FraudCase(
@@ -72,6 +73,7 @@ class CaseStore:
                 decision=decision,
                 priority=priority,
                 tags=tags or [],
+                tenant_id=tenant_id,
             )
             self._cases[case.case_id] = case
             self._audit[case.case_id] = []
@@ -83,9 +85,12 @@ class CaseStore:
             )
             return case
 
-    def get_case(self, case_id: str) -> Optional[FraudCase]:
+    def get_case(self, case_id: str, tenant_id: str = "default") -> Optional[FraudCase]:
         with self._lock:
-            return self._cases.get(case_id)
+            case = self._cases.get(case_id)
+            if case and case.tenant_id == tenant_id:
+                return case
+            return None
 
     def list_cases(
         self,
@@ -94,6 +99,7 @@ class CaseStore:
         assigned_analyst: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        tenant_id: str = "default",
     ) -> tuple[List[FraudCase], int]:
         """Return a paginated, filtered slice of cases.
 
@@ -103,6 +109,7 @@ class CaseStore:
             all_cases = list(self._cases.values())
 
         # Apply filters
+        all_cases = [c for c in all_cases if c.tenant_id == tenant_id]
         if status:
             all_cases = [c for c in all_cases if c.status == status]
         if priority:
@@ -123,9 +130,10 @@ class CaseStore:
         case_id: str,
         new_status: CaseStatus,
         analyst_id: str,
+        tenant_id: str = "default",
     ) -> FraudCase:
         with self._lock:
-            case = self._get_or_raise(case_id)
+            case = self._get_or_raise(case_id, tenant_id)
             validate_status_transition(case.status, new_status)
             old = case.status.value
             case.status = new_status
@@ -138,9 +146,10 @@ class CaseStore:
         case_id: str,
         analyst_id: str,
         assigning_analyst_id: str,
+        tenant_id: str = "default",
     ) -> FraudCase:
         with self._lock:
-            case = self._get_or_raise(case_id)
+            case = self._get_or_raise(case_id, tenant_id)
             old = case.assigned_analyst or "unassigned"
             case.assigned_analyst = analyst_id
             if case.status == CaseStatus.OPEN:
@@ -166,9 +175,10 @@ class CaseStore:
         case_id: str,
         new_priority: CasePriority,
         analyst_id: str,
+        tenant_id: str = "default",
     ) -> FraudCase:
         with self._lock:
-            case = self._get_or_raise(case_id)
+            case = self._get_or_raise(case_id, tenant_id)
             old = case.priority.value
             case.priority = new_priority
             case.touch()
@@ -180,11 +190,11 @@ class CaseStore:
     # ------------------------------------------------------------------
 
     def add_comment(
-        self, case_id: str, analyst_id: str, text: str
+        self, case_id: str, analyst_id: str, text: str, tenant_id: str = "default",
     ) -> CaseComment:
         with self._lock:
             case = self._get_or_raise(case_id)
-            comment = CaseComment(case_id=case_id, analyst_id=analyst_id, text=text)
+            comment = CaseComment(case_id=case_id, analyst_id=analyst_id, text=text, tenant_id=tenant_id)
             self._comments[comment.comment_id] = comment
             case.comment_ids.append(comment.comment_id)
             case.touch()
@@ -207,15 +217,17 @@ class CaseStore:
         evidence_type: EvidenceType,
         description: str,
         reference_id: Optional[str] = None,
+        tenant_id: str = "default",
     ) -> CaseEvidence:
         with self._lock:
-            case = self._get_or_raise(case_id)
+            case = self._get_or_raise(case_id, tenant_id)
             evidence = CaseEvidence(
                 case_id=case_id,
                 analyst_id=analyst_id,
                 evidence_type=evidence_type,
                 description=description,
                 reference_id=reference_id,
+                tenant_id=tenant_id,
             )
             self._evidence[evidence.evidence_id] = evidence
             case.evidence_ids.append(evidence.evidence_id)

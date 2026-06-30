@@ -3070,6 +3070,7 @@ def _serialise_case(case) -> FraudCaseResponse:
 async def create_case(
     request: CreateCaseRequest,
     x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
 ):
     """Open a new fraud investigation case from a detected alert."""
     store = get_case_store()
@@ -3081,6 +3082,7 @@ async def create_case(
         analyst_id=x_analyst_id or "system",
         priority=priority,
         tags=request.tags or [],
+        tenant_id=x_tenant_id,
     )
     return _serialise_case(case)
 
@@ -3128,10 +3130,12 @@ async def list_cases(
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Aggregated case management dashboard statistics",
 )
-async def get_case_dashboard():
+async def get_case_dashboard(
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
+):
     """Return aggregated counts of cases by status and priority."""
     store = get_case_store()
-    stats = store.get_dashboard_stats()
+    stats = store.get_dashboard_stats(tenant_id=x_tenant_id)
     return CaseDashboardResponse(**stats)
 
 
@@ -3142,10 +3146,13 @@ async def get_case_dashboard():
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Get full details of a fraud case",
 )
-async def get_case(case_id: str):
+async def get_case(
+    case_id: str,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
+):
     """Return full details of a specific fraud case."""
     store = get_case_store()
-    case = store.get_case(case_id)
+    case = store.get_case(case_id, tenant_id=x_tenant_id)
     if case is None:
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
     return _serialise_case(case)
@@ -3167,12 +3174,13 @@ async def update_case(
     case_id: str,
     request: UpdateCaseRequest,
     x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
 ):
     """Partially update a fraud case (status, assigned analyst, or priority)."""
     store = get_case_store()
     analyst = x_analyst_id or "system"
     try:
-        case = store.get_case(case_id)
+        case = store.get_case(case_id, tenant_id=x_tenant_id)
         if case is None:
             raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
         if request.status:
@@ -3181,7 +3189,7 @@ async def update_case(
             store.assign_analyst(case_id, request.assigned_analyst, analyst)
         if request.priority:
             store.update_priority(case_id, CasePriority(request.priority), analyst)
-        case = store.get_case(case_id)
+        case = store.get_case(case_id, tenant_id=x_tenant_id)
         return _serialise_case(case)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3199,12 +3207,13 @@ async def update_case(
 async def claim_case(
     case_id: str,
     x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
 ):
     """Analyst claims an unassigned case to begin investigation."""
     store = get_case_store()
     analyst = x_analyst_id or "system"
     try:
-        case = store.claim_case(case_id, analyst)
+        case = store.claim_case(case_id, analyst, tenant_id=x_tenant_id)
         return _serialise_case(case)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3223,12 +3232,13 @@ async def add_case_comment(
     case_id: str,
     request: AddCommentRequest,
     x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
 ):
     """Attach an investigation note or comment to a fraud case."""
     store = get_case_store()
     analyst = x_analyst_id or "system"
     try:
-        comment = store.add_comment(case_id, analyst, request.text)
+        comment = store.add_comment(case_id, analyst, request.text, tenant_id=x_tenant_id)
         return CaseCommentResponse(
             comment_id=comment.comment_id,
             case_id=comment.case_id,
@@ -3251,6 +3261,7 @@ async def add_case_evidence(
     case_id: str,
     request: AddEvidenceRequest,
     x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
 ):
     """Attach a piece of evidence (transaction link, graph snapshot, etc.) to a case."""
     store = get_case_store()
@@ -3283,11 +3294,14 @@ async def add_case_evidence(
     dependencies=[Depends(require_role(Role.AUDITOR))],
     summary="Get the immutable audit trail for a case",
 )
-async def get_case_timeline(case_id: str):
+async def get_case_timeline(
+    case_id: str,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-ID"),
+):
     """Return the full chronological audit trail for a fraud case."""
     store = get_case_store()
     try:
-        events = store.get_timeline(case_id)
+        events = store.get_timeline(case_id, tenant_id=x_tenant_id)
         return CaseTimelineResponse(
             case_id=case_id,
             events=[

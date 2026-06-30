@@ -88,6 +88,7 @@ class FraudCase:
     decision: str                         # ALLOW | REVIEW | BLOCK
 
     # Auto-populated fields
+    tenant_id: str = "default"
     case_id: str = field(default_factory=lambda: _new_id("CASE"))
     status: CaseStatus = CaseStatus.OPEN
     priority: CasePriority = CasePriority.MEDIUM
@@ -113,6 +114,7 @@ class CaseComment:
     analyst_id: str
     text: str
 
+    tenant_id: str = "default"
     comment_id: str = field(default_factory=lambda: _new_id("CMT"))
     created_at: str = field(default_factory=_utcnow)
 
@@ -126,6 +128,7 @@ class CaseEvidence:
     description: str
     reference_id: Optional[str] = None   # e.g. transaction_id or graph node id
 
+    tenant_id: str = "default"
     evidence_id: str = field(default_factory=lambda: _new_id("EVD"))
     created_at: str = field(default_factory=_utcnow)
 
@@ -139,5 +142,6 @@ class CaseAuditEvent:
     old_value: Optional[str] = None
     new_value: Optional[str] = None
 
+    tenant_id: str = "default"
     event_id: str = field(default_factory=lambda: _new_id("AUD"))
     timestamp: str = field(default_factory=_utcnow)
