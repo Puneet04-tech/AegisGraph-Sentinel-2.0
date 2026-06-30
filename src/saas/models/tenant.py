@@ -62,10 +62,10 @@ class Organization(Base):
     trial_ends_at = Column(DateTime, nullable=True)
     
     # Relationships
-    subscription = relationship("Subscription", back_populates="organization", uselist=False)
-    users = relationship("User", back_populates="organization")
-    workspaces = relationship("Workspace", back_populates="organization")
-    api_keys = relationship("APIKey", back_populates="organization")
+    subscription = relationship("Subscription", back_populates="organization", uselist=False, lazy="joined")
+    users = relationship("User", back_populates="organization", lazy="selectin")
+    workspaces = relationship("Workspace", back_populates="organization", lazy="selectin")
+    api_keys = relationship("APIKey", back_populates="organization", lazy="selectin")
 
 
 class Subscription(Base):
@@ -73,10 +73,10 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id = Column(String(36), primary_key=True)
-    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
     
     tier = Column(SQLEnum(SubscriptionTier), nullable=False)
-    status = Column(SQLEnum(SubscriptionStatus), default=SubscriptionStatus.TRIAL)
+    status = Column(SQLEnum(SubscriptionStatus), default=SubscriptionStatus.TRIAL, index=True)
     
     # Billing cycle
     billing_cycle = Column(String(20), default="monthly")  # monthly, annual
@@ -100,8 +100,8 @@ class Subscription(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    organization = relationship("Organization", back_populates="subscription")
-    invoices = relationship("Invoice", back_populates="subscription")
+    organization = relationship("Organization", back_populates="subscription", lazy="joined")
+    invoices = relationship("Invoice", back_populates="subscription", lazy="selectin")
 
 
 class User(Base):
@@ -132,8 +132,8 @@ class User(Base):
     sso_provider_id = Column(String(255), nullable=True)
     
     # Organization membership
-    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
-    role = Column(String(50), default="member")  # owner, admin, member, viewer
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
+    role = Column(String(50), default="member", index=True)  # owner, admin, member, viewer
     is_org_owner = Column(Boolean, default=False)
     
     # Status
@@ -152,8 +152,8 @@ class User(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    organization = relationship("Organization", back_populates="users")
-    sessions = relationship("UserSession", back_populates="user")
+    organization = relationship("Organization", back_populates="users", lazy="joined")
+    sessions = relationship("UserSession", back_populates="user", lazy="selectin")
 
 
 class UserSession(Base):
@@ -161,7 +161,7 @@ class UserSession(Base):
     __tablename__ = "user_sessions"
 
     id = Column(String(36), primary_key=True)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     
     # Session info
     token = Column(String(500), unique=True, nullable=False, index=True)
@@ -170,7 +170,7 @@ class UserSession(Base):
     # Client info
     user_agent = Column(String(500), nullable=True)
     ip_address = Column(String(45), nullable=True)
-    device_id = Column(String(255), nullable=True)
+    device_id = Column(String(255), nullable=True, index=True)
     
     # Location
     country = Column(String(100), nullable=True)
@@ -187,7 +187,7 @@ class UserSession(Base):
     last_used_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    user = relationship("User", back_populates="sessions")
+    user = relationship("User", back_populates="sessions", lazy="joined")
 
 
 class Workspace(Base):
@@ -195,10 +195,10 @@ class Workspace(Base):
     __tablename__ = "workspaces"
 
     id = Column(String(36), primary_key=True)
-    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
     
     name = Column(String(255), nullable=False)
-    slug = Column(String(100), nullable=False)
+    slug = Column(String(100), nullable=False, index=True)
     description = Column(Text, nullable=True)
     
     # Configuration
@@ -217,8 +217,8 @@ class Workspace(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    organization = relationship("Organization", back_populates="workspaces")
-    members = relationship("WorkspaceMember", back_populates="workspace")
+    organization = relationship("Organization", back_populates="workspaces", lazy="joined")
+    members = relationship("WorkspaceMember", back_populates="workspace", lazy="selectin")
 
 
 class WorkspaceMember(Base):
@@ -226,8 +226,8 @@ class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
 
     id = Column(String(36), primary_key=True)
-    workspace_id = Column(String(36), ForeignKey("workspaces.id"), nullable=False)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     
     role = Column(String(50), default="member")  # admin, member, viewer
     permissions = Column(JSON, default=list)  # Granular permissions
@@ -238,8 +238,8 @@ class WorkspaceMember(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    workspace = relationship("Workspace", back_populates="members")
-    user = Column(String(36), ForeignKey("users.id"))  # Simplified relationship
+    workspace = relationship("Workspace", back_populates="members", lazy="joined")
+    user = Column(String(36), ForeignKey("users.id"), index=True)  # Simplified relationship
 
 
 class APIKey(Base):
@@ -247,7 +247,7 @@ class APIKey(Base):
     __tablename__ = "api_keys"
 
     id = Column(String(36), primary_key=True)
-    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False, index=True)
     
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
@@ -269,14 +269,14 @@ class APIKey(Base):
     use_count = Column(Integer, default=0)
     
     # User who created
-    created_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    organization = relationship("Organization", back_populates="api_keys")
+    organization = relationship("Organization", back_populates="api_keys", lazy="joined")
 
 
 class Invoice(Base):
@@ -284,11 +284,11 @@ class Invoice(Base):
     __tablename__ = "invoices"
 
     id = Column(String(36), primary_key=True)
-    subscription_id = Column(String(36), ForeignKey("subscriptions.id"), nullable=False)
+    subscription_id = Column(String(36), ForeignKey("subscriptions.id"), nullable=False, index=True)
     
     # Invoice details
     number = Column(String(50), unique=True, nullable=False)
-    status = Column(String(20), default="pending")  # pending, paid, overdue, void
+    status = Column(String(20), default="pending", index=True)  # pending, paid, overdue, void
     
     # Amounts
     subtotal = Column(Integer, nullable=False)  # In cents
@@ -316,7 +316,7 @@ class Invoice(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    subscription = relationship("Subscription", back_populates="invoices")
+    subscription = relationship("Subscription", back_populates="invoices", lazy="joined")
 
 
 # Pydantic models for API
