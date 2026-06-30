@@ -51,6 +51,10 @@ class EventDispatcher:
     def started(self) -> bool:
         return self._started
 
+    @property
+    def _running(self) -> bool:
+        return self._started
+
     async def start(self) -> None:
         if self._started or self._stopping:
             return
@@ -122,14 +126,23 @@ class EventDispatcher:
         self._stopping = False
 
     async def _process_loop(self) -> None:
-        while not self._stop_requested.is_set() or not self._queue.empty() or self._overflow:
+        while (
+            not self._stop_requested.is_set()
+            or not self._queue.empty()
+            or self._overflow
+        ):
             event = await self._fetch_next_event()
             if event is None:
                 continue
+
             try:
                 await self._bus.publish(event)
             except Exception:
-                logger.exception("Event dispatch failed for %s", type(event).__name__)
+                logger.exception(
+                    "Event dispatch failed for %s",
+                    type(event).__name__,
+                )
+
             self._drain_overflow()
             self._sync_queue_budget()
 
@@ -141,7 +154,10 @@ class EventDispatcher:
         except asyncio.QueueEmpty:
             pass
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout=0.2)
+            return await asyncio.wait_for(
+                self._queue.get(),
+                timeout=0.2,
+            )
         except asyncio.TimeoutError:
             return None
 
