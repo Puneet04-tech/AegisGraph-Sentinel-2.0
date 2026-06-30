@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
+from typing import Optional
 import logging
 from collections import deque
 from typing import Any, Optional
@@ -60,6 +62,51 @@ class EventDispatcher:
         self._running = True
         self._stop_requested.clear()
         self._task = asyncio.create_task(self._process_loop())
+
+    async def stop(self) -> None:
+        """
+        Gracefully stop the dispatcher.
+
+        Sends a sentinel value so the loop processes all already-queued
+        events before exiting.
+        """
+        if not self._running:
+            return
+        self._sync_queue_budget()
+        if self._resource_manager is not None and not isinstance(event, _CRITICAL_EVENT_TYPES):
+            if not self._resource_manager.can_accept_event():
+                logger.warning(
+                    "Runtime event dropped due to backpressure throttling: %s",
+                    type(event).__name__,
+                )
+                return
+        try:
+            self._queue.put_nowait(event)
+            self._sync_queue_budget()
+        except asyncio.QueueFull:
+            if isinstance(event, _CRITICAL_EVENT_TYPES):
+                # Preserve critical events until shutdown processing can drain them.
+                self._overflow.appendleft(event)
+            else:
+                # Drop non-critical overflow events.
+                logger.warning(
+                    "Runtime event dropped due to bounded dispatcher queue overflow: %s",
+                    type(event).__name__,
+                )
+                return
+
+        if self._task is not None and not self._task.done():
+            try:
+                await self._task
+            except Exception:
+                pass
+            self._task = None
+
+        _logger.info("Event dispatcher stopped", event_type="event_dispatcher_stopped")
+
+    # ------------------------------------------------------------------
+    # Dispatching
+    # ------------------------------------------------------------------
 
     def dispatch(self, event: RuntimeEvent) -> None:
         """Enqueue *event* for delivery. Thread-safe, non-blocking."""

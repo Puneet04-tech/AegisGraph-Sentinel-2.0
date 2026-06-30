@@ -84,12 +84,8 @@ class LateralMovementDetector:
 
     def update_graph(self, src_account, dst_account, amount: float = 1.0, timestamp: Optional[float] = None):
         """Updates the network topology dynamically across all workers."""
-        # Some unit tests construct the detector via `__new__` without running
-        # `__init__`. Guard internal caches so update_graph remains usable.
-        if hasattr(self, "_centrality_cache") and self._centrality_cache is not None:
-            self._centrality_cache.clear()
-        if hasattr(self, "_centrality_cache_version"):
-            self._centrality_cache_version += 1
+        self._centrality_cache.clear()
+        self._centrality_cache_version += 1
 
         if self.graph_service is not None and getattr(self.graph_service, "is_active", False):
             # Neo4j Active Provider execution

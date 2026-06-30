@@ -796,6 +796,8 @@ def _require_honeypot_admin(x_honeypot_token: Optional[str]) -> None:
 _compute_risk_score_impl = None
 _generate_explanation_impl = None
 
+def compute_risk_score(*args, **kwargs):
+    global _compute_risk_score_impl
 
 def _resolve_model_components() -> tuple[Any, Any, bool]:
     if not MODEL_AVAILABLE:
@@ -841,6 +843,8 @@ def _is_module_available(module_name: str) -> bool:
 
 
 MODEL_AVAILABLE = (
+    _check_module_available("src.inference.risk_scorer")
+    and _check_module_available("src.inference.explainer")
     _is_module_available("src.inference.risk_scorer")
     and _is_module_available("src.inference.explainer")
     and _is_module_available("src.features.velocity_calculator")
@@ -1253,14 +1257,28 @@ def _initialize_innovation_runtime(startup_logger):
         state.runtime.health_monitor.register_service("blockchain_manager")
         state.runtime.health_monitor.register_service("aegis_oracle")
 
-    # NOTE: LateralMovementDetector is intentionally deferred
-    # to first request via get_lateral_movement_detector() in
-    # src/api/dependencies/subsystems.py. Construction is
-    # guarded by an asyncio.Lock to prevent double-init.
-    if LATERAL_MOVEMENT_AVAILABLE:
-        state.runtime.health_monitor.register_service(
-            "lateral_movement_detector"
-        )
+    # NOTE: LateralMovementDetector is intentionally kept on the
+    # eager startup path (unlike other innovation services which
+    # are lazy). It connects to Redis on init, and we want that
+    # connection failure surfaced at boot rather than silently
+    # degrading on the first fraud request. A follow-up PR can
+    # move this to the lazy provider pattern if full consistency
+    # is preferred.
+    if LATERAL_MOVEMENT_AVAILABLE and LateralMovementDetector is not None:
+        try:
+            _lmd = LateralMovementDetector()
+            state.services.register_service("lateral_movement_detector", _lmd, replace=True)
+            lateral_movement_detector = _lmd
+            state.runtime.health_monitor.register_service("lateral_movement_detector")
+            state.runtime.health_monitor.mark_healthy("lateral_movement_detector")
+            startup_logger.info("Lateral Movement Detector initialized", event_type="innovation_ready")
+        except Exception as e:
+            state.runtime.health_monitor.register_service("lateral_movement_detector")
+            state.runtime.health_monitor.mark_failed("lateral_movement_detector", error=str(e))
+            startup_logger.warning(
+                f"Lateral movement initialization failed: {e}",
+                event_type="innovation_init_failed",
+            )
     else:
         startup_logger.warning("Innovation modules not available", event_type="innovations_unavailable")
 

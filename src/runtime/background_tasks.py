@@ -19,9 +19,12 @@ async def honeypot_auto_release_loop(
     task_logger = logger or get_logger("runtime.background_tasks")
     if health_monitor is not None:
         health_monitor.register_service("honeypot_auto_release")
+        health_monitor.mark_healthy("honeypot_auto_release")
 
     try:
         while True:
+            if health_monitor is not None:
+                health_monitor.mark_healthy("honeypot_auto_release")
             await asyncio.sleep(interval_seconds)
             manager = get_honeypot_manager()
             if manager is None:

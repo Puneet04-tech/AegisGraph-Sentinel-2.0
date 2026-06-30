@@ -48,7 +48,11 @@ def get_mule_scorer():
     if service is None:
         from src.features.predictive_mule_identification import PredictiveMuleScorer
         service = PredictiveMuleScorer()
-        state.services.register_service("mule_scorer", service, replace=True)
+        try:
+            state.services.register_service("mule_scorer", service)
+        except KeyError:
+            # Service was registered concurrently, use the existing one
+            service = state.services.optional_get("mule_scorer")
     return service
 
 
@@ -59,7 +63,11 @@ def get_voice_analyzer():
     if service is None:
         from src.features.voice_stress_analysis import VoiceStressAnalyzer
         service = VoiceStressAnalyzer()
-        state.services.register_service("voice_analyzer", service, replace=True)
+        try:
+            state.services.register_service("voice_analyzer", service)
+        except KeyError:
+            # Service was registered concurrently, use the existing one
+            service = state.services.optional_get("voice_analyzer")
     return service
 
 
@@ -76,7 +84,11 @@ def get_aegis_oracle():
     if service is None:
         from src.features.aegis_oracle_explainer import AegisOracleExplainer
         service = AegisOracleExplainer()
-        state.services.register_service("aegis_oracle", service, replace=True)
+        try:
+            state.services.register_service("aegis_oracle", service)
+        except KeyError:
+            # Service was registered concurrently, use the existing one
+            service = state.services.optional_get("aegis_oracle")
     return service
 
 
@@ -94,7 +106,11 @@ async def get_honeypot_manager():
             if service is None:
                 from src.features.honeypot_escrow import HoneypotEscrowManager
                 service = HoneypotEscrowManager()
-                state.services.register_service("honeypot_manager", service, replace=True)
+                try:
+                    state.services.register_service("honeypot_manager", service)
+                except KeyError:
+                    # Service was registered concurrently, use the existing one
+                    service = state.services.optional_get("honeypot_manager")
     return service
 
 
@@ -108,7 +124,11 @@ async def get_blockchain_manager():
             if service is None:
                 from src.features.blockchain_evidence import BlockchainEvidenceManager
                 service = BlockchainEvidenceManager()
-                state.services.register_service("blockchain_manager", service, replace=True)
+                try:
+                    state.services.register_service("blockchain_manager", service)
+                except KeyError:
+                    # Service was registered concurrently, use the existing one
+                    service = state.services.optional_get("blockchain_manager")
     return service
 
 
@@ -123,11 +143,13 @@ async def get_lateral_movement_detector():
                 try:
                     from src.features.lateral_movement import LateralMovementDetector
                     service = LateralMovementDetector()
-                    state.services.register_service(
-                        "lateral_movement_detector", service, replace=True
-                    )
-                except Exception as exc:
-                    import logging
-                    logging.getLogger(__name__).debug("Lateral movement detector construction failed (optional feature): %s", exc)
+                    try:
+                        state.services.register_service(
+                            "lateral_movement_detector", service
+                        )
+                    except KeyError:
+                        # Service was registered concurrently, use the existing one
+                        service = state.services.optional_get("lateral_movement_detector")
+                except Exception:
                     return None  # lateral movement is optional
     return service  # may still be None if construction failed

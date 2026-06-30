@@ -160,9 +160,7 @@ class GraphEntropyCalculator:
                 return {"degree_entropy": 0.0}
             
             # Compute probability distribution
-            degrees = list(profile.get("neighbor_degrees") or [])
-            if not degrees:
-                degrees = [graph.degree(neighbor) for neighbor in neighbors]
+            degrees = [graph.degree(neighbor) for neighbor in neighbors]
             bins = [0, 1, 5, 10, 50, 100, float('inf')]
             binned_degrees = np.digitize(degrees, bins)
             counts = Counter(binned_degrees)
@@ -305,27 +303,40 @@ class GraphEntropyCalculator:
 
 
 def compute_entropy_risk_score(
-    node: str,
+    account: str,
     graph: nx.Graph,
-    node_attributes: Optional[Dict[str, Dict]] = None,
-    edge_timestamps: Optional[Dict] = None,
-    edge_amounts: Optional[Dict] = None,
+    node_attributes: Dict[str, Dict],
+    edge_timestamps: Dict[str, float],
+    edge_amounts: Dict[str, float],
     current_time: Optional[float] = None,
 ) -> float:
-    calculator = GraphEntropyCalculator()
-    features = calculator.compute_all_entropy_features(
-        node,
-        graph,
-        node_attributes=node_attributes or {},
-        edge_timestamps=edge_timestamps or {},
-        edge_amounts=edge_amounts or {},
-        current_time=current_time,
-    )
-    normalized = [
-        min(features.get("degree_entropy", 0.0) / 3.0, 1.0),
-        min(features.get("structural_entropy", 0.0) / 3.0, 1.0),
-        min(features.get("neighbor_entropy", 0.0) / 3.0, 1.0),
-        min(features.get("temporal_entropy", 0.0), 1.0),
-        min(features.get("amount_entropy", 0.0) / 3.0, 1.0),
-    ]
-    return float(min(sum(normalized) / len(normalized), 1.0))
+    """
+    Compute entropy-based risk score for an account.
+    
+    This standalone function provides a simple entropy-based risk assessment
+    based on the diversity of an account's connections and transaction patterns.
+    
+    Args:
+        account: Account identifier to analyze
+        graph: NetworkX graph structure
+        node_attributes: Dictionary mapping nodes to their attributes
+        edge_timestamps: Dictionary mapping edges to timestamps
+        edge_amounts: Dictionary mapping edges to transaction amounts
+        current_time: Current timestamp for temporal analysis
+    
+    Returns:
+        Risk score between 0.0 (low risk) and 1.0 (high risk)
+    """
+    if graph is None or account not in graph:
+        return 0.0
+    
+    calculator = GraphEntropyCalculator(neighborhood_size=2)
+    
+    # Compute neighbor entropy
+    neighbor_entropy = calculator.calculate_neighbor_entropy(graph, account)
+    
+    # Normalize entropy to risk score (higher entropy = higher risk)
+    # Typical entropy values range from 0 to ~3-4 for realistic graphs
+    risk_score = min(neighbor_entropy / 3.0, 1.0)
+    
+    return float(risk_score)
