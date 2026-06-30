@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import SecurityKnowledgeGraphEntityRelation, SecurityKnowledgeGraphRiskPropagationPath, SecurityKnowledgeGraphFederatedKnowledgeNode
 from .store import SecurityKnowledgeGraphStore
@@ -12,7 +12,7 @@ class SecurityKnowledgeGraphService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class SecurityKnowledgeGraphService:
     def create_entityrelation(self, tenant_id: str, record_id: str, relation_id: str, source_entity: str, target_entity: str, relation_type: str, confidence: float) -> SecurityKnowledgeGraphEntityRelation:
         item = SecurityKnowledgeGraphEntityRelation(
             record_id=record_id, tenant_id=tenant_id, relation_id=relation_id, source_entity=source_entity, target_entity=target_entity, relation_type=relation_type, confidence=confidence,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_entityrelation(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'EntityRelation'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class SecurityKnowledgeGraphService:
     def create_riskpropagationpath(self, tenant_id: str, record_id: str, path_id: str, nodes: List[str], total_risk: float, mitigation_status: str) -> SecurityKnowledgeGraphRiskPropagationPath:
         item = SecurityKnowledgeGraphRiskPropagationPath(
             record_id=record_id, tenant_id=tenant_id, path_id=path_id, nodes=nodes, total_risk=total_risk, mitigation_status=mitigation_status,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_riskpropagationpath(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'RiskPropagationPath'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class SecurityKnowledgeGraphService:
     def create_federatedknowledgenode(self, tenant_id: str, record_id: str, node_id: str, source_domain: str, sync_status: str) -> SecurityKnowledgeGraphFederatedKnowledgeNode:
         item = SecurityKnowledgeGraphFederatedKnowledgeNode(
             record_id=record_id, tenant_id=tenant_id, node_id=node_id, source_domain=source_domain, sync_status=sync_status,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_federatedknowledgenode(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'FederatedKnowledgeNode'.upper()}", {"record_id": record_id})

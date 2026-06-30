@@ -1,7 +1,7 @@
 """Security Universe Workflow Engine"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import (
     Team, UnifiedIncident, CollaborationRecord, Workflow,
     TeamType, WorkflowStatus, IncidentSeverity
@@ -131,7 +131,7 @@ class WorkflowEngine:
         incident = self.incidents.get(incident_id)
         if incident:
             incident.status = WorkflowStatus(status)
-            incident.updated_at = datetime.utcnow()
+            incident.updated_at = datetime.now(timezone.utc)
         return incident
     
     def get_incident_summary(self) -> Dict[str, Any]:

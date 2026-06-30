@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import SecurityDigitalTwinDigitalTwinState, SecurityDigitalTwinRiskVisualizationNode, SecurityDigitalTwinForecastingScenario
 from .store import SecurityDigitalTwinStore
@@ -11,7 +11,7 @@ class SecurityDigitalTwinService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -20,7 +20,7 @@ class SecurityDigitalTwinService:
     def create_digitaltwinstate(self, tenant_id: str, record_id: str, state_id: str, entity_id: str, posture_score: float, anomaly_detected: bool) -> SecurityDigitalTwinDigitalTwinState:
         item = SecurityDigitalTwinDigitalTwinState(
             record_id=record_id, tenant_id=tenant_id, state_id=state_id, entity_id=entity_id, posture_score=posture_score, anomaly_detected=anomaly_detected,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_digitaltwinstate(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'DigitalTwinState'.upper()}", {"record_id": record_id})
@@ -35,7 +35,7 @@ class SecurityDigitalTwinService:
     def create_riskvisualizationnode(self, tenant_id: str, record_id: str, node_id: str, asset_name: str, risk_level: str, x_y_coordinates: List[float]) -> SecurityDigitalTwinRiskVisualizationNode:
         item = SecurityDigitalTwinRiskVisualizationNode(
             record_id=record_id, tenant_id=tenant_id, node_id=node_id, asset_name=asset_name, risk_level=risk_level, x_y_coordinates=x_y_coordinates,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_riskvisualizationnode(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'RiskVisualizationNode'.upper()}", {"record_id": record_id})
@@ -50,7 +50,7 @@ class SecurityDigitalTwinService:
     def create_forecastingscenario(self, tenant_id: str, record_id: str, scenario_id: str, predicted_impact: str, forecasting_accuracy: float, is_critical: bool) -> SecurityDigitalTwinForecastingScenario:
         item = SecurityDigitalTwinForecastingScenario(
             record_id=record_id, tenant_id=tenant_id, scenario_id=scenario_id, predicted_impact=predicted_impact, forecasting_accuracy=forecasting_accuracy, is_critical=is_critical,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_forecastingscenario(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'ForecastingScenario'.upper()}", {"record_id": record_id})

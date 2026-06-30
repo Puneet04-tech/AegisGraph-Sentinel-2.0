@@ -1,7 +1,7 @@
 """Control Plane Orchestrator"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import SecurityControl, ControlExecution, Workflow, ModuleType, PolicyType, ControlStatus
 
 class ControlOrchestrator:
@@ -90,7 +90,7 @@ class ControlOrchestrator:
         # Simulate control execution
         execution.status = ControlStatus.COMPLETED
         execution.result = {"success": True, "control": control.name}
-        execution.completed_at = datetime.utcnow()
+        execution.completed_at = datetime.now(timezone.utc)
         
         return execution
     
