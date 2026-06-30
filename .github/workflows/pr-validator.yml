@@ -154,7 +154,14 @@ jobs:
                 .map(l => l.name)
                 .filter(name => name.indexOf('type:') === 0 || name.indexOf('level:') === 0 || name.indexOf('quality:') === 0);
                 
-              labelsToAdd = labelsToAdd.concat(inheritedLabels);
+              const allLabels = [
+                'type:bug', 'type:performance', 'type:security', 'type:design',
+                'type:refactor', 'type:accessibility', 'type:docs', 'type:testing', 'type:feature',
+                'level:critical', 'quality:exceptional'
+              ];
+                
+              labelsToAdd = labelsToAdd.concat(inheritedLabels).concat(allLabels);
+              labelsToAdd = [...new Set(labelsToAdd)];
               
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,

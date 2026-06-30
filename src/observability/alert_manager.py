@@ -15,6 +15,7 @@ from .models import (
     AlertStatus,
 )
 from .store import ObservabilityStore, get_observability_store
+from .webhook_dispatcher import get_webhook_dispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class AlertManager:
         self._module_id = "alert_manager"
         self._recent_alerts: Dict[str, datetime] = {}
         self._dedup_window_seconds = 300  # 5 minutes
+        self._webhook_dispatcher = get_webhook_dispatcher()
     
     def create_rule(
         self,
@@ -119,6 +121,19 @@ class AlertManager:
         
         self._store.store_alert(alert)
         self._recent_alerts[alert_key] = alert.triggered_at
+        
+        # Dispatch alert payload to Enterprise webhooks asynchronously
+        self._webhook_dispatcher.dispatch({
+            "alert_id": alert.alert_id,
+            "rule_id": alert.rule_id,
+            "title": alert.title,
+            "description": alert.description,
+            "severity": alert.severity.value,
+            "component": alert.component,
+            "metric_value": alert.metric_value,
+            "threshold": alert.threshold,
+            "triggered_at": alert.triggered_at.isoformat()
+        })
         
         return alert
     
