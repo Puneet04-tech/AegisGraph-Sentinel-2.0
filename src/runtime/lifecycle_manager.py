@@ -55,7 +55,10 @@ class LifecycleManager:
     async def startup(self) -> None:
         async with self._lock:
             if self._started:
-                self._logger.info("Startup already completed", event_type="runtime_startup_already_complete")
+                self._logger.info(
+                    "Startup already completed",
+                    event_type="runtime_startup_already_complete",
+                )
                 return
             if self._shutting_down:
                 self._logger.warning("Cannot start while shutdown is in progress", event_type="runtime_startup_during_shutdown")
@@ -68,6 +71,7 @@ class LifecycleManager:
             )
             self._audit("runtime_startup_started", steps=[step.name for step in self._startup_steps])
             self.runtime_state.shutting_down = False
+            completed_steps: List[str] = []
 
             # Wire default event subscriptions to the event bus
             await register_default_subscriptions(self.runtime_state.event_bus)
@@ -81,25 +85,42 @@ class LifecycleManager:
                     raise RuntimeError("Dispatcher failed to start during runtime startup")
                 self._logger.info("Event dispatcher started", event_type="dispatcher_started")
 
-            completed_steps: List[str] = []
             try:
                 for step in self._startup_steps:
                     await self._run_step(step, phase="startup")
                     completed_steps.append(step.name)
+
             except Exception as exc:
-                self._logger.error(
-                    f"Startup failed at step '{step.name}': {exc}",
-                    event_type="runtime_startup_failed",
-                    metadata={"failed_step": step.name, "completed_steps": completed_steps},
+                failed_step = (
+                    step.name
+                    if "step" in locals()
+                    else "unknown"
                 )
+
+                self._logger.error(
+                    f"Startup failed at step '{failed_step}': {exc}",
+                    event_type="runtime_startup_failed",
+                    metadata={
+                        "failed_step": failed_step,
+                        "completed_steps": completed_steps,
+                    },
+                )
+
                 await self._rollback_startup(completed_steps)
                 raise
             self._validate_runtime_services()
             self._started = True
             self.runtime_state.started = True
-            self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
-            self._logger.info("Runtime startup complete", event_type="runtime_startup_complete")
-            self._audit("runtime_startup_complete", steps=len(self._startup_steps))
+
+            self.runtime_state.record_lifecycle_event(
+                "startup_complete",
+                steps=len(self._startup_steps),
+            )
+
+            self._logger.info(
+                "Runtime startup complete",
+                event_type="runtime_startup_complete",
+            )
 
             # Emit RuntimeStartedEvent after all steps succeed.
             if dispatcher is not None and dispatcher.started:
