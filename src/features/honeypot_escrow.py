@@ -593,12 +593,15 @@ class HoneypotEscrowManager:
 
 # Global honeypot manager instance
 _honeypot_manager = None
+_honeypot_manager_lock = threading.Lock()
 
 def get_honeypot_manager() -> HoneypotEscrowManager:
     """Get global honeypot manager instance"""
     global _honeypot_manager
     if _honeypot_manager is None:
-        _honeypot_manager = HoneypotEscrowManager()
+        with _honeypot_manager_lock:
+            if _honeypot_manager is None:
+                _honeypot_manager = HoneypotEscrowManager()
     return _honeypot_manager
 
 

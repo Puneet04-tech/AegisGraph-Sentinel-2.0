@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -47,19 +48,23 @@ class RuntimeSettings(BaseModel):
 
 
 _settings_cache: Optional[RuntimeSettings] = None
+_settings_cache_lock = threading.Lock()
 
 
 def get_settings(*, refresh: bool = False, config_path: Optional[str] = None) -> RuntimeSettings:
     """Return cached runtime settings, loading them on first use."""
     global _settings_cache
     if refresh or _settings_cache is None:
-        from .loaders import load_settings
+        with _settings_cache_lock:
+            if refresh or _settings_cache is None:
+                from .loaders import load_settings
 
-        _settings_cache = load_settings(config_path=config_path)
+                _settings_cache = load_settings(config_path=config_path)
     return _settings_cache
 
 
 def reset_settings_cache() -> None:
     """Clear cached settings for tests and controlled reloads."""
     global _settings_cache
-    _settings_cache = None
+    with _settings_cache_lock:
+        _settings_cache = None

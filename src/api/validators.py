@@ -452,13 +452,16 @@ class RateLimiter:
 
 # Global rate limiter instance
 _rate_limiter: Optional[RateLimiter] = None
+_rate_limiter_lock = threading.Lock()
 
 
 def get_rate_limiter() -> RateLimiter:
     """Get or create the global rate limiter."""
     global _rate_limiter
     if _rate_limiter is None:
-        _rate_limiter = RateLimiter()
+        with _rate_limiter_lock:
+            if _rate_limiter is None:
+                _rate_limiter = RateLimiter()
     return _rate_limiter
 
 

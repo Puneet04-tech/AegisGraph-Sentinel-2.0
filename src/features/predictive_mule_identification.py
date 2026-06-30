@@ -26,6 +26,7 @@ Features Analyzed:
 """
 
 import bisect
+import threading
 from collections import OrderedDict, deque
 import numpy as np
 from typing import Dict, List, Optional
@@ -591,10 +592,13 @@ def score_new_account(
 
 
 _mule_scorer_instance: Optional[PredictiveMuleScorer] = None
+_mule_scorer_instance_lock = threading.Lock()
 
 
 def _get_mule_scorer() -> PredictiveMuleScorer:
     global _mule_scorer_instance
     if _mule_scorer_instance is None:
-        _mule_scorer_instance = PredictiveMuleScorer()
+        with _mule_scorer_instance_lock:
+            if _mule_scorer_instance is None:
+                _mule_scorer_instance = PredictiveMuleScorer()
     return _mule_scorer_instance

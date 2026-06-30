@@ -1668,12 +1668,15 @@ class BlockchainEvidenceManager:
 
 # Global blockchain manager
 _blockchain_manager = None
+_blockchain_manager_lock = threading.Lock()
 
 def get_blockchain_manager() -> BlockchainEvidenceManager:
     """Get global blockchain evidence manager"""
     global _blockchain_manager
     if _blockchain_manager is None:
-        _blockchain_manager = BlockchainEvidenceManager()
+        with _blockchain_manager_lock:
+            if _blockchain_manager is None:
+                _blockchain_manager = BlockchainEvidenceManager()
     return _blockchain_manager
 
 
