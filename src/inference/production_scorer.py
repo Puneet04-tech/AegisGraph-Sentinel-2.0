@@ -21,7 +21,7 @@ from collections import deque, OrderedDict
 from threading import Lock
 from typing import Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ class ProductionRiskScorer:
         Returns:
             FraudScore with decision and explanation
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Extract subgraph around source account (cached per batch)
@@ -241,7 +241,7 @@ class ProductionRiskScorer:
             )
             
             # Inference time
-            inference_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            inference_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             
             return FraudScore(
                 transaction_id=transaction.get('transaction_id', 'UNKNOWN'),

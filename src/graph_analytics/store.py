@@ -13,6 +13,7 @@ from .models import (
     GraphEdge,
     CommunityDetection,
     RiskPropagation,
+    LateralMovementSimulation,
     CentralityMetrics,
     GraphStats,
     NodeType,
@@ -283,6 +284,39 @@ class GraphStore:
                 page_rank=1.0 / total_nodes,
                 eigen_centrality=0.0,
             )
+
+    def simulate_lateral_movement(self, start_id: str, max_steps: int = 3, min_weight_threshold: float = 0.5) -> List[str]:
+        """Simulate lateral movement from a breached node based on edge weights/risks."""
+        with self._lock:
+            if start_id not in self._nodes:
+                return []
+
+            visited = {start_id}
+            queue = deque([(start_id, 0)])
+
+            while queue:
+                current_id, steps = queue.popleft()
+                if steps >= max_steps:
+                    continue
+
+                for neighbor_id in self._adjacency.get(current_id, set()):
+                    if neighbor_id in visited:
+                        continue
+                        
+                    # Evaluate edge weights to see if movement is possible
+                    edges = self.get_edges_between(current_id, neighbor_id)
+                    can_traverse = False
+                    for edge in edges:
+                        # Assuming higher weight means easier to traverse or higher risk connection
+                        if edge.weight >= min_weight_threshold:
+                            can_traverse = True
+                            break
+                            
+                    if can_traverse:
+                        visited.add(neighbor_id)
+                        queue.append((neighbor_id, steps + 1))
+            
+            return list(visited)
 
     def propagate_risk(self, source_id: str, max_depth: int = 5, decay_factor: float = 0.8) -> RiskPropagation:
         """Propagate risk through the graph."""

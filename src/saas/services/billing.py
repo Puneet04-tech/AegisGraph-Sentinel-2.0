@@ -5,7 +5,7 @@ Integrates with Stripe for subscriptions, usage metering, and license management
 """
 
 import stripe
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from decimal import Decimal
@@ -288,7 +288,7 @@ class BillingService:
                 "subscription_id": subscription.id,
                 "status": subscription.status,
                 "canceled": True,
-                "effective_date": datetime.fromtimestamp(subscription.current_period_end) if cancel_at_period_end else datetime.utcnow(),
+                "effective_date": datetime.fromtimestamp(subscription.current_period_end) if cancel_at_period_end else datetime.now(timezone.utc),
             }
         except stripe.error.StripeError as e:
             raise BillingError(f"Failed to cancel subscription: {e}")
@@ -583,7 +583,7 @@ class UsageMeteringService:
         return {
             "allowed": requests_per_minute < limit,
             "remaining": max(0, limit - requests_per_minute),
-            "reset_at": datetime.utcnow() + timedelta(minutes=1),
+            "reset_at": datetime.now(timezone.utc) + timedelta(minutes=1),
         }
 
 

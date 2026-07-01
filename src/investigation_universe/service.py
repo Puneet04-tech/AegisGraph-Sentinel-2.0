@@ -1,7 +1,7 @@
 """Investigation Universe Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import (
     Investigation, Evidence, Hypothesis, Correlation,
     InvestigationStatus, EvidenceType, ConfidenceLevel
@@ -51,9 +51,9 @@ class InvestigationUniverseService:
         investigation = self.investigations.get(investigation_id)
         if investigation:
             investigation.status = InvestigationStatus(status)
-            investigation.updated_at = datetime.utcnow()
+            investigation.updated_at = datetime.now(timezone.utc)
             if investigation.status == InvestigationStatus.CLOSED:
-                investigation.concluded_at = datetime.utcnow()
+                investigation.concluded_at = datetime.now(timezone.utc)
             return investigation.to_dict()
         return None
     
@@ -80,7 +80,7 @@ class InvestigationUniverseService:
         investigation = self.investigations.get(investigation_id)
         if investigation:
             investigation.evidence_count += 1
-            investigation.updated_at = datetime.utcnow()
+            investigation.updated_at = datetime.now(timezone.utc)
         
         return evidence.to_dict()
     

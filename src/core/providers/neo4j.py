@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -86,6 +87,7 @@ class Neo4jGraphProvider:
 
         self._driver: Optional[neo4j.Driver] = None
         self._subgraph_cache: OrderedDict[str, Tuple[float, nx.DiGraph]] = OrderedDict()
+        self._cache_lock = threading.RLock()
 
         if not NEO4J_AVAILABLE and enabled:
             logger.warning(
@@ -125,6 +127,7 @@ class Neo4jGraphProvider:
                 )
                 # Verify connectivity immediately
                 self._driver.verify_connectivity()
+                self._initialize_schema()
                 logger.info(f"Successfully connected to Neo4j database at {self.uri}")
             except Exception as e:
                 logger.error(
@@ -133,6 +136,16 @@ class Neo4jGraphProvider:
                 )
                 self.enabled = False
                 self._driver = None
+
+    def _initialize_schema(self) -> None:
+        """Create required indexes on first connect if they do not already exist."""
+        try:
+            with self._driver.session() as session:
+                session.run(
+                    "CREATE INDEX account_id_index IF NOT EXISTS FOR (a:Account) ON (a.id)"
+                )
+        except Exception as e:
+            logger.warning("Failed to initialize Neo4j schema indexes: %s", e)
 
     MAX_SAFE_SUBGRAPH_HOPS = 5
 
@@ -147,32 +160,35 @@ class Neo4jGraphProvider:
 
     def _invalidate_subgraph_cache_for(self, account_id: str) -> None:
         prefix = f"{account_id}:"
-        for key in list(self._subgraph_cache):
-            if key == account_id or key.startswith(prefix):
-                self._subgraph_cache.pop(key, None)
+        with self._cache_lock:
+            for key in list(self._subgraph_cache):
+                if key == account_id or key.startswith(prefix):
+                    self._subgraph_cache.pop(key, None)
 
     def _get_cached_subgraph(self, account_id: str, max_hops: int, now: float) -> Optional[nx.DiGraph]:
         key = self._cache_key(account_id, max_hops)
-        cached_entry = self._subgraph_cache.get(key)
-        if not cached_entry:
-            return None
+        with self._cache_lock:
+            cached_entry = self._subgraph_cache.get(key)
+            if not cached_entry:
+                return None
 
-        cache_time, cached_graph = cached_entry
-        if now - cache_time >= self.cache_ttl_seconds:
-            self._subgraph_cache.pop(key, None)
-            return None
+            cache_time, cached_graph = cached_entry
+            if now - cache_time >= self.cache_ttl_seconds:
+                self._subgraph_cache.pop(key, None)
+                return None
 
-        self._subgraph_cache.move_to_end(key)
-        return cached_graph
+            self._subgraph_cache.move_to_end(key)
+            return cached_graph
 
 
     def _store_cached_subgraph(self, account_id: str, max_hops: int, graph: nx.DiGraph, now: float) -> None:
-        self._cleanup_expired_subgraph_cache(now)
-        key = self._cache_key(account_id, max_hops)
-        self._subgraph_cache[key] = (now, graph)
-        self._subgraph_cache.move_to_end(key)
-        while len(self._subgraph_cache) > self.cache_max_entries:
-            self._subgraph_cache.popitem(last=False)
+        with self._cache_lock:
+            self._cleanup_expired_subgraph_cache(now)
+            key = self._cache_key(account_id, max_hops)
+            self._subgraph_cache[key] = (now, graph)
+            self._subgraph_cache.move_to_end(key)
+            while len(self._subgraph_cache) > self.cache_max_entries:
+                self._subgraph_cache.popitem(last=False)
 
     def _cleanup_expired_subgraph_cache(self, now: float) -> None:
         """Remove expired entries from the LRU front; stops at the first non-expired key."""
@@ -295,11 +311,9 @@ class Neo4jGraphProvider:
 
         limit = self.DEFAULT_SUBGRAPH_LIMIT
         hop_pattern = f"[r:TRANSFER*1..{max_hops}]"
-        # Neighborhood Sampling (GraphSAGE-style) to limit memory overhead
         query = (
             f"MATCH (a:Account {{id: $account_id}})\n"
             f"MATCH path = (a)-{hop_pattern}-(b:Account)\n"
-            f"WITH path, b LIMIT 50\n" # Limit branching factor per query to prevent memory exhaustion
             f"RETURN path\n"
             f"LIMIT $limit"
         )

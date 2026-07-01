@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 import yaml
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 from . import defaults
 from .schemas import (
@@ -193,8 +196,10 @@ def _build_settings_dict(
     api_port_val = env.api_port or api_config.get("port", defaults.DEFAULT_API_PORT)
     try:
         api_port_val = int(api_port_val)
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as exc:
+        logger.warning("Invalid api_port value %r, falling back to %s: %s",
+                       api_port_val, defaults.DEFAULT_API_PORT, exc)
+        api_port_val = defaults.DEFAULT_API_PORT
 
     api_reload_raw = api_config.get("reload")
     if api_reload_raw is None:
@@ -209,8 +214,10 @@ def _build_settings_dict(
     prometheus_port_val = env.prometheus_port or prometheus_config.get("port", defaults.DEFAULT_PROMETHEUS_PORT)
     try:
         prometheus_port_val = int(prometheus_port_val)
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as exc:
+        logger.warning("Invalid prometheus_port value %r, falling back to %s: %s",
+                       prometheus_port_val, defaults.DEFAULT_PROMETHEUS_PORT, exc)
+        prometheus_port_val = defaults.DEFAULT_PROMETHEUS_PORT
 
     return {
         "api": {

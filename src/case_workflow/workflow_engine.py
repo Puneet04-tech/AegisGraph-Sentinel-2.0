@@ -1,6 +1,6 @@
 """Workflow Engine"""
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .models import Workflow, Case, CaseStatus, Priority, SLALevel, SLA, Escalation, Assignment
 
 class WorkflowEngine:
@@ -128,7 +128,7 @@ class WorkflowEngine:
         
         case.current_state = to_state
         case.status = CaseStatus(to_state) if to_state in [s.value for s in CaseStatus] else case.status
-        case.updated_at = datetime.utcnow()
+        case.updated_at = datetime.now(timezone.utc)
         return case
     
     def get_case(self, case_id: str) -> Optional[Case]:
@@ -146,7 +146,7 @@ class WorkflowEngine:
             return None
         
         case.assignee = assignee
-        case.updated_at = datetime.utcnow()
+        case.updated_at = datetime.now(timezone.utc)
         
         assignment = Assignment(
             assignment_id=str(uuid4())[:8],
@@ -174,7 +174,7 @@ class WorkflowEngine:
         
         case.escalated_to = to_assignee
         case.status = CaseStatus.ESCALATED
-        case.updated_at = datetime.utcnow()
+        case.updated_at = datetime.now(timezone.utc)
         
         return escalation
     
@@ -191,7 +191,7 @@ class WorkflowEngine:
             sla_id=str(uuid4())[:8],
             case_id=case_id,
             sla_level=SLALevel(sla_level),
-            due_at=datetime.utcnow() + timedelta(hours=hours)
+            due_at=datetime.now(timezone.utc) + timedelta(hours=hours)
         )
         self.slas[sla.sla_id] = sla
         return sla
@@ -202,9 +202,9 @@ class WorkflowEngine:
         if not sla or sla.breached:
             return sla.breached if sla else False
         
-        if datetime.utcnow() > sla.due_at:
+        if datetime.now(timezone.utc) > sla.due_at:
             sla.breached = True
-            sla.breached_at = datetime.utcnow()
+            sla.breached_at = datetime.now(timezone.utc)
             return True
         return False
     

@@ -6,7 +6,7 @@ AI-powered fraud investigation with evidence gathering and case management
 
 import asyncio
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from src.agents.base import (
@@ -278,7 +278,7 @@ class InvestigationAgent(BaseAgent):
             evidence["network"] = await self._collect_network_evidence(case_id)
         
         # Add timestamp and hash for chain of custody
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         
         return {
             "case_id": case_id,
@@ -334,7 +334,7 @@ class InvestigationAgent(BaseAgent):
             timeline=self._build_timeline(analysis_data),
             related_entities=context.get("entities_involved", []),
             next_steps=self._generate_next_steps(analysis_data),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         
         return report
@@ -363,7 +363,7 @@ class InvestigationAgent(BaseAgent):
             evidence.append({
                 "type": "transaction",
                 "data": txn,
-                "collected_at": datetime.utcnow().isoformat(),
+                "collected_at": datetime.now(timezone.utc).isoformat(),
             })
         
         return evidence

@@ -117,8 +117,8 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         mock_record_edges = {"count": 99}
         mock_result_edges.single.return_value = mock_record_edges
 
-        # Mock session.run to return node results first, then edge results
-        mock_session.run.side_effect = [mock_result_nodes, mock_result_edges]
+        # _initialize_schema() fires once at construction before any count queries
+        mock_session.run.side_effect = [MagicMock(), mock_result_nodes, mock_result_edges]
 
         with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
             provider = Neo4jGraphProvider(enabled=True)
@@ -152,8 +152,8 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             # Cache for involved nodes must be cleared
             self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
 
-            # Query verification
-            mock_session.run.assert_called_once()
+            # Query verification (_initialize_schema adds one extra run at construction)
+            self.assertEqual(mock_session.run.call_count, 2)
             args, kwargs = mock_session.run.call_args
             self.assertIn("MERGE (s:Account {id: $src})", args[0])
             self.assertEqual(kwargs["src"], "ACC1")
@@ -271,6 +271,7 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             return result
 
         mock_session.run.side_effect = [
+            MagicMock(),  # _initialize_schema() at construction
             build_result("ACC1", "ACC2"),
             build_result("ACC3", "ACC4"),
         ]
@@ -283,7 +284,7 @@ class TestNeo4jGraphProvider(unittest.TestCase):
 
             self.assertEqual(list(provider._subgraph_cache.keys()), [provider._cache_key("ACC3", 2)])
             self.assertNotIn(provider._cache_key("ACC1", 2), provider._subgraph_cache)
-            self.assertEqual(mock_session.run.call_count, 2)
+            self.assertEqual(mock_session.run.call_count, 3)  # 1 schema init + 2 subgraph queries
 
     @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_contains_checks_node_existence(self, mock_neo4j_lib) -> None:
@@ -323,7 +324,7 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         
         # Node exists check query runs first, then APOC query
         mock_result_exists.single.return_value = {"exists": True}
-        
+
         mock_records = [
             {"node_id": "ACC2", "depth": 1, "score": 0.85},   # CRITICAL
             {"node_id": "ACC3", "depth": 2, "score": 0.40},   # HIGH
@@ -331,7 +332,8 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             {"node_id": "ACC5", "depth": 3, "score": 0.05},   # Under threshold, ignored
         ]
         mock_result_blast.__iter__.return_value = mock_records
-        mock_session.run.side_effect = [mock_result_exists, mock_result_blast]
+        # _initialize_schema() fires once at construction before any query
+        mock_session.run.side_effect = [MagicMock(), mock_result_exists, mock_result_blast]
 
         with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
             provider = Neo4jGraphProvider(enabled=True)
