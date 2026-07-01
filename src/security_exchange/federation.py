@@ -1,7 +1,7 @@
 """Security Exchange Federation Layer"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .models import (
     ExchangePartner, SharedIntelligence, DataGovernanceRule,
     OrganizationType, DataClassification, ShareStatus
@@ -102,7 +102,7 @@ class FederationLayer:
             classification=DataClassification(classification),
             status=ShareStatus.APPROVED,
             threat_indicators=threat_indicators,
-            expires_at=datetime.utcnow() + timedelta(days=expires_in_days)
+            expires_at=datetime.now(timezone.utc) + timedelta(days=expires_in_days)
         )
         self.shares[share.share_id] = share
         return share

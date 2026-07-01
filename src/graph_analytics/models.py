@@ -148,6 +148,29 @@ class CommunityDetection:
 
 
 @dataclass
+class LateralMovementSimulation:
+    """Lateral movement simulation result."""
+    simulation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    compromised_node_id: str = ""
+    vulnerable_nodes: List[str] = field(default_factory=list)
+    simulation_steps: int = 0
+    blast_radius_percentage: float = 0.0
+    high_value_assets_at_risk: int = 0
+    simulated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "simulation_id": self.simulation_id,
+            "compromised_node_id": self.compromised_node_id,
+            "vulnerable_nodes": self.vulnerable_nodes,
+            "simulation_steps": self.simulation_steps,
+            "blast_radius_percentage": self.blast_radius_percentage,
+            "high_value_assets_at_risk": self.high_value_assets_at_risk,
+            "simulated_at": self.simulated_at,
+        }
+
+
+@dataclass
 class RiskPropagation:
     """Risk propagation analysis result."""
     propagation_id: str = field(default_factory=lambda: str(uuid.uuid4()))

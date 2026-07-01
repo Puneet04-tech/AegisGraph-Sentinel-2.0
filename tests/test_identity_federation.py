@@ -6,7 +6,7 @@ Unit tests for the Enterprise Identity Federation Platform.
 
 import pytest
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.identity_federation import (
     IdentityFederationService,
@@ -109,7 +109,7 @@ class TestIdentityFederationStore:
             id="session-1",
             user_id="user-1",
             provider_id="provider-1",
-            expires_at=datetime.utcnow() + timedelta(hours=1),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         
         store.create_session(session)

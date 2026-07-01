@@ -1,7 +1,7 @@
 """Timeline Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import Timeline, TimelineEvent, EventType
 
 class TimelineService:
@@ -36,7 +36,7 @@ class TimelineService:
             event_id=str(uuid4())[:8],
             investigation_id=investigation_id,
             event_type=EventType(event_type),
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(timezone.utc),
             title=title,
             description=description,
             source=source,

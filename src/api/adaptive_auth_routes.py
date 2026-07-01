@@ -5,7 +5,7 @@ Provides endpoints for risk-based authentication, continuous authorization,
 and session management.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -303,12 +303,12 @@ async def get_audit_summary(
 ):
     """Get audit summary."""
     from src.adaptive_auth import get_audit_service
-    from datetime import timedelta
+    from datetime import timedelta, timezone
     
     audit_service = get_audit_service()
     
-    start = datetime.fromisoformat(start_time) if start_time else datetime.utcnow() - timedelta(hours=24)
-    end = datetime.fromisoformat(end_time) if end_time else datetime.utcnow()
+    start = datetime.fromisoformat(start_time) if start_time else datetime.now(timezone.utc) - timedelta(hours=24)
+    end = datetime.fromisoformat(end_time) if end_time else datetime.now(timezone.utc)
     
     summary = audit_service.get_summary(start, end)
     

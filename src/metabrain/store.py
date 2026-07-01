@@ -1,6 +1,6 @@
 """MetaBrain Store - In-memory storage for MetaBrain data"""
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .models import IntelligenceSignal, StrategicInsight, StrategicRecommendation, Forecast, Strategy
 
 class MetaBrainStore:
@@ -12,7 +12,7 @@ class MetaBrainStore:
         self.recommendations: Dict[str, StrategicRecommendation] = {}
         self.forecasts: Dict[str, Forecast] = {}
         self.strategies: Dict[str, Strategy] = {}
-        self.created_at: datetime = datetime.utcnow()
+        self.created_at: datetime = datetime.now(timezone.utc)
     
     def add_signal(self, signal: IntelligenceSignal) -> None:
         """Add an intelligence signal"""
@@ -92,7 +92,7 @@ class MetaBrainStore:
     
     def clear_old_data(self, days: int = 30) -> None:
         """Clear data older than specified days"""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         self.signals = {
             k: v for k, v in self.signals.items()
             if v.timestamp > cutoff
