@@ -112,6 +112,7 @@ from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
+from .omega_routes import router as omega_router
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1678,6 +1679,8 @@ register_archival_routes(app)
 
 # Register Agent Swarm routes (Issue #1494)
 app.include_router(agent_router)
+# Register Omega Platform routes (Issue #1503)
+app.include_router(omega_router)
 
 
 @app.get("/", tags=["Health"])
