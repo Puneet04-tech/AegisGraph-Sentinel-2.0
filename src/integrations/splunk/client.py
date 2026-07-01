@@ -7,7 +7,7 @@ import json
 import httpx
 import asyncio
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 import logging
 
@@ -47,7 +47,7 @@ class SplunkClient:
         """Send event to Splunk via HEC"""
         try:
             payload = {
-                "time": datetime.utcnow().timestamp(),
+                "time": datetime.now(timezone.utc).timestamp(),
                 "host": host,
                 "source": "aegisgraph-sentinel",
                 "sourcetype": sourcetype,
@@ -214,7 +214,7 @@ class SplunkAlertHandler:
         # Enrich with AegisGraph data
         enriched = {
             "original_alert": alert,
-            "enriched_at": datetime.utcnow().isoformat(),
+            "enriched_at": datetime.now(timezone.utc).isoformat(),
             "correlation_score": self._calculate_correlation(alert),
         }
         
@@ -233,7 +233,7 @@ class SplunkAlertHandler:
             "source": alert.get("source", "unknown"),
             "indicator": alert.get("indicator"),
             "confidence": alert.get("confidence", 0.5),
-            "processed_at": datetime.utcnow().isoformat(),
+            "processed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     async def _handle_uba_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -243,7 +243,7 @@ class SplunkAlertHandler:
             "user": alert.get("user"),
             "behavior": alert.get("behavior"),
             "risk_score": alert.get("risk_score", 0.5),
-            "processed_at": datetime.utcnow().isoformat(),
+            "processed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     async def _handle_generic_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,7 +251,7 @@ class SplunkAlertHandler:
         return {
             "type": "generic",
             "alert": alert,
-            "processed_at": datetime.utcnow().isoformat(),
+            "processed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def _calculate_correlation(self, alert: Dict[str, Any]) -> float:
@@ -283,7 +283,7 @@ class SplunkMetricsExporter:
         event = {
             "metric_type": metric_type,
             "metrics": metrics,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": "aegisgraph-sentinel",
         }
         

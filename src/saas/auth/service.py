@@ -10,7 +10,7 @@ import os
 import secrets
 import pyotp
 import bcrypt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -134,7 +134,7 @@ class InMemoryMFAPendingStore(MFAPendingStore):
 
     def issue(self, user_id: str) -> str:
         mfa_token = secrets.token_hex(16)
-        expires_at = datetime.utcnow() + timedelta(seconds=self._ttl_seconds)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds)
         self._pending[user_id] = (mfa_token, expires_at)
         return mfa_token
 
@@ -143,7 +143,7 @@ class InMemoryMFAPendingStore(MFAPendingStore):
         if entry is None:
             return False
         stored_token, expires_at = entry
-        if datetime.utcnow() > expires_at:
+        if datetime.now(timezone.utc) > expires_at:
             return False
         return secrets.compare_digest(stored_token, mfa_token)
     
@@ -269,7 +269,7 @@ class AuthService:
 
     def create_refresh_token(self, user_id: str, session_id: str) -> str:
         """Create refresh token"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         payload = {
             "sub": user_id,
             "session": session_id,
@@ -290,8 +290,8 @@ class AuthService:
                 email=payload["email"],
                 role=payload["role"],
                 permissions=payload["permissions"],
-                exp=datetime.fromtimestamp(payload["exp"]),
-                iat=datetime.fromtimestamp(payload["iat"]),
+                exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+                iat=datetime.fromtimestamp(payload["iat"], tz=timezone.utc),
                 jti=payload["jti"],
             )
         except jwt.ExpiredSignatureError:
@@ -420,7 +420,7 @@ class AuthService:
     ) -> AuthResult:
         """Create successful authentication result"""
         session_id = secrets.token_hex(16)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         access_payload = TokenPayload(
             sub=record.user_id,

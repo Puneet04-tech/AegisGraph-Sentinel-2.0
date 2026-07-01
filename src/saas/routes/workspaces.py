@@ -5,7 +5,7 @@ AegisGraph Sentinel Enterprise SaaS Platform
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["workspaces"])
@@ -49,7 +49,7 @@ class WorkspaceMember(BaseModel):
 async def create_workspace(data: WorkspaceCreate, organization_id: str):
     """Create a new workspace"""
     return WorkspaceResponse(
-        id=f"ws_{datetime.utcnow().timestamp()}",
+        id=f"ws_{datetime.now(timezone.utc).timestamp()}",
         name=data.name,
         slug=data.slug,
         description=data.description,
@@ -58,7 +58,7 @@ async def create_workspace(data: WorkspaceCreate, organization_id: str):
         is_default=False,
         max_members=20,
         max_cases=1000,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -75,7 +75,7 @@ async def get_workspace(workspace_id: str):
         is_default=True,
         max_members=20,
         max_cases=1000,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -92,7 +92,7 @@ async def update_workspace(workspace_id: str, data: WorkspaceUpdate):
         is_default=False,
         max_members=20,
         max_cases=1000,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -112,7 +112,7 @@ async def list_workspace_members(workspace_id: str):
             full_name="Admin User",
             role="admin",
             permissions=["read", "write", "delete"],
-            joined_at=datetime.utcnow(),
+            joined_at=datetime.now(timezone.utc),
         )
     ]
 

@@ -1,7 +1,7 @@
 """Security Playbook Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import Playbook, PlaybookTask, Execution, ExecutionStatus, TaskStatus
 
 class PlaybookService:
@@ -96,7 +96,7 @@ class PlaybookService:
             execution_id=str(uuid4())[:8],
             playbook_id=playbook_id,
             status=ExecutionStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             current_task=playbook.tasks[0].task_id if playbook.tasks else None
         )
         
@@ -105,11 +105,11 @@ class PlaybookService:
             execution.results.append({
                 "task_id": task.task_id,
                 "status": "COMPLETED",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
         
         execution.status = ExecutionStatus.COMPLETED
-        execution.completed_at = datetime.utcnow()
+        execution.completed_at = datetime.now(timezone.utc)
         execution.current_task = None
         self.executions[execution.execution_id] = execution
         return execution.to_dict()

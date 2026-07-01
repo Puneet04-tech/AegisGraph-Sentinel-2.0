@@ -1,7 +1,7 @@
 """Intelligence Marketplace Catalog"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .marketplace_models import (
     IntelligenceAsset, Subscription, Publisher,
     AssetType, AssetStatus, SubscriptionStatus
@@ -100,8 +100,8 @@ class Catalog:
             asset_id=asset_id,
             subscriber_id=subscriber_id,
             status=SubscriptionStatus.ACTIVE,
-            start_date=datetime.utcnow(),
-            end_date=datetime.utcnow() + timedelta(days=duration_days),
+            start_date=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=duration_days),
             price_paid=price
         )
         self.subscriptions[subscription.subscription_id] = subscription

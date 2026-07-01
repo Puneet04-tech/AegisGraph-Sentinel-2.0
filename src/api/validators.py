@@ -110,7 +110,7 @@ class TransactionValidator:
             )
 
         # Check decimal precision (max 2 places)
-        if len(str(amount).split(".")[-1]) > 2:
+        if round(amount, 2) != amount:
             raise ValidationError(
                 field="amount",
                 value=amount,

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import InvestigationOrchestratorInvestigationWorkflow, InvestigationOrchestratorEvidenceCorrelation, InvestigationOrchestratorEscalationRecord
 from .store import InvestigationOrchestratorStore
@@ -12,7 +12,7 @@ class InvestigationOrchestratorService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class InvestigationOrchestratorService:
     def create_investigationworkflow(self, tenant_id: str, record_id: str, workflow_id: str, domain: str, current_state: str, assigned_analyst: str) -> InvestigationOrchestratorInvestigationWorkflow:
         item = InvestigationOrchestratorInvestigationWorkflow(
             record_id=record_id, tenant_id=tenant_id, workflow_id=workflow_id, domain=domain, current_state=current_state, assigned_analyst=assigned_analyst,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_investigationworkflow(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'InvestigationWorkflow'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class InvestigationOrchestratorService:
     def create_evidencecorrelation(self, tenant_id: str, record_id: str, correlation_id: str, evidence_ids: List[str], score: float, description: str) -> InvestigationOrchestratorEvidenceCorrelation:
         item = InvestigationOrchestratorEvidenceCorrelation(
             record_id=record_id, tenant_id=tenant_id, correlation_id=correlation_id, evidence_ids=evidence_ids, score=score, description=description,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_evidencecorrelation(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'EvidenceCorrelation'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class InvestigationOrchestratorService:
     def create_escalationrecord(self, tenant_id: str, record_id: str, escalation_id: str, reason: str, priority: str, resolved: bool) -> InvestigationOrchestratorEscalationRecord:
         item = InvestigationOrchestratorEscalationRecord(
             record_id=record_id, tenant_id=tenant_id, escalation_id=escalation_id, reason=reason, priority=priority, resolved=resolved,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_escalationrecord(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'EscalationRecord'.upper()}", {"record_id": record_id})
