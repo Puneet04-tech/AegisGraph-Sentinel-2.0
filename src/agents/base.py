@@ -7,7 +7,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import json
 import logging
@@ -161,14 +161,14 @@ class BaseAgent(ABC):
 
     async def process_task(self, task: AgentTask):
         """Process a task"""
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         task.status = AgentStatus.RUNNING
         task.started_at = start_time
 
         try:
             result = await self.execute(task)
             task.status = AgentStatus.COMPLETED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             task.result = result
             self.tasks_processed += 1
             self.total_execution_time += (task.completed_at - start_time).total_seconds()
@@ -176,7 +176,7 @@ class BaseAgent(ABC):
         except Exception as e:
             task.status = AgentStatus.FAILED
             task.error = str(e)
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             self.errors += 1
             logger.error(f"Agent {self.agent_id} failed task {task.id}: {e}")
 

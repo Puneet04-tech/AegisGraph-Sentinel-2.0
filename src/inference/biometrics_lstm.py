@@ -2,6 +2,9 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BiometricLSTM(nn.Module):
     """
@@ -46,11 +49,11 @@ class KeystrokeSequenceAnalyzer:
                 self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
                 self.model.eval()
                 self.is_loaded = True
-                print(f"Biometric LSTM: Weights loaded successfully on {self.device}.")
+                logger.info("Biometric LSTM: Weights loaded successfully on %s.", self.device)
             except Exception as e:
-                print(f"Warning: Failed to load Biometric LSTM weights: {e}")
+                logger.warning("Warning: Failed to load Biometric LSTM weights: %s", e)
         else:
-            print("Biometric LSTM: Weights not found. Utilizing static mathematical fallback.")
+            logger.warning("Biometric LSTM: Weights not found. Utilizing static mathematical fallback.")
 
     def analyze_sequence(self, flight_times, hold_times):
         """

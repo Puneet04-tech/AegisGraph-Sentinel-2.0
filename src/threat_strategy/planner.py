@@ -1,7 +1,7 @@
 """Threat Strategy Planner"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .models import (
     ThreatStrategy, ThreatAssessment, DefenseInitiative,
     ThreatCategory, ThreatLevel, StrategyStatus
@@ -136,7 +136,7 @@ class StrategyPlanner:
         days_per_phase = strategy.timeline_days // len(strategy.initiatives)
         
         for i, initiative in enumerate(strategy.initiatives):
-            start_date = datetime.utcnow() + timedelta(days=i * days_per_phase)
+            start_date = datetime.now(timezone.utc) + timedelta(days=i * days_per_phase)
             end_date = start_date + timedelta(days=days_per_phase)
             
             roadmap.append({

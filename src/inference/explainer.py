@@ -9,6 +9,9 @@ for regulatory compliance and transparency.
 from typing import Dict, List, Optional
 import numpy as np
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
 
 Explainer = None
 GNNExplainer = None
@@ -362,7 +365,7 @@ def generate_explanation(
     return oracle.explain_decision(transaction, risk_result, graph_patterns)
 
 if __name__ == "__main__":
-    print("--- 🛡️ Booting AegisOracle Compliance Engine ---")
+    logger.info("--- 🛡️ Booting AegisOracle Compliance Engine ---")
     
     # 1. Mock a flagged transaction
     mock_txn = {
@@ -394,11 +397,11 @@ if __name__ == "__main__":
     # Run the engine
     report = generate_explanation(mock_txn, mock_risk, mock_patterns, detail_level='high')
     
-    print("\n[EXECUTIVE SUMMARY]")
-    print(report['summary'])
+    logger.info("[EXECUTIVE SUMMARY]")
+    logger.info(report['summary'])
     
-    print("\n[FULL COMPLIANCE EXPLANATION]")
-    print(report['explanation'])
+    logger.info("[FULL COMPLIANCE EXPLANATION]")
+    logger.info(report['explanation'])
     
-    print("\n[RECOMMENDED ACTION]")
-    print(report['recommended_action'])
+    logger.info("[RECOMMENDED ACTION]")
+    logger.info(report['recommended_action'])

@@ -6,7 +6,7 @@ case similarity search capabilities.
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from src.case_management.vector_store import VectorStore, SearchResult
@@ -82,7 +82,7 @@ class CaseRetriever:
             # Prepare metadata with explanation text for reference
             full_metadata = metadata or {}
             full_metadata.update({
-                "indexed_at": datetime.utcnow().isoformat(),
+                "indexed_at": datetime.now(timezone.utc).isoformat(),
                 "summary": explanation.get("summary", ""),
             })
             

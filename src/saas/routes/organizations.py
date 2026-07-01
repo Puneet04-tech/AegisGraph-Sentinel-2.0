@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, EmailStr, Field
 
 from src.saas.models import (
@@ -73,7 +73,7 @@ async def create_organization(
         is_active=True,
         is_verified=False,
         subscription_tier=SubscriptionTier.COMMUNITY,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -97,8 +97,8 @@ async def get_organization(
         max_users=25,
         max_api_calls_per_month=-1,
         max_storage_gb=100,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         members=[],
     )
 
@@ -120,7 +120,7 @@ async def update_organization(
         is_active=True,
         is_verified=True,
         subscription_tier=SubscriptionTier.PROFESSIONAL,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -162,7 +162,7 @@ async def invite_member(
         "invitation_id": str(uuid.uuid4()),
         "email": email,
         "role": role,
-        "expires_at": (datetime.utcnow().timestamp() + 86400 * 7),
+        "expires_at": (datetime.now(timezone.utc).timestamp() + 86400 * 7),
         "status": "pending",
     }
 

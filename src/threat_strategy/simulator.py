@@ -1,6 +1,6 @@
 """Threat Strategy Simulator"""
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from .models import ThreatStrategy, ThreatCategory, ThreatLevel, CampaignForecast
 
@@ -167,8 +167,8 @@ class StrategySimulator:
             threat_type=threat_type,
             prediction=predictions.get(threat_type, "General threat activity"),
             confidence=0.7 + random.random() * 0.2,
-            timeframe_start=datetime.utcnow(),
-            timeframe_end=datetime.utcnow() + timedelta(days=timeframe_days),
+            timeframe_start=datetime.now(timezone.utc),
+            timeframe_end=datetime.now(timezone.utc) + timedelta(days=timeframe_days),
             affected_sectors=random.sample(sectors, random.randint(2, 4))
         )
         

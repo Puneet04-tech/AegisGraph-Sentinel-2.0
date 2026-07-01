@@ -5,7 +5,7 @@ AegisGraph Sentinel Enterprise SaaS Platform
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from src.saas.services.billing import PLANS, PriceTier, billing_service
@@ -81,8 +81,8 @@ async def get_subscription(organization_id: str):
         tier="professional",
         status="active",
         billing_cycle="monthly",
-        current_period_start=datetime.utcnow(),
-        current_period_end=datetime.utcnow(),
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc),
         trial_ends_at=None,
         cancel_at_period_end=False,
     )
@@ -96,7 +96,7 @@ async def create_subscription(
 ):
     """Create new subscription"""
     return {
-        "subscription_id": f"sub_{datetime.utcnow().timestamp()}",
+        "subscription_id": f"sub_{datetime.now(timezone.utc).timestamp()}",
         "tier": tier.value,
         "status": "active",
         "checkout_url": "https://checkout.stripe.com/...",
@@ -128,7 +128,7 @@ async def cancel_subscription(
         "success": True,
         "subscription_id": "sub_123",
         "cancel_at_period_end": cancel_at_period_end,
-        "effective_date": datetime.utcnow(),
+        "effective_date": datetime.now(timezone.utc),
     }
 
 
@@ -148,10 +148,10 @@ async def list_invoices(organization_id: str, limit: int = 10):
             status="paid",
             amount=49900,
             currency="usd",
-            period_start=datetime.utcnow(),
-            period_end=datetime.utcnow(),
+            period_start=datetime.now(timezone.utc),
+            period_end=datetime.now(timezone.utc),
             pdf_url="https://...",
-            paid_at=datetime.utcnow(),
+            paid_at=datetime.now(timezone.utc),
         )
     ]
 
@@ -165,10 +165,10 @@ async def get_invoice(organization_id: str, invoice_id: str):
         status="paid",
         amount=49900,
         currency="usd",
-        period_start=datetime.utcnow(),
-        period_end=datetime.utcnow(),
+        period_start=datetime.now(timezone.utc),
+        period_end=datetime.now(timezone.utc),
         pdf_url="https://...",
-        paid_at=datetime.utcnow(),
+        paid_at=datetime.now(timezone.utc),
     )
 
 
@@ -180,8 +180,8 @@ async def get_usage(organization_id: str):
         max_api_calls=100000,
         storage_used_gb=45.2,
         max_storage_gb=100,
-        period_start=datetime.utcnow(),
-        period_end=datetime.utcnow(),
+        period_start=datetime.now(timezone.utc),
+        period_end=datetime.now(timezone.utc),
         usage_percentage=75.0,
     )
 
@@ -192,7 +192,7 @@ async def get_daily_usage(organization_id: str, days: int = 30):
     return {
         "daily_usage": [
             {
-                "date": datetime.utcnow().isoformat(),
+                "date": datetime.now(timezone.utc).isoformat(),
                 "api_calls": 2500,
                 "storage_gb": 45.2,
             }
