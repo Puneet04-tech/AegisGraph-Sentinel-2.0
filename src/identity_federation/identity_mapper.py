@@ -5,7 +5,7 @@ Maps identity attributes and roles from IdP to local user attributes.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .models import (
@@ -322,7 +322,7 @@ class IdentityMapper:
         user.roles = self.map_roles(provider, raw_groups)
         
         # Update user
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         self._store.update_user(user)
         
         return user

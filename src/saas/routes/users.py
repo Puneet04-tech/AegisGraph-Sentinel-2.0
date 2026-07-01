@@ -5,7 +5,7 @@ AegisGraph Sentinel Enterprise SaaS Platform
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, EmailStr, Field
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -47,7 +47,7 @@ class UserResponse(BaseModel):
 async def create_user(data: UserCreate):
     """Create a new user"""
     return UserResponse(
-        id=f"user_{datetime.utcnow().timestamp()}",
+        id=f"user_{datetime.now(timezone.utc).timestamp()}",
         email=data.email,
         full_name=data.full_name,
         username=data.username,
@@ -56,7 +56,7 @@ async def create_user(data: UserCreate):
         email_verified=False,
         mfa_enabled=False,
         last_login=None,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -73,8 +73,8 @@ async def get_user(user_id: str):
         is_active=True,
         email_verified=True,
         mfa_enabled=False,
-        last_login=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+        last_login=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -91,8 +91,8 @@ async def update_user(user_id: str, data: UserUpdate):
         is_active=True,
         email_verified=True,
         mfa_enabled=False,
-        last_login=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+        last_login=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -134,7 +134,7 @@ async def get_user_activity(user_id: str, limit: int = 50):
             {
                 "id": "act_1",
                 "action": "login",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "ip_address": "192.168.1.1",
                 "device": "Chrome on Windows",
             }

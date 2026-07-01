@@ -6,7 +6,7 @@ Provides comprehensive audit logging for identity events.
 
 import uuid
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .models import AuditEvent
@@ -69,7 +69,7 @@ class AuditLogger:
         """
         event = AuditEvent(
             id=str(uuid.uuid4()),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             username=username,
             ip_address=ip_address,
@@ -301,7 +301,7 @@ class AuditLogger:
         Returns:
             Activity summary
         """
-        start_time = datetime.utcnow() - timedelta(days=days)
+        start_time = datetime.now(timezone.utc) - timedelta(days=days)
         
         events = self.query(
             user_id=user_id,
@@ -341,7 +341,7 @@ class AuditLogger:
         Returns:
             Security summary
         """
-        start_time = datetime.utcnow() - timedelta(days=days)
+        start_time = datetime.now(timezone.utc) - timedelta(days=days)
         
         # Query security-relevant events
         auth_events = self.query(
@@ -382,7 +382,7 @@ class AuditLogger:
     
     def _cleanup_old_events(self) -> int:
         """Remove events older than retention period."""
-        cutoff = datetime.utcnow() - timedelta(days=self._retention_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._retention_days)
         
         to_remove = [
             event_id

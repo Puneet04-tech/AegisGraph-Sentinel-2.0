@@ -13,6 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Optional, List
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Optional torch_geometric imports
 try:
@@ -20,7 +23,7 @@ try:
     from torch_geometric.utils import softmax
     TORCH_GEOMETRIC_AVAILABLE = True
 except ImportError:
-    print("⚠️  torch_geometric not available - HTGAT will use fallback implementation")
+    logger.warning("⚠️  torch_geometric not available - HTGAT will use fallback implementation")
     class MessagePassing(nn.Module):
         def __init__(self, **kwargs):
             super().__init__()

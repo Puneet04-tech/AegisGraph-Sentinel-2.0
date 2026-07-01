@@ -163,7 +163,7 @@ class Trainer:
                 model=self.model,
                 device=str(self.device),
             )
-            print(f"Adversarial training enabled (method: {attack_method}, epsilon: {epsilon})")
+            logger.info("Adversarial training enabled (method: %s, epsilon: %s)", attack_method, epsilon)
 
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """

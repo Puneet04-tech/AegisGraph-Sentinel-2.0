@@ -1,7 +1,7 @@
 """Sovereign Federation Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .models import (
     NationalEntity, GovernancePolicy, IntelligenceShare, ComplianceRecord,
     FederationRole, DataClassification, ComplianceStatus
@@ -123,7 +123,7 @@ class SovereignFederationService:
             content_summary=content_summary,
             status="APPROVED",
             approved_by="SYSTEM",
-            shared_at=datetime.utcnow()
+            shared_at=datetime.now(timezone.utc)
         )
         self.shares[share.share_id] = share
         return share.to_dict()
@@ -149,8 +149,8 @@ class SovereignFederationService:
             entity_id=entity_id,
             policy_id=policy_id,
             status=ComplianceStatus.VERIFIED,
-            verified_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(days=365),
+            verified_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=365),
             details="Compliance verified by automated system"
         )
         self.compliance_records[record.record_id] = record

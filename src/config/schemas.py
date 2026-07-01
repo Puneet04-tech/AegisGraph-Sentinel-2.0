@@ -177,33 +177,6 @@ class GraphRuntimeSettings(ConfigBaseModel):
                 "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
             )
 
-        return self
-    @model_validator(mode="after")
-    def validate_graph_limits(self):
-        if self.max_subgraph_edges < self.max_subgraph_nodes:
-            raise ValueError(
-                "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
-            )
-
-        if self.max_subgraph_nodes < 10:
-            raise ValueError(
-                "max_subgraph_nodes must be at least 10"
-            )
-
-        if self.max_subgraph_edges < 10:
-            raise ValueError(
-                "max_subgraph_edges must be at least 10"
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_graph_limits(self):
-        if self.max_subgraph_edges < self.max_subgraph_nodes:
-            raise ValueError(
-                "max_subgraph_edges must be greater than or equal to max_subgraph_nodes"
-            )
-
         if self.max_subgraph_nodes < 10:
             raise ValueError(
                 "max_subgraph_nodes must be at least 10"

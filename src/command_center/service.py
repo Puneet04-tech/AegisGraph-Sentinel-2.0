@@ -1,7 +1,7 @@
 """Command Center Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import SecurityMetric, ThreatEvent, DashboardConfig, MetricType, ThreatLevel
 
 class CommandCenterService:
@@ -126,7 +126,7 @@ class CommandCenterService:
             "total_metrics": len(self.metrics),
             "metrics_by_type": type_metrics,
             "dashboards_configured": len(self.dashboards),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
 

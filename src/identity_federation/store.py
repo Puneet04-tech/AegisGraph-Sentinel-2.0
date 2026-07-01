@@ -6,7 +6,7 @@ Thread-safe in-memory store with O(1) lookups using dictionaries.
 
 import threading
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from .models import (
     IdentityProvider,
@@ -93,7 +93,7 @@ class IdentityFederationStore:
     def update_provider(self, provider: IdentityProvider) -> None:
         """Update an identity provider."""
         with self._lock:
-            provider.updated_at = datetime.utcnow()
+            provider.updated_at = datetime.now(timezone.utc)
             self._providers[provider.id] = provider
     
     def delete_provider(self, provider_id: str) -> bool:
@@ -135,7 +135,7 @@ class IdentityFederationStore:
     def update_user(self, user: FederatedUser) -> None:
         """Update a federated user."""
         with self._lock:
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
             self._users[user.id] = user
             self._users_by_email[user.email] = user
     
@@ -190,7 +190,7 @@ class IdentityFederationStore:
     def update_session(self, session: FederationSession) -> None:
         """Update a session."""
         with self._lock:
-            session.last_activity = datetime.utcnow()
+            session.last_activity = datetime.now(timezone.utc)
             self._sessions[session.id] = session
     
     def revoke_session(self, session_id: str) -> bool:
@@ -326,14 +326,14 @@ class IdentityFederationStore:
     def cache_metadata(self, key: str, metadata: dict) -> None:
         """Cache federation metadata."""
         with self._lock:
-            self._metadata_cache[key] = (datetime.utcnow(), metadata)
+            self._metadata_cache[key] = (datetime.now(timezone.utc), metadata)
     
     def get_cached_metadata(self, key: str) -> Optional[dict]:
         """Get cached metadata if not expired."""
         with self._lock:
             if key in self._metadata_cache:
                 timestamp, metadata = self._metadata_cache[key]
-                if datetime.utcnow() - timestamp < timedelta(seconds=self._metadata_cache_ttl):
+                if datetime.now(timezone.utc) - timestamp < timedelta(seconds=self._metadata_cache_ttl):
                     self._stats["cache_hits"] += 1
                     return metadata
                 else:
