@@ -1,7 +1,7 @@
 """Feed Intelligence Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import ThreatFeed, IOC, IOCType, FeedStatus
 
 class FeedIntelligenceService:
@@ -86,12 +86,12 @@ class FeedIntelligenceService:
             feed_id=feed_id,
             threat_type=threat_type,
             confidence=confidence,
-            first_seen=datetime.utcnow(),
+            first_seen=datetime.now(timezone.utc),
             tags=tags or []
         )
         self.iocs[ioc.ioc_id] = ioc
         feed.ioc_count += 1
-        feed.last_updated = datetime.utcnow()
+        feed.last_updated = datetime.now(timezone.utc)
         return ioc.to_dict()
     
     def get_ioc(self, ioc_id: str) -> Optional[Dict[str, Any]]:

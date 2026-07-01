@@ -10,7 +10,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer, HTTPBearer
 from typing import Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, EmailStr, Field
 import secrets
 
@@ -469,7 +469,7 @@ async def list_active_sessions(current_user: dict = Depends(get_current_user)):
                 "device": "Chrome on Windows",
                 "ip_address": "192.168.1.1",
                 "location": "Mumbai, India",
-                "last_active": datetime.utcnow().isoformat(),
+                "last_active": datetime.now(timezone.utc).isoformat(),
                 "current": True,
             },
             {
@@ -477,7 +477,7 @@ async def list_active_sessions(current_user: dict = Depends(get_current_user)):
                 "device": "Safari on iOS",
                 "ip_address": "10.0.0.1",
                 "location": "Unknown",
-                "last_active": (datetime.utcnow() - timedelta(hours=24)).isoformat(),
+                "last_active": (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
                 "current": False,
             },
         ]
@@ -507,13 +507,13 @@ async def create_api_key(
     key_prefix = raw_key[:8]
     
     return APIKeyResponse(
-        id=f"key_{datetime.utcnow().timestamp()}",
+        id=f"key_{datetime.now(timezone.utc).timestamp()}",
         name=request.name,
         key=raw_key,  # Only shown once
         key_prefix=key_prefix,
         scopes=request.scopes,
         expires_at=request.expires_at,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -528,8 +528,8 @@ async def list_api_keys(current_user: dict = Depends(get_current_user)):
                 "key_prefix": "sk_1234ab",
                 "scopes": ["read", "write"],
                 "is_active": True,
-                "last_used": datetime.utcnow().isoformat(),
-                "created_at": datetime.utcnow().isoformat(),
+                "last_used": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
         ]
     }

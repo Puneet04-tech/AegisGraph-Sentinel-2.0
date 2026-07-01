@@ -6,7 +6,7 @@ Implements OAuth2 authorization flows.
 
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -70,7 +70,7 @@ class OAuthProvider:
             "redirect_uris": redirect_uris,
             "scopes": scopes or ["openid", "profile", "email"],
             "client_name": client_name or client_id,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
             "enabled": True,
         }
         
@@ -141,7 +141,7 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": code_challenge_method,
                 "state": state,
-                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
                 "used": False,
             }
             
@@ -259,7 +259,7 @@ class OAuthProvider:
             )
         
         # Check expiration
-        if datetime.utcnow() > auth_code["expires_at"]:
+        if datetime.now(timezone.utc) > auth_code["expires_at"]:
             return AuthenticationResponse(
                 success=False,
                 error="invalid_grant",
@@ -401,7 +401,7 @@ class OAuthProvider:
             )
         
         # Check expiration
-        if datetime.utcnow() > token_info.get("refresh_expires_at", datetime.utcnow()):
+        if datetime.now(timezone.utc) > token_info.get("refresh_expires_at", datetime.now(timezone.utc)):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_grant",
@@ -453,8 +453,8 @@ class OAuthProvider:
         refresh_token: Optional[str] = None,
     ) -> None:
         """Store token information."""
-        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-        refresh_expires_at = datetime.utcnow() + timedelta(days=30)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
         
         self._tokens[access_token] = {
             "access_token": access_token,
@@ -465,7 +465,7 @@ class OAuthProvider:
             "client_id": client_id,
             "refresh_token": refresh_token,
             "refresh_expires_at": refresh_expires_at if refresh_token else None,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         }
     
     def _verify_pkce(
@@ -502,7 +502,7 @@ class OAuthProvider:
         if not token_info:
             return None
         
-        if datetime.utcnow() > token_info["expires_at"]:
+        if datetime.now(timezone.utc) > token_info["expires_at"]:
             return None
         
         return token_info
@@ -525,7 +525,7 @@ class OAuthProvider:
             return None
         
         # Check expiration
-        if datetime.utcnow() > token_info["expires_at"]:
+        if datetime.now(timezone.utc) > token_info["expires_at"]:
             return None
         
         # Return copy without sensitive data

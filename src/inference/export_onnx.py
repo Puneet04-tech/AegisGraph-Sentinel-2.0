@@ -1,9 +1,12 @@
 import os
 import torch
+import logging
 from src.inference.biometrics_lstm import BiometricLSTM
 
+logger = logging.getLogger(__name__)
+
 def compile_lstm_to_onnx():
-    print("⚙️ Initializing ONNX Compilation for Biometric LSTM...")
+    logger.info("⚙️ Initializing ONNX Compilation for Biometric LSTM...")
     
     # 1. Initialize the PyTorch Model (with structural weights)
     model = BiometricLSTM()
@@ -32,7 +35,7 @@ def compile_lstm_to_onnx():
         }
     )
     
-    print(f"✅ Compilation Successful! Optimized ONNX graph saved to: {onnx_path}")
+    logger.info("✅ Compilation Successful! Optimized ONNX graph saved to: %s", onnx_path)
 
 if __name__ == "__main__":
     compile_lstm_to_onnx()

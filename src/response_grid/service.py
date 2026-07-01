@@ -1,7 +1,7 @@
 """Response Grid Service"""
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import Incident, Playbook, RemediationAction, PartnerOrganization
 from .models import IncidentStatus, Severity, RemediationStatus
 
@@ -89,7 +89,7 @@ class ResponseGridService:
         incident = self.incidents.get(incident_id)
         if incident:
             incident.status = IncidentStatus(status)
-            incident.updated_at = datetime.utcnow()
+            incident.updated_at = datetime.now(timezone.utc)
             return incident.to_dict()
         return None
     
@@ -129,7 +129,7 @@ class ResponseGridService:
         action = self.remediations.get(action_id)
         if action:
             action.status = RemediationStatus.IN_PROGRESS
-            action.executed_at = datetime.utcnow()
+            action.executed_at = datetime.now(timezone.utc)
             # Simulate execution
             action.status = RemediationStatus.COMPLETED
             action.result = {"success": True, "action": action.action_type}

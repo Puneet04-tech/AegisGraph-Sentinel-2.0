@@ -165,7 +165,7 @@ class ModelEncryption:
 
         # Deserialize checkpoint
         buffer = io.BytesIO(plaintext)
-        checkpoint_dict = torch.load(buffer, map_location="cpu", weights_only=False)
+        checkpoint_dict = torch.load(buffer, map_location="cpu", weights_only=True)
 
         return checkpoint_dict
 

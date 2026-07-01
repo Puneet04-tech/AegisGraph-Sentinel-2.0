@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from .models import ComplianceValidationPlatformCompliancePolicy, ComplianceValidationPlatformControlAssessment, ComplianceValidationPlatformComplianceAudit
 from .store import ComplianceValidationPlatformStore
@@ -12,7 +12,7 @@ class ComplianceValidationPlatformService:
 
     def log_audit(self, tenant_id: str, action: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "tenant_id": tenant_id,
             "action": action,
             "details": details
@@ -21,7 +21,7 @@ class ComplianceValidationPlatformService:
     def create_compliancepolicy(self, tenant_id: str, record_id: str, policy_id: str, regulation_name: str, rules_count: int, status: str) -> ComplianceValidationPlatformCompliancePolicy:
         item = ComplianceValidationPlatformCompliancePolicy(
             record_id=record_id, tenant_id=tenant_id, policy_id=policy_id, regulation_name=regulation_name, rules_count=rules_count, status=status,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_compliancepolicy(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'CompliancePolicy'.upper()}", {"record_id": record_id})
@@ -36,7 +36,7 @@ class ComplianceValidationPlatformService:
     def create_controlassessment(self, tenant_id: str, record_id: str, assessment_id: str, control_id: str, compliance_percentage: float, findings: List[str]) -> ComplianceValidationPlatformControlAssessment:
         item = ComplianceValidationPlatformControlAssessment(
             record_id=record_id, tenant_id=tenant_id, assessment_id=assessment_id, control_id=control_id, compliance_percentage=compliance_percentage, findings=findings,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_controlassessment(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'ControlAssessment'.upper()}", {"record_id": record_id})
@@ -51,7 +51,7 @@ class ComplianceValidationPlatformService:
     def create_complianceaudit(self, tenant_id: str, record_id: str, audit_id: str, auditor_name: str, violations_detected: int, audit_date: str) -> ComplianceValidationPlatformComplianceAudit:
         item = ComplianceValidationPlatformComplianceAudit(
             record_id=record_id, tenant_id=tenant_id, audit_id=audit_id, auditor_name=auditor_name, violations_detected=violations_detected, audit_date=audit_date,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.store.save_complianceaudit(tenant_id, item)
         self.log_audit(tenant_id, f"CREATE_{'ComplianceAudit'.upper()}", {"record_id": record_id})
