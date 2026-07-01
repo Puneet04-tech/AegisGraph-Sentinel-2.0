@@ -10,6 +10,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from ..lru_cache import LRUCache
+
+logger = logging.getLogger(__name__)
 
 import networkx as nx
 import numpy as np
@@ -108,6 +111,7 @@ from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .archival_routes import register_routes as register_archival_routes
+from .agent_routes import router as agent_router
 from .compliance_routes import router as compliance_router
 from .schemas import (
     AccountOpeningRequest,
@@ -1616,8 +1620,9 @@ async def metrics():
         manager = await get_honeypot_manager()
         active_count = len(manager.get_active_honeypots())
         ACTIVE_HONEYPOTS.set(active_count)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to collect honeypot metrics: %s", exc)
+        ACTIVE_HONEYPOTS.set(0)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -1672,6 +1677,8 @@ register_adaptive_auth_routes(app)
 # Register archival routes (Issue #1477 — automated data archival strategy)
 register_archival_routes(app)
 
+# Register Agent Swarm routes (Issue #1494)
+app.include_router(agent_router)
 # Register Compliance routes (Issue #1495)
 app.include_router(compliance_router)
 
@@ -3347,7 +3354,7 @@ async def generate_case_embedding(
                 float(x)
                 for x in embedding[:10]
             ],
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
         )
 
     except Exception as e:
@@ -3481,7 +3488,7 @@ async def find_similar_cases(request: SimilarCaseRequest):
             query_text_used=query_used,
             reference_case_id=reference_case,
             processing_time_ms=processing_time,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
         )
     
     except Exception as e:

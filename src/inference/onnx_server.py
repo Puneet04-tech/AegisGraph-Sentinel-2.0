@@ -1,10 +1,13 @@
 import os
 import numpy as np
+import logging
 try:
     import onnxruntime as ort
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 class FastONNXAnalyzer:
     """
@@ -22,9 +25,9 @@ class FastONNXAnalyzer:
                 providers=['CPUExecutionProvider']
             )
             self.is_loaded = True
-            print(f"🚀 ONNX Runtime Initialized: Serving {model_path} at high speed.")
+            logger.info("🚀 ONNX Runtime Initialized: Serving %s at high speed.", model_path)
         else:
-            print("⚠️ ONNX Runtime or artifact not found. API will require standard PyTorch fallback.")
+            logger.warning("⚠️ ONNX Runtime or artifact not found. API will require standard PyTorch fallback.")
 
     def analyze_sequence(self, flight_times, hold_times):
         """Executes the compiled graph in sub-millisecond time."""

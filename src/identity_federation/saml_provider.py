@@ -9,7 +9,7 @@ import hashlib
 import secrets
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode, parse_qs, urlparse
 
@@ -122,7 +122,7 @@ class SAMLProvider:
         force_authn: bool,
     ) -> str:
         """Create SAML AuthnRequest XML."""
-        issue_instant = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        issue_instant = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         
         authn_request = f'''<?xml version="1.0" encoding="UTF-8"?>
 <samlp:AuthnRequest
@@ -247,14 +247,14 @@ class SAMLProvider:
             not_before = conditions.get("NotBefore")
             if not_before:
                 not_before_time = datetime.strptime(not_before, "%Y-%m-%dT%H:%M:%SZ")
-                if datetime.utcnow() < not_before_time:
+                if datetime.now(timezone.utc) < not_before_time:
                     return False, "Assertion not yet valid"
             
             # Check not_on_or_after
             not_on_or_after = conditions.get("NotOnOrAfter")
             if not_on_or_after:
                 not_after_time = datetime.strptime(not_on_or_after, "%Y-%m-%dT%H:%M:%SZ")
-                if datetime.utcnow() >= not_after_time:
+                if datetime.now(timezone.utc) >= not_after_time:
                     return False, "Assertion expired"
         
         return True, None
@@ -296,7 +296,7 @@ class SAMLProvider:
         existing_user = self._store.get_user_by_provider(provider.id, provider_user_id)
         if existing_user:
             # Update user info
-            existing_user.last_login = datetime.utcnow()
+            existing_user.last_login = datetime.now(timezone.utc)
             existing_user.profile_data = user_info
             self._store.update_user(existing_user)
             return existing_user
@@ -313,7 +313,7 @@ class SAMLProvider:
             last_name=user_info.get("last_name") or user_info.get("surname"),
             groups=user_info.get("groups", []),
             profile_data=user_info,
-            last_login=datetime.utcnow(),
+            last_login=datetime.now(timezone.utc),
         )
         
         self._store.register_user(user)
@@ -333,7 +333,7 @@ class SAMLProvider:
             session_index = authn_statement.get("SessionIndex")
         
         session_id = f"saml_{secrets.token_hex(24)}"
-        expires_at = datetime.utcnow() + timedelta(hours=self._store._session_ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=self._store._session_ttl)
         
         session = FederationSession(
             id=session_id,
@@ -394,7 +394,7 @@ class SAMLProvider:
         session_index = sessions[0].session_index if sessions else None
         
         request_id = f"_{secrets.token_hex(16)}"
-        issue_instant = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        issue_instant = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         
         # Get user for NameID
         user = self._store.get_user(user_id)

@@ -11,6 +11,11 @@ from .cache import (
     reset_cache,
 )
 
+from .graph_debug import (
+    print_graph_summary,
+    dump_graph_state,
+)
+
 __all__ = [
     "GraphCache",
     "GraphOperationCache",
@@ -18,5 +23,7 @@ __all__ = [
     "RedisGraphCache",
     "get_graph_cache",
     "reset_cache",
+    "print_graph_summary",
+    "dump_graph_state",
 ]
 

@@ -9,7 +9,7 @@ import json
 import secrets
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -366,7 +366,7 @@ class OIDCProvider:
         # Check if user exists
         existing_user = self._store.get_user_by_provider(provider.id, provider_user_id)
         if existing_user:
-            existing_user.last_login = datetime.utcnow()
+            existing_user.last_login = datetime.now(timezone.utc)
             existing_user.profile_data = user_info
             existing_user.claims = user_info.get("claims", {})
             self._store.update_user(existing_user)
@@ -389,7 +389,7 @@ class OIDCProvider:
             roles=user_info.get("roles", []),
             profile_data=user_info,
             claims=user_info.get("claims", {}),
-            last_login=datetime.utcnow(),
+            last_login=datetime.now(timezone.utc),
         )
         
         self._store.register_user(user)
@@ -403,7 +403,7 @@ class OIDCProvider:
     ) -> FederationSession:
         """Create federation session."""
         session_id = f"oidc_{secrets.token_hex(24)}"
-        expires_at = datetime.utcnow() + timedelta(hours=self._store._session_ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=self._store._session_ttl)
         
         session = FederationSession(
             id=session_id,

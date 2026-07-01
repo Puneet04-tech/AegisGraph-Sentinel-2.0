@@ -5,7 +5,7 @@ CISO Dashboard, Board Reporting, and Executive Analytics
 """
 
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -104,7 +104,7 @@ class CISODashboard:
             "compliance": compliance,
             "trends": trends,
             "alerts": alerts,
-            "last_updated": datetime.utcnow().isoformat(),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
         }
 
     async def _get_executive_metrics(self) -> ExecutiveMetrics:
@@ -149,13 +149,13 @@ class CISODashboard:
                 {
                     "type": "AI-generated phishing",
                     "severity": "high",
-                    "detected_at": datetime.utcnow().isoformat(),
+                    "detected_at": datetime.now(timezone.utc).isoformat(),
                     "affected_count": 45,
                 },
                 {
                     "type": "Synthetic identity fraud",
                     "severity": "medium",
-                    "detected_at": (datetime.utcnow() - timedelta(hours=6)).isoformat(),
+                    "detected_at": (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat(),
                     "affected_count": 23,
                 },
             ],
@@ -172,7 +172,7 @@ class CISODashboard:
                 requirements_met=245,
                 requirements_total=250,
                 gaps=["6.4.1 - Automated vulnerability scans"],
-                last_audit=datetime.utcnow() - timedelta(days=30),
+                last_audit=datetime.now(timezone.utc) - timedelta(days=30),
             ),
             ComplianceSummary(
                 framework="SOC2 Type II",
@@ -181,7 +181,7 @@ class CISODashboard:
                 requirements_met=190,
                 requirements_total=200,
                 gaps=[],
-                last_audit=datetime.utcnow() - timedelta(days=15),
+                last_audit=datetime.now(timezone.utc) - timedelta(days=15),
             ),
             ComplianceSummary(
                 framework="GDPR",
@@ -190,7 +190,7 @@ class CISODashboard:
                 requirements_met=46,
                 requirements_total=50,
                 gaps=["Art. 30 - Records of processing activities"],
-                last_audit=datetime.utcnow() - timedelta(days=45),
+                last_audit=datetime.now(timezone.utc) - timedelta(days=45),
             ),
             ComplianceSummary(
                 framework="RBI Guidelines",
@@ -199,14 +199,14 @@ class CISODashboard:
                 requirements_met=48,
                 requirements_total=50,
                 gaps=[],
-                last_audit=datetime.utcnow() - timedelta(days=20),
+                last_audit=datetime.now(timezone.utc) - timedelta(days=20),
             ),
         ]
 
     async def _get_trend_data(self) -> Dict[str, Any]:
         """Get trend data for charts"""
         # Generate last 30 days trend
-        dates = [(datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30, 0, -1)]
+        dates = [(datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30, 0, -1)]
         
         return {
             "fraud_cases_trend": {
@@ -236,7 +236,7 @@ class CISODashboard:
                 "severity": "critical",
                 "title": "Suspected Mule Network Activity",
                 "description": "Multiple accounts showing coordinated suspicious behavior",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "action_required": True,
             },
             {
@@ -245,7 +245,7 @@ class CISODashboard:
                 "severity": "medium",
                 "title": "PCI-DSS Gap Identified",
                 "description": "Automated vulnerability scan required for compliance",
-                "timestamp": (datetime.utcnow() - timedelta(hours=2)).isoformat(),
+                "timestamp": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
                 "action_required": True,
             },
             {
@@ -254,7 +254,7 @@ class CISODashboard:
                 "severity": "low",
                 "title": "Model Performance Degradation",
                 "description": "Detection rate dropped below 95% threshold",
-                "timestamp": (datetime.utcnow() - timedelta(hours=4)).isoformat(),
+                "timestamp": (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat(),
                 "action_required": False,
             },
         ]
@@ -307,7 +307,7 @@ Risk Landscape: {risk_landscape['overall_risk']} risk level with {risk_landscape
             recommendations=await self._generate_recommendations(metrics, risk_landscape),
             risk_factors=await self._identify_risk_factors(metrics),
             investment_roi=roi,
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
         )
 
     async def _aggregate_period_metrics(
@@ -355,17 +355,17 @@ Risk Landscape: {risk_landscape['overall_risk']} risk level with {risk_landscape
             "pci_dss": {
                 "status": "compliant",
                 "score": 98.5,
-                "next_audit": (datetime.utcnow() + timedelta(days=60)).isoformat(),
+                "next_audit": (datetime.now(timezone.utc) + timedelta(days=60)).isoformat(),
             },
             "soc2": {
                 "status": "compliant",
                 "score": 95.0,
-                "next_audit": (datetime.utcnow() + timedelta(days=45)).isoformat(),
+                "next_audit": (datetime.now(timezone.utc) + timedelta(days=45)).isoformat(),
             },
             "gdpr": {
                 "status": "compliant",
                 "score": 92.0,
-                "next_audit": (datetime.utcnow() + timedelta(days=90)).isoformat(),
+                "next_audit": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
             },
         }
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from .models import AttackCampaign, SimulationResult
 
 class SimulationEngine:
@@ -12,5 +12,5 @@ class SimulationEngine:
             success_rate=1.0 if len(campaign.steps) > 0 else 0.0,
             detected_steps=detected,
             total_steps=len(campaign.steps),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )

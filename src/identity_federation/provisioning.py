@@ -5,7 +5,7 @@ Handles user lifecycle management and provisioning from IdPs.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -86,7 +86,7 @@ class ProvisioningService:
         try:
             # Set status to in progress
             event.status = ProvisioningStatus.IN_PROGRESS.value
-            event.started_at = datetime.utcnow()
+            event.started_at = datetime.now(timezone.utc)
             
             if action == ProvisioningAction.CREATE:
                 user, changes = self._create_user(provider, user_info)
@@ -124,7 +124,7 @@ class ProvisioningService:
             
             # Mark completed
             event.status = ProvisioningStatus.COMPLETED.value
-            event.completed_at = datetime.utcnow()
+            event.completed_at = datetime.now(timezone.utc)
             
             return user, event
             
@@ -209,7 +209,7 @@ class ProvisioningService:
         if user_info.get("claims"):
             user.claims = user_info["claims"]
         
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         self._store.update_user(user)
         
         return user, changes
@@ -226,7 +226,7 @@ class ProvisioningService:
         user = self._store.get_user(user_id)
         if user:
             user.enabled = False
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
             self._store.update_user(user)
             
             # Revoke all sessions
@@ -239,7 +239,7 @@ class ProvisioningService:
         user = self._store.get_user(user_id)
         if user:
             user.enabled = True
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
             self._store.update_user(user)
         
         return user
@@ -274,7 +274,7 @@ class ProvisioningService:
         # Disable user
         user.enabled = False
         user.provisioning_status = "deprovisioned"
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         
         self._store.update_user(user)
         

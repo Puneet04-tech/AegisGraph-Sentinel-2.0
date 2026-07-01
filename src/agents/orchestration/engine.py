@@ -6,7 +6,7 @@ Coordinates multiple AI agents for complex investigations
 
 import asyncio
 from typing import Dict, Any, List, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
@@ -125,13 +125,13 @@ class OrchestrationEngine:
         callback: Optional[Callable] = None,
     ) -> WorkflowExecution:
         """Execute a multi-agent workflow"""
-        execution_id = f"exec_{workflow.workflow_id}_{datetime.utcnow().timestamp()}"
+        execution_id = f"exec_{workflow.workflow_id}_{datetime.now(timezone.utc).timestamp()}"
         
         execution = WorkflowExecution(
             execution_id=execution_id,
             workflow_id=workflow.workflow_id,
             status=AgentStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         self.active_workflows[execution_id] = execution
@@ -147,16 +147,16 @@ class OrchestrationEngine:
                 await self._execute_cascade(workflow, execution, initial_input, callback)
             
             execution.status = AgentStatus.COMPLETED
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = datetime.now(timezone.utc)
             
         except Exception as e:
             logger.error(f"Workflow {workflow.workflow_id} failed: {e}")
             execution.status = AgentStatus.FAILED
             execution.errors.append({
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = datetime.now(timezone.utc)
         
         return execution
 
@@ -185,7 +185,7 @@ class OrchestrationEngine:
                 execution.step_results.append({
                     "step_id": step.step_id,
                     "result": result,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 
                 # Map outputs for next step
@@ -231,7 +231,7 @@ class OrchestrationEngine:
                     execution.step_results.append({
                         "step_id": step.step_id,
                         "result": result,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
         
         execution.output = {"results": results}
@@ -296,7 +296,7 @@ class OrchestrationEngine:
                 execution.step_results.append({
                     "step_id": step.step_id,
                     "result": result,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
         
         execution.output = execution.step_results[-1]["result"] if execution.step_results else {}
@@ -316,11 +316,11 @@ class OrchestrationEngine:
         
         # Create task
         task = AgentTask(
-            id=f"task_{step.step_id}_{datetime.utcnow().timestamp()}",
+            id=f"task_{step.step_id}_{datetime.now(timezone.utc).timestamp()}",
             agent_type=step.agent_type,
             priority=TaskPriority.NORMAL,
             input_data=input_data,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         
         # Execute with timeout
@@ -411,10 +411,10 @@ class OrchestrationEngine:
         execution = self.active_workflows.get(execution_id)
         if execution and execution.status == AgentStatus.RUNNING:
             execution.status = AgentStatus.FAILED
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = datetime.now(timezone.utc)
             execution.errors.append({
                 "error": "Cancelled by user",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             return True
         return False

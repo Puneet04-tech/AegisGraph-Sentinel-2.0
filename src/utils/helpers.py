@@ -287,12 +287,11 @@ def pretty_print_dict(d: dict, indent: int = 0):
         indent: Indentation level
     """
     for key, value in d.items():
-        print('  ' * indent + str(key) + ':', end=' ')
         if isinstance(value, dict):
-            print()
+            logger.info('%s%s:', '  ' * indent, key)
             pretty_print_dict(value, indent + 1)
         else:
-            print(value)
+            logger.info('%s%s: %s', '  ' * indent, key, value)
 
 
 class Timer:
@@ -311,7 +310,7 @@ class Timer:
     def __exit__(self, *args):
         self.elapsed = (datetime.now() - self.start_time).total_seconds()
         if self.verbose:
-            print(f"{self.name}: {format_time(self.elapsed)}")
+            logger.info("%s: %s", self.name, format_time(self.elapsed))
 
 
 def ensure_dir(path: str):
