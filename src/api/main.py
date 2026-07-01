@@ -112,6 +112,7 @@ from ..security import sanitize_payload
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
+from .digital_twin_routes import router as digital_twin_router
 from .schemas import (
     AccountOpeningRequest,
     AccountOpeningResponse,
@@ -1678,6 +1679,8 @@ register_archival_routes(app)
 
 # Register Agent Swarm routes (Issue #1494)
 app.include_router(agent_router)
+# Register Digital Twin routes (Issue #1498)
+app.include_router(digital_twin_router)
 
 
 @app.get("/", tags=["Health"])
