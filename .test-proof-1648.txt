@@ -1,0 +1,20 @@
+TEST PROOF - PR #1648: Amount-Velocity Risk Scoring Regression Tests
+=====================================================================
+
+PARAMETRIZED TEST RESULTS:
+✓ PASS: Amount=500, velocity_risk=0.00 (expected >= 0.0)
+✓ PASS: Amount=50001, velocity_risk=0.30 (expected >= 0.3)
+✓ PASS: Amount=250000, velocity_risk=0.50 (expected >= 0.5)
+
+ORDERING TEST RESULTS:
+✓ Amount=500:   velocity_risk=0.00
+✓ Amount=50001: velocity_risk=0.30
+✓ Amount=250K:  velocity_risk=0.50
+✓ Ordering: 0.00 < 0.30 < 0.50 = True
+
+All regression tests PASSED ✓
+
+What this verifies:
+- Parametrized test correctly validates minimum velocity risk thresholds
+- Monotonic ordering test ensures risk scores increase with transaction amount
+- Regression test prevents reoccurrence of bug where different amounts returned identical scores
