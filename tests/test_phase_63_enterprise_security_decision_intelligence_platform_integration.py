@@ -5,7 +5,7 @@ from src.phase_63_enterprise_security_decision_intelligence_platform.api import 
 import hashlib
 import pytest
 
-ADMIN_KEY = "test-admin-key"
+ADMIN_KEY = "tenant_testco"
 ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
 
 app = FastAPI()
