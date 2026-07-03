@@ -42,7 +42,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 
 ## 🏆 Key Achievements
 
-- **96.8% Precision** | **94.2% Recall** | **<200ms Latency**
+- **96.8% Precision** | **94.2% Recall** | **<200ms Latency** *(synthetic evaluation dataset)*
 - **₹27.6+ Crore Prevented** across all innovation pilots
 - **87% Arrest Rate** through Honeypot Escrow system
 - **86-94% Accuracy** across all detection modules
@@ -341,6 +341,12 @@ print(f"Verified: {response.json()['verified']}")
 
 ## 📊 Performance Metrics
 
+### Evaluation Dataset: In-Distribution Synthetic Transactions
+
+The metrics below are evaluated on a synthetic transaction dataset generated using the same process as the training set. This represents in-distribution performance and provides an upper bound on real-world metrics.
+
+**Important**: Synthetic evaluation metrics should not be used to directly estimate production performance without validation against independent fraud datasets.
+
 | Model | Precision | Recall | F1 Score | ROC-AUC | Latency (p99) |
 |-------|-----------|--------|----------|---------|---------------|
 | Logistic Regression | 73.2% | 68.5% | 70.8% | 0.812 | N/A |
@@ -349,6 +355,23 @@ print(f"Verified: {response.json()['verified']}")
 | GNN (Homogeneous) | 91.2% | 87.4% | 89.3% | 0.932 | 198ms |
 | **HTGNN (Ours)** | **96.8%** | **94.2%** | **95.5%** | **0.978** | **89ms** |
 | **HTGNN + Biometrics** | **97.9%** | **95.8%** | **96.8%** | **0.987** | **112ms** |
+
+### Key Limitations of Synthetic Metrics
+
+1. **Circular Evaluation**: Model has learned statistical properties of the synthetic generator, not inherent properties of real fraud
+2. **Missing Dynamics**: Real mule networks exhibit temporal dynamics and adversarial evolution not present in synthetic data
+3. **Class Imbalance Disparity**: Synthetic class distributions differ from real-world fraud prevalence rates
+4. **Community Structure**: Real social networks shape legitimate transaction graphs differently than random generators
+
+### Real-World Performance
+
+To bridge the gap between synthetic and real-world evaluation, consider:
+
+- Evaluating against public fraud datasets (IEEE-CIS, Kaggle Credit Card Fraud 2023) as out-of-distribution benchmarks
+- Piloting on partner bank data with regulatory approval to measure production performance
+- Monitoring false positive and false negative rates during deployment to calibrate thresholds
+
+See [Model Evaluation Guide](docs/evaluation.md) for details on running custom evaluations on your datasets.
 
 ## 🔐 Security & Privacy
 
@@ -378,6 +401,7 @@ print(f"Verified: {response.json()['verified']}")
 - [System Architecture](docs/architecture.md)
 - [API Documentation](docs/api.md)
 - [Model Training Guide](docs/training.md)
+- [Model Evaluation Guide](docs/evaluation.md)
 - [Deployment Guide](docs/deployment.md)
 - [Graph Investigation Playbooks](docs/graph-investigation-playbooks.md)
 
