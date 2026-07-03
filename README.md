@@ -49,7 +49,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 - Real-time fraud detection during transaction authorization
 - Multi-modal fusion: Graph topology + Temporal patterns + Behavioral biometrics
 - Deception-based intervention with Honeypot Virtual Escrow
-- Court-admissible blockchain evidence
+- Audit trail support *(blockchain evidence integration in development)*
 
 ## 🚀 Six Breakthrough Innovations
 
@@ -60,7 +60,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 | 3 | **Aegis-Oracle** | Explainable AI | RBI-compliant, 72% self-service |
 | 4 | **Predictive Mule ID** | Pre-transaction detection | 86% precision, ₹14.2 Cr prevented |
 | 5 | **Voice Stress Analysis** | Phone coercion detection | 92% detection rate |
-| 6 | **Blockchain Evidence** | Immutable forensics | <100ms sealing, court-admissible |
+| 6 | **Blockchain Evidence** | Immutable forensics | <100ms sealing *(planned implementation)* |
 
 **📖 Detailed Innovation Guide**: See [INNOVATIONS.md](INNOVATIONS.md) for comprehensive documentation
 
@@ -70,7 +70,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 - **Behavioral Biometrics**: Keystroke dynamics and voice stress detection
 - **Explainable AI**: LLM-based reasoning engine (Aegis-Oracle)
 - **Real-Time Processing**: <200ms inference latency
-- **Blockchain**: Hyperledger Fabric for evidence integrity
+- **Blockchain**: Hyperledger Fabric for evidence integrity *(implementation in progress)*
 - **Audio Analysis**: Librosa, SciPy for acoustic feature extraction
 
 ## 📋 System Motto

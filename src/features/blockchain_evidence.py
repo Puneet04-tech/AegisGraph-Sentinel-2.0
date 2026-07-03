@@ -951,8 +951,30 @@ class BlockchainEvidenceManager:
         if fraud_patterns is None:
             fraud_patterns = []
 
+        # Check if Hyperledger Fabric is configured for real blockchain sealing
+        fabric_profile = os.getenv("FABRIC_CONNECTION_PROFILE")
+        env = os.getenv("ENV", "dev").lower()
+        is_production = env in ["prod", "production"]
+
+        if not fabric_profile and is_production:
+            raise NotImplementedError(
+                "Blockchain evidence sealing requires Hyperledger Fabric configuration in production. "
+                "Set FABRIC_CONNECTION_PROFILE environment variable to enable real blockchain sealing. "
+                "Issue #1646: Hyperledger Fabric audit trail implementation is planned for a future release. "
+                "See: https://github.com/Puneet04-tech/AegisGraph-Sentinel-2.0/issues/1646"
+            )
+
+        if not fabric_profile and not is_production:
+            logger.warning(
+                "Blockchain evidence sealing: Using simulated mock blockchain (DEVELOPMENT MODE ONLY). "
+                "Evidence returned by this function is NOT immutable and NOT suitable for legal proceedings. "
+                "Set FABRIC_CONNECTION_PROFILE to enable real Hyperledger Fabric blockchain sealing. "
+                "See Issue #1646 for implementation details.",
+                extra={"blockchain_mode": "mock", "environment": env}
+            )
+
         start_time = time.time()
-        
+
         # Create transaction hash (exclude PII)
         transaction_data = {
             'transaction_id_hash': hashlib.sha256(transaction_id.encode()).hexdigest(),
@@ -961,14 +983,14 @@ class BlockchainEvidenceManager:
             'amount': amount,
         }
         transaction_hash = hashlib.sha256(json.dumps(transaction_data, sort_keys=True).encode()).hexdigest()
-        
+
         # Create explanation hash
         explanation_hash = hashlib.sha256(explanation.encode()).hexdigest()
-        
+
         # Evidence record
         evidence_id = f"EV_{secrets.token_hex(6).upper()}"
         detection_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        
+
         evidence_data = {
             'evidence_id': evidence_id,
             'transaction_hash': transaction_hash,
@@ -985,14 +1007,17 @@ class BlockchainEvidenceManager:
             'model_version': self.model_version,
             'model_hash': self.model_hash,
         }
-        
-        # Check if Hyperledger Fabric is configured
-        fabric_profile = os.getenv("FABRIC_CONNECTION_PROFILE")
+
+        # Attempt real Hyperledger Fabric integration if configured
         if fabric_profile:
             try:
                 from src.blockchain_evidence.gateway import FabricGatewayClient
                 client = FabricGatewayClient(fabric_profile)
                 client.invoke_chaincode("aegischannel", "evidencecc", "SealEvidence", [evidence_id, transaction_hash])
+                logger.info(
+                    "Evidence sealed on Hyperledger Fabric blockchain",
+                    extra={"evidence_id": evidence_id, "blockchain": "hyperledger_fabric"}
+                )
             except Exception as e:
                 logger.error(f"Fabric SDK invocation failed: {e}")
 
