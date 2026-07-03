@@ -355,3 +355,50 @@ def require_admin():
         HTTPException 403: Caller is not ADMIN or SUPER_ADMIN.
     """
     return require_role(Role.ADMIN)
+
+
+# Security: Validate against hardcoded/well-known keys
+def validate_api_keys_security() -> None:
+    """Validate that API keys are not hardcoded or well-known defaults.
+
+    Raises:
+        RuntimeError: If any configured key is a known insecure default.
+    """
+    known_insecure_keys = {
+        "SUPER_ADMIN",
+        "admin",
+        "test-key",
+        "development",
+        "default",
+        "password",
+        "12345678",
+        "test",
+    }
+
+    # Check all configured role-specific keys
+    for role in Role:
+        hashes = _load_role_hashes(role)
+        for hash_val in hashes:
+            # Check if this hash matches any known insecure key
+            for insecure_key in known_insecure_keys:
+                insecure_hash = hashlib.sha256(insecure_key.encode("utf-8")).hexdigest()
+                if hmac.compare_digest(hash_val, insecure_hash):
+                    raise RuntimeError(
+                        f"CRITICAL: API key for role {role.value} is a known insecure default. "
+                        f"Never use hardcoded keys in production. "
+                        f"Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(32))\" "
+                        f"and set AEGIS_ROLE_{role.value} environment variable."
+                    )
+
+    # Check general API key hashes
+    general_hashes = _load_allowed_hashes()
+    for hash_val in general_hashes:
+        for insecure_key in known_insecure_keys:
+            insecure_hash = hashlib.sha256(insecure_key.encode("utf-8")).hexdigest()
+            if hmac.compare_digest(hash_val, insecure_hash):
+                raise RuntimeError(
+                    f"CRITICAL: General API key is a known insecure default. "
+                    f"Never use hardcoded keys in production. "
+                    f"Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(32))\" "
+                    f"and set AEGIS_API_KEY_HASHES environment variable."
+                )

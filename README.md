@@ -188,10 +188,22 @@ The AegisGraph Sentinel 2.0 API features comprehensive OpenAPI (Swagger) documen
 
 All protected endpoints in AegisGraph Sentinel require an API Key. You can easily test them via the Swagger UI:
 
-1. Click the **Authorize** button at the top right of the Swagger UI page.
-2. In the `APIKeyHeader` dialog box, enter your API Key. (By default, use `SUPER_ADMIN`).
-3. Click **Authorize** and then **Close**. 
-4. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
+1. Generate a secure API key by running:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+
+2. Set the API key in your environment:
+   ```bash
+   export AEGIS_ROLE_SUPER_ADMIN="<your-generated-key>"
+   ```
+
+3. Click the **Authorize** button at the top right of the Swagger UI page.
+4. In the `APIKeyHeader` dialog box, enter your generated API Key.
+5. Click **Authorize** and then **Close**. 
+6. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
+
+**IMPORTANT**: Never use hardcoded or well-known keys in production. Always generate a unique, cryptographically secure key for each deployment.
 
 *(Insert Screenshot here)*
 

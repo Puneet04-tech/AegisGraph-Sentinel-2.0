@@ -97,6 +97,7 @@ except ImportError as e:
 
 from ..config.settings import get_settings
 from ..config.validation import validate_environment
+from .security import validate_api_keys_security
 from ..exceptions import (
     AegisException,
     register_exception_handlers,
@@ -1490,6 +1491,10 @@ async def lifespan(app: FastAPI):
     lifecycle_manager.register_startup(
         "validate_environment",
         lambda: _validate_runtime_environment(startup_logger),
+    )
+    lifecycle_manager.register_startup(
+        "validate_api_keys_security",
+        lambda: validate_api_keys_security(),
     )
     lifecycle_manager.register_startup(
         "load_graph_runtime_data",
