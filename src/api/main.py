@@ -1226,6 +1226,37 @@ async def _load_graph_runtime_data(startup_logger):
     )
 
 
+def _check_inference_backend(startup_logger):
+    """Check for NetworkX backend usage and warn about SLA implications."""
+    env = os.getenv("ENV", "dev").lower()
+    is_production = env in ["prod", "production"]
+    is_staging = env in ["staging", "stage"]
+
+    if state.transaction_graph is not None:
+        is_networkx = isinstance(state.transaction_graph, nx.Graph)
+        if is_networkx and (is_production or is_staging):
+            startup_logger.warning(
+                "PERFORMANCE WARNING: NetworkX backend detected in production/staging. "
+                "NetworkX does not meet the 200-500ms SLA target (typically 1-5s for 50+ node graphs). "
+                "For production use, deploy with PyTorch Geometric and GPU support. "
+                "See docs/evaluation.md for latency benchmarks and performance guidance.",
+                event_type="networkx_sla_warning",
+                metadata={
+                    "environment": env,
+                    "backend": "networkx",
+                    "expected_latency_ms": "1000-5000",
+                    "sla_target_ms": "200-500",
+                },
+            )
+        elif is_networkx:
+            startup_logger.info(
+                "NetworkX backend loaded (development mode). "
+                "For production, use PyTorch Geometric backend.",
+                event_type="networkx_backend_info",
+                metadata={"backend": "networkx", "environment": env},
+            )
+
+
 def _initialize_model_runtime(startup_logger):
     if MODEL_AVAILABLE:
         state.model_loaded = True
@@ -1494,6 +1525,11 @@ async def lifespan(app: FastAPI):
     lifecycle_manager.register_startup(
         "load_graph_runtime_data",
         lambda: _load_graph_runtime_data(startup_logger),
+        critical=False,
+    )
+    lifecycle_manager.register_startup(
+        "check_inference_backend",
+        lambda: _check_inference_backend(startup_logger),
         critical=False,
     )
     lifecycle_manager.register_startup(

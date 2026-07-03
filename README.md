@@ -42,7 +42,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 
 ## 🏆 Key Achievements
 
-- **96.8% Precision** | **94.2% Recall** | **<200ms Latency**
+- **96.8% Precision** | **94.2% Recall** | **<200ms Latency** *(PyTorch GPU backend)*
 - **₹27.6+ Crore Prevented** across all innovation pilots
 - **87% Arrest Rate** through Honeypot Escrow system
 - **86-94% Accuracy** across all detection modules
@@ -349,6 +349,58 @@ print(f"Verified: {response.json()['verified']}")
 | GNN (Homogeneous) | 91.2% | 87.4% | 89.3% | 0.932 | 198ms |
 | **HTGNN (Ours)** | **96.8%** | **94.2%** | **95.5%** | **0.978** | **89ms** |
 | **HTGNN + Biometrics** | **97.9%** | **95.8%** | **96.8%** | **0.987** | **112ms** |
+
+### Inference Backend Performance
+
+The latency figures above are achieved with PyTorch Geometric on GPU. Different deployment backends have different performance characteristics:
+
+| Backend | Mean Latency | p99 Latency | SLA (≤500ms) | Use Case |
+|---------|--------------|-------------|--------------|----------|
+| **PyTorch (GPU)** | 89-112ms | <200ms | ✓ Met | Production |
+| **PyTorch (CPU)** | 400-700ms | 800-1200ms | ✗ Missed | Staging with GPU unavailable |
+| **NetworkX** | 1000-5000ms | 2000-8000ms | ✗ Missed | Development only |
+
+**Important**: The NetworkX backend (default demo mode) does NOT meet the 200-500ms SLA. For production and staging deployments, use PyTorch Geometric with GPU support.
+
+#### Benchmarking Your Deployment
+
+Run the latency benchmark to measure performance in your environment:
+
+```bash
+python -m src.benchmarks.latency_benchmark --backend all --iterations 100 --graph-size 50
+```
+
+Options:
+- `--backend`: `networkx`, `pytorch`, or `all`
+- `--graph-size`: Number of nodes (default: 50)
+- `--iterations`: Number of runs (default: 100)
+- `--device`: `cpu`, `cuda`, or `mps` (default: cpu)
+- `--output`: Save results to JSON file
+
+Example output:
+```
+PYTORCH Backend (Graph Size: 50 nodes)
+==================================================
+Mean Latency:       95.23 ms
+P99 Latency:        145.67 ms ✓ SLA
+SLA Compliance:     100.0%
+```
+
+#### Startup Warnings
+
+When running in production or staging with NetworkX backend, the system logs a warning on startup:
+
+```
+PERFORMANCE WARNING: NetworkX backend detected in production/staging.
+NetworkX does not meet the 200-500ms SLA target (typically 1-5s for 50+ node graphs).
+For production use, deploy with PyTorch Geometric and GPU support.
+```
+
+#### Recommended Configurations
+
+- **Production**: PyTorch Geometric + NVIDIA GPU (A100/H100 preferred)
+- **Staging**: PyTorch Geometric + GPU if available, CPU fallback with increased SLA
+- **Development**: NetworkX (acceptable for testing)
 
 ## 🔐 Security & Privacy
 
