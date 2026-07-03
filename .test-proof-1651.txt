@@ -1,0 +1,28 @@
+TEST PROOF - PR #1651: Model Metrics Clarification
+====================================================
+
+FILES MODIFIED:
+1. README.md - Key Achievements
+   ✓ Added clarification: "(synthetic evaluation dataset)"
+   ✓ Removed misleading "Court-admissible blockchain evidence" claim
+
+2. README.md - Performance Metrics Section  
+   ✓ New heading: "Evaluation Dataset: In-Distribution Synthetic Transactions"
+   ✓ Added warning about circular evaluation
+   ✓ Listed key limitations of synthetic evaluation
+   ✓ Added guidance for real-world evaluation
+
+3. docs/evaluation.md - NEW FILE CREATED
+   ✓ Two-tier evaluation approach explained
+   ✓ Expected performance ranges by dataset type:
+     - Synthetic: Precision 96.8%, Recall 94.2%
+     - IEEE-CIS: Precision 82-92%, Recall 84-91%
+     - Bank-Specific: Precision 75-90%, Recall 70-88%
+     - Production Pilot: Precision 70-85%, Recall 60-75%
+   ✓ Step-by-step guides for evaluating on public datasets
+   ✓ Methods for closing synthetic-to-real gap
+   ✓ Best practices and references
+
+Key Improvement:
+Removes false confidence in synthetic metrics while providing clear guidance
+on validating performance on real data.
