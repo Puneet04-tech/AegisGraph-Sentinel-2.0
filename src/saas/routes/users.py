@@ -6,7 +6,7 @@ AegisGraph Sentinel Enterprise SaaS Platform
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from src.saas.services.limit_enforcer import enforce_tenant_limit, get_tenant_resource_count, set_tenant_resource_count
 from src.saas.services.billing import PriceTier
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
 class UserCreate(BaseModel):
-    email: str
+    email: EmailStr
     full_name: Optional[str] = None
     username: Optional[str] = Field(None, max_length=100)
     password: Optional[str] = Field(None, min_length=8)
@@ -22,7 +22,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     full_name: Optional[str] = None
     username: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = None
