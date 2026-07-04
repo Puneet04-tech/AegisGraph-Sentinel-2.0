@@ -51,6 +51,8 @@ class CaseStore:
         self._comments: _LRUDict = _LRUDict(maxsize=200_000)
         self._evidence: _LRUDict = _LRUDict(maxsize=200_000)
         self._audit: Dict[str, List[CaseAuditEvent]] = {}  # case_id → list (append-only)
+        from src.integrations.syslog.client import SyslogClient
+        self.syslog_client = SyslogClient()
 
     # ------------------------------------------------------------------
     # Cases
@@ -292,6 +294,23 @@ class CaseStore:
         if case_id not in self._audit:
             self._audit[case_id] = []
         self._audit[case_id].append(event)
+
+        # Log to external syslog compliance server
+        try:
+            self.syslog_client.log_event(
+                msg_id=action,
+                message=f"Case {case_id} audit event by analyst {analyst_id}",
+                severity=4 if any(kw in action for kw in ("FAILED", "REJECTED", "ESCALATED", "BLOCKED")) else 6,
+                metadata={
+                    "case_id": case_id,
+                    "analyst_id": analyst_id,
+                    "action": action,
+                    "old_value": old_value or "",
+                    "new_value": new_value or "",
+                }
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
