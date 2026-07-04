@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
+from src.saas.services.limit_enforcer import enforce_tenant_limit, get_tenant_resource_count, set_tenant_resource_count
+from src.saas.services.billing import PriceTier
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -31,22 +33,25 @@ class UserUpdate(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
-    full_name: Optional[str]
-    username: Optional[str]
-    phone: Optional[str]
-    avatar_url: Optional[str]
+    full_name: Optional[str] = None
+    username: Optional[str] = None
+    phone: Optional[str] = None
+    avatar_url: Optional[str] = None
     role: str
     is_active: bool
     email_verified: bool
     mfa_enabled: bool
-    last_login: Optional[datetime]
+    last_login: Optional[datetime] = None
     created_at: datetime
 
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(data: UserCreate):
+async def create_user(data: UserCreate, tenant_id: Optional[str] = None):
     """Create a new user"""
-    return UserResponse(
+    if tenant_id:
+        enforce_tenant_limit(tenant_id, "max_users", PriceTier.COMMUNITY)
+
+    user = UserResponse(
         id=f"user_{datetime.utcnow().timestamp()}",
         email=data.email,
         full_name=data.full_name,
@@ -58,6 +63,12 @@ async def create_user(data: UserCreate):
         last_login=None,
         created_at=datetime.utcnow(),
     )
+
+    if tenant_id:
+        current_count = get_tenant_resource_count(tenant_id, "max_users")
+        set_tenant_resource_count(tenant_id, "max_users", current_count + 1)
+
+    return user
 
 
 @router.get("/{user_id}", response_model=UserResponse)
