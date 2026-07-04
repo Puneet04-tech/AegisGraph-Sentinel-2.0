@@ -240,6 +240,7 @@ def _build_settings_dict(
             "thresholds": risk_thresholds,
             "weights": risk_config.get("weights", defaults.DEFAULT_COMPONENT_WEIGHTS),
             "thresholds_path": thresholds_path,
+            "high_value_threshold": float(risk_config.get("high_value_threshold", 500000.0)),
         },
         "innovations": {
             "redis_url": env.redis_url,
@@ -338,6 +339,7 @@ def load_settings(
             thresholds=ScoringThresholdSettings(**settings_dict["scoring"]["thresholds"]),
             weights=settings_dict["scoring"]["weights"],
             thresholds_path=settings_dict["scoring"]["thresholds_path"],
+            high_value_threshold=settings_dict["scoring"]["high_value_threshold"],
         ),
         innovations=InnovationSettings(**settings_dict["innovations"]),
         webhook=WebhookSettings(**settings_dict["webhook"]),

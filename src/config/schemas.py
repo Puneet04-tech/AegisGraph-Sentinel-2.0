@@ -244,6 +244,7 @@ class ScoringSettings(ConfigBaseModel):
     thresholds: ScoringThresholdSettings = Field(default_factory=ScoringThresholdSettings)
     weights: Dict[str, float] = Field(default_factory=lambda: dict(defaults.DEFAULT_COMPONENT_WEIGHTS))
     thresholds_path: Path = Field(default=defaults.DEFAULT_THRESHOLDS_PATH)
+    high_value_threshold: float = Field(default=500000.0, ge=0.0)
 
 
 class InnovationSettings(ConfigBaseModel):
