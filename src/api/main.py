@@ -1818,47 +1818,66 @@ async def check_transaction(
         # Prepare transaction data
         transaction = request.model_dump()
         
-        # Prepare biometrics data
-        biometrics = None
+        # Check IP/location blacklist
+        from src.features.ip_blacklist import check_blacklist
         behavioral_stress_detected = False
-        if request.biometrics:
-            biometrics = {
-                'hold_times': request.biometrics.hold_times,
-                'flight_times': request.biometrics.flight_times,
+        if check_blacklist(request.ip_address, request.location):
+            risk_result = {
+                "risk_score": 1.0,
+                "decision": "BLOCK",
+                "confidence": 1.0,
+                "breakdown": {
+                    "graph": 1.0,
+                    "velocity": 1.0,
+                    "behavior": 1.0,
+                    "entropy": 1.0,
+                }
             }
+            explanation_result = {
+                "explanation": "❌ IMMEDIATE BLOCK: Source IP or transaction location is blacklisted due to high compliance and security risk.",
+                "recommended_action": "REJECT TRANSACTION: High fraud probability - immediate intervention required"
+            }
+        else:
+            # Prepare biometrics data
+            biometrics = None
+            if request.biometrics:
+                biometrics = {
+                    'hold_times': request.biometrics.hold_times,
+                    'flight_times': request.biometrics.flight_times,
+                }
+                
+                # Innovation 1: Simple keystroke stress detection
+                if INNOVATIONS_AVAILABLE:
+                    try:
+                        behavioral_stress_detected = await asyncio.to_thread(_analyze_keystrokes_sync, biometrics)
+                    except Exception as e:
+                        _api_logger.warning(
+                            f"Keystroke analysis failed: {e}",
+                            event_type="keystroke_analysis_error",
+                        )
             
-            # Innovation 1: Simple keystroke stress detection
-            if INNOVATIONS_AVAILABLE:
-                try:
-                    behavioral_stress_detected = await asyncio.to_thread(_analyze_keystrokes_sync, biometrics)
-                except Exception as e:
-                    _api_logger.warning(
-                        f"Keystroke analysis failed: {e}",
-                        event_type="keystroke_analysis_error",
-                    )
-        
-        # Offload CPU-bound scoring + graph analysis to thread pool.
-        # When called from the batch endpoint, _batch_subgraph_cache and
-        # _batch_subgraph_lock are set via context variables so that subgraph
-        # extractions for the same source account are shared across concurrent
-        # tasks within the same batch, reducing graph traversals from O(N) to
-        # O(unique source accounts).
-        loop = asyncio.get_running_loop()
-        subgraph_cache = _batch_subgraph_cache.get()
-        subgraph_lock = _batch_subgraph_lock.get()
-        risk_result = await asyncio.to_thread(_run_scoring_pipeline, transaction,
-                biometrics,
-                request.source_account,
-                request.target_account,
-                lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
-                INNOVATIONS_AVAILABLE,
-                subgraph_cache,
-                subgraph_lock,)
+            # Offload CPU-bound scoring + graph analysis to thread pool.
+            # When called from the batch endpoint, _batch_subgraph_cache and
+            # _batch_subgraph_lock are set via context variables so that subgraph
+            # extractions for the same source account are shared across concurrent
+            # tasks within the same batch, reducing graph traversals from O(N) to
+            # O(unique source accounts).
+            loop = asyncio.get_running_loop()
+            subgraph_cache = _batch_subgraph_cache.get()
+            subgraph_lock = _batch_subgraph_lock.get()
+            risk_result = await asyncio.to_thread(_run_scoring_pipeline, transaction,
+                    biometrics,
+                    request.source_account,
+                    request.target_account,
+                    lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
+                    INNOVATIONS_AVAILABLE,
+                    subgraph_cache,
+                    subgraph_lock,)
 
-        # Generate explanation off the event loop to keep the request thread responsive.
-        explanation_result = await asyncio.to_thread(generate_explanation, transaction=transaction,
-                risk_result=risk_result,
-                detail_level='high',)
+            # Generate explanation off the event loop to keep the request thread responsive.
+            explanation_result = await asyncio.to_thread(generate_explanation, transaction=transaction,
+                    risk_result=risk_result,
+                    detail_level='high',)
         
         # Innovation 2: Check if honeypot should be activated
         honeypot_activated = False
