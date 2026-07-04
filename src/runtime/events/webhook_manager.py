@@ -314,6 +314,51 @@ class WebhookManager:
             "blocks": blocks,
         }
 
+    def _format_teams_payload(self, event: SentinelAlertEvent) -> Dict[str, Any]:
+        """Build a Microsoft Teams webhook payload in Office 365 Connector Card format."""
+        facts = [
+            {"name": "Severity", "value": f"`{event.severity}`"},
+            {"name": "Source", "value": f"`{event.source}`"},
+            {
+                "name": "Transaction ID",
+                "value": str(event.payload.get("transaction_id", "N/A")),
+            },
+        ]
+
+        amount = event.payload.get("amount")
+        if amount is not None:
+            currency = event.payload.get("currency", "")
+            facts.append({"name": "Amount", "value": f"{amount} {currency}".strip()})
+
+        if "source_account" in event.payload:
+            facts.append({"name": "Source Account", "value": str(event.payload["source_account"])})
+
+        if "target_account" in event.payload:
+            facts.append({"name": "Target Account", "value": str(event.payload["target_account"])})
+
+        risk_score = event.payload.get("risk_score")
+        if risk_score is not None:
+            facts.append({"name": "Risk Score", "value": f"{risk_score:.4f}"})
+
+        explanation = event.payload.get("explanation")
+        if explanation:
+            facts.append({"name": "Explanation", "value": str(explanation)})
+
+        return {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "FF0000" if event.severity in ("HIGH", "CRITICAL") else "FFCC00",
+            "summary": f"Sentinel Alert: {event.title}",
+            "sections": [
+                {
+                    "activityTitle": f"🚨 {event.title}",
+                    "activitySubtitle": event.message,
+                    "facts": facts,
+                    "markdown": True,
+                }
+            ],
+        }
+
     # ------------------------------------------------------------------
     # HTTP delivery with retry / back-off
     # ------------------------------------------------------------------
@@ -461,6 +506,20 @@ class WebhookManager:
                     "Slack webhook is enabled but SLACK_WEBHOOK_URL is not set. "
                     "Skipping Slack notification.",
                     event_type="webhook_slack_url_missing",
+                )
+
+            if getattr(self.settings, "enable_teams", False) and getattr(self.settings, "teams_url", ""):
+                teams_payload = self._format_teams_payload(event)
+                tasks.append(
+                    self._send_with_retry(
+                        client, "Teams", self.settings.teams_url, teams_payload
+                    )
+                )
+            elif getattr(self.settings, "enable_teams", False) and not getattr(self.settings, "teams_url", ""):
+                _logger.warning(
+                    "Teams webhook is enabled but TEAMS_WEBHOOK_URL is not set. "
+                    "Skipping Teams notification.",
+                    event_type="webhook_teams_url_missing",
                 )
 
             if not tasks:

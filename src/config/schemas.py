@@ -42,8 +42,10 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
     prometheus_port: Optional[str] = Field(default=None, description="Prometheus metrics port (default: 9090).")
     discord_webhook_url: Optional[str] = Field(default=None, description="Discord Webhook URL for alerts.")
     slack_webhook_url: Optional[str] = Field(default=None, description="Slack Webhook URL for alerts.")
+    teams_webhook_url: Optional[str] = Field(default=None, description="Teams Webhook URL for alerts.")
     enable_discord_webhook: Optional[str] = Field(default=None, description="Enable/disable Discord webhook alerts.")
     enable_slack_webhook: Optional[str] = Field(default=None, description="Enable/disable Slack webhook alerts.")
+    enable_teams_webhook: Optional[str] = Field(default=None, description="Enable/disable Teams webhook alerts.")
     enable_webhook_alerts: Optional[str] = Field(default=None, description="Global kill-switch: enable/disable ALL webhook alerts (ENABLE_WEBHOOK_ALERTS).")
 
     @property
@@ -135,8 +137,10 @@ class WebhookSettings(ConfigBaseModel):
 
     discord_url: str = Field(default=defaults.DEFAULT_DISCORD_WEBHOOK_URL)
     slack_url: str = Field(default=defaults.DEFAULT_SLACK_WEBHOOK_URL)
+    teams_url: str = Field(default=defaults.DEFAULT_TEAMS_WEBHOOK_URL)
     enable_discord: bool = Field(default=defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)
     enable_slack: bool = Field(default=defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)
+    enable_teams: bool = Field(default=defaults.DEFAULT_ENABLE_TEAMS_WEBHOOK)
     enable_alerts: bool = Field(default=defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS)
 
     @field_validator("discord_url")
@@ -158,6 +162,17 @@ class WebhookSettings(ConfigBaseModel):
             raise ValueError(
                 "SLACK_WEBHOOK_URL must be a full HTTPS URL "
                 "(e.g. https://hooks.slack.com/services/…)"
+            )
+        return value
+
+    @field_validator("teams_url")
+    @classmethod
+    def validate_teams_url(cls, value: str) -> str:
+        """Validate Teams webhook URL schema."""
+        if value and not value.startswith("https://"):
+            raise ValueError(
+                "TEAMS_WEBHOOK_URL must be a full HTTPS URL "
+                "(e.g. https://outlook.office.com/webhook/…)"
             )
         return value
 

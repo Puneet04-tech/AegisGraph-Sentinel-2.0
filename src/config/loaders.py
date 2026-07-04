@@ -49,8 +49,10 @@ ENV_ALIASES = {
     "prometheus_port": "PROMETHEUS_PORT",
     "discord_webhook_url": "DISCORD_WEBHOOK_URL",
     "slack_webhook_url": "SLACK_WEBHOOK_URL",
+    "teams_webhook_url": "TEAMS_WEBHOOK_URL",
     "enable_discord_webhook": "ENABLE_DISCORD_WEBHOOK",
     "enable_slack_webhook": "ENABLE_SLACK_WEBHOOK",
+    "enable_teams_webhook": "ENABLE_TEAMS_WEBHOOK",
     "enable_webhook_alerts": "ENABLE_WEBHOOK_ALERTS",
 }
 
@@ -292,8 +294,10 @@ def _build_settings_dict(
         "webhook": {
             "discord_url": env.discord_webhook_url or webhook_config.get("discord_url", defaults.DEFAULT_DISCORD_WEBHOOK_URL),
             "slack_url": env.slack_webhook_url or webhook_config.get("slack_url", defaults.DEFAULT_SLACK_WEBHOOK_URL),
+            "teams_url": env.teams_webhook_url or webhook_config.get("teams_url", defaults.DEFAULT_TEAMS_WEBHOOK_URL),
             "enable_discord": _bool_from_env(env.enable_discord_webhook, webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK)) if env.enable_discord_webhook is not None else webhook_config.get("enable_discord", defaults.DEFAULT_ENABLE_DISCORD_WEBHOOK),
             "enable_slack": _bool_from_env(env.enable_slack_webhook, webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK)) if env.enable_slack_webhook is not None else webhook_config.get("enable_slack", defaults.DEFAULT_ENABLE_SLACK_WEBHOOK),
+            "enable_teams": _bool_from_env(env.enable_teams_webhook, webhook_config.get("enable_teams", defaults.DEFAULT_ENABLE_TEAMS_WEBHOOK)) if env.enable_teams_webhook is not None else webhook_config.get("enable_teams", defaults.DEFAULT_ENABLE_TEAMS_WEBHOOK),
             "enable_alerts": _bool_from_env(getattr(env, "enable_webhook_alerts", None), webhook_config.get("enable_alerts", defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS)) if getattr(env, "enable_webhook_alerts", None) is not None else webhook_config.get("enable_alerts", defaults.DEFAULT_ENABLE_WEBHOOK_ALERTS),
         },
         "runtime": {
