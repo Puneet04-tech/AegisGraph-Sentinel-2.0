@@ -180,6 +180,7 @@ from .adaptive_auth_routes import register_routes as register_adaptive_auth_rout
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
 from .decision_routes import router as decision_router
+from .bulk_ingest_routes import router as bulk_ingest_router
 from src.phase_61_autonomous_security_knowledge_graph_engine.api import router as phase61_router
 from src.phase_62_cross_domain_investigation_orchestrator.api import router as phase62_router
 from src.phase_63_enterprise_security_decision_intelligence_platform.api import router as phase63_router
@@ -1603,10 +1604,20 @@ async def lifespan(app: FastAPI):
             
     stale_cleanup_task = asyncio.create_task(_stale_cleanup_loop())
 
+    # Start bulk ingestion worker
+    from .bulk_ingest_routes import bulk_ingestion_manager
+    bulk_ingestion_manager.start_worker()
+
     await lifecycle_manager.startup()
     try:
         yield
     finally:
+        # Stop bulk ingestion worker
+        try:
+            await bulk_ingestion_manager.stop_worker()
+        except Exception as e:
+            logger.error(f"Error stopping bulk ingestion worker: {e}")
+
         stale_cleanup_task.cancel()
         try:
             await stale_cleanup_task
@@ -1755,6 +1766,8 @@ register_archival_routes(app)
 app.include_router(agent_router)
 # Register Decision Intelligence routes (Issue #1496)
 app.include_router(decision_router)
+# Register Bulk Ingestion routes
+app.include_router(bulk_ingest_router)
 # Register Phase 61-67 module routes (Issue #1508)
 app.include_router(phase61_router)
 app.include_router(phase62_router)

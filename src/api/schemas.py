@@ -2082,3 +2082,45 @@ class ProfileCreateRequest(BaseModel):
 class CampaignGenerateRequest(BaseModel):
     profile_id: str
     target_entity: str
+
+
+# Phase 72: Bulk Graph Ingestion
+class BulkNode(BaseModel):
+    """Pydantic schema representing a single node in bulk ingestion."""
+    id: str = Field(description="Unique node identifier")
+    type: Optional[str] = Field(default="Account", description="Type of node (Account, Device, ATM, Merchant, IP)")
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Arbitrary attributes for the node")
+
+class BulkEdge(BaseModel):
+    """Pydantic schema representing a single edge in bulk ingestion."""
+    source: str = Field(description="Source node ID")
+    target: str = Field(description="Target node ID")
+    type: str = Field(default="Transfer", description="Type of edge (Transfer, Login, Withdrawal, Association)")
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Arbitrary attributes for the edge")
+
+class BulkIngestRequest(BaseModel):
+    """Pydantic schema for JSON bulk graph ingestion request payload."""
+    nodes: Optional[List[BulkNode]] = Field(default_factory=list, description="List of nodes to ingest")
+    edges: Optional[List[BulkEdge]] = Field(default_factory=list, description="List of edges to ingest")
+
+class BulkIngestResponse(BaseModel):
+    """Response returned upon submitting bulk ingestion."""
+    task_id: str = Field(description="Unique UUID string identifying the background task")
+    status: str = Field(description="Status of the task (e.g. pending, processing, completed, failed)")
+    message: str = Field(description="User-friendly message explaining the task status")
+
+class BulkTaskProgress(BaseModel):
+    """Progress tracking sub-schema."""
+    total_items: int = Field(description="Total count of nodes and edges to process")
+    successful_items: int = Field(description="Count of successfully processed items")
+    failed_items: int = Field(description="Count of failed/skipped items")
+
+class BulkIngestStatusResponse(BaseModel):
+    """Response returned when polling status of a bulk ingestion task."""
+    task_id: str = Field(description="Unique UUID identifying the task")
+    status: str = Field(description="Current status (pending, processing, completed, failed)")
+    created_at: str = Field(description="ISO 8601 UTC timestamp of creation")
+    completed_at: Optional[str] = Field(default=None, description="ISO 8601 UTC timestamp of completion")
+    progress: BulkTaskProgress = Field(description="Detailed progress metrics")
+    errors: List[str] = Field(default_factory=list, description="List of skip/failure reasons for corrupt rows")
+
