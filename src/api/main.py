@@ -931,7 +931,7 @@ class AppState:
         # Graph-based fraud detection
         self.transaction_graph = None
         self.fraud_chains = []
-        self.mule_accounts = {'mule_acc_001', 'mule_acc_002', 'test_merchant', 'suspect_account_1', 'fraud_wallet_xyz'}
+        self.mule_accounts = set()
         self.account_profiles = {}
         self.graph_loaded = False
         # Lateral movement detection - rolling betweenness centrality baseline

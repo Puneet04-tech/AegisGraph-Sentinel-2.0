@@ -487,6 +487,7 @@ class TestApiModuleFallbacks:
             "account_profiles",
             {"mule_acc_001": {"avg_transaction_amount": 10000}},
         )
+        monkeypatch.setattr(api_main.state, "mule_accounts", {"mule_acc_001"})
 
         result = api_main._fallback_compute_risk_score(
             {
