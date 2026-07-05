@@ -62,6 +62,20 @@ class TestAmountValidation:
         TransactionValidator.validate_amount(100.1)
         TransactionValidator.validate_amount(100.12)
 
+    @pytest.mark.parametrize("computed_amount", [
+        0.1 + 0.2,       # 0.30000000000000004
+        9.99 * 3,        # 29.969999999999995
+        (100 - 10.5) / 2 # 44.75
+    ])
+    def test_amount_computed_float_safe(self, computed_amount):
+        """Computed floats that naturally round to 2 decimals should pass IEEE-754 checks."""
+        TransactionValidator.validate_amount(computed_amount)
+
+    def test_amount_computed_float_rejected(self):
+        """Computed floats that truly exceed 2 decimal places should still fail."""
+        with pytest.raises(ValidationError, match="decimal_precision"):
+            TransactionValidator.validate_amount(100.00 / 3)  # 33.333333333333336
+
 
 class TestTimestampValidation:
     """Test transaction timestamp validation."""

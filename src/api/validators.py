@@ -15,6 +15,7 @@ import math
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Tuple, Optional, List, Dict, Any
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import threading
 import logging
 from fastapi import Request, Header, HTTPException
@@ -109,8 +110,8 @@ class TransactionValidator:
                 suggestion="Amount cannot exceed 10,000,000",
             )
 
-        # Check decimal precision (max 2 places)
-        if round(amount, 2) != amount:
+        # Check decimal precision (max 2 places) using math.isclose to avoid IEEE-754 false positives
+        if not math.isclose(round(amount, 2), amount, rel_tol=1e-9, abs_tol=1e-9):
             raise ValidationError(
                 field="amount",
                 value=amount,
