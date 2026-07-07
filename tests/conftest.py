@@ -146,6 +146,16 @@ def _reset_global_rate_limiter():
     from src.api.validators import reset_rate_limiter
     reset_rate_limiter()
 
+    # Clear slowapi's storage to prevent 429s across test execution
+    from src.api.main import limiter
+    for storage_attr in ("storage", "_storage"):
+        storage = getattr(limiter, storage_attr, None)
+        if storage:
+            if hasattr(storage, "storage"):
+                storage.storage.clear()
+            elif hasattr(storage, "clear"):
+                storage.clear()
+
 
 @pytest.fixture
 def anyio_backend():

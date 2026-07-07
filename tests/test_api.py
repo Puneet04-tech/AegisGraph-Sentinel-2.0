@@ -1188,5 +1188,49 @@ class TestFallbackScoringConfigDriven:
         assert expected_decision == "BLOCK"
 
 
+class TestDefaultRateLimiting:
+    """Test standard API default rate limiting middleware."""
+
+    def test_standard_api_rate_limiting_enforced(self, monkeypatch):
+        if not api_main.SLOWAPI_AVAILABLE:
+            pytest.skip("SlowAPI is not installed")
+
+        # Set a low rate limit for testing
+        monkeypatch.setattr(api_main.settings.api, "rate_limit", "5/minute")
+
+        # Clear existing rate limit keys to ensure clean state
+        _clear_rate_limit_storage()
+
+        # Let's hit a standard API route (e.g. /api/v1/model/info).
+        # The rate limit middleware runs first (before RBAC verification), so we don't need auth to test this.
+        statuses = []
+        for _ in range(6):
+            response = client.get("/api/v1/model/info")
+            statuses.append(response.status_code)
+
+        # First 5 should not be 429 (they will be 401 or 403 or 200, but not 429)
+        for code in statuses[:5]:
+            assert code != 429, f"Request failed early with {code}"
+
+        # 6th should be 429
+        assert statuses[5] == 429, f"6th request status was {statuses[5]} instead of 429"
+
+        # Check headers of the 429 response
+        last_response = client.get("/api/v1/model/info")
+        assert last_response.status_code == 429
+        assert "Retry-After" in last_response.headers
+        assert int(last_response.headers["Retry-After"]) >= 0
+
+        # Verify that exempt paths like /health are NOT rate limited
+        health_statuses = []
+        for _ in range(10):
+            response = client.get("/health")
+            health_statuses.append(response.status_code)
+        assert all(code == 200 for code in health_statuses)
+
+        # Clean up
+        _clear_rate_limit_storage()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
