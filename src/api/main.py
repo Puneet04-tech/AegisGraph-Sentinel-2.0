@@ -2562,7 +2562,7 @@ async def analyze_voice(
     description="Innovation 4: Predicts mule accounts before first transaction using 12 features",
     dependencies=[Depends(require_role(Role.ANALYST))]
 )
-def score_account_opening(
+async def score_account_opening(
     request: AccountOpeningRequest,
     mule_scorer=Depends(get_mule_scorer),
 ):
@@ -2578,8 +2578,9 @@ def score_account_opening(
         if not hasattr(mule_scorer, "MAX_HISTORY_SIZE"):
             mule_scorer.MAX_HISTORY_SIZE = 10000
 
-        # Score the account opening
-        result = mule_scorer.score_account_opening(
+        # Score the account opening using thread pool to prevent blocking event loop
+        result = await asyncio.to_thread(
+            mule_scorer.score_account_opening,
             account_id=request.account_id,
             name=request.name,
             age=request.age,
@@ -2629,9 +2630,12 @@ def score_account_opening(
     description="Innovation 3: Alias for mule assessment endpoint",
     dependencies=[Depends(require_role(Role.ANALYST))]
 )
-def assess_mule_risk(request: AccountOpeningRequest):
+async def assess_mule_risk(
+    request: AccountOpeningRequest,
+    mule_scorer=Depends(get_mule_scorer),
+):
     """Alias endpoint for mule assessment"""
-    return score_account_opening(request)
+    return await score_account_opening(request, mule_scorer=mule_scorer)
 
 
 @app.get(
