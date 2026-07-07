@@ -4,7 +4,10 @@ AegisGraph Sentinel Enterprise
 Integrates with Stripe for subscriptions, usage metering, and license management
 """
 
-import stripe
+try:
+    import stripe
+except ImportError:
+    stripe = None
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -20,6 +23,10 @@ class PriceTier(str, Enum):
     PROFESSIONAL = "professional"
     ENTERPRISE = "enterprise"
     CUSTOM = "custom"
+    PROFESSIONAL_MONTHLY = "professional_monthly"
+    PROFESSIONAL_ANNUAL = "professional_annual"
+    ENTERPRISE_MONTHLY = "enterprise_monthly"
+    ENTERPRISE_ANNUAL = "enterprise_annual"
 
 
 @dataclass
@@ -121,7 +128,8 @@ class BillingService:
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        stripe.api_key = config.get("stripe_api_key", "sk_test_...")
+        if stripe is not None:
+            stripe.api_key = config.get("stripe_api_key", "sk_test_...")
         
         self.webhook_secret = config.get("stripe_webhook_secret")
         self.currency = config.get("currency", "usd")
@@ -135,6 +143,10 @@ class BillingService:
             PriceTier.ENTERPRISE_ANNUAL: config.get("stripe_price_enterprise_annual"),
         }
 
+    def _check_stripe(self) -> None:
+        if stripe is None:
+            raise BillingError("Stripe library is not installed.")
+
     def create_customer(
         self,
         email: str,
@@ -143,6 +155,7 @@ class BillingService:
         metadata: Optional[Dict[str, str]] = None,
     ) -> str:
         """Create Stripe customer"""
+        self._check_stripe()
         try:
             customer = stripe.Customer.create(
                 email=email,
@@ -165,6 +178,7 @@ class BillingService:
         metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create subscription for customer"""
+        self._check_stripe()
         try:
             # Get price ID based on tier and billing cycle
             if tier == PriceTier.COMMUNITY:
@@ -209,6 +223,7 @@ class BillingService:
 
     def get_subscription(self, subscription_id: str) -> Dict[str, Any]:
         """Get subscription details"""
+        self._check_stripe()
         try:
             subscription = stripe.Subscription.retrieve(subscription_id)
             return {
@@ -229,6 +244,7 @@ class BillingService:
         billing_cycle: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update subscription (upgrade/downgrade)"""
+        self._check_stripe()
         try:
             subscription = stripe.Subscription.retrieve(subscription_id)
             
@@ -274,6 +290,7 @@ class BillingService:
         reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Cancel subscription"""
+        self._check_stripe()
         try:
             if cancel_at_period_end:
                 subscription = stripe.Subscription.modify(
@@ -302,6 +319,7 @@ class BillingService:
         billing_cycle: str = "monthly",
     ) -> str:
         """Create Stripe Checkout session"""
+        self._check_stripe()
         try:
             plan = PLANS[tier]
             
@@ -344,6 +362,7 @@ class BillingService:
         metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create and finalize invoice"""
+        self._check_stripe()
         try:
             invoice = stripe.Invoice.create(
                 customer=customer_id,
@@ -376,6 +395,7 @@ class BillingService:
 
     def get_invoices(self, customer_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Get list of invoices for customer"""
+        self._check_stripe()
         try:
             invoices = stripe.Invoice.list(customer=customer_id, limit=limit)
             return [
@@ -401,6 +421,7 @@ class BillingService:
         period_end: datetime,
     ) -> Dict[str, Any]:
         """Get usage metrics for billing period"""
+        self._check_stripe()
         try:
             # Get usage from Stripe
             usage_records = stripe.UsageRecord.list(
@@ -425,6 +446,7 @@ class BillingService:
         timestamp: datetime,
     ) -> Dict[str, Any]:
         """Record usage for metered billing"""
+        self._check_stripe()
         try:
             record = stripe.UsageRecord.create(
                 subscription_item=subscription_item_id,
@@ -445,6 +467,7 @@ class BillingService:
         signature: str,
     ) -> Dict[str, Any]:
         """Handle Stripe webhook events"""
+        self._check_stripe()
         try:
             event = stripe.Webhook.construct_event(
                 payload, signature, self.webhook_secret
@@ -527,6 +550,7 @@ class BillingService:
 
     def _get_subscription_item(self, subscription_id: str) -> str:
         """Get subscription item ID for usage recording"""
+        self._check_stripe()
         subscription = stripe.Subscription.retrieve(subscription_id)
         return subscription.items.data[0].id
 

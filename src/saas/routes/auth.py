@@ -14,7 +14,15 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, EmailStr, Field
 import secrets
 
-from src.config import settings
+import importlib.util
+from pathlib import Path
+_spec = importlib.util.spec_from_file_location(
+    "src_config_file",
+    str(Path(__file__).resolve().parents[2] / "config.py")
+)
+_src_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_src_config)
+settings = _src_config.settings
 from src.exceptions import AuthenticationError
 from src.saas.auth.service import (
     AuthProvider,

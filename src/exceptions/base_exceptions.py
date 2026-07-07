@@ -58,3 +58,9 @@ class AuthenticationError(AegisException):
 class AuthorizationError(AegisException):
     default_code = ErrorCode.SECURITY_ERROR
     default_status_code = 403
+
+
+class BillingError(AegisException):
+    default_code = ErrorCode.PROCESSING_ERROR
+    default_status_code = 402
+
