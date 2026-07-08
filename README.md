@@ -43,6 +43,14 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 ## 🏆 Key Achievements
 
 - **96.8% Precision** | **94.2% Recall** | **<200ms Latency**
+> **⚠️ Evaluation Notes:** The metrics above (96.8% Precision, 94.2% Recall,
+> <200ms Latency) are measured entirely on **synthetically generated data**
+> produced by `python -m src.data.data_generator`. The model is trained and
+> evaluated on held-out splits of the same synthetic distribution. These
+> numbers reflect how well the model learned the synthetic generator's
+> assumptions, not necessarily real-world mule-account detection performance.
+> See [docs/evaluation.md](docs/evaluation.md) for full methodology and
+> real-benchmark results.
 - **₹27.6+ Crore Prevented** across all innovation pilots
 - **87% Arrest Rate** through Honeypot Escrow system
 - **86-94% Accuracy** across all detection modules
