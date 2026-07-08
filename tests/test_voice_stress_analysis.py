@@ -1,4 +1,5 @@
 import pytest
+import base64
 
 try:
     import numpy as np
@@ -98,3 +99,28 @@ def test_analyze_voice_extracts_features_when_audio_libs_available(monkeypatch):
     assert result["classification"] in {"NORMAL", "MILD_STRESS", "SEVERE_COERCION"}
     assert result["features"]["f0_mean"] == 140.0
     assert analyzer.user_baseline == {"f0_mean": 140.0, "speech_rate": 4.2}
+
+
+def test_oversized_audio_rejected():
+    """
+    Test that the voice endpoint rejects audio payloads exceeding the size limit.
+    """
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+
+    client = TestClient(app)
+
+    # Create a payload that is 11MB (base64 encoded) – exceeds default 10MB limit
+    oversized_payload = base64.b64encode(b"0" * (11 * 1024 * 1024)).decode()
+
+    response = client.post(
+        "/api/v1/voice/analyze",
+        json={
+            "transaction_id": "TXN_OVERSIZE",
+            "audio_base64": oversized_payload,
+            "sample_rate": 16000
+        }
+    )
+
+    assert response.status_code == 413
+    assert "exceeds maximum size" in response.json()["detail"]

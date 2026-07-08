@@ -39,6 +39,11 @@ from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_late
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
 
+# Voice analysis limits
+MAX_AUDIO_SIZE_MB = int(os.getenv("MAX_AUDIO_SIZE_MB", "10"))
+MAX_AUDIO_BASE64_BYTES = MAX_AUDIO_SIZE_MB * 1024 * 1024
+MAX_AUDIO_DURATION_SECONDS = 60
+
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
     get_mule_scorer,
@@ -2599,12 +2604,27 @@ async def analyze_voice(
         
         # Decode base64 audio
         try:
+            # 1. SIZE CHECK on base64 payload (configurable)
+            if len(request_body.audio_base64) > MAX_AUDIO_BASE64_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Audio payload exceeds maximum size of {MAX_AUDIO_SIZE_MB}MB"
+                )
             audio_bytes = base64.b64decode(request_body.audio_base64, validate=True)
+
+            # 2. DURATION CHECK (rough estimate, before heavy processing)
+            sample_rate = request_body.sample_rate
+            duration_seconds = len(audio_bytes) / sample_rate
+            if duration_seconds > MAX_AUDIO_DURATION_SECONDS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Audio duration exceeds maximum of {MAX_AUDIO_DURATION_SECONDS} seconds"
+                )
+
         except (binascii.Error, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Invalid base64 audio payload") from exc
 
-        # Base64 can still expand into a large decoded blob. Cap decoded bytes
-        # as well so short voice samples cannot monopolize memory or CPU.
+        # 3. DECODED BYTES CAP (hard safety limit – keeps memory in check)
         if len(audio_bytes) > 350_000:
             raise HTTPException(status_code=413, detail="Audio payload too large")
         
@@ -2639,7 +2659,6 @@ async def analyze_voice(
         if tmp_path:
             from pathlib import Path
             Path(tmp_path).unlink(missing_ok=True)
-
 @app.post(
     "/api/v1/accounts/score-opening",
     response_model=AccountOpeningResponse,
