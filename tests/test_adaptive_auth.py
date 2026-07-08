@@ -8,14 +8,14 @@ Tests cover:
 - Policy enforcement
 - Behavior monitoring
 """
-
+from pathlib import Path
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 # Import the adaptive auth modules
 import sys
-sys.path.insert(0, '/workspace/project/AegisGraph-Sentinel-2.0')
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.adaptive_auth.models import (
     RiskLevel,
