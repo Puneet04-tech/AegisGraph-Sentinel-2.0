@@ -3665,9 +3665,9 @@ elif page == "🕸️ Network Graph Explorer":
         active_label = "⚡ Active Propagation" if fn["is_active"] else "Idle"
 
         # Screen reader helper text in an invisible span
-        sr_only = f"<span style='position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0;'>Account {fn['node_id']}, Role {fn['role']}, Risk {fn['risk_text']}, {fn['connections']}, Status {active_label}, Visibility {vis_label}</span>"
+        sr_only = f"<span style='position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0;'>Account {html.escape(str(fn['node_id']))}, Role {fn['role']}, Risk {fn['risk_text']}, {fn['connections']}, Status {active_label}, Visibility {vis_label}</span>"
 
-        row_html = f'<tr class="{row_class}"><td><strong>{fn["node_id"]}</strong>{match_label}{sr_only}</td><td>{fn["role"]}</td><td>{fn["risk_badge"]}</td><td>{fn["connections"]}</td><td style="color: {"#ef4444" if fn["is_active"] else "#94a3b8"}">{active_label}</td><td>{vis_label}</td></tr>'
+        row_html = f'<tr class="{row_class}"><td><strong>{html.escape(str(fn["node_id"]))}</strong>{match_label}{sr_only}</td><td>{fn["role"]}</td><td>{fn["risk_badge"]}</td><td>{fn["connections"]}</td><td style="color: {"#ef4444" if fn["is_active"] else "#94a3b8"}">{active_label}</td><td>{vis_label}</td></tr>'
         table_rows.append(row_html)
 
     nodes_table_html = f"""<div class="fallback-container">
@@ -3740,7 +3740,9 @@ elif page == "🕸️ Network Graph Explorer":
         )
         active_label = "⚡ Active Flow" if fe["is_active"] else "Inactive"
 
-        row_html = f'<tr class="{row_class}"><td><strong>{fe["source"]}</strong>{match_label}</td><td><strong>{fe["target"]}</strong></td><td>₹{fe["amount"]:,.2f}</td><td style="color: {"#ef4444" if fe["is_active"] else "#94a3b8"}">{active_label}</td></tr>'
+        safe_source = html.escape(str(fe["source"]))
+        safe_target = html.escape(str(fe["target"]))
+        row_html = f'<tr class="{row_class}"><td><strong>{safe_source}</strong>{match_label}</td><td><strong>{safe_target}</strong></td><td>₹{fe["amount"]:,.2f}</td><td style="color: {"#ef4444" if fe["is_active"] else "#94a3b8"}">{active_label}</td></tr>'
         edge_rows.append(row_html)
 
     edges_table_html = f"""<div class="fallback-container">
