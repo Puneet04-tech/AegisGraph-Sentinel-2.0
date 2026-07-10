@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 import networkx as nx
 import numpy as np
+import concurrent.futures
+import os
+
+# Dedicated thread pool for CPU-bound ML inference
+inference_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 1)))
 import uvicorn
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -1905,7 +1910,7 @@ def _analyze_keystrokes_sync(biometrics: dict) -> bool:
     tags=["Detection"],
     summary="Check transaction for fraud",
     description="Analyze a single transaction for fraud risk using HTGNN and behavioral biometrics",
-    dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=60, api_key_limit=300))]
+    dependencies=[Depends(StrictRateLimit(ip_limit=60, api_key_limit=300)), Depends(require_role(Role.ANALYST))]
 )
 async def check_transaction(
     request: TransactionCheckRequest,
@@ -1960,7 +1965,7 @@ async def check_transaction(
                 # Innovation 1: Simple keystroke stress detection
                 if INNOVATIONS_AVAILABLE:
                     try:
-                        behavioral_stress_detected = await asyncio.to_thread(_analyze_keystrokes_sync, biometrics)
+                        behavioral_stress_detected = await asyncio.get_running_loop().run_in_executor(inference_pool, _analyze_keystrokes_sync, biometrics)
                     except Exception as e:
                         _api_logger.warning(
                             f"Keystroke analysis failed: {e}",
@@ -1976,7 +1981,7 @@ async def check_transaction(
             loop = asyncio.get_running_loop()
             subgraph_cache = _batch_subgraph_cache.get()
             subgraph_lock = _batch_subgraph_lock.get()
-            risk_result = await asyncio.to_thread(_run_scoring_pipeline, transaction,
+            risk_result = await loop.run_in_executor(inference_pool, _run_scoring_pipeline, transaction,
                     biometrics,
                     request.source_account,
                     request.target_account,
@@ -1986,9 +1991,9 @@ async def check_transaction(
                     subgraph_lock,)
 
             # Generate explanation off the event loop to keep the request thread responsive.
-            explanation_result = await asyncio.to_thread(generate_explanation, transaction=transaction,
+            explanation_result = await loop.run_in_executor(inference_pool, partial(generate_explanation, transaction=transaction,
                     risk_result=risk_result,
-                    detail_level='high',)
+                    detail_level='high'))
         
         # Innovation 2: Check if honeypot should be activated
         honeypot_activated = False
@@ -2435,7 +2440,7 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
     tags=["Detection"],
     summary="Check multiple transactions",
     description="Batch processing of multiple transactions for fraud detection",
-    dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=10, api_key_limit=50))]
+    dependencies=[Depends(StrictRateLimit(ip_limit=10, api_key_limit=50)), Depends(require_role(Role.ANALYST))]
 )
 async def check_batch_transactions(request: BatchTransactionRequest):
     """
@@ -2576,7 +2581,7 @@ async def get_model_info():
     tags=["Detection"],
     summary="Analyze voice stress during transaction",
     description="Innovation 5: Real-time voice stress analysis to detect coercion or AI generation",
-    dependencies=[Depends(require_role(Role.ANALYST)), Depends(StrictRateLimit(ip_limit=5, api_key_limit=20))]
+    dependencies=[Depends(StrictRateLimit(ip_limit=5, api_key_limit=20)), Depends(require_role(Role.ANALYST))]
 )
 @limiter.limit("10/minute")
 async def analyze_voice(

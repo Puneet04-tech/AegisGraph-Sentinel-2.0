@@ -313,8 +313,8 @@ class HTGATConv(MessagePassing):
         num_edges = x_i.size(0)
         H = self.heads
         
-        # Initialize attention logits
-        alpha = torch.zeros(num_edges, H, device=x_i.device)
+        alpha_pieces = []
+        indices = []
         
         # Compute attention for each edge type separately
         for rel_type in range(self.num_edge_types):
@@ -341,7 +341,16 @@ class HTGATConv(MessagePassing):
                 alpha_edge = (edge_embedding * att_edge).sum(dim=-1)
                 alpha_edge_type = alpha_edge_type + alpha_edge
             
-            alpha[mask] = alpha_edge_type
+            alpha_pieces.append(alpha_edge_type)
+            indices.append(torch.nonzero(mask, as_tuple=True)[0])
+        
+        if alpha_pieces:
+            alpha = torch.cat(alpha_pieces, dim=0)
+            indices = torch.cat(indices, dim=0)
+            _, inverse_indices = indices.sort()
+            alpha = alpha[inverse_indices]
+        else:
+            alpha = torch.zeros(num_edges, H, device=x_i.device)
         
         # Apply LeakyReLU
         alpha = F.leaky_relu(alpha, self.negative_slope)
@@ -370,13 +379,23 @@ class HTGATConv(MessagePassing):
             Transformed features [num_nodes, heads * out_channels]
         """
         num_nodes = x.size(0)
-        out = torch.zeros(num_nodes, self.heads * self.out_channels, device=x.device)
+        out_pieces = []
+        indices = []
         
         for ntype in range(self.num_node_types):
             mask = node_type == ntype
             if not mask.any():
                 continue
-            out[mask] = transforms[ntype](x[mask])
+            out_pieces.append(transforms[ntype](x[mask]))
+            indices.append(torch.nonzero(mask, as_tuple=True)[0])
+        
+        if out_pieces:
+            out = torch.cat(out_pieces, dim=0)
+            indices = torch.cat(indices, dim=0)
+            _, inverse_indices = indices.sort()
+            out = out[inverse_indices]
+        else:
+            out = torch.zeros(num_nodes, self.heads * self.out_channels, device=x.device)
         
         return out
     
