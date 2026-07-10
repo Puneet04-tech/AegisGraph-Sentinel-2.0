@@ -15,6 +15,8 @@ detection limits and sensitivity values.
 import logging
 logger = logging.getLogger(__name__)
 import torch
+# Bound PyTorch intra-op threads to prevent CPU starvation under high concurrency
+torch.set_num_threads(1)
 import numpy as np
 import weakref
 from threading import Lock
