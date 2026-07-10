@@ -1076,20 +1076,30 @@ class TestAsyncExplainabilityOffload:
         monkeypatch.setattr(api_main, "LATERAL_MOVEMENT_AVAILABLE", False)
 
         try:
-            txn_loop = _RecordingLoop([
-                {
-                    "risk_score": 0.12,
-                    "decision": "ALLOW",
-                    "confidence": 0.91,
-                    "breakdown": {"graph": 0.1, "velocity": 0.1, "behavior": 0.1, "entropy": 0.1},
-                    "lateral_movement_detected": False,
-                },
-                {
-                    "explanation": "generated off thread",
-                    "recommended_action": "monitor",
-                },
-            ])
-            monkeypatch.setattr(api_main.asyncio, "to_thread", txn_loop.to_thread)
+            import concurrent.futures
+            calls = []
+            original_submit = api_main.inference_pool.submit
+            def mock_submit(func, *args, **kwargs):
+                unwrapped_func = getattr(func, "func", func)
+                calls.append((unwrapped_func, args, kwargs))
+                f = concurrent.futures.Future()
+                if unwrapped_func == api_main._run_scoring_pipeline:
+                    f.set_result({
+                        "risk_score": 0.12,
+                        "decision": "ALLOW",
+                        "confidence": 0.91,
+                        "breakdown": {"graph": 0.1, "velocity": 0.1, "behavior": 0.1, "entropy": 0.1},
+                        "lateral_movement_detected": False,
+                    })
+                elif unwrapped_func == api_main.generate_explanation:
+                    f.set_result({
+                        "explanation": "generated off thread",
+                        "recommended_action": "monitor",
+                    })
+                else:
+                    f.set_result(None)
+                return f
+            monkeypatch.setattr(api_main.inference_pool, "submit", mock_submit)
 
             txn_request = api_main.TransactionCheckRequest(
                 transaction_id="txn-379",
@@ -1103,8 +1113,7 @@ class TestAsyncExplainabilityOffload:
 
             txn_response = asyncio.run(api_main.check_transaction(txn_request))
 
-            # Since _analyze_keystrokes_sync is called first, the explanation is the 3rd or 4th call!
-            explanation_call = next((c for c in txn_loop.calls if c[1] is api_main.generate_explanation), None)
+            explanation_call = next((c for c in calls if c[0] is api_main.generate_explanation), None)
             assert explanation_call is not None
             assert txn_response.explanation == "generated off thread"
         finally:
