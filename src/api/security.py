@@ -174,11 +174,12 @@ def _get_key_role(api_key: str) -> Optional[Role]:
 
     role = _resolve_key_role(provided_hash)
 
-    with _KEY_ROLE_CACHE_LOCK:
-        _KEY_ROLE_CACHE[provided_hash] = (role, now)
-        _KEY_ROLE_CACHE.move_to_end(provided_hash)
-        if len(_KEY_ROLE_CACHE) > _CACHE_MAX:
-            _KEY_ROLE_CACHE.popitem(last=False)
+    if role is not None:
+        with _KEY_ROLE_CACHE_LOCK:
+            _KEY_ROLE_CACHE[provided_hash] = (role, now)
+            _KEY_ROLE_CACHE.move_to_end(provided_hash)
+            if len(_KEY_ROLE_CACHE) > _CACHE_MAX:
+                _KEY_ROLE_CACHE.popitem(last=False)
 
     return role
 
