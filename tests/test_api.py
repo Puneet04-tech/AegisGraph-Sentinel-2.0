@@ -540,8 +540,105 @@ class TestApiModuleFallbacks:
         )
 
         assert result["decision"] == "ALLOW"
-        assert api_main._compute_risk_score_impl is api_main._fallback_compute_risk_score
-        assert api_main._generate_explanation_impl is api_main._fallback_generate_explanation
+        assert api_main._compute_risk_score_impl is None
+        assert api_main._generate_explanation_impl is None
+
+    def test_wrapper_uses_production_path_when_runtime_graph_exists_without_kwarg(self, monkeypatch):
+        graph = api_main.nx.DiGraph()
+        graph.add_edge("acct_src", "acct_dst")
+
+        monkeypatch.setattr(api_main, "MODEL_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "graph_loaded", True)
+        monkeypatch.setattr(api_main.state, "transaction_graph", graph)
+        monkeypatch.setattr(api_main.state, "mule_accounts", {"acct_src"})
+        monkeypatch.setattr(api_main.state, "account_profiles", {})
+
+        calls = {}
+
+        def fake_compute_risk_score(transaction: dict, biometrics: dict = None, **kwargs):
+            calls["kwargs"] = kwargs
+            return {
+                "risk_score": 0.42,
+                "decision": "REVIEW",
+                "confidence": 0.91,
+                "breakdown": {"graph": 0.1, "velocity": 0.2, "behavior": 0.0, "entropy": 0.1},
+            }
+
+        fallback_called = Mock(side_effect=AssertionError("fallback path should not be used"))
+        monkeypatch.setattr(api_main, "_compute_risk_score_impl", fake_compute_risk_score)
+        monkeypatch.setattr(api_main, "_fallback_compute_risk_score", fallback_called)
+
+        result = api_main.compute_risk_score(
+            {"source_account": "acct_src", "target_account": "acct_dst", "amount": 1000.0}
+        )
+
+        assert result["decision"] == "REVIEW"
+        assert calls["kwargs"]["graph_loaded"] is True
+        assert calls["kwargs"]["transaction_graph"] is graph
+        assert calls["kwargs"]["mule_accounts"] == {"acct_src"}
+        assert calls["kwargs"]["account_profiles"] == {}
+        fallback_called.assert_not_called()
+
+    def test_wrapper_uses_production_path_when_transaction_graph_is_explicitly_passed(self, monkeypatch):
+        graph = api_main.nx.DiGraph()
+        graph.add_edge("acct_src", "acct_dst")
+
+        monkeypatch.setattr(api_main, "MODEL_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "graph_loaded", True)
+        monkeypatch.setattr(api_main.state, "transaction_graph", graph)
+
+        calls = {}
+
+        def fake_compute_risk_score(transaction: dict, biometrics: dict = None, **kwargs):
+            calls["kwargs"] = kwargs
+            return {
+                "risk_score": 0.12,
+                "decision": "ALLOW",
+                "confidence": 0.99,
+                "breakdown": {"graph": 0.0, "velocity": 0.0, "behavior": 0.0, "entropy": 0.0},
+            }
+
+        monkeypatch.setattr(api_main, "_compute_risk_score_impl", fake_compute_risk_score)
+        monkeypatch.setattr(
+            api_main,
+            "_fallback_compute_risk_score",
+            Mock(side_effect=AssertionError("fallback path should not be used")),
+        )
+
+        result = api_main.compute_risk_score(
+            {"source_account": "acct_src", "target_account": "acct_dst", "amount": 1000.0},
+            transaction_graph=graph,
+        )
+
+        assert result["decision"] == "ALLOW"
+        assert calls["kwargs"]["transaction_graph"] is graph
+
+    def test_wrapper_uses_fallback_when_graph_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(api_main, "MODEL_AVAILABLE", True)
+        monkeypatch.setattr(api_main.state, "graph_loaded", False)
+        monkeypatch.setattr(api_main.state, "transaction_graph", None)
+
+        fallback_result = {
+            "risk_score": 0.87,
+            "decision": "BLOCK",
+            "confidence": 0.75,
+            "breakdown": {"graph": 0.6, "velocity": 0.2, "behavior": 0.0, "entropy": 0.1},
+        }
+
+        fallback_called = Mock(return_value=fallback_result)
+        monkeypatch.setattr(api_main, "_fallback_compute_risk_score", fallback_called)
+        monkeypatch.setattr(
+            api_main,
+            "_compute_risk_score_impl",
+            Mock(side_effect=AssertionError("production path should not be used")),
+        )
+
+        result = api_main.compute_risk_score(
+            {"source_account": "acct_src", "target_account": "acct_dst", "amount": 1000.0}
+        )
+
+        assert result == fallback_result
+        fallback_called.assert_called_once()
 
     def test_fallback_outputs_are_deterministic_for_identical_inputs(self, monkeypatch):
         monkeypatch.setattr(api_main.state, "graph_loaded", False)

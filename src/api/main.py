@@ -895,14 +895,27 @@ def _resolve_model_components() -> tuple[Any, Any, bool]:
     return model_compute_risk_score, model_generate_explanation, True
 
 
+def _has_runtime_graph() -> bool:
+    return bool(
+        getattr(state, "graph_loaded", False)
+        and getattr(state, "transaction_graph", None) is not None
+    )
+
+
 def compute_risk_score(*args, **kwargs):
     global _compute_risk_score_impl, _generate_explanation_impl
-    if (
-        "transaction_graph" not in kwargs
-        and getattr(state, "graph_loaded", False)
-        and getattr(state, "transaction_graph", None) is not None
-    ):
+    runtime_graph_ready = _has_runtime_graph()
+    if not MODEL_AVAILABLE or not runtime_graph_ready:
         return _fallback_compute_risk_score(*args, **kwargs)
+
+    kwargs.setdefault("graph_loaded", getattr(state, "graph_loaded", False))
+    kwargs.setdefault("transaction_graph", getattr(state, "transaction_graph", None))
+    kwargs.setdefault("mule_accounts", getattr(state, "mule_accounts", set()))
+    kwargs.setdefault("centrality_baseline", getattr(state, "centrality_baseline", {}))
+    kwargs.setdefault("centrality_window_size", getattr(state, "centrality_window_size", 10))
+    kwargs.setdefault("account_profiles", getattr(state, "account_profiles", {}))
+    kwargs.setdefault("config", getattr(state, "config", {}))
+
     if _compute_risk_score_impl is None:
         _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()
     return _compute_risk_score_impl(*args, **kwargs)
