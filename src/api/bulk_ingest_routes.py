@@ -303,38 +303,25 @@ async def ingest_bulk_file(
     ),
 ):
     """Parse CSV/JSON file uploads and submit them to the queue."""
-    try:
-        contents = await file.read()
-        decoded_contents = contents.decode("utf-8")
-    except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Failed to read/decode uploaded file: {e}"
-        )
+    filename_lower = file.filename.lower() if file.filename else ""
+    content_type_lower = file.content_type.lower() if file.content_type else ""
 
     nodes = []
     edges = []
     initial_errors = []
 
-    filename_lower = file.filename.lower() if file.filename else ""
-    content_type_lower = file.content_type.lower() if file.content_type else ""
-
-    # Parse JSON
-    if filename_lower.endswith(".json") or "json" in content_type_lower:
-        try:
-            data = json.loads(decoded_contents)
+    try:
+        # Parse JSON
+        if filename_lower.endswith(".json") or "json" in content_type_lower:
+            data = json.load(file.file)
             payload = BulkIngestRequest.model_validate(data)
             nodes = [n.model_dump() for n in payload.nodes] if payload.nodes else []
             edges = [e.model_dump() for e in payload.edges] if payload.edges else []
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to parse or validate JSON file: {e}"
-            )
 
     # Parse CSV
-    else:
-        try:
-            f = io.StringIO(decoded_contents)
-            reader = csv.DictReader(f)
+        else:
+            import codecs
+            reader = csv.DictReader(codecs.iterdecode(file.file, "utf-8"))
             if not reader.fieldnames:
                 raise ValueError("CSV file is empty or lacks column headers.")
 
@@ -450,10 +437,12 @@ async def ingest_bulk_file(
                         }
                     )
 
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to parse CSV file: {e}"
-            )
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=400, detail=f"Failed to parse uploaded file: {e}"
+        )
 
     if not nodes and not edges and not initial_errors:
         raise HTTPException(
