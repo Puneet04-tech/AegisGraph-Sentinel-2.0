@@ -1,0 +1,7 @@
+name: MLOps Pipeline
+on: [push]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Deploying ML Model'
