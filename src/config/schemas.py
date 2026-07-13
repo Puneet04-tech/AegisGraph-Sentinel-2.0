@@ -47,6 +47,10 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
     enable_slack_webhook: Optional[str] = Field(default=None, description="Enable/disable Slack webhook alerts.")
     enable_teams_webhook: Optional[str] = Field(default=None, description="Enable/disable Teams webhook alerts.")
     enable_webhook_alerts: Optional[str] = Field(default=None, description="Global kill-switch: enable/disable ALL webhook alerts (ENABLE_WEBHOOK_ALERTS).")
+    runtime_failure_mode: Optional[str] = Field(
+        default=None,
+        description="Runtime failure policy override (fail_fast, degraded, maintenance).",
+    )
 
     @property
     def runtime_environment(self) -> str:
@@ -273,6 +277,18 @@ class RuntimeFlags(ConfigBaseModel):
     debug: bool = Field(default=False)
     strict_validation: Optional[bool] = Field(default=None)
     config_path: Path = Field(default=defaults.DEFAULT_CONFIG_PATH)
+    failure_mode: str = Field(default="degraded")
+
+    @field_validator("failure_mode")
+    @classmethod
+    def validate_failure_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        allowed = {"fail_fast", "degraded", "maintenance"}
+        if normalized not in allowed:
+            raise ValueError(
+                "failure_mode must be one of: fail_fast, degraded, maintenance"
+            )
+        return normalized
 
     @property
     def is_production(self) -> bool:
