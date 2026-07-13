@@ -131,6 +131,27 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
 
         if is_standard_route and not is_exempt:
             try:
+                if SLOWAPI_AVAILABLE and limiter:
+                    import limits
+                    client_ip = get_remote_address(request)
+                    runtime_settings = get_settings()
+                    rate_limit_str = runtime_settings.api.rate_limit
+                    parsed_limit = limits.parse(rate_limit_str)
+                    allowed = limiter.limiter.hit(parsed_limit, client_ip, "default_limit")
+                    if not allowed:
+                        stats = limiter.limiter.get_window_stats(parsed_limit, client_ip, "default_limit")
+                        retry_after = max(1, int(stats.reset_time - time.time()))
+                        return JSONResponse(
+                            status_code=429,
+                            content={
+                                "error": {
+                                    "code": 429,
+                                    "message": f"Rate limit exceeded: {rate_limit_str}. Please try again later."
+                                }
+                            },
+                            headers={"Retry-After": str(retry_after)}
+                        )
+
                 runtime_settings = get_settings()
                 client_ip = get_remote_address(request)
                 api_key = request.headers.get("X-API-Key")
