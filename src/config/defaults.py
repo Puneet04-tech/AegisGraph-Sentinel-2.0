@@ -27,6 +27,8 @@ DEFAULT_ALLOWED_ORIGINS = tuple(
     origin.strip() for origin in DEFAULT_ALLOWED_ORIGINS_STR.split(",") if origin.strip()
 )
 DEFAULT_RATE_LIMIT = os.getenv("RATE_LIMIT", "100/minute")
+DEFAULT_RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "100"))
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 DEFAULT_MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "100"))
 
 DEFAULT_GRAPH_PATH = Path(os.getenv("GRAPH_PATH", "data/synthetic/graph.graphml"))

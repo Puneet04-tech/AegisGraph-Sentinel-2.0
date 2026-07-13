@@ -45,6 +45,8 @@ ENV_ALIASES = {
     "api_reload": "API_RELOAD",
     "api_log_level": "API_LOG_LEVEL",
     "rate_limit": "RATE_LIMIT",
+    "rate_limit_burst": "RATE_LIMIT_BURST",
+    "rate_limit_window_seconds": "RATE_LIMIT_WINDOW_SECONDS",
     "max_batch_size": "MAX_BATCH_SIZE",
     "log_level": "LOG_LEVEL",
     "log_format": "LOG_FORMAT",
@@ -230,6 +232,8 @@ def _build_settings_dict(
             "allowed_origins": env.cors_origins or env.aegis_allowed_origins or api_config.get("allowed_origins"),
             "api_url": env.api_url or api_config.get("api_url"),
             "rate_limit": env.rate_limit or api_config.get("rate_limit", defaults.DEFAULT_RATE_LIMIT),
+            "rate_limit_burst": int(env.rate_limit_burst or api_config.get("rate_limit_burst", defaults.DEFAULT_RATE_LIMIT_BURST)),
+            "rate_limit_window_seconds": int(env.rate_limit_window_seconds or api_config.get("rate_limit_window_seconds", defaults.DEFAULT_RATE_LIMIT_WINDOW_SECONDS)),
         },
         "graph": {
             "graph_path": env.aegis_graph_path or graph_config.get("path") or defaults.DEFAULT_GRAPH_PATH,
