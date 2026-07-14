@@ -107,9 +107,11 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware to enforce default rate limits on standard API endpoints."""
 
     async def dispatch(self, request: Request, call_next):
-        # Only rate limit if slowapi is available and limiter is configured
+        # Only rate limit if the app has a limiter configured.
+        # SlowAPI is an optional acceleration path; the distributed limiter
+        # below should still run when SlowAPI is unavailable.
         limiter = getattr(request.app.state, "limiter", None)
-        if not SLOWAPI_AVAILABLE or not limiter:
+        if not limiter:
             return await call_next(request)
 
         path = request.url.path
