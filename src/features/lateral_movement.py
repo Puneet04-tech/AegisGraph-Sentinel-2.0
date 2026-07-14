@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 
 from ..config import get_settings
+from ..runtime.failure_policy import should_fail_fast
 from ..utils.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,15 @@ class LateralMovementDetector:
                 self._graph_cache_max_size = 1024
                 self.redis_client.setnx("aegis:graph:version", 0)
             except Exception as e:
-                logger.warning(f"LateralMovementDetector: Redis initialization failed: {e}. Falling back to In-Memory Backend.")
+                failure_mode = runtime_settings.runtime.failure_mode
+                logger.warning(
+                    "LateralMovementDetector: Redis initialization failed: %s. runtime.failure_mode=%s",
+                    e,
+                    failure_mode,
+                )
+                if should_fail_fast(failure_mode):
+                    raise
+                logger.warning("LateralMovementDetector: Falling back to In-Memory Backend.")
                 self.use_redis = False
         else:
             logger.info("LateralMovementDetector: Using Thread-Safe In-Memory Backend (Single Worker).")

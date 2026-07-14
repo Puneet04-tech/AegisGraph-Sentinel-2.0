@@ -32,6 +32,8 @@ DEFAULT_MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "100"))
 DEFAULT_GRAPH_PATH = Path(os.getenv("GRAPH_PATH", "data/synthetic/graph.graphml"))
 DEFAULT_GRAPH_ALLOWED_SUFFIX = os.getenv("GRAPH_ALLOWED_SUFFIX", ".graphml")
 DEFAULT_GRAPH_LOAD_TIMEOUT_SECONDS = int(os.getenv("GRAPH_LOAD_TIMEOUT_SECONDS", "30"))
+DEFAULT_BACKUP_DIRECTORY = Path(os.getenv("BACKUP_DIRECTORY", "backups"))
+DEFAULT_BACKUP_TOOL_PATH = os.getenv("BACKUP_TOOL_PATH")
 
 DEFAULT_RISK_THRESHOLDS = {
     "allow": float(os.getenv("RISK_THRESHOLD_ALLOW", "0.50")),

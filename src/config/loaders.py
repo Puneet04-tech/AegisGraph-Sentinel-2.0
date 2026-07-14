@@ -38,6 +38,10 @@ ENV_ALIASES = {
     "aegis_graph_path": "AEGIS_GRAPH_PATH",
     "aegis_graph_sha256": "AEGIS_GRAPH_SHA256",
     "redis_url": "REDIS_URL",
+    "backup_directory": "BACKUP_DIRECTORY",
+    "backup_encryption_key": "BACKUP_ENCRYPTION_KEY",
+    "backup_database_url": "BACKUP_DATABASE_URL",
+    "backup_tool_path": "BACKUP_TOOL_PATH",
     "aegis_config_path": "AEGIS_CONFIG_PATH",
     "aegis_thresholds_path": "AEGIS_THRESHOLDS_PATH",
     "api_host": "API_HOST",
@@ -134,7 +138,7 @@ def _bool_from_env(value: Optional[str], default: bool = False) -> bool:
     normalized = value.strip().lower()
 
     truthy = {"1", "true", "yes", "on"}
-    falsy = {"0", "false", "no", "off"}
+    falsy = {"0", "false", "no", "off", "release"}
 
     if normalized in truthy:
         return True
@@ -163,6 +167,7 @@ def _build_settings_dict(
     risk_config = dict(runtime_config.get("risk_scoring", {}))
     advanced_config = dict(runtime_config.get("advanced_features", {}))
     webhook_config = dict(runtime_config.get("webhook", {}))
+    runtime_policy_config = dict(runtime_config.get("runtime", {}))
 
     risk_thresholds = dict(risk_config.get("thresholds", {}))
     threshold_risk_config = thresholds_config.get("risk_scoring")
@@ -313,6 +318,11 @@ def _build_settings_dict(
             "debug": _bool_from_env(env.debug, default=False),
             "strict_validation": None,
             "config_path": config_path,
+            "failure_mode": (
+                (env.runtime_failure_mode or runtime_policy_config.get("failure_mode", "degraded"))
+                .strip()
+                .lower()
+            ),
         },
         "raw_config": runtime_config,
         "raw_environment": env,

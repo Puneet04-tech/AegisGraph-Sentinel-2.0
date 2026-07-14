@@ -463,9 +463,15 @@ def _build_health_response(include_details: bool) -> dict[str, Any]:
     if health_monitor is not None:
         overall_status = health_monitor.get_overall_status()
 
+    runtime_mode = getattr(getattr(runtime_state, "settings", None), "runtime", None)
+    failure_mode = getattr(runtime_mode, "failure_mode", "degraded")
+    if failure_mode == "maintenance" and overall_status == "healthy":
+        overall_status = "maintenance"
+
     response: dict[str, Any] = {
         "status": overall_status,
         "service": "AegisGraph Sentinel",
+        "runtime_mode": failure_mode,
     }
 
     start_time = getattr(runtime_state, "start_time", None)
@@ -1153,6 +1159,7 @@ def _read_json_file(path: Path) -> Any:
 
 async def _load_graph_runtime_data(startup_logger):
     try:
+        failure_mode = state.settings.runtime.failure_mode
         # === NEO4J DATABASE INITIALIZATION ===
         db_config = state.config.get("database", {})
         neo4j_config = db_config.get("neo4j", {})
@@ -1208,7 +1215,10 @@ async def _load_graph_runtime_data(startup_logger):
                 startup_logger.warning(
                     "Neo4j enabled but connection failed. Falling back to static graph files.",
                     event_type="neo4j_fallback",
+                    metadata={"failure_mode": failure_mode},
                 )
+                if failure_mode == "fail_fast":
+                    raise RuntimeError("Neo4j initialization failed and fail-fast mode is enabled")
 
         # === SECURE GRAPH LOADING (Fallback) ===
         if not state.graph_loaded:
@@ -1272,6 +1282,8 @@ async def _load_graph_runtime_data(startup_logger):
                     event_type="graph_file_missing",
                     metadata={"expected_path": "data/synthetic/graph.graphml"},
                 )
+                if failure_mode == "fail_fast":
+                    raise RuntimeError("Graph artifact missing and fail-fast mode is enabled")
             
             if not graph_path:
                 state.graph_loaded = False
@@ -1307,11 +1319,15 @@ async def _load_graph_runtime_data(startup_logger):
             startup_logger.warning("Accounts file not found", event_type="accounts_missing")
 
     except Exception as e:
+        failure_mode = state.settings.runtime.failure_mode
         startup_logger.warning(
             f"Error loading graph data: {e}",
             event_type="graph_load_error",
+            metadata={"failure_mode": failure_mode},
         )
         state.graph_loaded = False
+        if failure_mode == "fail_fast":
+            raise
     register_graph_services(
         state.services,
         state.transaction_graph,
