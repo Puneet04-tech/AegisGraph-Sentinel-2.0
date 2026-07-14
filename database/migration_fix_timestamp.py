@@ -5,7 +5,7 @@ Ensures transactions have single, accurate timestamp field with no data loss.
 
 import logging
 from typing import Dict, Any, List, Tuple, Callable, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class TransactionTimestampFixer:
         self.fixed_count = 0
         self.error_count = 0
         self.skipped_count = 0
+        self.conflict_count = 0
 
     def find_timestamp_fields(self, transaction: Dict) -> List[Tuple[str, Any]]:
         """
@@ -58,48 +59,60 @@ class TransactionTimestampFixer:
 
         return timestamp_fields
 
-    def normalize_timestamp(self, value: Any) -> int:
+    def normalize_timestamp(self, value: Any) -> float:
         """
-        Convert timestamp to Unix seconds.
+        Convert timestamp to Unix seconds with fractional precision preserved.
 
         Args:
             value: Timestamp value (int, float, str, or datetime)
 
         Returns:
-            Unix timestamp in seconds
+            Unix timestamp in seconds as a float
         """
         if isinstance(value, int):
             # Assume seconds if reasonable range
             if 946684800 < value < 4102444800:  # 2000-2100
-                return value
+                return float(value)
             # Assume milliseconds if in millisecond range
             elif value > 1000000000000:  # > ~2001 in milliseconds
-                return value // 1000
-            return value
+                return float(value) / 1000.0
+            return float(value)
 
         elif isinstance(value, float):
             # Assume seconds
-            return int(value)
+            return float(value)
 
         elif isinstance(value, datetime):
-            return int(value.timestamp())
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return float(value.timestamp())
 
         elif isinstance(value, str):
             # Try parsing common formats
+            candidate = value.strip()
+            iso_candidate = candidate[:-1] + "+00:00" if candidate.endswith("Z") else candidate
+            try:
+                dt = datetime.fromisoformat(iso_candidate)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return float(dt.timestamp())
+            except ValueError:
+                pass
+
             for fmt in [
                 '%Y-%m-%dT%H:%M:%S.%fZ',
                 '%Y-%m-%dT%H:%M:%SZ',
                 '%Y-%m-%d %H:%M:%S',
             ]:
                 try:
-                    dt = datetime.strptime(value, fmt)
-                    return int(dt.timestamp())
+                    dt = datetime.strptime(candidate, fmt)
+                    return float(dt.replace(tzinfo=timezone.utc).timestamp())
                 except ValueError:
                     continue
 
             # If all parsing fails, try int conversion
             try:
-                return int(float(value))
+                return float(value)
             except (ValueError, TypeError):
                 raise ValueError(f"Cannot normalize timestamp: {value}")
 
@@ -122,30 +135,70 @@ class TransactionTimestampFixer:
         if not timestamp_fields:
             raise TimestampMigrationError("No timestamp fields found")
 
+        normalized_fields = []
+        for field_name, value in timestamp_fields:
+            normalized_fields.append((field_name, value, self.normalize_timestamp(value)))
+
+        normalized_values = {normalized for _, _, normalized in normalized_fields}
+        if len(normalized_values) == 1:
+            # All timestamp representations refer to the same instant.
+            preferred_names = ['timestamp', 'created_at', 'created_time']
+            for pref_name in preferred_names:
+                for field_name, value, normalized in normalized_fields:
+                    if field_name == pref_name:
+                        logger.debug(
+                            "Using canonical timestamp field '%s' after normalization agreement: %s",
+                            field_name,
+                            normalized,
+                        )
+                        return (field_name, normalized)
+
+            field_name, _, normalized = normalized_fields[0]
+            logger.debug(
+                "Using first timestamp field '%s' after normalization agreement: %s",
+                field_name,
+                normalized,
+            )
+            return (field_name, normalized)
+
         if len(timestamp_fields) == 1:
             field_name, value = timestamp_fields[0]
             return (field_name, self.normalize_timestamp(value))
 
-        # Multiple timestamp fields - need to resolve
-        # Strategy: prefer 'timestamp' field, else prefer newest
+        # Multiple timestamp fields with conflicting values.
+        # Preserve the canonical timestamp and capture the conflict for review.
         preferred_names = ['timestamp', 'created_at', 'created_time']
+        canonical_name = None
+        canonical_value = None
+        canonical_normalized = None
 
-        # Check for preferred field
         for pref_name in preferred_names:
-            for field_name, value in timestamp_fields:
+            for field_name, value, normalized in normalized_fields:
                 if field_name == pref_name:
-                    normalized = self.normalize_timestamp(value)
-                    logger.debug(f"Using preferred timestamp field '{field_name}'")
-                    return (field_name, normalized)
+                    canonical_name = field_name
+                    canonical_value = value
+                    canonical_normalized = normalized
+                    break
+            if canonical_name is not None:
+                break
 
-        # No preferred field found - use first one (but log warning)
-        field_name, value = timestamp_fields[0]
-        normalized = self.normalize_timestamp(value)
+        if canonical_name is None:
+            canonical_name, canonical_value, canonical_normalized = normalized_fields[0]
+
+        conflict_map = {
+            field_name: {
+                "original": value,
+                "normalized": normalized,
+            }
+            for field_name, value, normalized in normalized_fields
+        }
         logger.warning(
-            f"Multiple timestamp fields without preferred name. "
-            f"Using first field '{field_name}' with value {normalized}"
+            "Conflicting timestamp values detected; preserving canonical field '%s' and recording "
+            "all normalized values for manual review: %s",
+            canonical_name,
+            conflict_map,
         )
-        return (field_name, normalized)
+        return (canonical_name, canonical_normalized)
 
     def fix_transaction(self, transaction: Dict) -> Dict:
         """
@@ -173,19 +226,55 @@ class TransactionTimestampFixer:
             # Multiple timestamp fields - resolve conflict
             logger.info(f"Found {len(timestamp_fields)} timestamp fields in transaction")
 
+            normalized_values = {
+                field_name: self.normalize_timestamp(value)
+                for field_name, value in timestamp_fields
+            }
+            unique_normalized_values = set(normalized_values.values())
             canonical_name, canonical_value = self.resolve_duplicate_timestamps(
                 timestamp_fields
             )
 
             # Create fixed transaction
-            fixed = {k: v for k, v in transaction.items()
-                    if k == canonical_name or not self.is_timestamp_field(k)}
+            fixed = {
+                k: v for k, v in transaction.items()
+                if k == canonical_name or not self.is_timestamp_field(k)
+            }
 
             # Ensure timestamp field is present
             if canonical_name not in fixed:
                 fixed[canonical_name] = canonical_value
 
-            logger.info(f"Fixed transaction - removed {len(timestamp_fields) - 1} duplicate timestamp fields")
+            if len(unique_normalized_values) > 1:
+                conflict_details = {
+                    field_name: {
+                        "original": transaction[field_name],
+                        "normalized": normalized_values[field_name],
+                    }
+                    for field_name, _ in timestamp_fields
+                }
+                fixed["_timestamp_conflicts"] = {
+                    "canonical_field": canonical_name,
+                    "canonical_value": canonical_value,
+                    "conflicting_fields": list(conflict_details.keys()),
+                    "values": conflict_details,
+                    "reason": "Normalized timestamp values do not match",
+                }
+                self.conflict_count += 1
+                logger.warning(
+                    "Timestamp conflict preserved for transaction; canonical=%s, fields=%s, normalized=%s",
+                    canonical_name,
+                    list(conflict_details.keys()),
+                    {name: details["normalized"] for name, details in conflict_details.items()},
+                )
+                logger.info(
+                    "Fixed transaction with preserved timestamp conflict metadata; kept canonical field '%s'",
+                    canonical_name,
+                )
+            else:
+                logger.info(
+                    f"Fixed transaction - removed {len(timestamp_fields) - 1} duplicate timestamp fields"
+                )
             self.fixed_count += 1
             return fixed
 
@@ -251,7 +340,8 @@ class TransactionTimestampFixer:
         #  Provide summary statistics during execution
         logger.info(
             f"Batch fix complete: {self.fixed_count} fixed, "
-            f"{self.error_count} errors, {self.skipped_count} skipped. "
+            f"{self.error_count} errors, {self.skipped_count} skipped, "
+            f"{self.conflict_count} conflicts preserved. "
             f"Total processed: {total_tx}"
         )
         
@@ -282,8 +372,21 @@ def verify_timestamp_field(transaction: Dict) -> Tuple[bool, str]:
         return (False, "Transaction missing timestamp field")
 
     if len(timestamp_fields) > 1:
+        normalized_values = {}
+        for field_name, value in timestamp_fields:
+            try:
+                normalized_values[field_name] = fixer.normalize_timestamp(value)
+            except ValueError as e:
+                return (False, f"Timestamp format invalid for field '{field_name}': {str(e)}")
+
+        if len(set(normalized_values.values())) > 1:
+            return (
+                False,
+                f"Transaction has conflicting timestamp fields: {normalized_values}",
+            )
+
         field_names = [name for name, _ in timestamp_fields]
-        return (False, f"Transaction has multiple timestamp fields: {field_names}")
+        return (True, f"Transaction has duplicate timestamp fields with matching values: {field_names}")
 
     # Verify timestamp can be normalized
     try:

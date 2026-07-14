@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from src.features.blast_radius import BlastRadiusReport
 
 import networkx as nx
+from src.config.settings import get_settings
+from src.runtime.failure_policy import should_fail_fast
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +132,15 @@ class Neo4jGraphProvider:
                 self._initialize_schema()
                 logger.info(f"Successfully connected to Neo4j database at {self.uri}")
             except Exception as e:
+                failure_mode = get_settings().runtime.failure_mode
                 logger.error(
                     f"Failed to establish a connection pool to Neo4j: {e}. "
-                    "Operating in offline graceful fallback mode."
+                    f"runtime.failure_mode={failure_mode}"
+                )
+                if should_fail_fast(failure_mode):
+                    raise
+                logger.warning(
+                    "Operating in offline graceful fallback mode for Neo4j."
                 )
                 self.enabled = False
                 self._driver = None
@@ -145,6 +153,8 @@ class Neo4jGraphProvider:
                     "CREATE INDEX account_id_index IF NOT EXISTS FOR (a:Account) ON (a.id)"
                 )
         except Exception as e:
+            if should_fail_fast(get_settings().runtime.failure_mode):
+                raise
             logger.warning("Failed to initialize Neo4j schema indexes: %s", e)
 
     MAX_SAFE_SUBGRAPH_HOPS = 5
@@ -378,6 +388,8 @@ class Neo4jGraphProvider:
             logger.error(
                 f"Error extracting subgraph for account {account_id}: {e}"
             )
+            if should_fail_fast(get_settings().runtime.failure_mode):
+                raise
             return G
 
     def __contains__(self, account_id: str) -> bool:
@@ -496,6 +508,8 @@ class Neo4jGraphProvider:
 
         except Exception as e:
             logger.error(f"Error computing blast radius in Neo4j for node {source_node}: {e}")
+            if should_fail_fast(get_settings().runtime.failure_mode):
+                raise RuntimeError(f"Neo4j computation error: {e}") from e
             raise RuntimeError(f"Neo4j computation error: {e}") from e
 
     def close(self) -> None:

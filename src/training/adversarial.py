@@ -10,18 +10,19 @@ References:
 - Adversarial Training: Trades-off robustness vs accuracy
 """
 
-from typing import Dict, Tuple, Optional
+from copy import deepcopy
+from typing import Dict, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from copy import deepcopy
 
 
 class AdversarialAttack:
     """Base class for adversarial attacks on graph neural networks."""
 
-    def __init__(self, model: nn.Module, epsilon: float = 0.1, device: str = 'cpu'):
+    def __init__(self, model: nn.Module, epsilon: float = 0.1, device: str = "cpu"):
         """Initialize adversarial attack.
 
         Args:
@@ -93,7 +94,7 @@ class FGSMAttack(AdversarialAttack):
 
         # Compute loss
         loss = F.binary_cross_entropy_with_logits(
-            outputs['risk'].squeeze(), labels.float()
+            outputs["risk"].squeeze(), labels.float()
         )
 
         # Compute gradient
@@ -126,7 +127,7 @@ class PGDAttack(AdversarialAttack):
         epsilon: float = 0.1,
         alpha: float = 0.01,
         num_steps: int = 10,
-        device: str = 'cpu',
+        device: str = "cpu",
     ):
         """Initialize PGD attack.
 
@@ -186,7 +187,7 @@ class PGDAttack(AdversarialAttack):
 
             # Compute loss
             loss = F.binary_cross_entropy_with_logits(
-                outputs['risk'].squeeze(), labels.float()
+                outputs["risk"].squeeze(), labels.float()
             )
 
             # Compute gradient
@@ -216,10 +217,10 @@ class AdversarialTrainer:
     def __init__(
         self,
         model: nn.Module,
-        attack_method: str = 'fgsm',
+        attack_method: str = "fgsm",
         epsilon: float = 0.1,
         adversarial_weight: float = 0.5,
-        device: str = 'cpu',
+        device: str = "cpu",
     ):
         """Initialize adversarial trainer.
 
@@ -236,10 +237,12 @@ class AdversarialTrainer:
         self.device = device
 
         # Initialize attack method
-        if attack_method == 'fgsm':
+        if attack_method == "fgsm":
             self.attack = FGSMAttack(model, epsilon, device)
-        elif attack_method == 'pgd':
-            self.attack = PGDAttack(model, epsilon, alpha=epsilon / 4, num_steps=10, device=device)
+        elif attack_method == "pgd":
+            self.attack = PGDAttack(
+                model, epsilon, alpha=epsilon / 4, num_steps=10, device=device
+            )
         else:
             raise ValueError(f"Unknown attack method: {attack_method}")
 
@@ -300,9 +303,9 @@ class AdversarialTrainer:
             criterion = F.binary_cross_entropy_with_logits
 
         if isinstance(criterion, nn.Module):
-            loss = criterion(outputs['risk'].squeeze(), labels.float())
+            loss = criterion(outputs["risk"].squeeze(), labels.float())
         else:
-            loss = criterion(outputs['risk'].squeeze(), labels.float())
+            loss = criterion(outputs["risk"].squeeze(), labels.float())
 
         return loss
 
@@ -347,9 +350,9 @@ class AdversarialTrainer:
             criterion = F.binary_cross_entropy_with_logits
 
         if isinstance(criterion, nn.Module):
-            loss_standard = criterion(outputs['risk'].squeeze(), labels.float())
+            loss_standard = criterion(outputs["risk"].squeeze(), labels.float())
         else:
-            loss_standard = criterion(outputs['risk'].squeeze(), labels.float())
+            loss_standard = criterion(outputs["risk"].squeeze(), labels.float())
 
         # Adversarial loss
         loss_adversarial = self.compute_adversarial_loss(
@@ -372,7 +375,7 @@ class AdversarialTrainer:
 class RobustnessEvaluator:
     """Evaluate model robustness against adversarial attacks."""
 
-    def __init__(self, model: nn.Module, device: str = 'cpu'):
+    def __init__(self, model: nn.Module, device: str = "cpu"):
         """Initialize robustness evaluator.
 
         Args:
@@ -411,7 +414,7 @@ class RobustnessEvaluator:
         if epsilons is None:
             epsilons = [0.01, 0.05, 0.1, 0.2]
 
-        results = {'epsilons': epsilons, 'accuracy': []}
+        results = {"epsilons": epsilons, "accuracy": []}
 
         self.model.eval()
 
@@ -425,7 +428,7 @@ class RobustnessEvaluator:
                 edge_timestamp=edge_timestamp,
                 batch=batch,
             )
-            clean_preds = (outputs['risk'].squeeze() > 0.5).long().cpu().numpy()
+            clean_preds = (outputs["risk"].squeeze() > 0.5).long().cpu().numpy()
             clean_labels = labels.cpu().numpy()
             clean_acc = (clean_preds == clean_labels).mean()
 
@@ -451,11 +454,14 @@ class RobustnessEvaluator:
                     edge_timestamp=edge_timestamp,
                     batch=batch,
                 )
-                preds = (outputs['risk'].squeeze() > 0.5).long().cpu().numpy()
+                preds = (outputs["risk"].squeeze() > 0.5).long().cpu().numpy()
                 acc = (preds == clean_labels).mean()
-                results['accuracy'].append(acc)
+                results["accuracy"].append(acc)
+                del x_adv, outputs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
-        results['clean_accuracy'] = clean_acc
+        results["clean_accuracy"] = clean_acc
         return results
 
     def evaluate_pgd_robustness(
@@ -487,7 +493,7 @@ class RobustnessEvaluator:
         if epsilons is None:
             epsilons = [0.01, 0.05, 0.1, 0.2]
 
-        results = {'epsilons': epsilons, 'accuracy': []}
+        results = {"epsilons": epsilons, "accuracy": []}
 
         self.model.eval()
 
@@ -501,7 +507,7 @@ class RobustnessEvaluator:
                 edge_timestamp=edge_timestamp,
                 batch=batch,
             )
-            clean_preds = (outputs['risk'].squeeze() > 0.5).long().cpu().numpy()
+            clean_preds = (outputs["risk"].squeeze() > 0.5).long().cpu().numpy()
             clean_labels = labels.cpu().numpy()
             clean_acc = (clean_preds == clean_labels).mean()
 
@@ -533,9 +539,12 @@ class RobustnessEvaluator:
                     edge_timestamp=edge_timestamp,
                     batch=batch,
                 )
-                preds = (outputs['risk'].squeeze() > 0.5).long().cpu().numpy()
+                preds = (outputs["risk"].squeeze() > 0.5).long().cpu().numpy()
                 acc = (preds == clean_labels).mean()
-                results['accuracy'].append(acc)
+                results["accuracy"].append(acc)
+                del x_adv, outputs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
-        results['clean_accuracy'] = clean_acc
+        results["clean_accuracy"] = clean_acc
         return results
