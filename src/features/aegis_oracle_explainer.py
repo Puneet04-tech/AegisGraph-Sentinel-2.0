@@ -12,6 +12,7 @@ The Oracle pattern: Combine model reasoning with LLM narrative generation.
 
 import json
 import logging
+import math
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -176,18 +177,31 @@ class AegisOracleExplainer:
         attention_weights: Dict
     ) -> List[Dict[str, any]]:
         """Extract and rank causal factors for the decision"""
-        
+
         factors = []
-        
+        attention_edges = self._parse_attention_edges(attention_weights)
+
         # Graph-based factors
         if breakdown.get('graph', 0) > 0.5:
-            factors.append({
+            graph_weight = breakdown.get('graph', 0)
+            if attention_edges:
+                evidence = self._get_attention_evidence(attention_edges)
+                graph_weight = max(
+                    graph_weight,
+                    min(attention_edges[0]['weight'], 1.0),
+                )
+            else:
+                evidence = self._get_graph_evidence(transaction)
+            graph_factor = {
                 'type': 'GRAPH',
                 'impact': 'HIGH',
                 'description': 'Mule network topology detected',
-                'weight': breakdown.get('graph', 0),
-                'evidence': self._get_graph_evidence(transaction),
-            })
+                'weight': graph_weight,
+                'evidence': evidence,
+            }
+            if attention_edges:
+                graph_factor['attention_edges'] = attention_edges[:5]
+            factors.append(graph_factor)
         
         # Velocity-based factors
         if breakdown.get('velocity', 0) > 0.5:
@@ -378,6 +392,88 @@ class AegisOracleExplainer:
             'gdpr_compliance': 'Personal data processed per IT Act 2000 requirements',
         }
     
+    def _parse_attention_edges(self, attention_weights: Optional[Dict]) -> List[Dict]:
+        """Normalize HTGAT attention weights into a ranked edge list.
+
+        Accepts the shapes produced by the explainability pipeline:
+        - {'edges': [{'source'/'source_node': ..., 'target'/'target_node': ...,
+          'weight'/'attention_score': ...}, ...]}
+        - {'top_relationships': [...]} as emitted by ProductionRiskScorer
+        - a flat {'SRC->TGT': weight} mapping
+
+        Returns a list of {'source', 'target', 'weight'} dicts sorted by
+        weight descending. Malformed entries are skipped so a bad payload
+        degrades to the template-based evidence instead of failing.
+        """
+        if not isinstance(attention_weights, dict) or not attention_weights:
+            return []
+
+        raw_edges = attention_weights.get('edges')
+        if raw_edges is None:
+            raw_edges = attention_weights.get('top_relationships')
+
+        edges = []
+
+        if isinstance(raw_edges, list):
+            for entry in raw_edges:
+                if not isinstance(entry, dict):
+                    continue
+                source = entry.get('source', entry.get('source_node'))
+                target = entry.get('target', entry.get('target_node'))
+                weight = self._coerce_attention_weight(
+                    entry.get('weight', entry.get('attention_score'))
+                )
+                if source is None or target is None or weight is None:
+                    continue
+                edges.append({
+                    'source': str(source),
+                    'target': str(target),
+                    'weight': weight,
+                })
+        elif raw_edges is None:
+            # Flat {'SRC->TGT': weight} mapping
+            for key, value in attention_weights.items():
+                if not isinstance(key, str) or '->' not in key:
+                    continue
+                source, _, target = key.partition('->')
+                weight = self._coerce_attention_weight(value)
+                if not source.strip() or not target.strip() or weight is None:
+                    continue
+                edges.append({
+                    'source': source.strip(),
+                    'target': target.strip(),
+                    'weight': weight,
+                })
+
+        edges.sort(key=lambda edge: -edge['weight'])
+        return edges
+
+    @staticmethod
+    def _coerce_attention_weight(value) -> Optional[float]:
+        """Convert a raw attention value to a finite float; multi-head lists are averaged"""
+        if isinstance(value, (list, tuple)):
+            head_values = [
+                v for v in value
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            ]
+            if not head_values:
+                return None
+            value = sum(head_values) / len(head_values)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        value = float(value)
+        if not math.isfinite(value):
+            return None
+        return value
+
+    def _get_attention_evidence(self, attention_edges: List[Dict], top_k: int = 3) -> str:
+        """Build evidence from the highest-attention graph relationships"""
+        parts = [
+            f"{edge['source']} -> {edge['target']} (attention {edge['weight']:.2f})"
+            for edge in attention_edges[:top_k]
+        ]
+        return "High-attention transfer paths: " + "; ".join(parts)
+
     def _get_graph_evidence(self, transaction: Dict) -> str:
         """Extract graph-based evidence"""
         source = transaction.get('source_account')
@@ -431,9 +527,17 @@ if __name__ == "__main__":
         'entropy': 0.93,
     }
 
+    test_attention = {
+        'edges': [
+            {'source': 'ACC_001', 'target': 'ACC_MULE', 'weight': 0.91},
+            {'source': 'ACC_MULE', 'target': 'ACC_EXIT', 'weight': 0.74},
+        ]
+    }
+
     explanation = explainer.generate_explanation(
         test_txn,
         test_assessment,
+        attention_weights=test_attention,
         break_down=test_breakdown,
         innovations_triggered=['honeypot_activated', 'behavioral_stress_detected']
     )

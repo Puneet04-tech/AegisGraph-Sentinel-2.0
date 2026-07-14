@@ -1,51 +1,61 @@
-"""Quick script to demonstrate variable risk scores for mule and normal accounts"""
-# Working on risk score variation testing
-import requests
-import json
-from pathlib import Path
+import torch
 
-API = "http://localhost:8000/api/v1/fraud/check"
+from src.adversarial.attacks.feature import FeaturePerturbation
+from src.adversarial.evaluator import build_synthetic_graph, evaluate_attack
+from src.models.risk_model import FraudDetectionModel
 
-if __name__ == '__main__':
-    # load first few mule accounts from synthetic chains
-    chains = json.load(open('data/synthetic/fraud_chains.json'))
-    mules = set()
-    for chain in chains[:5]:
-        for acc in chain.get('accounts', []):
-            mules.add(acc)
-            if len(mules) >= 10:
-                break
-        if len(mules) >= 10:
-            break
 
-    mules = list(mules)
+def run_stress_test():
+    print("Initializing memory stress test...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    print(f"Using mule accounts sample: {mules[:5]}")
+    # 1. Initialize the GNN model
+    model = FraudDetectionModel(
+        node_feature_dim=32,
+        hidden_dim=128,
+        output_dim=64,
+        num_node_types=5,
+        num_edge_types=4,
+        num_layers=2,
+        heads=4,
+        dropout=0.3,
+    ).to(device)
+    model.eval()
 
-    for acc in mules[:5]:
-        payload = {
-            "transaction_id": f"TEST_{acc}",
-            "source_account": acc,
-            "target_account": "NORMAL_0001",
-            "amount": 12345,
-            "currency": "INR",
-            "mode": "UPI",
-            "timestamp": "2026-02-28T12:00:00Z"
-        }
-        res = requests.post(API, json=payload).json()
-        print(acc, res['risk_score'], res['decision'])
+    # 2. Initialize attack
+    attack = FeaturePerturbation()
 
-    # also send normal
-    for i in range(3):
-        payload = {
-            "transaction_id": f"NORM_{i}",
-            "source_account": f"USR{i}",
-            "target_account": f"MER{i}",
-            "amount": 100*(i+1),
-            "currency": "INR",
-            "mode": "UPI",
-            "timestamp": "2026-02-28T12:00:00Z"
-        }
-        res = requests.post(API, json=payload).json()
-        print("normal", res['risk_score'], res['decision'])
+    # 3. Simulate heavy validation / evaluation loops
+    print("Running heavy batch evaluation loop to check memory stability...")
+    initial_memory = 0
+    if torch.cuda.is_available():
+        initial_memory = torch.cuda.memory_allocated(device)
+        print(f"Initial CUDA memory: {initial_memory / (1024 * 1024):.2f} MB")
 
+    for i in range(1, 51):
+        # Run adversarial evaluation
+        _ = evaluate_attack(
+            model=model,
+            attack=attack,
+            n_graphs=5,
+            threshold=0.5,
+            graph_builder=build_synthetic_graph,
+        )
+
+        if i % 10 == 0 and torch.cuda.is_available():
+            current_memory = torch.cuda.memory_allocated(device)
+            print(
+                f"Iteration {i} - CUDA memory: "
+                f"{current_memory / (1024 * 1024):.2f} MB"
+            )
+            # Assert memory does not leak/grow unbounded
+            assert (
+                current_memory <= initial_memory * 1.5
+            ), "Memory leak detected!"
+
+    print("Memory stress test completed successfully. Memory remains stable!")
+
+
+if __name__ == "__main__":
+    run_stress_test()

@@ -6,6 +6,9 @@ import redis
 
 from src.config.settings import get_settings
 
+from ..config import get_settings
+from ..runtime.failure_policy import should_fail_fast
+
 logger = logging.getLogger(__name__)
 
 _redis_pool = None
@@ -54,7 +57,15 @@ def get_redis_client(redis_url: Optional[str] = None) -> redis.Redis:
                     )
                     logger.info("Created new Redis connection pool")
                 except Exception as e:
-                    logger.error(f"Failed to initialize Redis connection pool: {e}")
-                    raise
-
+                    failure_mode = get_settings().runtime.failure_mode
+                    logger.error(
+                        "Failed to initialize Redis connection pool: %s. runtime.failure_mode=%s",
+                        e,
+                        failure_mode,
+                    )
+                    if should_fail_fast(failure_mode):
+                        raise
+                    logger.warning("Continuing without Redis connection pool.")
+                    return redis.Redis()
+            
     return redis.Redis(connection_pool=_redis_pool)

@@ -56,6 +56,10 @@ ENV_ALIASES = {
     "neo4j_max_transaction_retry_time": "NEO4J_MAX_TRANSACTION_RETRY_TIME",
     "neo4j_keep_alive": "NEO4J_KEEP_ALIVE",
     "neo4j_liveness_check_timeout": "NEO4J_LIVENESS_CHECK_TIMEOUT",
+    "backup_directory": "BACKUP_DIRECTORY",
+    "backup_encryption_key": "BACKUP_ENCRYPTION_KEY",
+    "backup_database_url": "BACKUP_DATABASE_URL",
+    "backup_tool_path": "BACKUP_TOOL_PATH",
     "aegis_config_path": "AEGIS_CONFIG_PATH",
     "aegis_thresholds_path": "AEGIS_THRESHOLDS_PATH",
     "api_host": "API_HOST",
@@ -152,7 +156,7 @@ def _bool_from_env(value: Optional[str], default: bool = False) -> bool:
     normalized = value.strip().lower()
 
     truthy = {"1", "true", "yes", "on"}
-    falsy = {"0", "false", "no", "off"}
+    falsy = {"0", "false", "no", "off", "release"}
 
     if normalized in truthy:
         return True
@@ -210,6 +214,7 @@ def _build_settings_dict(
     database_config = dict(runtime_config.get("database", {}))
     redis_config = dict(database_config.get("redis", {}))
     neo4j_config = dict(database_config.get("neo4j", {}))
+    runtime_policy_config = dict(runtime_config.get("runtime", {}))
 
     risk_thresholds = dict(risk_config.get("thresholds", {}))
     threshold_risk_config = thresholds_config.get("risk_scoring")
@@ -408,6 +413,11 @@ def _build_settings_dict(
             "debug": _bool_from_env_or_default(env.debug, default=False),
             "strict_validation": None,
             "config_path": config_path,
+            "failure_mode": (
+                (env.runtime_failure_mode or runtime_policy_config.get("failure_mode", "degraded"))
+                .strip()
+                .lower()
+            ),
         },
         "raw_config": runtime_config,
         "raw_environment": env,

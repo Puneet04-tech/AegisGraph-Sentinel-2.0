@@ -4,10 +4,13 @@ Evaluator: runs an attack over many graphs and reports aggregate metrics.
 Currently builds synthetic graphs matching example_training.py's format. Future
 work: accept any DataLoader so we can evaluate against real test sets.
 """
+
 from __future__ import annotations
+
 import statistics
 from dataclasses import dataclass
 from typing import Callable, List
+
 import torch
 
 from .base import BaseAttack, Graph
@@ -16,6 +19,7 @@ from .base import BaseAttack, Graph
 @dataclass
 class EvaluationResult:
     """Aggregate metrics from running one attack over N graphs."""
+
     attack_name: str
     budget: float
     n_graphs: int
@@ -65,7 +69,9 @@ def predict(model: torch.nn.Module, graph: Graph) -> float:
     return float(out["risk"].item())
 
 
-def _calculate_metrics(y_true: List[float], y_pred_prob: List[float], threshold: float) -> tuple[float, float, float]:
+def _calculate_metrics(
+    y_true: List[float], y_pred_prob: List[float], threshold: float
+) -> tuple[float, float, float]:
     tp = fp = fn = tn = 0
     for true, prob in zip(y_true, y_pred_prob):
         pred = 1.0 if prob >= threshold else 0.0
@@ -81,7 +87,11 @@ def _calculate_metrics(y_true: List[float], y_pred_prob: List[float], threshold:
                 tn += 1
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
     return float(f1), float(precision), float(recall)
 
 
@@ -129,11 +139,14 @@ def evaluate_attack(
         if (clean >= threshold) != (attacked >= threshold):
             flips += 1
 
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     n = max(1, n_graphs)
-    
+
     clean_f1, clean_prec, clean_rec = _calculate_metrics(y_true, clean_risks, threshold)
     att_f1, att_prec, att_rec = _calculate_metrics(y_true, attacked_risks, threshold)
-    
+
     f1_drop = clean_f1 - att_f1
     prec_drop = clean_prec - att_prec
     rec_drop = clean_rec - att_rec
