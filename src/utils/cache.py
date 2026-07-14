@@ -19,6 +19,8 @@ from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import networkx as nx
+from src.config.settings import get_settings
+from src.runtime.failure_policy import should_fail_fast
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +299,15 @@ class GraphOperationCache:
                 try:
                     backend = RedisGraphCache(redis_url)
                 except Exception as e:
-                    logger.warning(f"Redis unavailable, using in-memory cache: {e}")
+                    failure_mode = get_settings().runtime.failure_mode
+                    logger.warning(
+                        "Redis unavailable for graph cache: %s. runtime.failure_mode=%s",
+                        e,
+                        failure_mode,
+                    )
+                    if should_fail_fast(failure_mode):
+                        raise
+                    logger.warning("Using in-memory cache fallback.")
                     backend = InMemoryGraphCache()
             else:
                 backend = InMemoryGraphCache()

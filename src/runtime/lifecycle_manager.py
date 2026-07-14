@@ -68,6 +68,8 @@ class LifecycleManager:
             )
             self._audit("runtime_startup_started", steps=[step.name for step in self._startup_steps])
             self.runtime_state.shutting_down = False
+            failure_mode = getattr(getattr(self.runtime_state, "settings", None), "runtime", None)
+            failure_mode = getattr(failure_mode, "failure_mode", "degraded")
 
             # Wire default event subscriptions to the event bus
             await register_default_subscriptions(self.runtime_state.event_bus)
@@ -94,7 +96,9 @@ class LifecycleManager:
                 )
                 await self._rollback_startup(completed_steps)
                 raise
-            self._validate_runtime_services()
+            validation_failures = self._validate_runtime_services()
+            if failure_mode == "fail_fast" and validation_failures:
+                raise RuntimeError("Runtime dependency validation failed in fail-fast mode")
             self._started = True
             self.runtime_state.started = True
             self.runtime_state.record_lifecycle_event("startup_complete", steps=len(self._startup_steps))
@@ -111,10 +115,10 @@ class LifecycleManager:
                 )
 
 
-    def _validate_runtime_services(self) -> None:
+    def _validate_runtime_services(self) -> List[Any]:
         validator = getattr(self.runtime_state, "validate_runtime_dependencies", None)
         if validator is None:
-            return
+            return []
         try:
             results = validator()
         except Exception as exc:
@@ -122,7 +126,7 @@ class LifecycleManager:
                 f"Runtime dependency validation failed unexpectedly: {exc}",
                 event_type="runtime_dependency_validation_error",
             )
-            return
+            return []
 
         failures = [result for result in results if not getattr(result, "valid", False)]
         if failures:
@@ -131,6 +135,7 @@ class LifecycleManager:
                 event_type="runtime_dependency_validation_failed",
                 metadata={"failures": [failure.__dict__ for failure in failures]},
             )
+        return failures
 
 
     async def shutdown(self) -> None:
@@ -230,7 +235,9 @@ class LifecycleManager:
                 metadata=metadata,
             )
             self.runtime_state.record_lifecycle_event(f"{phase}_step_failed", **metadata)
-            if step.critical:
+            failure_mode = getattr(getattr(self.runtime_state, "settings", None), "runtime", None)
+            failure_mode = getattr(failure_mode, "failure_mode", "degraded")
+            if step.critical or failure_mode == "fail_fast":
                 raise
             return
 
