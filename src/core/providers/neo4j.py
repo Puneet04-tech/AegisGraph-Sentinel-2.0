@@ -16,8 +16,6 @@ import networkx as nx
 from src.config.settings import get_settings
 from src.runtime.failure_policy import should_fail_fast
 
-from src.config.settings import get_settings
-
 logger = logging.getLogger(__name__)
 
 # Optional Neo4j Driver Import
@@ -101,7 +99,15 @@ class Neo4jGraphProvider:
             self.enabled = False
 
         if self.enabled:
-            settings = get_settings().database
+            settings = get_settings()
+            database_settings = getattr(settings, "database", settings)
+            neo4j_max_connection_lifetime = getattr(database_settings, "neo4j_max_connection_lifetime", 3600.0)
+            neo4j_keep_alive = getattr(database_settings, "neo4j_keep_alive", True)
+            neo4j_max_connection_pool_size = getattr(database_settings, "neo4j_max_connection_pool_size", 50)
+            neo4j_connection_timeout = getattr(database_settings, "neo4j_connection_timeout", None)
+            neo4j_connection_acquisition_timeout = getattr(database_settings, "neo4j_connection_acquisition_timeout", None)
+            neo4j_max_transaction_retry_time = getattr(database_settings, "neo4j_max_transaction_retry_time", None)
+            neo4j_liveness_check_timeout = getattr(database_settings, "neo4j_liveness_check_timeout", None)
             if not self.uri or not self.user or not self.password:
                 raise ValueError(
                     "Neo4j credentials are required. Either pass them explicitly to "
@@ -126,22 +132,18 @@ class Neo4jGraphProvider:
             try:
                 driver_kwargs = {
                     "auth": (self.user, self.password),
-                    "max_connection_lifetime": (
-                        settings.neo4j_max_connection_lifetime
-                        if settings.neo4j_max_connection_lifetime is not None
-                        else 3600.0
-                    ),
-                    "keep_alive": settings.neo4j_keep_alive,
-                    "max_connection_pool_size": settings.neo4j_max_connection_pool_size,
+                    "max_connection_lifetime": neo4j_max_connection_lifetime,
+                    "keep_alive": neo4j_keep_alive,
+                    "max_connection_pool_size": neo4j_max_connection_pool_size,
                 }
-                if settings.neo4j_connection_timeout is not None:
-                    driver_kwargs["connection_timeout"] = settings.neo4j_connection_timeout
-                if settings.neo4j_connection_acquisition_timeout is not None:
-                    driver_kwargs["connection_acquisition_timeout"] = settings.neo4j_connection_acquisition_timeout
-                if settings.neo4j_max_transaction_retry_time is not None:
-                    driver_kwargs["max_transaction_retry_time"] = settings.neo4j_max_transaction_retry_time
-                if settings.neo4j_liveness_check_timeout is not None:
-                    driver_kwargs["liveness_check_timeout"] = settings.neo4j_liveness_check_timeout
+                if neo4j_connection_timeout is not None:
+                    driver_kwargs["connection_timeout"] = neo4j_connection_timeout
+                if neo4j_connection_acquisition_timeout is not None:
+                    driver_kwargs["connection_acquisition_timeout"] = neo4j_connection_acquisition_timeout
+                if neo4j_max_transaction_retry_time is not None:
+                    driver_kwargs["max_transaction_retry_time"] = neo4j_max_transaction_retry_time
+                if neo4j_liveness_check_timeout is not None:
+                    driver_kwargs["liveness_check_timeout"] = neo4j_liveness_check_timeout
 
                 self._driver = neo4j.GraphDatabase.driver(
                     self.uri,
