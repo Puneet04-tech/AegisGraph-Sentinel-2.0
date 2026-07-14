@@ -2,39 +2,45 @@
 AegisGraph Sentinel 2.0 - Streamlit Web Application
 Real-time Fraud Detection Interface
 """
+
 # Updated: May 17, 2026
 
 import atexit
 import logging
-import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
+
+import streamlit as st
 
 logger = logging.getLogger(__name__)
 try:
     from streamlit_autorefresh import st_autorefresh
 except ImportError:
     st_autorefresh = None
-import requests
-import json
-import html
 import base64
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-from datetime import datetime
-from datetime import timezone
-import time
+import html
+import json
 import os
 import random
-import numpy as np
+import time
+from datetime import datetime, timezone
+
 import networkx as nx
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import requests
+from plotly.subplots import make_subplots
+
 from src.inference.model_comparison import build_model_explanation_comparison
 from src.timeline.doubly_linked_list import DoublyLinkedList
+from utils.webhook_alerts import trigger_webhook_alert
+
 
 def _get_timestamp() -> str:
     """Return a strict ISO 8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ) for the API."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # Lazy loading heavy visualization and graph modules implemented inline where possible
 # Page configuration
@@ -52,13 +58,14 @@ BATCH_PREVIEW_ROWS = int(os.getenv("BATCH_PREVIEW_ROWS", 10))
 BATCH_CHUNK_SIZE = int(os.getenv("BATCH_CHUNK_SIZE", 50))
 BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", 500))
 
+
 def display_decision_badge(decision: str):
     """
     Display a color-coded status badge for the given decision.
     """
     # Normalize to uppercase for comparison to support legacy labels if any
     status = str(decision).upper()
-    
+
     if status in ["SAFE", "ALLOW", "APPROVE"]:
         st.success(f"✅ {status}")
     elif status == "REVIEW":
@@ -68,6 +75,8 @@ def display_decision_badge(decision: str):
     else:
         # Fallback for unexpected status
         st.info(f"ℹ️ {status}")
+
+
 REQUIRED_CSV_COLUMNS = {"transaction_id", "source_account", "target_account", "amount"}
 COMMAND_CENTER_REFRESH_KEY = "command_center_live_refresh"
 
@@ -134,7 +143,7 @@ def _estimate_csv_rows(uploaded_file) -> int:
     uploaded_file.seek(0)
     total_rows = 0
     for i in range(0, len(st.session_state["batch_df"]), BATCH_CHUNK_SIZE):
-        chunk = st.session_state["batch_df"].iloc[i:i+BATCH_CHUNK_SIZE]
+        chunk = st.session_state["batch_df"].iloc[i : i + BATCH_CHUNK_SIZE]
         total_rows += len(chunk)
         if total_rows >= BATCH_MAX_ROWS:
             break
@@ -144,7 +153,10 @@ def _estimate_csv_rows(uploaded_file) -> int:
 
 def _schedule_live_refresh(interval_ms: int = 1500) -> None:
     """Request a non-blocking dashboard refresh when the helper is available."""
-    if st_autorefresh is not None and st.session_state.get("page") == "🧭 Command Center":
+    if (
+        st_autorefresh is not None
+        and st.session_state.get("page") == "🧭 Command Center"
+    ):
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
@@ -166,7 +178,10 @@ def _api_headers(extra: dict | None = None) -> dict:
             key = st.secrets.get("AEGIS_UI_API_KEY", "")
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).debug("Failed to access Streamlit secrets: %s", exc)
+
+            logging.getLogger(__name__).debug(
+                "Failed to access Streamlit secrets: %s", exc
+            )
             key = ""
     headers: dict = {}
     if key:
@@ -176,7 +191,9 @@ def _api_headers(extra: dict | None = None) -> dict:
     return headers
 
 
-def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None) -> dict:
+def _safe_api_get(
+    url: str, timeout: int = 5, extra_headers: dict | None = None
+) -> dict:
     """GET *url* and return the parsed JSON body on success.
 
     Returns an empty dict on any network failure or non-2xx response and
@@ -189,12 +206,16 @@ def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None)
     such as ``X-Honeypot-Token``.
     """
     try:
-        response = requests.get(url, timeout=timeout, headers=_api_headers(extra_headers))
+        response = requests.get(
+            url, timeout=timeout, headers=_api_headers(extra_headers)
+        )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
         logger.warning("API unreachable (ConnectionError): %s", url)
-        st.warning("⚠️ Cannot reach the API server — verify it is running (`uvicorn src.api.main:app --reload`).")
+        st.warning(
+            "⚠️ Cannot reach the API server — verify it is running (`uvicorn src.api.main:app --reload`)."
+        )
         return {}
     except requests.exceptions.Timeout:
         logger.warning("API request timed out: %s", url)
@@ -214,7 +235,9 @@ def _safe_api_get(url: str, timeout: int = 5, extra_headers: dict | None = None)
         return {}
 
 
-def _safe_api_post(url: str, payload: dict, timeout: int = 5, extra_headers: dict | None = None) -> dict | None:
+def _safe_api_post(
+    url: str, payload: dict, timeout: int = 5, extra_headers: dict | None = None
+) -> dict | None:
     """POST *payload* to *url* and return the parsed JSON body on success.
 
     Returns ``None`` on any network failure or non-2xx response and logs
@@ -226,7 +249,9 @@ def _safe_api_post(url: str, payload: dict, timeout: int = 5, extra_headers: dic
     ``_api_headers()``.  Pass *extra_headers* for endpoint-specific tokens.
     """
     try:
-        response = requests.post(url, json=payload, timeout=timeout, headers=_api_headers(extra_headers))
+        response = requests.post(
+            url, json=payload, timeout=timeout, headers=_api_headers(extra_headers)
+        )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -705,6 +730,25 @@ with st.sidebar:
 
     st.markdown("---")
 
+    with st.sidebar.expander("⚙️ Webhook Alert Settings", expanded=False):
+        st.toggle("Enable Webhook Alerts", value=False, key="webhook_enabled")
+        st.text_input(
+            "Webhook Endpoint URL",
+            value="",
+            placeholder="https://api.example.com/webhook",
+            key="webhook_url",
+        )
+        st.text_input(
+            "Webhook Secret Key",
+            value="",
+            type="password",
+            placeholder="Secret signature key",
+            key="webhook_secret",
+        )
+        st.slider(
+            "Anomaly Alert Threshold", 0.0, 1.0, 0.75, 0.05, key="webhook_threshold"
+        )
+
     # API Status Check
     try:
         health = _fetch_health_snapshot(API_URL)
@@ -731,7 +775,10 @@ if page == "🧭 Command Center":
 
     # Display last updated timestamp
     last_updated_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.markdown(f"<p style='text-align: right; color: #94a3b8;'>Last updated: {last_updated_time}</p>", unsafe_allow_html=True)
+    st.markdown(
+        f"<p style='text-align: right; color: #94a3b8;'>Last updated: {last_updated_time}</p>",
+        unsafe_allow_html=True,
+    )
 
     # Live Mode Toggle
     live_mode = st.toggle(
@@ -772,7 +819,7 @@ if page == "🧭 Command Center":
                 "amount": float(random.choice([500, 2500, 50000, 150000, 300000])),
                 "currency": "INR",
                 "mode": random.choice(["UPI", "IMPS"]),
-                "timestamp": _get_timestamp()
+                "timestamp": _get_timestamp(),
             }
             st.session_state.live_event_txn = txn
             st.session_state.live_event_future = COMMAND_CENTER_IO_EXECUTOR.submit(
@@ -997,15 +1044,37 @@ elif page == "💳 Transaction Scan":
                             st.metric(
                                 "Risk Score", f"{risk:.3f}", delta=f"{(risk - 0.5):.3f}"
                             )
+                            if (
+                                st.session_state.get("webhook_enabled")
+                                and st.session_state.get("webhook_url")
+                                and risk
+                                >= st.session_state.get("webhook_threshold", 0.75)
+                            ):
+                                payload = {
+                                    "event": "anomaly_score_breached",
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "transaction_id": transaction.get(
+                                        "transaction_id", "N/A"
+                                    ),
+                                    "risk_score": risk,
+                                    "threshold": st.session_state.get(
+                                        "webhook_threshold"
+                                    ),
+                                    "decision": result.get("decision", "UNKNOWN"),
+                                    "source": "Transaction Scan Page",
+                                }
+                                trigger_webhook_alert(
+                                    st.session_state.get("webhook_url"),
+                                    payload,
+                                    st.session_state.get("webhook_secret"),
+                                )
                         with metric_cols[1]:
                             decision = result["decision"]
                             status = str(decision).upper()
                             emoji = (
                                 "🟢"
                                 if status in ["SAFE", "ALLOW", "APPROVE"]
-                                else "🟡"
-                                if status == "REVIEW"
-                                else "🔴"
+                                else "🟡" if status == "REVIEW" else "🔴"
                             )
                             st.metric(
                                 "Decision",
@@ -1161,7 +1230,7 @@ elif page == "📁 Batch Triage":
 
                 uploaded_file.seek(0)
                 for i in range(0, len(st.session_state["batch_df"]), BATCH_CHUNK_SIZE):
-                    chunk = st.session_state["batch_df"].iloc[i:i+BATCH_CHUNK_SIZE]
+                    chunk = st.session_state["batch_df"].iloc[i : i + BATCH_CHUNK_SIZE]
                     for _, row in chunk.iterrows():
                         if processed_rows >= BATCH_MAX_ROWS:
                             break
@@ -2180,6 +2249,26 @@ elif page == "📊 Risk Analytics":
                 new_alert
             ] + st.session_state.realtime_alerts[:49]
 
+            if (
+                st.session_state.get("webhook_enabled")
+                and st.session_state.get("webhook_url")
+                and sev in ("Critical", "High")
+            ):
+                payload = {
+                    "event": "critical_threat_activity",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "alert_id": new_alert["id"],
+                    "severity": sev,
+                    "title": new_alert["title"],
+                    "category": new_alert["category"],
+                    "source": "Real-time Alert Simulator",
+                }
+                trigger_webhook_alert(
+                    st.session_state.get("webhook_url"),
+                    payload,
+                    st.session_state.get("webhook_secret"),
+                )
+
         # Filters UI
         filter_col1, filter_col2 = st.columns([2, 1])
         with filter_col1:
@@ -2382,9 +2471,7 @@ elif page == "🧪 Innovation Lab":
                     delta=f"{stats['arrest_rate']:.1%} rate",
                 )
             with col3:
-                st.metric(
-                    "Recovery", f"₹{stats['total_recovered'] / 10000000:.2f} Cr"
-                )
+                st.metric("Recovery", f"₹{stats['total_recovered'] / 10000000:.2f} Cr")
             with col4:
                 st.metric("Networks Dismantled", stats["networks_dismantled"])
 
@@ -2407,9 +2494,7 @@ elif page == "🧪 Innovation Lab":
                 arrest_rate_colored = (
                     "🟢"
                     if stats["arrest_rate"] >= 0.8
-                    else "🟡"
-                    if stats["arrest_rate"] >= 0.6
-                    else "🔴"
+                    else "🟡" if stats["arrest_rate"] >= 0.6 else "🔴"
                 )
                 st.metric(
                     "System Status",
@@ -2440,13 +2525,9 @@ elif page == "🧪 Innovation Lab":
                     with col1:
                         st.write(f"**Transaction ID**: {hp['transaction_id']}")
                         st.write(f"**Target Account**: {hp['target_account']}")
-                        st.write(
-                            f"**Amount**: ₹{hp['amount']:,.2f} {hp['currency']}"
-                        )
+                        st.write(f"**Amount**: ₹{hp['amount']:,.2f} {hp['currency']}")
                         status_text = (
-                            "Police alerted"
-                            if hp["police_alerted"]
-                            else "Monitoring"
+                            "Police alerted" if hp["police_alerted"] else "Monitoring"
                         )
                         st.write(
                             f"**Status**: {'🚨' if hp['police_alerted'] else '👁️'} {status_text} ({status_text})"
@@ -2538,9 +2619,7 @@ elif page == "🧪 Innovation Lab":
                                 color = (
                                     "🟢"
                                     if stress_score < 30
-                                    else "🟡"
-                                    if stress_score < 70
-                                    else "🔴"
+                                    else "🟡" if stress_score < 70 else "🔴"
                                 )
                                 st.metric(
                                     "Stress Score",
@@ -2704,11 +2783,11 @@ elif page == "🧪 Innovation Lab":
                             color = (
                                 "🔴"
                                 if risk_level == "CRITICAL_MULE_RISK"
-                                else "🟠"
-                                if risk_level == "HIGH_MULE_RISK"
-                                else "🟡"
-                                if risk_level == "MODERATE"
-                                else "🟢"
+                                else (
+                                    "🟠"
+                                    if risk_level == "HIGH_MULE_RISK"
+                                    else "🟡" if risk_level == "MODERATE" else "🟢"
+                                )
                             )
                             st.metric(
                                 "Mule Risk Score",
@@ -4086,13 +4165,18 @@ from ring_buffer_concurrency import InMemoryRingBuffer
 # Initialize the global telemetry sentinel shield ring buffer array
 sentinel_telemetry_buffer = InMemoryRingBuffer(capacity=1024)
 
+
 def process_incoming_stream_safely(new_log_data):
     """
-    Layman Safe Ingestion System: Bypasses immediate heavy graph processing context 
+    Layman Safe Ingestion System: Bypasses immediate heavy graph processing context
     by feeding logs straight into our lock-free buffer array.
     """
     is_saved = sentinel_telemetry_buffer.enqueue(new_log_data)
     if not is_saved:
-        logger.warning("Buffer capacity exceeded threshold! Applying safe backpressure drop.")
+        logger.warning(
+            "Buffer capacity exceeded threshold! Applying safe backpressure drop."
+        )
     return is_saved
+
+
 # --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---
