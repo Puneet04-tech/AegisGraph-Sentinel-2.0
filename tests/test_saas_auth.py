@@ -14,6 +14,7 @@ from src.saas.auth.service import (
     InMemoryUserStore,
     UserRecord,
 )
+from src.exceptions import AuthenticationError
 
 
 def _make_service(users=None):
@@ -138,6 +139,44 @@ class TestAuthenticateUser:
         result = svc.authenticate_user("nobody@x.com", "password")
         assert result.success is False
 
+    def test_missing_configuration_fails_closed(self):
+        svc = AuthService({"jwt_secret": "test-secret-only"})
+        result = svc.authenticate_user("nobody@x.com", "password")
+        assert result.success is False
+        assert "not configured" in result.error.lower()
+
+    def test_runtime_credentials_from_env_are_loaded(self, monkeypatch):
+        svc = _make_service()
+        admin_hash = svc.hash_password("admin-password")
+        monkeypatch.setenv("ADMIN_USERNAME", "admin@example.com")
+        monkeypatch.setenv("ADMIN_PASSWORD_HASH", admin_hash)
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("admin@example.com", "admin-password")
+        assert result.success is True
+        assert result.email == "admin@example.com"
+        assert result.organization_id == "administration"
+        assert result.user_id == "admin_user"
+
+    def test_operator_role_is_assigned_from_runtime_credentials(self, monkeypatch):
+        svc = _make_service()
+        operator_hash = svc.hash_password("operator-password")
+        monkeypatch.setenv("OPERATOR_USERNAME", "operator@example.com")
+        monkeypatch.setenv("OPERATOR_PASSWORD_HASH", operator_hash)
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("operator@example.com", "operator-password")
+        assert result.success is True
+        assert result.email == "operator@example.com"
+        assert result.organization_id == "operations"
+        assert result.user_id == "operator_user"
+
+    def test_invalid_hash_format_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("ADMIN_USERNAME", "admin@example.com")
+        monkeypatch.setenv("ADMIN_PASSWORD_HASH", "plaintext-not-allowed")
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("admin@example.com", "plaintext-not-allowed")
+        assert result.success is False
+        assert "not configured" in result.error.lower()
+
     def test_tenant_isolation(self):
         """Users in different orgs must resolve to their own organization_id."""
         svc = _make_service()
@@ -164,3 +203,18 @@ class TestJwtSecretConfig:
         # Two services without config should each get their own random secret
         assert svc1.jwt_secret != svc2.jwt_secret
         assert len(svc1.jwt_secret) == 64  # 32 bytes hex
+
+
+class TestLogoutRevocation:
+    def test_logout_revokes_current_token(self):
+        svc = _make_service()
+        pw_hash = svc.hash_password("logout-password")
+        user = UserRecord("u_logout", "org_logout", "logout@example.com", password_hash=pw_hash)
+        svc.user_store.add(user)
+        result = svc.authenticate_user("logout@example.com", "logout-password")
+        assert result.success is True
+        payload = svc.verify_token(result.access_token)
+        assert payload is not None
+        svc.revoke_token_id(payload.jti)
+        with pytest.raises(AuthenticationError):
+            svc.verify_token(result.access_token)
