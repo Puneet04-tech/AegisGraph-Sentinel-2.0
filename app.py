@@ -791,6 +791,25 @@ with st.sidebar:
 
     st.markdown("---")
 
+    with st.sidebar.expander("⚙️ Webhook Alert Settings", expanded=False):
+        st.toggle("Enable Webhook Alerts", value=False, key="webhook_enabled")
+        st.text_input(
+            "Webhook Endpoint URL",
+            value="",
+            placeholder="https://api.example.com/webhook",
+            key="webhook_url",
+        )
+        st.text_input(
+            "Webhook Secret Key",
+            value="",
+            type="password",
+            placeholder="Secret signature key",
+            key="webhook_secret",
+        )
+        st.slider(
+            "Anomaly Alert Threshold", 0.0, 1.0, 0.75, 0.05, key="webhook_threshold"
+        )
+
     # API Status Check
     try:
         health = _fetch_health_snapshot(API_URL)
@@ -1086,6 +1105,30 @@ elif page == "💳 Transaction Scan":
                             st.metric(
                                 "Risk Score", f"{risk:.3f}", delta=f"{(risk - 0.5):.3f}"
                             )
+                            if (
+                                st.session_state.get("webhook_enabled")
+                                and st.session_state.get("webhook_url")
+                                and risk
+                                >= st.session_state.get("webhook_threshold", 0.75)
+                            ):
+                                payload = {
+                                    "event": "anomaly_score_breached",
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "transaction_id": transaction.get(
+                                        "transaction_id", "N/A"
+                                    ),
+                                    "risk_score": risk,
+                                    "threshold": st.session_state.get(
+                                        "webhook_threshold"
+                                    ),
+                                    "decision": result.get("decision", "UNKNOWN"),
+                                    "source": "Transaction Scan Page",
+                                }
+                                trigger_webhook_alert(
+                                    st.session_state.get("webhook_url"),
+                                    payload,
+                                    st.session_state.get("webhook_secret"),
+                                )
                         with metric_cols[1]:
                             decision = result["decision"]
                             status = str(decision).upper()
@@ -2266,6 +2309,26 @@ elif page == "📊 Risk Analytics":
             st.session_state.realtime_alerts = [
                 new_alert
             ] + st.session_state.realtime_alerts[:49]
+
+            if (
+                st.session_state.get("webhook_enabled")
+                and st.session_state.get("webhook_url")
+                and sev in ("Critical", "High")
+            ):
+                payload = {
+                    "event": "critical_threat_activity",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "alert_id": new_alert["id"],
+                    "severity": sev,
+                    "title": new_alert["title"],
+                    "category": new_alert["category"],
+                    "source": "Real-time Alert Simulator",
+                }
+                trigger_webhook_alert(
+                    st.session_state.get("webhook_url"),
+                    payload,
+                    st.session_state.get("webhook_secret"),
+                )
 
         # Filters UI
         filter_col1, filter_col2 = st.columns([2, 1])
