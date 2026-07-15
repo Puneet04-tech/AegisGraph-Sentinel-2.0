@@ -36,6 +36,17 @@ from config.security import is_admin_role
 from src.inference.model_comparison import build_model_explanation_comparison
 from src.timeline.doubly_linked_list import DoublyLinkedList
 from utils.webhook_alerts import trigger_webhook_alert
+from utils.rate_limiter import RateLimiter
+
+
+def check_rate_limit() -> bool:
+    """Check rate limit. Show warning and return False if exceeded."""
+    if not st.session_state.rate_limiter.consume():
+        st.warning(
+            "⚠️ Slow down! You are exceeding the rate limit. Please wait a moment."
+        )
+        return False
+    return True
 
 
 def _get_timestamp() -> str:
@@ -57,6 +68,8 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "role" not in st.session_state:
     st.session_state.role = None
+if "rate_limiter" not in st.session_state:
+    st.session_state.rate_limiter = RateLimiter(capacity=5.0, refill_rate=1.0)
 
 if not st.session_state.logged_in:
     st.title("🛡️ AegisGraph Sentinel 2.0 Login")
@@ -3277,6 +3290,9 @@ elif page == "🕸️ Network Graph Explorer":
         search_query = st.text_input(
             "🔍 Search Account ID (e.g. ACC_VICTIM_3)", value="", key="graph_search_box"
         )
+        if search_query:
+            if not check_rate_limit():
+                search_query = ""
     with col_p2:
         physics_enabled = st.toggle(
             "🔒 Dynamic Spring Physics", value=True, key="graph_physics_toggle"
