@@ -19,6 +19,7 @@ except ImportError:
 import base64
 import html
 import json
+from config.sanitizer import sanitize_query_input
 import os
 import random
 import time
@@ -3350,9 +3351,10 @@ elif page == "🕸️ Network Graph Explorer":
     # Interactivity settings panel
     col_p1, col_p2, col_p3 = st.columns([1.5, 1, 1.5])
     with col_p1:
-        search_query = st.text_input(
+        raw_search_query = st.text_input(
             "🔍 Search Account ID (e.g. ACC_VICTIM_3)", value="", key="graph_search_box"
         )
+        search_query = sanitize_query_input(raw_search_query)
         if search_query:
             if not check_rate_limit():
                 search_query = ""
