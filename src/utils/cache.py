@@ -22,6 +22,8 @@ import networkx as nx
 from src.config.settings import get_settings
 from src.runtime.failure_policy import should_fail_fast
 
+from src.config.settings import get_settings
+
 logger = logging.getLogger(__name__)
 
 # Optional Redis import for production
@@ -171,7 +173,22 @@ class RedisGraphCache(GraphCache):
         self.redis_url = redis_url
         self.default_ttl = default_ttl
         try:
-            self.client = redis.from_url(redis_url, decode_responses=False)
+            database = get_settings().database
+            pool_kwargs = {
+                "decode_responses": False,
+                "max_connections": database.redis_max_connections,
+            }
+            if database.redis_socket_timeout is not None:
+                pool_kwargs["socket_timeout"] = database.redis_socket_timeout
+            if database.redis_socket_connect_timeout is not None:
+                pool_kwargs["socket_connect_timeout"] = database.redis_socket_connect_timeout
+            if database.redis_retry_on_timeout is not None:
+                pool_kwargs["retry_on_timeout"] = database.redis_retry_on_timeout
+            if database.redis_health_check_interval is not None:
+                pool_kwargs["health_check_interval"] = database.redis_health_check_interval
+            if database.redis_socket_keepalive is not None:
+                pool_kwargs["socket_keepalive"] = database.redis_socket_keepalive
+            self.client = redis.Redis.from_url(redis_url, **pool_kwargs)
             self.client.ping()
             logger.info("Connected to Redis cache backend")
         except Exception as e:

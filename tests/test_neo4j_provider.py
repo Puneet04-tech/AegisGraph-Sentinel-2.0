@@ -32,8 +32,18 @@ class TestNeo4jGraphProvider(unittest.TestCase):
         """Verify driver connectivity check and configuration when Neo4j is available."""
         mock_driver = MagicMock()
         mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_settings = MagicMock()
+        mock_settings.database.neo4j_max_connection_lifetime = 3600.0
+        mock_settings.database.neo4j_keep_alive = True
+        mock_settings.database.neo4j_max_connection_pool_size = 50
+        mock_settings.database.neo4j_connection_timeout = None
+        mock_settings.database.neo4j_connection_acquisition_timeout = None
+        mock_settings.database.neo4j_max_transaction_retry_time = None
+        mock_settings.database.neo4j_liveness_check_timeout = None
 
-        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True), patch(
+            "src.core.providers.neo4j.get_settings", return_value=mock_settings
+        ):
             provider = Neo4jGraphProvider(
                 uri=self.mock_uri,
                 user=self.mock_user,
@@ -46,8 +56,9 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             mock_neo4j_lib.GraphDatabase.driver.assert_called_once_with(
                 "bolt+ssc://localhost:7687",
                 auth=(self.mock_user, self.mock_password),
-                max_connection_lifetime=3600,
+                max_connection_lifetime=3600.0,
                 keep_alive=True,
+                max_connection_pool_size=50,
             )
             mock_driver.verify_connectivity.assert_called_once()
 

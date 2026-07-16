@@ -16,6 +16,7 @@ from . import defaults
 from .schemas import (
     APISettings,
     EnvironmentVariablesSchema,
+    DatabaseConnectionSettings,
     GraphRuntimeSettings,
     InnovationSettings,
     ObservabilitySettings,
@@ -38,6 +39,23 @@ ENV_ALIASES = {
     "aegis_graph_path": "AEGIS_GRAPH_PATH",
     "aegis_graph_sha256": "AEGIS_GRAPH_SHA256",
     "redis_url": "REDIS_URL",
+    "redis_max_connections": "REDIS_MAX_CONNECTIONS",
+    "redis_socket_timeout": "REDIS_SOCKET_TIMEOUT",
+    "redis_socket_connect_timeout": "REDIS_SOCKET_CONNECT_TIMEOUT",
+    "redis_retry_on_timeout": "REDIS_RETRY_ON_TIMEOUT",
+    "redis_health_check_interval": "REDIS_HEALTH_CHECK_INTERVAL",
+    "redis_socket_keepalive": "REDIS_SOCKET_KEEPALIVE",
+    "neo4j_enabled": "NEO4J_ENABLED",
+    "neo4j_uri": "NEO4J_URI",
+    "neo4j_user": "NEO4J_USER",
+    "neo4j_password": "NEO4J_PASSWORD",
+    "neo4j_max_connection_pool_size": "NEO4J_MAX_CONNECTION_POOL_SIZE",
+    "neo4j_connection_timeout": "NEO4J_CONNECTION_TIMEOUT",
+    "neo4j_connection_acquisition_timeout": "NEO4J_CONNECTION_ACQUISITION_TIMEOUT",
+    "neo4j_max_connection_lifetime": "NEO4J_MAX_CONNECTION_LIFETIME",
+    "neo4j_max_transaction_retry_time": "NEO4J_MAX_TRANSACTION_RETRY_TIME",
+    "neo4j_keep_alive": "NEO4J_KEEP_ALIVE",
+    "neo4j_liveness_check_timeout": "NEO4J_LIVENESS_CHECK_TIMEOUT",
     "backup_directory": "BACKUP_DIRECTORY",
     "backup_encryption_key": "BACKUP_ENCRYPTION_KEY",
     "backup_database_url": "BACKUP_DATABASE_URL",
@@ -152,6 +170,32 @@ def _bool_from_env(value: Optional[str], default: bool = False) -> bool:
     )
 
 
+def _bool_from_env_or_default(value: Optional[str], default: bool = False) -> bool:
+    try:
+        return _bool_from_env(value, default=default)
+    except ValueError:
+        logger.warning("Ignoring invalid boolean environment value for debug flag: %r", value)
+        return default
+
+
+def _float_from_env(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid numeric environment value: {value!r}") from exc
+
+
+def _int_from_env(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid integer environment value: {value!r}") from exc
+
+
 def _build_settings_dict(
     runtime_config: Dict[str, Any],
     thresholds_config: Dict[str, Any],
@@ -167,6 +211,9 @@ def _build_settings_dict(
     risk_config = dict(runtime_config.get("risk_scoring", {}))
     advanced_config = dict(runtime_config.get("advanced_features", {}))
     webhook_config = dict(runtime_config.get("webhook", {}))
+    database_config = dict(runtime_config.get("database", {}))
+    redis_config = dict(database_config.get("redis", {}))
+    neo4j_config = dict(database_config.get("neo4j", {}))
     runtime_policy_config = dict(runtime_config.get("runtime", {}))
 
     risk_thresholds = dict(risk_config.get("thresholds", {}))
@@ -304,6 +351,54 @@ def _build_settings_dict(
                 else defaults.DEFAULT_HONEYPOT_ESCROW_SECONDS,
             ),
         },
+        "database": {
+            "redis_url": env.redis_url or database_config.get("redis_url") or redis_config.get("url"),
+            "redis_max_connections": _int_from_env(env.redis_max_connections)
+            if env.redis_max_connections is not None
+            else redis_config.get("max_connections", 50),
+            "redis_socket_timeout": _float_from_env(env.redis_socket_timeout)
+            if env.redis_socket_timeout is not None
+            else redis_config.get("socket_timeout"),
+            "redis_socket_connect_timeout": _float_from_env(env.redis_socket_connect_timeout)
+            if env.redis_socket_connect_timeout is not None
+            else redis_config.get("socket_connect_timeout"),
+            "redis_retry_on_timeout": _bool_from_env(env.redis_retry_on_timeout)
+            if env.redis_retry_on_timeout is not None
+            else redis_config.get("retry_on_timeout", False),
+            "redis_health_check_interval": _int_from_env(env.redis_health_check_interval)
+            if env.redis_health_check_interval is not None
+            else redis_config.get("health_check_interval"),
+            "redis_socket_keepalive": _bool_from_env(env.redis_socket_keepalive)
+            if env.redis_socket_keepalive is not None
+            else redis_config.get("socket_keepalive", False),
+            "neo4j_enabled": _bool_from_env(env.neo4j_enabled)
+            if env.neo4j_enabled is not None
+            else neo4j_config.get("enabled", False),
+            "neo4j_uri": env.neo4j_uri or neo4j_config.get("uri"),
+            "neo4j_user": env.neo4j_user or neo4j_config.get("user"),
+            "neo4j_password": env.neo4j_password or neo4j_config.get("password"),
+            "neo4j_max_connection_pool_size": _int_from_env(env.neo4j_max_connection_pool_size)
+            if env.neo4j_max_connection_pool_size is not None
+            else neo4j_config.get("max_connection_pool_size", 50),
+            "neo4j_connection_timeout": _float_from_env(env.neo4j_connection_timeout)
+            if env.neo4j_connection_timeout is not None
+            else neo4j_config.get("connection_timeout"),
+            "neo4j_connection_acquisition_timeout": _float_from_env(env.neo4j_connection_acquisition_timeout)
+            if env.neo4j_connection_acquisition_timeout is not None
+            else neo4j_config.get("connection_acquisition_timeout"),
+            "neo4j_max_connection_lifetime": _float_from_env(env.neo4j_max_connection_lifetime)
+            if env.neo4j_max_connection_lifetime is not None
+            else neo4j_config.get("max_connection_lifetime", 3600.0),
+            "neo4j_max_transaction_retry_time": _float_from_env(env.neo4j_max_transaction_retry_time)
+            if env.neo4j_max_transaction_retry_time is not None
+            else neo4j_config.get("max_transaction_retry_time"),
+            "neo4j_keep_alive": _bool_from_env(env.neo4j_keep_alive)
+            if env.neo4j_keep_alive is not None
+            else neo4j_config.get("keep_alive", True),
+            "neo4j_liveness_check_timeout": _float_from_env(env.neo4j_liveness_check_timeout)
+            if env.neo4j_liveness_check_timeout is not None
+            else neo4j_config.get("liveness_check_timeout"),
+        },
         "webhook": {
             "discord_url": env.discord_webhook_url or webhook_config.get("discord_url", defaults.DEFAULT_DISCORD_WEBHOOK_URL),
             "slack_url": env.slack_webhook_url or webhook_config.get("slack_url", defaults.DEFAULT_SLACK_WEBHOOK_URL),
@@ -315,7 +410,7 @@ def _build_settings_dict(
         },
         "runtime": {
             "environment": environment,
-            "debug": _bool_from_env(env.debug, default=False),
+            "debug": _bool_from_env_or_default(env.debug, default=False),
             "strict_validation": None,
             "config_path": config_path,
             "failure_mode": (
@@ -363,6 +458,7 @@ def load_settings(
             high_value_threshold=settings_dict["scoring"]["high_value_threshold"],
         ),
         innovations=InnovationSettings(**settings_dict["innovations"]),
+        database=DatabaseConnectionSettings(**settings_dict["database"]),
         webhook=WebhookSettings(**settings_dict["webhook"]),
         runtime=RuntimeFlags(**settings_dict["runtime"]),
         raw_config=settings_dict["raw_config"],
