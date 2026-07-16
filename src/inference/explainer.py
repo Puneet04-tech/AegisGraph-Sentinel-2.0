@@ -18,9 +18,22 @@ GNNExplainer = None
 
 class AegisModelExplainer:
     """
-    Compliance engine for the HTGNN. Extracts the critical subgraph 
+    Compliance engine for the HTGNN. Extracts the critical subgraph
     responsible for triggering a fraud alert using Mutual Information.
     """
+
+    # Edge selection: at most MAX_EXPLANATION_EDGES edges with mask weight
+    # above EDGE_WEIGHT_THRESHOLD are reported as the explanation subgraph.
+    MAX_EXPLANATION_EDGES = 10
+    EDGE_WEIGHT_THRESHOLD = 0.5
+
+    # Faithfulness verdict thresholds: the explanation is considered
+    # necessary when removing it drops the prediction by at least
+    # FIDELITY_PLUS_MIN, and sufficient when keeping only the explanation
+    # changes the prediction by no more than FIDELITY_MINUS_TOLERANCE.
+    FIDELITY_PLUS_MIN = 0.1
+    FIDELITY_MINUS_TOLERANCE = 0.1
+
     def __init__(self, model):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
@@ -55,23 +68,130 @@ class AegisModelExplainer:
         x = node_features.to(self.device)
         edge_idx = edge_index.to(self.device)
 
+        edge_weights = self._compute_edge_mask(x, edge_idx, target_node_idx)
+        selected = self._select_explanation_edges(edge_weights)
+        return self._build_critical_path(edge_idx, edge_weights, selected)
+
+    def explain_with_faithfulness(self, node_features, edge_index, target_node_idx):
+        """
+        Extract the critical subgraph and validate it against the model.
+
+        Runs the explainer once, then measures whether the selected edges
+        actually drive the prediction (mask-based importance is not, by
+        itself, evidence of faithfulness).
+
+        Returns a dict ready to merge into graph_patterns:
+        - 'critical_topology': same shape as extract_critical_topology()
+        - 'explanation_faithfulness': fidelity+/fidelity-/sparsity metrics
+          and a verdict
+        """
+        x = node_features.to(self.device)
+        edge_idx = edge_index.to(self.device)
+
+        edge_weights = self._compute_edge_mask(x, edge_idx, target_node_idx)
+        selected = self._select_explanation_edges(edge_weights)
+
+        return {
+            'critical_topology': self._build_critical_path(
+                edge_idx, edge_weights, selected
+            ),
+            'explanation_faithfulness': self._evaluate_faithfulness(
+                x, edge_idx, target_node_idx, selected
+            ),
+        }
+
+    def _compute_edge_mask(self, x, edge_idx, target_node_idx):
+        """Run the explainer and return the learned edge importance mask."""
         with torch.enable_grad():
             explanation = self._get_explainer()(x, edge_idx, index=target_node_idx)
-        
-        edge_weights = explanation.edge_mask
-        k = min(10, edge_weights.size(0))
+        return explanation.edge_mask
+
+    def _select_explanation_edges(self, edge_weights):
+        """Indices of the top edges above the importance threshold."""
+        k = min(self.MAX_EXPLANATION_EDGES, edge_weights.size(0))
         top_edges = torch.topk(edge_weights, k)
-        
-        critical_path = []
-        for idx in top_edges.indices:
-            weight = edge_weights[idx].item()
-            if weight > 0.5:
-                critical_path.append({
-                    "source_node": edge_idx[0, idx].item(), 
-                    "target_node": edge_idx[1, idx].item(), 
-                    "fraud_contribution": weight
-                })
-        return critical_path
+        return [
+            idx.item() for idx in top_edges.indices
+            if edge_weights[idx].item() > self.EDGE_WEIGHT_THRESHOLD
+        ]
+
+    def _build_critical_path(self, edge_idx, edge_weights, selected):
+        """Format selected edges as the reported critical path."""
+        return [
+            {
+                "source_node": edge_idx[0, idx].item(),
+                "target_node": edge_idx[1, idx].item(),
+                "fraud_contribution": edge_weights[idx].item(),
+            }
+            for idx in selected
+        ]
+
+    def _predict_proba(self, x, edge_idx, target_node_idx) -> float:
+        """Model probability for the target node under a given edge set."""
+        with torch.no_grad():
+            out = self.model(x, edge_idx)
+        if out.dim() > 1:
+            out = out.squeeze(-1)
+        return float(out[target_node_idx])
+
+    def _evaluate_faithfulness(self, x, edge_idx, target_node_idx, selected):
+        """
+        Perturbation-based faithfulness check of the explanation subgraph.
+
+        - fidelity+ (necessity): prediction drop when the explanation
+          edges are removed. High is good.
+        - fidelity- (sufficiency): prediction change when ONLY the
+          explanation edges are kept. Near zero is good.
+        - sparsity: fraction of the graph NOT needed to explain the
+          decision. High means a compact explanation.
+        """
+        total_edges = edge_idx.size(1)
+
+        if not selected or total_edges == 0:
+            return {
+                'fidelity_plus': 0.0,
+                'fidelity_minus': 0.0,
+                'sparsity': 0.0,
+                'explanation_edge_count': 0,
+                'total_edge_count': total_edges,
+                'verdict': 'NO_EXPLANATION',
+            }
+
+        selected_mask = torch.zeros(
+            total_edges, dtype=torch.bool, device=edge_idx.device
+        )
+        selected_mask[selected] = True
+
+        p_original = self._predict_proba(x, edge_idx, target_node_idx)
+        p_without_explanation = self._predict_proba(
+            x, edge_idx[:, ~selected_mask], target_node_idx
+        )
+        p_only_explanation = self._predict_proba(
+            x, edge_idx[:, selected_mask], target_node_idx
+        )
+
+        fidelity_plus = p_original - p_without_explanation
+        fidelity_minus = p_original - p_only_explanation
+        sparsity = 1.0 - len(selected) / total_edges
+
+        is_necessary = fidelity_plus >= self.FIDELITY_PLUS_MIN
+        is_sufficient = abs(fidelity_minus) <= self.FIDELITY_MINUS_TOLERANCE
+
+        if is_necessary and is_sufficient:
+            verdict = 'FAITHFUL'
+        elif is_necessary or is_sufficient:
+            verdict = 'PARTIALLY_FAITHFUL'
+        else:
+            verdict = 'UNFAITHFUL'
+
+        return {
+            'fidelity_plus': round(fidelity_plus, 4),
+            'fidelity_minus': round(fidelity_minus, 4),
+            'sparsity': round(sparsity, 4),
+            'explanation_edge_count': len(selected),
+            'total_edge_count': total_edges,
+            'verdict': verdict,
+        }
 
 class AegisOracle:
     """
@@ -252,6 +372,25 @@ class AegisOracle:
                 dst = edge['target_node']
                 weight = edge['fraud_contribution']
                 explanations.append(f"  • Suspicious Edge [Node {src} -> Node {dst}]: AI Impact Weight {weight:.4f}")
+
+        # Faithfulness validation of the explanation subgraph
+        faithfulness = graph_patterns.get('explanation_faithfulness')
+        if faithfulness:
+            explanations.append("\n  **Explanation Faithfulness Validation:**")
+            explanations.append(
+                f"  • Fidelity+ (necessity): {faithfulness['fidelity_plus']:.4f} "
+                f"(prediction drop when explanation edges are removed)"
+            )
+            explanations.append(
+                f"  • Fidelity- (sufficiency): {faithfulness['fidelity_minus']:.4f} "
+                f"(prediction change with only explanation edges kept)"
+            )
+            explanations.append(
+                f"  • Sparsity: {faithfulness['sparsity']:.2%} "
+                f"({faithfulness['explanation_edge_count']} of "
+                f"{faithfulness['total_edge_count']} edges used)"
+            )
+            explanations.append(f"  • Verdict: {faithfulness['verdict']}")
 
         if not explanations:
             explanations.append("  • Structural anomalies in transaction network")
