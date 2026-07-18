@@ -1302,7 +1302,8 @@ class TestDefaultRateLimiting:
             pytest.skip("SlowAPI is not installed")
 
         # Set a low rate limit for testing
-        monkeypatch.setattr(api_main.settings.api, "rate_limit", "5/minute")
+        monkeypatch.setattr(api_main.settings.api, "rate_limit_burst", 5)
+        monkeypatch.setattr(api_main.settings.api, "rate_limit_window_seconds", 60)
 
         # Clear existing rate limit keys to ensure clean state
         _clear_rate_limit_storage()

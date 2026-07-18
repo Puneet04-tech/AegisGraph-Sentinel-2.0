@@ -111,8 +111,7 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
         # SlowAPI is an optional acceleration path; the distributed limiter
         # below should still run when SlowAPI is unavailable.
         limiter = getattr(request.app.state, "limiter", None)
-        if not limiter:
-            return await call_next(request)
+        # We don't early return here so that our distributed limiter runs.
 
         path = request.url.path
 
