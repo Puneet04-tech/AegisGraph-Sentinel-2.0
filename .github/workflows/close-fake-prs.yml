@@ -1,0 +1,59 @@
+name: Close fake PRs
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'GitHub username of the fake PR creator'
+        required: true
+        type: string
+      close_reason:
+        description: 'Reason to show in the close comment'
+        required: false
+        type: string
+        default: 'Closing this PR as it is spam / fake.'
+      delete_branch:
+        description: 'Delete the branch after closing?'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  close-prs:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write   # needed only if you delete branches (delete_branch: true)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Close all open PRs from the specified user
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          USER="${{ github.event.inputs.username }}"
+          REASON="${{ github.event.inputs.close_reason }}"
+          DELETE_BRANCH="${{ github.event.inputs.delete_branch }}"
+
+          echo "::group::Fetching open PRs from $USER"
+          PRS=$(gh pr list --state open --author "$USER" --json number --jq '.[].number')
+          echo "::endgroup::"
+
+          if [ -z "$PRS" ]; then
+            echo "No open PRs from $USER found."
+            exit 0
+          fi
+
+          echo "Found PRs: $PRS"
+          for PR in $PRS; do
+            echo "::group::Closing PR #$PR"
+            if [ "$DELETE_BRANCH" = "true" ]; then
+              gh pr close "$PR" --comment "$REASON" --delete-branch
+            else
+              gh pr close "$PR" --comment "$REASON"
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "✅ All open PRs from $USER have been closed."
