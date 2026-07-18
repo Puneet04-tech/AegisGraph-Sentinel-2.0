@@ -31,6 +31,8 @@ _trainer_logger = logging.getLogger(__name__)
 from ..utils.encryption import get_encryption_handler
 from ..utils.helpers import get_device
 from .adversarial import AdversarialTrainer, RobustnessEvaluator
+from .calibration import (TemperatureScaler, expected_calibration_error,
+                          reliability_curve)
 from .losses import CombinedLoss, FocalLoss
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,10 @@ class Trainer:
         self.best_val_loss = float("inf")
         self.best_val_f1 = 0.0
         self.patience_counter = 0
+
+        # Post-hoc calibration state (set by calibrate())
+        self.temperature_scaler = None
+        self.calibration_report = None
 
         # Metrics history
         self.history = {
@@ -403,11 +409,13 @@ class Trainer:
                             "train_precision": train_metrics["precision"],
                             "train_recall": train_metrics["recall"],
                             "train_roc_auc": train_metrics["roc_auc"],
+                            "train_ece": train_metrics["ece"],
                             "val_loss": val_metrics["loss"],
                             "val_f1": val_metrics["f1"],
                             "val_precision": val_metrics["precision"],
                             "val_recall": val_metrics["recall"],
                             "val_roc_auc": val_metrics["roc_auc"],
+                            "val_ece": val_metrics["ece"],
                         },
                         step=epoch,
                     )
@@ -433,6 +441,16 @@ class Trainer:
                     break
 
                 logger.info("-" * 80)
+
+            # Post-hoc calibration on the validation set (opt-in via config)
+            calibration_config = self.config.get("training", {}).get(
+                "calibration", {}
+            )
+            if calibration_config.get("enabled", False):
+                self.calibrate(
+                    val_loader,
+                    n_bins=calibration_config.get("n_bins", 10),
+                )
 
             # Save final model
             self.save_checkpoint(save_path / "htgnn_final.pt")
@@ -466,6 +484,8 @@ class Trainer:
         }
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.calibration_report is not None:
+            checkpoint["calibration"] = self.calibration_report
 
         # Encrypt checkpoint before saving
         encryption = get_encryption_handler()
@@ -507,6 +527,12 @@ class Trainer:
         self.best_val_loss = checkpoint["best_val_loss"]
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if "calibration" in checkpoint:
+            self.calibration_report = checkpoint["calibration"]
+            self.temperature_scaler = TemperatureScaler()
+            self.temperature_scaler.load_temperature(
+                self.calibration_report["temperature"]
+            )
 
     def save_history(self, path: Path):
         """Save training history"""
@@ -582,6 +608,89 @@ class Trainer:
 
         return all_results
 
+    def calibrate(
+        self,
+        val_loader: DataLoader,
+        n_bins: int = 10,
+    ) -> Dict[str, any]:
+        """
+        Fit temperature scaling on the validation set.
+
+        Learns a single temperature that rescales the model's risk
+        probabilities so they match observed fraud frequencies.
+        Temperature scaling is monotonic, so ROC-AUC/PR-AUC and the
+        score ranking are unchanged — only confidence is corrected.
+
+        Args:
+            val_loader: Validation data loader (must be held-out data)
+            n_bins: Number of bins for ECE / reliability diagram
+
+        Returns:
+            Calibration report with the fitted temperature, ECE before
+            and after, and reliability curves for plotting.
+        """
+        probs, labels = self._collect_predictions(val_loader)
+
+        scaler = TemperatureScaler()
+        temperature = scaler.fit(probs, labels)
+        calibrated = scaler.transform(probs)
+
+        report = {
+            "temperature": temperature,
+            "n_bins": n_bins,
+            "ece_before": expected_calibration_error(probs, labels, n_bins),
+            "ece_after": expected_calibration_error(calibrated, labels, n_bins),
+            "reliability_before": reliability_curve(probs, labels, n_bins),
+            "reliability_after": reliability_curve(calibrated, labels, n_bins),
+        }
+
+        self.temperature_scaler = scaler
+        self.calibration_report = report
+
+        logger.info(
+            "Calibration: temperature=%.4f ECE %.4f -> %.4f",
+            temperature,
+            report["ece_before"],
+            report["ece_after"],
+        )
+
+        if self.mlflow_enabled:
+            mlflow.log_metrics(
+                {
+                    "calibration_temperature": temperature,
+                    "val_ece_before_calibration": report["ece_before"],
+                    "val_ece_after_calibration": report["ece_after"],
+                }
+            )
+
+        return report
+
+    def _collect_predictions(
+        self, loader: DataLoader
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Collect model probabilities and labels over a data loader."""
+        self.model.eval()
+        all_preds = []
+        all_labels = []
+
+        with torch.no_grad():
+            for batch in loader:
+                batch = self._batch_to_device(batch)
+                outputs = self.model(
+                    x=batch["x"],
+                    edge_index=batch["edge_index"],
+                    node_type=batch["node_type"],
+                    edge_type=batch["edge_type"],
+                    edge_timestamp=batch["edge_timestamp"],
+                    batch=batch.get("batch", None),
+                )
+                all_preds.extend(
+                    np.atleast_1d(outputs["risk"].cpu().numpy())
+                )
+                all_labels.extend(np.atleast_1d(batch["label"].cpu().numpy()))
+
+        return np.array(all_preds), np.array(all_labels)
+
     def _batch_to_device(self, batch: dict) -> dict:
         """Move batch tensors to device"""
         return {
@@ -631,4 +740,5 @@ class Trainer:
             "f1": f1,
             "roc_auc": roc_auc,
             "pr_auc": pr_auc,
+            "ece": expected_calibration_error(predictions, labels),
         }
