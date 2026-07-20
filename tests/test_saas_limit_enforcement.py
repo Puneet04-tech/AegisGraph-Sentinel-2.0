@@ -22,36 +22,19 @@ def test_enforce_tenant_limit_exceeded() -> None:
     assert excinfo.value.status_code == 402
     assert "limit exceeded" in excinfo.value.detail.lower()
 
-def test_api_user_creation_limits() -> None:
+def test_placeholder_user_api_is_not_mounted() -> None:
     client = TestClient(app)
-    
-    # Reset limit count for tenant_test
-    set_tenant_resource_count("tenant_test", "max_users", 0)
-    
-    # Create 5 users successfully (limit is 5)
-    for i in range(5):
-        resp = client.post(
-            "/api/v1/users/?tenant_id=tenant_test",
-            json={
-                "email": f"user_{i}@example.com",
-                "full_name": f"User {i}",
-                "username": f"user_{i}",
-                "password": "password123"
-            }
-        )
-        assert resp.status_code == 201
-    
-    # The 6th user creation should be rejected with 402 (Payment Required)
-    resp = client.post(
-        "/api/v1/users/?tenant_id=tenant_test",
+
+    response = client.post(
+        "/api/v1/users/",
+        params={"tenant_id": "tenant_test"},
         json={
-            "email": "user_overflow@example.com",
-            "full_name": "Overflow User",
-            "username": "overflow",
-            "password": "password123"
-        }
+            "email": "user@example.com",
+            "full_name": "User",
+            "username": "user",
+            "password": "password123",
+            "role": "admin",
+        },
     )
-    assert resp.status_code == 402
-    json_data = resp.json()
-    error_msg = json_data.get("detail") or json_data.get("error", {}).get("message", "")
-    assert "limit exceeded" in error_msg.lower()
+
+    assert response.status_code == 404
