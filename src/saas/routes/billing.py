@@ -3,11 +3,12 @@ Billing & Subscription Routes
 AegisGraph Sentinel Enterprise SaaS Platform
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
+from src.exceptions import BillingError
 from src.saas.services.billing import PLANS, PriceTier, billing_service
 from src.saas.routes.auth import get_current_user
 from src.saas.routes.organizations import _require_org_access
@@ -276,9 +277,25 @@ async def create_customer_portal(
 
 
 @router.post("/webhook")
-async def handle_stripe_webhook(payload: dict, headers: dict):
+async def handle_stripe_webhook(request: Request):
     """Handle Stripe webhook events"""
-    return {"received": True}
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    if not signature:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing Stripe-Signature header",
+        )
+
+    try:
+        result = billing_service.handle_webhook(payload, signature)
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    return {"received": True, **result}
 
 
 @router.get("/payment-methods")
