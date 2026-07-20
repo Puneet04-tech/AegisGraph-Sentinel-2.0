@@ -3,12 +3,15 @@ Billing & Subscription Routes
 AegisGraph Sentinel Enterprise SaaS Platform
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
+from src.exceptions import BillingError
 from src.saas.services.billing import PLANS, PriceTier, billing_service
+from src.saas.routes.auth import get_current_user
+from src.saas.routes.organizations import _require_org_access
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
@@ -74,8 +77,13 @@ async def list_plans():
 
 
 @router.get("/subscription", response_model=SubscriptionResponse)
-async def get_subscription(organization_id: str):
+async def get_subscription(
+    organization_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get current subscription"""
+    _require_org_access(organization_id, current_user)
+
     return SubscriptionResponse(
         id="sub_123",
         tier="professional",
@@ -93,8 +101,11 @@ async def create_subscription(
     organization_id: str,
     tier: PriceTier,
     billing_cycle: str = "monthly",
+    current_user: dict = Depends(get_current_user),
 ):
     """Create new subscription"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "subscription_id": f"sub_{datetime.now(timezone.utc).timestamp()}",
         "tier": tier.value,
@@ -108,8 +119,11 @@ async def update_subscription(
     organization_id: str,
     tier: Optional[PriceTier] = None,
     billing_cycle: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """Update subscription (upgrade/downgrade)"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "success": True,
         "subscription_id": "sub_123",
@@ -122,8 +136,11 @@ async def cancel_subscription(
     organization_id: str,
     cancel_at_period_end: bool = True,
     reason: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """Cancel subscription"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "success": True,
         "subscription_id": "sub_123",
@@ -133,14 +150,25 @@ async def cancel_subscription(
 
 
 @router.post("/subscription/resume")
-async def resume_subscription(organization_id: str):
+async def resume_subscription(
+    organization_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Resume canceled subscription"""
+    _require_org_access(organization_id, current_user)
+
     return {"success": True}
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
-async def list_invoices(organization_id: str, limit: int = 10):
+async def list_invoices(
+    organization_id: str,
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user),
+):
     """List invoices"""
+    _require_org_access(organization_id, current_user)
+
     return [
         InvoiceResponse(
             id="inv_1",
@@ -157,8 +185,14 @@ async def list_invoices(organization_id: str, limit: int = 10):
 
 
 @router.get("/invoices/{invoice_id}", response_model=InvoiceResponse)
-async def get_invoice(organization_id: str, invoice_id: str):
+async def get_invoice(
+    organization_id: str,
+    invoice_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get invoice details"""
+    _require_org_access(organization_id, current_user)
+
     return InvoiceResponse(
         id=invoice_id,
         number="INV-2024-001",
@@ -173,8 +207,13 @@ async def get_invoice(organization_id: str, invoice_id: str):
 
 
 @router.get("/usage", response_model=UsageResponse)
-async def get_usage(organization_id: str):
+async def get_usage(
+    organization_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get usage metrics"""
+    _require_org_access(organization_id, current_user)
+
     return UsageResponse(
         api_calls_this_period=75000,
         max_api_calls=100000,
@@ -187,8 +226,14 @@ async def get_usage(organization_id: str):
 
 
 @router.get("/usage/daily")
-async def get_daily_usage(organization_id: str, days: int = 30):
+async def get_daily_usage(
+    organization_id: str,
+    days: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
     """Get daily usage breakdown"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "daily_usage": [
             {
@@ -207,8 +252,11 @@ async def create_checkout_session(
     organization_id: str,
     tier: PriceTier,
     billing_cycle: str = "monthly",
+    current_user: dict = Depends(get_current_user),
 ):
     """Create Stripe checkout session"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "checkout_url": "https://checkout.stripe.com/...",
         "session_id": "cs_123",
@@ -216,22 +264,48 @@ async def create_checkout_session(
 
 
 @router.post("/portal")
-async def create_customer_portal(organization_id: str):
+async def create_customer_portal(
+    organization_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Create Stripe customer portal session"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "portal_url": "https://billing.stripe.com/...",
     }
 
 
 @router.post("/webhook")
-async def handle_stripe_webhook(payload: dict, headers: dict):
+async def handle_stripe_webhook(request: Request):
     """Handle Stripe webhook events"""
-    return {"received": True}
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    if not signature:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing Stripe-Signature header",
+        )
+
+    try:
+        result = billing_service.handle_webhook(payload, signature)
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    return {"received": True, **result}
 
 
 @router.get("/payment-methods")
-async def list_payment_methods(organization_id: str):
+async def list_payment_methods(
+    organization_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """List saved payment methods"""
+    _require_org_access(organization_id, current_user)
+
     return {
         "payment_methods": [
             {
@@ -248,12 +322,24 @@ async def list_payment_methods(organization_id: str):
 
 
 @router.post("/payment-methods")
-async def add_payment_method(organization_id: str, payment_method_id: str):
+async def add_payment_method(
+    organization_id: str,
+    payment_method_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Add payment method"""
+    _require_org_access(organization_id, current_user)
+
     return {"success": True, "payment_method_id": payment_method_id}
 
 
 @router.delete("/payment-methods/{method_id}")
-async def remove_payment_method(organization_id: str, method_id: str):
+async def remove_payment_method(
+    organization_id: str,
+    method_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Remove payment method"""
+    _require_org_access(organization_id, current_user)
+
     return {"success": True}
