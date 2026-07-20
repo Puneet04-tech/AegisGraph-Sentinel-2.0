@@ -195,6 +195,19 @@ class ServiceNowClient:
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """Query records from ServiceNow"""
+        # "^" is the ServiceNow encoded-query condition separator (and
+        # "^OR" introduces an OR clause), so any "^" inside a caller-supplied
+        # key or value would let it splice in extra conditions the caller
+        # never intended. Reject those up front instead of joining them into
+        # sysparm_query, since the REST Table API has no documented way to
+        # escape a literal "^".
+        for key, value in filters.items():
+            if "^" in str(key) or "^" in str(value):
+                raise ValueError(
+                    f"Invalid ServiceNow query filter for '{key}': "
+                    "'^' is not allowed in query keys or values."
+                )
+
         try:
             params = {
                 "sysparm_limit": limit,
