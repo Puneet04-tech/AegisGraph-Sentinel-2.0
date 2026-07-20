@@ -63,6 +63,7 @@ class PipelineExecutor:
         try:
             # Execute stages
             data = source_data or self._generate_sample_data()
+            records_in = len(data)
             records_processed = 0
             records_failed = 0
             
@@ -73,10 +74,10 @@ class PipelineExecutor:
                 logger.info(f"Executing stage: {stage_type}")
                 job.logs.append(f"Stage {stage_type} started")
                 
-                # Simulate stage execution
-                processed, failed = self._execute_stage(stage_type, stage_config, data)
-                records_processed += processed
-                records_failed += failed
+                data, records_processed, stage_failed = self._execute_stage(
+                    stage_type, stage_config, data
+                )
+                records_failed += stage_failed
                 
                 job.logs.append(f"Stage {stage_type} completed")
             
@@ -91,7 +92,7 @@ class PipelineExecutor:
             metrics = PipelineMetrics(
                 pipeline_id=pipeline_id,
                 job_id=job.job_id,
-                records_in=len(data),
+                records_in=records_in,
                 records_out=records_processed,
                 records_failed=records_failed,
                 duration_seconds=duration,
@@ -115,12 +116,106 @@ class PipelineExecutor:
         config: Dict[str, Any],
         data: List[Dict[str, Any]],
     ) -> tuple:
-        """Execute a single stage."""
-        # Simulate stage execution
-        records_out = len(data)
-        records_failed = int(len(data) * random.uniform(0, 0.05))
+        """Execute a single stage and return (data, records_out, records_failed).
+
+        Dispatches to the source/transform/validate/load implementations
+        based on the stage's configured behavior instead of unconditionally
+        reporting success.
+        """
+        if stage_type == "source":
+            return self._execute_source_stage(config, data)
+        elif stage_type == "transform":
+            return self._execute_transform_stage(config, data)
+        elif stage_type == "validate":
+            return self._execute_validate_stage(config, data)
+        elif stage_type == "load":
+            return self._execute_load_stage(config, data)
         
-        return records_out, records_failed
+        logger.warning(f"Unknown stage type: {stage_type}")
+        return data, len(data), 0
+    
+    def _execute_source_stage(
+        self,
+        config: Dict[str, Any],
+        data: List[Dict[str, Any]],
+    ) -> tuple:
+        """Extract data from the configured source, if any."""
+        from .data_sources import DataSourceConnector
+        
+        source_id = config.get("source_id")
+        if not source_id:
+            return data, len(data), 0
+        
+        connector = DataSourceConnector(store=self._store)
+        extracted = connector.extract_data(source_id, limit=config.get("limit", 1000))
+        return extracted, len(extracted), 0
+    
+    def _execute_transform_stage(
+        self,
+        config: Dict[str, Any],
+        data: List[Dict[str, Any]],
+    ) -> tuple:
+        """Apply the configured transformation to the data."""
+        from .transformations import DataTransformer
+        
+        transform_id = config.get("transform_id")
+        if not transform_id:
+            return data, len(data), 0
+        
+        transformer = DataTransformer(store=self._store)
+        transform = transformer.get_transform(transform_id)
+        if not transform:
+            raise ValueError(f"Transform {transform_id} not found")
+        
+        transformed = transformer.apply_transform(transform, data)
+        records_failed = max(0, len(data) - len(transformed))
+        return transformed, len(transformed), records_failed
+    
+    def _execute_validate_stage(
+        self,
+        config: Dict[str, Any],
+        data: List[Dict[str, Any]],
+    ) -> tuple:
+        """Run configured validation rules against the data.
+
+        Records failing any rule marked as ERROR are dropped from the
+        output (and counted as failed) when ``strict`` is set.
+        """
+        from .validators import DataValidator
+        from .models import ValidationLevel
+        
+        rule_ids = config.get("rule_ids")
+        validator = DataValidator(store=self._store)
+        rules = (
+            [r for r in validator.list_rules() if r.rule_id in rule_ids]
+            if rule_ids
+            else validator.list_rules()
+        )
+        
+        if not rules:
+            return data, len(data), 0
+        
+        results = validator.validate_data(data, rules)
+        records_failed = sum(r.error_count for r in results)
+        
+        strict = config.get("strict", False)
+        has_error_failure = any(
+            r.error_count > 0
+            for r, rule in zip(results, rules)
+            if rule.level == ValidationLevel.ERROR
+        )
+        if strict and has_error_failure:
+            raise ValueError("Validation failed for one or more required rules")
+        
+        return data, len(data), records_failed
+    
+    def _execute_load_stage(
+        self,
+        config: Dict[str, Any],
+        data: List[Dict[str, Any]],
+    ) -> tuple:
+        """Load stage is a terminal sink; data passes through unchanged."""
+        return data, len(data), 0
     
     def _generate_sample_data(self) -> List[Dict[str, Any]]:
         """Generate sample data for testing."""
