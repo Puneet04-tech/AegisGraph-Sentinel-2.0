@@ -92,13 +92,19 @@ class DataValidator:
         failed = 0
         error_samples = []
         
+        if rule.rule_type == "unique":
+            value_counts: Dict[Any, int] = {}
+            for record in data:
+                value = record.get(rule.field)
+                value_counts[value] = value_counts.get(value, 0) + 1
+        
         for record in data:
             value = record.get(rule.field)
             
             if rule.rule_type == "not_null":
                 is_valid = value is not None and value != ""
             elif rule.rule_type == "unique":
-                is_valid = True  # Simplified
+                is_valid = value_counts.get(value, 0) <= 1
             elif rule.rule_type == "range":
                 min_val = rule.config.get("min")
                 max_val = rule.config.get("max")
