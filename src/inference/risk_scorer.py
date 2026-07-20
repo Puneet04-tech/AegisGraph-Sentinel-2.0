@@ -706,34 +706,32 @@ def compute_risk_score(
                     with lock:
                         if source_account not in centrality_baseline:
                             centrality_baseline[source_account] = []
-                        baseline_snapshot = list(centrality_baseline[source_account])
+                        live_history = centrality_baseline.get(source_account, [])
+                        baseline_snapshot = list(live_history)
 
-                    if len(baseline_snapshot) >= 3:
-                        baseline_avg = np.mean(baseline_snapshot)
-                        baseline_std = np.std(baseline_snapshot) if len(baseline_snapshot) > 1 else 0.001
+                        if len(baseline_snapshot) >= 3:
+                            baseline_avg = np.mean(baseline_snapshot)
+                            baseline_std = np.std(baseline_snapshot) if len(baseline_snapshot) > 1 else 0.001
 
-                        # Spike detection: configurable thresholds (from thresholds.yaml)
-                        spike_threshold = max(
-                            baseline_avg + config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER * baseline_std,
-                            baseline_avg * config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
-                        )
-
-                        if current_score > spike_threshold and baseline_avg > 0:
-                            lateral_movement_detected = True
-                            lateral_movement_reason = f"Lateral movement detected: {source_account} betweenness centrality spiked from baseline {baseline_avg:.4f} to {current_score:.4f} (MITRE ATT&CK TA0008)"
-                            graph_risk += config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
-                            _inference_logger.warning(
-                                f"Lateral movement detected for {source_account}",
-                                event_type="lateral_movement",
-                                metadata={
-                                    "baseline_avg": baseline_avg,
-                                    "current_score": current_score,
-                                },
+                            # Spike detection: configurable thresholds (from thresholds.yaml)
+                            spike_threshold = max(
+                                baseline_avg + config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER * baseline_std,
+                                baseline_avg * config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
                             )
 
-                    # Update baseline (rolling window, thread-safe)
-                    with lock:
-                        live_history = centrality_baseline.get(source_account, [])
+                            if current_score > spike_threshold and baseline_avg > 0:
+                                lateral_movement_detected = True
+                                lateral_movement_reason = f"Lateral movement detected: {source_account} betweenness centrality spiked from baseline {baseline_avg:.4f} to {current_score:.4f} (MITRE ATT&CK TA0008)"
+                                graph_risk += config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
+                                _inference_logger.warning(
+                                    f"Lateral movement detected for {source_account}",
+                                    event_type="lateral_movement",
+                                    metadata={
+                                        "baseline_avg": baseline_avg,
+                                        "current_score": current_score,
+                                    },
+                                )
+
                         live_history.append(current_score)
                         if len(live_history) > centrality_window_size:
                             live_history.pop(0)
