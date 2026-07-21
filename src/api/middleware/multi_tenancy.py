@@ -123,7 +123,8 @@ def _resolve_from_api_key(request: Request) -> Optional[TenantResolutionResult]:
     if default_tenant:
         return TenantResolutionResult(tenant_id=_validate_tenant_id(default_tenant), source="default")
 
-    return None
+    derived_tenant = f"api_{key_hash[:24]}"
+    return TenantResolutionResult(tenant_id=_validate_tenant_id(derived_tenant), source="api_key_derived")
 
 
 def _resolve_from_tenant_header(request: Request) -> Optional[TenantResolutionResult]:
