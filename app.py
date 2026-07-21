@@ -86,6 +86,34 @@ if "auth_username" not in st.session_state:
 if "rate_limiter" not in st.session_state:
     st.session_state.rate_limiter = RateLimiter(capacity=5.0, refill_rate=1.0)
 
+
+def _extract_token_expiry(access_token: str | None) -> float | None:
+    """Extract the JWT expiry timestamp from the access token payload."""
+    if not access_token:
+        return None
+    try:
+        parts = access_token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        data = json.loads(decoded.decode("utf-8"))
+        exp = data.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+def auth_login(username: str, password: str) -> dict:
+    """Authenticate against the backend login endpoint."""
+    response = requests.post(
+        f"{API_URL}/api/v1/auth/login",
+        json={"username": username, "password": password},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
 if not st.session_state.logged_in:
     st.title("🛡️ AegisGraph Sentinel 2.0 Login")
     st.markdown("Please authenticate to access the security command center.")
@@ -98,7 +126,7 @@ if not st.session_state.logged_in:
             st.error("Enter both username and password.")
         else:
             try:
-                response = login(username, password)
+                response = auth_login(username, password)
                 access_token = response.get("access_token")
                 role = response.get("role")
                 if not access_token or not role:
@@ -239,23 +267,6 @@ def _schedule_live_refresh(interval_ms: int = 1500) -> None:
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
-def _extract_token_expiry(access_token: str | None) -> float | None:
-    """Extract the JWT expiry timestamp from the access token payload."""
-    if not access_token:
-        return None
-    try:
-        parts = access_token.split(".")
-        if len(parts) != 3:
-            return None
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
-        data = json.loads(decoded.decode("utf-8"))
-        exp = data.get("exp")
-        return float(exp) if exp is not None else None
-    except Exception:
-        return None
-
-
 def _token_is_expired() -> bool:
     expiry = st.session_state.get("token_expires_at")
     return bool(expiry and time.time() >= float(expiry))
@@ -277,17 +288,6 @@ def logout() -> None:
     """Clear the local session and rerun to the login screen."""
     _clear_auth_state()
     st.rerun()
-
-
-def login(username: str, password: str) -> dict:
-    """Authenticate against the backend login endpoint."""
-    response = requests.post(
-        f"{API_URL}/api/v1/auth/login",
-        json={"username": username, "password": password},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()
 
 
 def authenticated_headers(extra: dict | None = None) -> dict:
