@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .schemas import (
     APISettings,
     EnvironmentVariablesSchema,
+    DatabaseConnectionSettings,
     GraphRuntimeSettings,
     InnovationSettings,
     ObservabilitySettings,
@@ -28,6 +29,7 @@ class RuntimeSettings(BaseModel):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     scoring: ScoringSettings = Field(default_factory=ScoringSettings)
     innovations: InnovationSettings = Field(default_factory=InnovationSettings)
+    database: DatabaseConnectionSettings = Field(default_factory=DatabaseConnectionSettings)
     webhook: WebhookSettings = Field(default_factory=WebhookSettings)
     runtime: RuntimeFlags = Field(default_factory=RuntimeFlags)
     raw_config: Dict[str, Any] = Field(default_factory=dict)

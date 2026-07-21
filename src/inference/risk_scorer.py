@@ -31,9 +31,60 @@ from ..utils.helpers import get_device, load_thresholds
 from ..scoring import ThresholdConfig, RiskScorer as CentralRiskScorer
 from ..observability import get_logger
 from ..config import defaults as config_defaults
+from ..runtime.failure_policy import should_fail_fast
 
 _inference_logger = get_logger("inference.risk_scorer")
 _CENTRALITY_CACHE = weakref.WeakKeyDictionary()
+
+
+def _log_scoring_failure(
+    operation: str,
+    exc: Exception,
+    account_id: Optional[str] = None,
+) -> None:
+    metadata = {
+        "module": __name__,
+        "operation": operation,
+        "error_type": type(exc).__name__,
+    }
+    if account_id is not None:
+        metadata["account_id"] = account_id
+
+    logger.error(
+        "%s failed | module=%s operation=%s account_id=%s error_type=%s error_message=%s",
+        operation,
+        __name__,
+        operation,
+        account_id,
+        type(exc).__name__,
+        str(exc),
+        exc_info=True,
+    )
+    _inference_logger.warning(
+        f"{operation} failed",
+        event_type="risk_scoring_error",
+        metadata=metadata,
+    )
+
+
+def _get_failure_mode(config: Optional[dict]) -> str:
+    if not isinstance(config, dict):
+        return "degraded"
+
+    runtime_config = config.get("runtime")
+    if isinstance(runtime_config, dict) and runtime_config.get("failure_mode"):
+        return str(runtime_config["failure_mode"])
+
+    if config.get("failure_mode"):
+        return str(config["failure_mode"])
+
+    settings = config.get("settings")
+    if isinstance(settings, dict):
+        runtime_settings = settings.get("runtime")
+        if isinstance(runtime_settings, dict) and runtime_settings.get("failure_mode"):
+            return str(runtime_settings["failure_mode"])
+
+    return "degraded"
 
 
 def _get_betweenness_centrality(graph: nx.Graph) -> Dict:
@@ -465,9 +516,12 @@ def compute_risk_score(
                 else getattr(api_state, "account_profiles", {})
             )
             config = config if config is not None else getattr(api_state, "config", {})
+            if not config:
+                runtime_settings = getattr(getattr(api_state, "settings", None), "runtime", None)
+                failure_mode = getattr(runtime_settings, "failure_mode", "degraded")
+                config = {"runtime": {"failure_mode": failure_mode}}
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Failed to load graph state from api_state: %s", exc)
+            _log_scoring_failure("load graph state", exc)
             graph_loaded = False
 
     mule_accounts = mule_accounts or set()
@@ -483,6 +537,15 @@ def compute_risk_score(
         'behavior': 0.0,
         'entropy': 0.0,
     }
+    analysis_errors: List[Dict[str, str]] = []
+    component_status = {
+        'graph': 'not_run',
+        'velocity': 'not_run',
+        'behavior': 'not_run',
+        'entropy': 'not_run',
+    }
+    analysis_degraded = False
+    fail_fast = should_fail_fast(_get_failure_mode(config))
     
     source_account = transaction.get('source_account')
     target_account = transaction.get('target_account')
@@ -580,8 +643,18 @@ def compute_risk_score(
                             event_type="graph_pattern",
                             metadata={"pattern": "chain", "descendants": len(descendants)},
                         )
-            except Exception as e:
-                logger.error(f"Error in chain pattern analysis: {e}")
+            except Exception as exc:
+                analysis_degraded = True
+                component_status['graph'] = 'degraded'
+                analysis_errors.append({
+                    "component": "graph",
+                    "operation": "chain pattern analysis",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                })
+                _log_scoring_failure("chain pattern analysis", exc, source_account)
+                if fail_fast:
+                    raise
             
             # Betweenness centrality (key intermediary in network)
             try:
@@ -594,8 +667,18 @@ def compute_risk_score(
                         event_type="graph_pattern",
                         metadata={"pattern": "high_centrality"},
                     )
-            except Exception as e:
-                logger.error(f"Error in centrality analysis: {e}")
+            except Exception as exc:
+                analysis_degraded = True
+                component_status['graph'] = 'degraded'
+                analysis_errors.append({
+                    "component": "graph",
+                    "operation": "centrality analysis",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                })
+                _log_scoring_failure("centrality analysis", exc, source_account)
+                if fail_fast:
+                    raise
     
     graph_risk = min(graph_risk, 1.0)
     breakdown['graph'] = graph_risk
@@ -623,41 +706,49 @@ def compute_risk_score(
                     with lock:
                         if source_account not in centrality_baseline:
                             centrality_baseline[source_account] = []
-                        baseline_snapshot = list(centrality_baseline[source_account])
+                        live_history = centrality_baseline.get(source_account, [])
+                        baseline_snapshot = list(live_history)
 
-                    if len(baseline_snapshot) >= 3:
-                        baseline_avg = np.mean(baseline_snapshot)
-                        baseline_std = np.std(baseline_snapshot) if len(baseline_snapshot) > 1 else 0.001
+                        if len(baseline_snapshot) >= 3:
+                            baseline_avg = np.mean(baseline_snapshot)
+                            baseline_std = np.std(baseline_snapshot) if len(baseline_snapshot) > 1 else 0.001
 
-                        # Spike detection: configurable thresholds (from thresholds.yaml)
-                        spike_threshold = max(
-                            baseline_avg + config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER * baseline_std,
-                            baseline_avg * config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
-                        )
-
-                        if current_score > spike_threshold and baseline_avg > 0:
-                            lateral_movement_detected = True
-                            lateral_movement_reason = f"Lateral movement detected: {source_account} betweenness centrality spiked from baseline {baseline_avg:.4f} to {current_score:.4f} (MITRE ATT&CK TA0008)"
-                            graph_risk += config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
-                            _inference_logger.warning(
-                                f"Lateral movement detected for {source_account}",
-                                event_type="lateral_movement",
-                                metadata={
-                                    "baseline_avg": baseline_avg,
-                                    "current_score": current_score,
-                                },
+                            # Spike detection: configurable thresholds (from thresholds.yaml)
+                            spike_threshold = max(
+                                baseline_avg + config_defaults.DEFAULT_LATERAL_MOVEMENT_STD_MULTIPLIER * baseline_std,
+                                baseline_avg * config_defaults.DEFAULT_LATERAL_MOVEMENT_THRESHOLD_MULTIPLIER
                             )
 
-                    # Update baseline (rolling window, thread-safe)
-                    with lock:
-                        live_history = centrality_baseline.get(source_account, [])
+                            if current_score > spike_threshold and baseline_avg > 0:
+                                lateral_movement_detected = True
+                                lateral_movement_reason = f"Lateral movement detected: {source_account} betweenness centrality spiked from baseline {baseline_avg:.4f} to {current_score:.4f} (MITRE ATT&CK TA0008)"
+                                graph_risk += config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
+                                _inference_logger.warning(
+                                    f"Lateral movement detected for {source_account}",
+                                    event_type="lateral_movement",
+                                    metadata={
+                                        "baseline_avg": baseline_avg,
+                                        "current_score": current_score,
+                                    },
+                                )
+
                         live_history.append(current_score)
                         if len(live_history) > centrality_window_size:
                             live_history.pop(0)
                         centrality_baseline[source_account] = live_history
                         
-            except Exception as e:
-                pass
+            except Exception as exc:
+                analysis_degraded = True
+                component_status['graph'] = 'degraded'
+                analysis_errors.append({
+                    "component": "graph",
+                    "operation": "lateral movement analysis",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                })
+                _log_scoring_failure("lateral movement analysis", exc, source_account)
+                if fail_fast:
+                    raise
     
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
@@ -735,9 +826,18 @@ def compute_risk_score(
             # Late night transactions (2 AM - 5 AM) are riskier
             if 2 <= hour <= 5:
                 entropy_risk += 0.3
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            pass
+        except Exception as exc:
+            analysis_degraded = True
+            component_status['entropy'] = 'degraded'
+            analysis_errors.append({
+                "component": "entropy",
+                "operation": "entropy analysis",
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            })
+            _log_scoring_failure("entropy analysis", exc, source_account)
+            if fail_fast:
+                raise
     
     # Round amounts are suspicious (lowered for demo)
     if amount == int(amount) and amount % 1000 == 0 and amount >= 5000:
@@ -745,6 +845,14 @@ def compute_risk_score(
     
     entropy_risk = min(entropy_risk, 1.0)
     breakdown['entropy'] = entropy_risk
+    if component_status['graph'] == 'not_run':
+        component_status['graph'] = 'ok'
+    if component_status['velocity'] == 'not_run':
+        component_status['velocity'] = 'ok'
+    if component_status['behavior'] == 'not_run':
+        component_status['behavior'] = 'ok'
+    if component_status['entropy'] == 'not_run':
+        component_status['entropy'] = 'ok'
 
     central_scorer = _get_central_scorer(config)
     assessment = central_scorer.assess(breakdown)
@@ -756,4 +864,7 @@ def compute_risk_score(
         'breakdown': breakdown,
         'lateral_movement_detected': lateral_movement_detected,
         'lateral_movement_reason': lateral_movement_reason,
+        'analysis_degraded': analysis_degraded,
+        'analysis_errors': analysis_errors,
+        'component_status': component_status,
     }

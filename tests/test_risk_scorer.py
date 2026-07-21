@@ -1,4 +1,10 @@
+import threading
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+from unittest.mock import MagicMock
+
+import pytest
 
 from src.inference import risk_scorer as risk_mod
 
@@ -62,3 +68,132 @@ def test_compute_risk_score_reuses_betweenness_centrality(monkeypatch):
     assert first["breakdown"]["graph"] >= 0.15
     assert second["breakdown"]["graph"] >= 0.15
     assert calls["count"] == 1
+
+
+class _FailingBaseline(dict):
+    def __contains__(self, key):
+        raise RuntimeError("lateral boom")
+
+
+def _make_state(failure_mode="degraded", graph=None, centrality_baseline=None):
+    return SimpleNamespace(
+        graph_loaded=True,
+        transaction_graph=graph,
+        mule_accounts=set(),
+        account_profiles={},
+        centrality_baseline=centrality_baseline if centrality_baseline is not None else {},
+        centrality_window_size=3,
+        config={},
+        settings=SimpleNamespace(runtime=SimpleNamespace(failure_mode=failure_mode)),
+    )
+
+
+class _FailingEntropyGraph(_FakeGraph):
+    def descendants(self, node):
+        raise RuntimeError("graph boom")
+
+
+def test_lateral_movement_exception_is_degraded_and_logged(monkeypatch):
+    state = _make_state(graph=_FakeGraph(), centrality_baseline=_FailingBaseline())
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.02})
+    monkeypatch.setattr(risk_mod.logger, "error", MagicMock())
+
+    result = risk_mod.compute_risk_score({"source_account": "source", "target_account": "target", "amount": 10})
+
+    assert result["analysis_degraded"] is True
+    assert result["component_status"]["graph"] == "degraded"
+    assert any(err["operation"] == "lateral movement analysis" for err in result["analysis_errors"])
+    assert risk_mod.logger.error.called
+
+
+def test_entropy_exception_is_degraded_and_logged(monkeypatch):
+    state = _make_state(graph=None)
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod.logger, "error", MagicMock())
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "source", "target_account": "target", "amount": 10, "timestamp": "not-a-timestamp"}
+    )
+
+    assert result["analysis_degraded"] is True
+    assert result["component_status"]["entropy"] == "degraded"
+    assert any(err["operation"] == "entropy analysis" for err in result["analysis_errors"])
+    assert risk_mod.logger.error.called
+
+
+def test_fail_fast_mode_raises_on_lateral_movement_failure(monkeypatch):
+    state = _make_state(failure_mode="fail_fast", graph=_FakeGraph(), centrality_baseline=_FailingBaseline())
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.02})
+    monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+    monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+
+    with pytest.raises(RuntimeError, match="lateral boom"):
+        risk_mod.compute_risk_score({"source_account": "source", "target_account": "target", "amount": 10})
+
+
+def test_successful_execution_unchanged_and_not_degraded(monkeypatch):
+    state = _make_state(graph=_FakeGraph())
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.02})
+    monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+    monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+
+    result = risk_mod.compute_risk_score({"source_account": "source", "target_account": "target", "amount": 10})
+
+    assert result["analysis_degraded"] is False
+    assert result["component_status"]["graph"] == "ok"
+    assert result["component_status"]["entropy"] == "ok"
+    assert set(result.keys()) >= {"risk_score", "decision", "confidence", "breakdown"}
+
+
+def test_multiple_component_failures_are_reported(monkeypatch):
+    state = _make_state(graph=_FailingEntropyGraph())
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod.logger, "error", MagicMock())
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.02})
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "source", "target_account": "target", "amount": 10, "timestamp": "not-a-timestamp"}
+    )
+
+    assert result["analysis_degraded"] is True
+    assert len(result["analysis_errors"]) >= 1
+    assert result["component_status"]["graph"] in {"ok", "degraded"}
+    assert result["component_status"]["entropy"] == "degraded"
+
+
+def test_lateral_movement_baseline_update_is_atomic_under_concurrency(monkeypatch):
+    state = _make_state(graph=_FakeGraph(), centrality_baseline={"source": [0.01, 0.01, 0.01]})
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+    monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+
+    scores = Queue()
+    scores.put({"source": 0.9})
+    scores.put({"source": 0.05})
+
+    score_barrier = threading.Barrier(2)
+    warning_events = []
+
+    def fake_centrality(graph):
+        score_barrier.wait()
+        return scores.get_nowait()
+
+    def record_warning(message, **kwargs):
+        if kwargs.get("event_type") == "lateral_movement":
+            warning_events.append(kwargs.get("metadata", {}))
+
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", fake_centrality)
+    monkeypatch.setattr(risk_mod._inference_logger, "warning", record_warning)
+
+    def run_score():
+        return risk_mod.compute_risk_score({"source_account": "source", "target_account": "target", "amount": 10})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: run_score(), range(2)))
+
+    assert len(warning_events) == 1
+    assert len(state.centrality_baseline["source"]) == 3
+    assert all("risk_score" in result for result in results)

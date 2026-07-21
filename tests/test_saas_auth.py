@@ -6,14 +6,19 @@ Covers the stubs fixed in issue #1085:
 - Tenant isolation: two users in different orgs stay separate
 """
 
+import inspect
+
 import pytest
 import pyotp
 
 from src.saas.auth.service import (
+    AuthProvider,
     AuthService,
     InMemoryUserStore,
     UserRecord,
 )
+from src.saas.routes.auth import LoginRequest
+from src.exceptions import AuthenticationError
 
 
 def _make_service(users=None):
@@ -38,6 +43,7 @@ class TestVerifyMfa:
         result = svc.verify_mfa("u1", mfa_token=mfa_token, token=totp_token)
         assert result.success is True
         assert result.organization_id == "org_a"
+        assert svc.verify_token(result.access_token).org == "org_a"
 
     def test_invalid_totp_rejected(self):
         secret = pyotp.random_base32()
@@ -124,6 +130,74 @@ class TestAuthenticateUser:
         result = svc.authenticate_user("d@x.com", "correct-password")
         assert result.success is True
         assert result.organization_id == "org_d"
+        assert svc.verify_token(result.access_token).org == "org_d"
+
+    def test_password_login_uses_record_organization(self):
+        svc = _make_service()
+        password = "correct-password"
+        user = UserRecord(
+            "u_record_org",
+            "member-org",
+            "member@example.com",
+            password_hash=svc.hash_password(password),
+        )
+        svc.user_store.add(user)
+
+        result = svc.authenticate_user("member@example.com", password)
+
+        assert result.success is True
+        assert result.organization_id == "member-org"
+        assert svc.verify_token(result.access_token).org == "member-org"
+
+    def test_password_login_has_no_organization_selector(self):
+        svc = _make_service()
+
+        assert "organization_id" not in inspect.signature(
+            svc.authenticate_user
+        ).parameters
+        assert "organization_id" not in LoginRequest.model_fields
+
+    def test_refresh_uses_record_organization(self):
+        svc = _make_service()
+        password = "correct-password"
+        user = UserRecord(
+            "u_refresh_org",
+            "member-org",
+            "refresh@example.com",
+            password_hash=svc.hash_password(password),
+        )
+        svc.user_store.add(user)
+        initial = svc.authenticate_user("refresh@example.com", password)
+
+        refreshed = svc.refresh_tokens(initial.refresh_token)
+
+        assert refreshed.organization_id == "member-org"
+        assert svc.verify_token(refreshed.access_token).org == "member-org"
+
+    def test_sso_uses_record_organization(self):
+        class SsoStore(InMemoryUserStore):
+            def find_or_create_sso_user(self, provider, user_info):
+                return "u_sso_org", "foreign-org"
+
+        class SsoProvider:
+            def exchange_code(self, code, redirect_uri):
+                return {"access_token": "token"}
+
+            def get_user_info(self, access_token):
+                return {"email": "member@example.com"}
+
+        store = SsoStore()
+        store.add(UserRecord("u_sso_org", "member-org", "member@example.com"))
+        svc = AuthService({"jwt_secret": "test-secret-only"}, user_store=store)
+        svc.sso_providers[AuthProvider.GOOGLE] = SsoProvider()
+
+        result = svc.authenticate_sso(
+            AuthProvider.GOOGLE, "authorization-code", "https://example.com/callback"
+        )
+
+        assert result.success is True
+        assert result.organization_id == "member-org"
+        assert svc.verify_token(result.access_token).org == "member-org"
 
     def test_wrong_password_rejected(self):
         svc = _make_service()
@@ -137,6 +211,44 @@ class TestAuthenticateUser:
         svc = _make_service()
         result = svc.authenticate_user("nobody@x.com", "password")
         assert result.success is False
+
+    def test_missing_configuration_fails_closed(self):
+        svc = AuthService({"jwt_secret": "test-secret-only"})
+        result = svc.authenticate_user("nobody@x.com", "password")
+        assert result.success is False
+        assert "not configured" in result.error.lower()
+
+    def test_runtime_credentials_from_env_are_loaded(self, monkeypatch):
+        svc = _make_service()
+        admin_hash = svc.hash_password("admin-password")
+        monkeypatch.setenv("ADMIN_USERNAME", "admin@example.com")
+        monkeypatch.setenv("ADMIN_PASSWORD_HASH", admin_hash)
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("admin@example.com", "admin-password")
+        assert result.success is True
+        assert result.email == "admin@example.com"
+        assert result.organization_id == "administration"
+        assert result.user_id == "admin_user"
+
+    def test_operator_role_is_assigned_from_runtime_credentials(self, monkeypatch):
+        svc = _make_service()
+        operator_hash = svc.hash_password("operator-password")
+        monkeypatch.setenv("OPERATOR_USERNAME", "operator@example.com")
+        monkeypatch.setenv("OPERATOR_PASSWORD_HASH", operator_hash)
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("operator@example.com", "operator-password")
+        assert result.success is True
+        assert result.email == "operator@example.com"
+        assert result.organization_id == "operations"
+        assert result.user_id == "operator_user"
+
+    def test_invalid_hash_format_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("ADMIN_USERNAME", "admin@example.com")
+        monkeypatch.setenv("ADMIN_PASSWORD_HASH", "plaintext-not-allowed")
+        runtime_service = AuthService({"jwt_secret": "test-secret-only"})
+        result = runtime_service.authenticate_user("admin@example.com", "plaintext-not-allowed")
+        assert result.success is False
+        assert "not configured" in result.error.lower()
 
     def test_tenant_isolation(self):
         """Users in different orgs must resolve to their own organization_id."""
@@ -164,3 +276,18 @@ class TestJwtSecretConfig:
         # Two services without config should each get their own random secret
         assert svc1.jwt_secret != svc2.jwt_secret
         assert len(svc1.jwt_secret) == 64  # 32 bytes hex
+
+
+class TestLogoutRevocation:
+    def test_logout_revokes_current_token(self):
+        svc = _make_service()
+        pw_hash = svc.hash_password("logout-password")
+        user = UserRecord("u_logout", "org_logout", "logout@example.com", password_hash=pw_hash)
+        svc.user_store.add(user)
+        result = svc.authenticate_user("logout@example.com", "logout-password")
+        assert result.success is True
+        payload = svc.verify_token(result.access_token)
+        assert payload is not None
+        svc.revoke_token_id(payload.jti)
+        with pytest.raises(AuthenticationError):
+            svc.verify_token(result.access_token)

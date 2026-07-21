@@ -6,10 +6,11 @@ SHAP (SHapley Additive exPlanations) implementation for model explanations.
 
 import random
 import math
-from typing import Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
 
+from .counterfactual_generator import CounterfactualGenerator
 from .models import (
     Explanation,
     FeatureImportance,
@@ -31,10 +32,33 @@ class SHAPExplainer:
         - Global explanations
     """
     
-    def __init__(self, store: Optional[ExplainableAIStore] = None):
-        """Initialize the SHAP explainer."""
+    def __init__(
+        self,
+        store: Optional[ExplainableAIStore] = None,
+        predict_fn: Optional[Callable[[Dict[str, float]], float]] = None,
+        decision_threshold: float = 0.5,
+    ):
+        """Initialize the SHAP explainer.
+
+        Args:
+            store: Explanation store (defaults to the shared singleton).
+            predict_fn: Optional callable mapping a feature dict to a
+                risk probability. When provided, counterfactuals are
+                found by searching against the real model instead of
+                the deterministic heuristic fallback.
+            decision_threshold: Boundary used to define a decision flip.
+        """
         self._store = store or get_xai_store()
         self._module_id = "shap_explainer"
+        self._counterfactual_generator = (
+            CounterfactualGenerator(
+                predict_fn,
+                threshold=decision_threshold,
+                store=self._store,
+            )
+            if predict_fn is not None
+            else None
+        )
     
     def explain(
         self,
@@ -161,18 +185,30 @@ class SHAPExplainer:
         decision_id: str,
         features: Dict[str, float],
         prediction_value: float,
-    ) -> CounterfactualExplanation:
-        """Generate counterfactual explanation."""
-        # Generate counterfactual instance
-        cf_instance = features.copy()
+    ) -> Optional[CounterfactualExplanation]:
+        """Generate counterfactual explanation.
+
+        With a predict_fn attached, runs a model-probing search for a
+        minimal, verified decision flip. Without one, falls back to a
+        deterministic heuristic (halve the largest features) whose
+        scores are computed from the actual deltas, never invented.
+        """
+        if self._counterfactual_generator is not None:
+            return self._counterfactual_generator.generate(decision_id, features)
+
+        cf_instance = dict(features)
         changed_features = []
-        
-        # Find features to change
-        for feature in list(features.keys())[:3]:
-            change_amount = features[feature] * random.uniform(0.3, 0.7)
-            cf_instance[feature] = features[feature] - change_amount
+
+        largest_features = sorted(
+            features.items(), key=lambda item: abs(item[1]), reverse=True
+        )[:3]
+        for feature, value in largest_features:
+            cf_instance[feature] = value * 0.5
             changed_features.append(feature)
-        
+
+        if not changed_features:
+            return None
+
         cf = CounterfactualExplanation(
             decision_id=decision_id,
             original_instance=features,
@@ -180,10 +216,14 @@ class SHAPExplainer:
             changed_features=changed_features,
             feature_changes={f: cf_instance[f] - features[f] for f in changed_features},
             outcome_change="fraud to non-fraud" if prediction_value > 0.5 else "non-fraud to fraud",
-            proximity_score=random.uniform(0.7, 0.95),
-            sparsity_score=len(changed_features) / len(features),
+            # Each change halves a feature: normalized change of 0.5
+            proximity_score=0.5,
+            # High sparsity = few features changed
+            sparsity_score=round(
+                1.0 - len(changed_features) / max(len(features), 1), 4
+            ),
         )
-        
+
         self._store.store_counterfactual(cf)
         return cf
     

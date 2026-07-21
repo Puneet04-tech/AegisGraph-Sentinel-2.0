@@ -46,7 +46,6 @@ class RefreshTokenRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    organization_id: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -180,11 +179,12 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             "organization_id": payload.org,
             "email": payload.email,
             "role": payload.role,
+            "jti": payload.jti,
         }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
+            detail="Invalid or expired credentials",
         )
 
 
@@ -231,7 +231,6 @@ async def login(request: LoginRequest):
     result = auth_service.authenticate_user(
         email=request.email,
         password=request.password,
-        organization_id=request.organization_id,
     )
     
     if not result.success:
@@ -256,7 +255,7 @@ async def login(request: LoginRequest):
         expires_in=3600,
         user={
             "id": result.user_id,
-            "email": "user@example.com",
+            "email": result.email or request.email,
         },
         organization={
             "id": result.organization_id,
@@ -424,6 +423,8 @@ async def refresh_token(body: RefreshTokenRequest):
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
     """Logout current session"""
+    if current_user.get("jti"):
+        auth_service.revoke_token_id(current_user["jti"])
     return {"success": True, "message": "Logged out successfully"}
 
 

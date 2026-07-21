@@ -29,6 +29,7 @@ class UserRecord:
     user_id: str
     organization_id: str
     email: str
+    username: str = ""
     password_hash: str = ""
     mfa_enabled: bool = False
     mfa_secret: str = ""
@@ -171,6 +172,7 @@ class AuthResult:
     """Authentication result"""
     success: bool
     user_id: Optional[str] = None
+    email: Optional[str] = None
     organization_id: Optional[str] = None
     session_id: Optional[str] = None
     access_token: Optional[str] = None
@@ -223,9 +225,84 @@ class AuthService:
         self.mfa_pending_store: MFAPendingStore = (
             mfa_pending_store or InMemoryMFAPendingStore()
         )
+        self.revoked_token_ids: set[str] = set()
+        self._runtime_credentials = self._load_runtime_credentials(config)
+        self._credentials_configured = bool(self._runtime_credentials)
 
         # SSO providers
         self.sso_providers: Dict[str, 'SSOProvider'] = {}
+
+    def _load_runtime_credentials(self, config: Dict[str, Any]) -> Dict[str, UserRecord]:
+        """Load configured operator/admin identities from secure runtime config.
+
+        Preference order:
+        1. Streamlit secrets
+        2. Environment variables
+        3. Explicit runtime config dictionary
+
+        Only password hashes are accepted. Missing or malformed credentials
+        are ignored so the service can fail closed instead of creating a
+        default backdoor.
+        """
+        sources: List[Dict[str, Any]] = []
+
+        secrets_obj = self._load_streamlit_secrets()
+        if secrets_obj:
+            sources.append(secrets_obj)
+        sources.append(os.environ)
+        sources.append(config)
+
+        credentials: Dict[str, UserRecord] = {}
+        for role, default_org in (("admin", "administration"), ("operator", "operations")):
+            username = self._read_credential_value(sources, f"{role.upper()}_USERNAME")
+            password_hash = self._read_credential_value(sources, f"{role.upper()}_PASSWORD_HASH")
+            if not username or not password_hash:
+                continue
+            if not self._is_supported_password_hash(password_hash):
+                logger.warning("Ignoring %s credential with unsupported password hash format", role)
+                continue
+
+            record = UserRecord(
+                user_id=f"{role}_user",
+                organization_id=default_org,
+                email=username,
+                username=username,
+                password_hash=password_hash,
+                role=role,
+                permissions=["read", "write", "admin"] if role == "admin" else ["read", "write"],
+            )
+            credentials[username.casefold()] = record
+            credentials[username.strip().casefold()] = record
+        return credentials
+
+    @staticmethod
+    def _load_streamlit_secrets() -> Dict[str, Any]:
+        try:
+            import streamlit as st  # type: ignore
+        except Exception:
+            return {}
+
+        try:
+            return dict(getattr(st, "secrets", {}) or {})
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _read_credential_value(sources: List[Dict[str, Any]], key: str) -> Optional[str]:
+        for source in sources:
+            if key in source and source[key]:
+                return str(source[key]).strip()
+            lower_key = key.lower()
+            if lower_key in source and source[lower_key]:
+                return str(source[lower_key]).strip()
+        return None
+
+    @staticmethod
+    def _is_supported_password_hash(password_hash: str) -> bool:
+        return password_hash.startswith(("$2a$", "$2b$", "$2y$"))
+
+    def _lookup_runtime_user(self, identifier: str) -> Optional[UserRecord]:
+        return self._runtime_credentials.get(identifier.strip().casefold())
 
     def hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""
@@ -284,6 +361,8 @@ class AuthService:
         """Verify and decode JWT token"""
         try:
             payload = jwt.decode(token, self.jwt_secret, algorithms=[self.jwt_algorithm])
+            if payload.get("jti") in self.revoked_token_ids:
+                raise AuthenticationError("Token has been revoked")
             return TokenPayload(
                 sub=payload["sub"],
                 org=payload["org"],
@@ -303,7 +382,6 @@ class AuthService:
         self,
         email: str,
         password: str,
-        organization_id: Optional[str] = None
     ) -> AuthResult:
         """Authenticate user with email and password.
 
@@ -313,24 +391,36 @@ class AuthService:
         """
         record = self.user_store.get_by_email(email)
         if record is None:
+            record = self._lookup_runtime_user(email)
+
+        if record is None and not self._credentials_configured and not self._has_any_user_records():
+            return AuthResult(success=False, error="Authentication is not configured")
+
+        if record is None:
             return AuthResult(success=False, error="Invalid credentials")
 
-        if record.password_hash and not self.verify_password(password, record.password_hash):
-            return AuthResult(success=False, error="Invalid credentials")
-
-        org_id = organization_id or record.organization_id
+        if record.password_hash:
+            if not self.verify_password(password, record.password_hash):
+                return AuthResult(success=False, error="Invalid credentials")
+        else:
+            return AuthResult(success=False, error="Authentication is not configured")
 
         if record.mfa_enabled:
             mfa_token = self.mfa_pending_store.issue(record.user_id)
             return AuthResult(
                 success=True,
                 user_id=record.user_id,
-                organization_id=org_id,
+                organization_id=record.organization_id,
                 mfa_required=True,
                 mfa_token=mfa_token,
             )
 
-        return self._create_auth_result(record, org_id)
+        return self._create_auth_result(record)
+
+    def _has_any_user_records(self) -> bool:
+        if hasattr(self.user_store, "_users"):
+            return bool(getattr(self.user_store, "_users", {}))
+        return False
 
     def authenticate_api_key(self, api_key: str) -> AuthResult:
         """Authenticate using API key.
@@ -378,13 +468,13 @@ class AuthService:
         user_info = sso_provider.get_user_info(tokens["access_token"])
 
         # Find or create user
-        user_id, org_id = self._find_or_create_sso_user(provider, user_info)
+        user_id, _ = self._find_or_create_sso_user(provider, user_info)
 
         record = self.user_store.get_by_id(user_id)
         if record is None:
             return AuthResult(success=False, error="User record not found after SSO login")
 
-        return self._create_auth_result(record, org_id, provider=provider)
+        return self._create_auth_result(record, provider=provider)
 
     def verify_mfa(self, user_id: str, mfa_token: str, token: str) -> AuthResult:
         """Verify TOTP MFA token and complete authentication.
@@ -410,12 +500,11 @@ class AuthService:
         if not self.verify_mfa_token(record.mfa_secret, token):
             return AuthResult(success=False, error="Invalid MFA token")
 
-        return self._create_auth_result(record, record.organization_id)
+        return self._create_auth_result(record)
 
     def _create_auth_result(
         self,
         record: UserRecord,
-        organization_id: str,
         provider: Optional[AuthProvider] = None,
     ) -> AuthResult:
         """Create successful authentication result"""
@@ -424,7 +513,7 @@ class AuthService:
 
         access_payload = TokenPayload(
             sub=record.user_id,
-            org=organization_id,
+            org=record.organization_id,
             email=record.email,
             role=record.role,
             permissions=record.permissions,
@@ -439,7 +528,8 @@ class AuthService:
         return AuthResult(
             success=True,
             user_id=record.user_id,
-            organization_id=organization_id,
+            email=record.email,
+            organization_id=record.organization_id,
             session_id=session_id,
             access_token=access_token,
             refresh_token=refresh_token,
@@ -482,7 +572,11 @@ class AuthService:
         if record is None:
             raise AuthenticationError("User not found")
 
-        return self._create_auth_result(record, record.organization_id)
+        return self._create_auth_result(record)
+
+    def revoke_token_id(self, token_id: str) -> None:
+        if token_id:
+            self.revoked_token_ids.add(token_id)
 
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
