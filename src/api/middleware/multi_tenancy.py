@@ -64,6 +64,9 @@ def _decode_jwt_tenant(request: Request) -> Optional[TenantResolutionResult]:
         return None
 
     token = authorization.split(" ", 1)[1].strip()
+    if token.count(".") != 2:
+        return None
+
     secret = os.getenv("AEGIS_JWT_SECRET")
     if not secret:
         raise TenantIsolationError(
@@ -92,6 +95,14 @@ def _decode_jwt_tenant(request: Request) -> Optional[TenantResolutionResult]:
         )
 
     return TenantResolutionResult(tenant_id=_validate_tenant_id(str(tenant_id)), source="jwt")
+
+
+def _has_jwt_like_authorization(request: Request) -> bool:
+    authorization = request.headers.get("Authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization.split(" ", 1)[1].strip()
+    return token.count(".") == 2
 
 
 def _load_api_key_tenant_map() -> dict[str, str]:
@@ -132,7 +143,7 @@ def _resolve_from_tenant_header(request: Request) -> Optional[TenantResolutionRe
     if not header_tenant:
         return None
 
-    if not any(request.headers.get(header) for header in ("Authorization", "X-API-Key")):
+    if not (request.headers.get("X-API-Key") or _has_jwt_like_authorization(request)):
         raise TenantIsolationError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication for tenant resolution",
@@ -142,7 +153,7 @@ def _resolve_from_tenant_header(request: Request) -> Optional[TenantResolutionRe
 
 
 def resolve_tenant_from_request(request: Request) -> Optional[TenantResolutionResult]:
-    has_auth = bool(request.headers.get("Authorization") or request.headers.get("X-API-Key"))
+    has_auth = bool(request.headers.get("X-API-Key") or _has_jwt_like_authorization(request))
     jwt_result = _decode_jwt_tenant(request)
     header_result = _resolve_from_tenant_header(request)
     if jwt_result is not None:
