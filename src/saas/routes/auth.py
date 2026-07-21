@@ -46,7 +46,6 @@ class RefreshTokenRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    organization_id: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -232,7 +231,6 @@ async def login(request: LoginRequest):
     result = auth_service.authenticate_user(
         email=request.email,
         password=request.password,
-        organization_id=request.organization_id,
     )
     
     if not result.success:
