@@ -44,7 +44,7 @@ class RefreshTokenRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    username: str = Field(..., min_length=1, description="Username or email")
     password: str
 
 
@@ -53,6 +53,7 @@ class LoginResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+    role: str
     user: dict
     organization: dict
 
@@ -227,9 +228,9 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
 
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
-    """Login with email and password"""
+    """Login with username and password."""
     result = auth_service.authenticate_user(
-        email=request.email,
+        email=request.username,
         password=request.password,
     )
     
@@ -253,9 +254,11 @@ async def login(request: LoginRequest):
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         expires_in=3600,
+        role=result.role or "member",
         user={
             "id": result.user_id,
-            "email": result.email or request.email,
+            "email": result.email or request.username,
+            "username": request.username,
         },
         organization={
             "id": result.organization_id,
@@ -282,6 +285,7 @@ async def verify_mfa(request: MFATokenRequest):
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         expires_in=3600,
+        role=result.role or "member",
         user={"id": result.user_id},
         organization={"id": result.organization_id},
     )
@@ -396,6 +400,7 @@ async def sso_callback(request: SSOCallbackRequest):
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         expires_in=3600,
+        role=result.role or "member",
         user={"id": result.user_id},
         organization={"id": result.organization_id},
     )
@@ -415,6 +420,7 @@ async def refresh_token(body: RefreshTokenRequest):
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         expires_in=auth_service.access_token_expiry,
+        role=result.role or "member",
         user={"id": result.user_id},
         organization={"id": result.organization_id},
     )
