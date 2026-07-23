@@ -62,14 +62,22 @@ jobs:
               return;
             }
 
+            // Extensions and filenames that cannot produce a visual change, so a
+            // screenshot would carry no information for a reviewer.
+            const NON_VISUAL_EXTENSIONS = [
+              '.py', '.yml', '.yaml', '.md', '.txt', '.cfg', '.ini', '.toml', '.json', '.sql',
+            ];
+            const NON_VISUAL_FILENAMES = [
+              'requirements.txt', 'pyproject.toml', 'setup.cfg', 'setup.py',
+              '.env.example', '.gitignore', '.gitattributes', '.editorconfig',
+              '.prettierrc', 'LICENSE', 'Dockerfile', 'Makefile',
+            ];
+
             const backendOnly = files.length === 0 || files.every((file) => {
+              const name = file.filename.split('/').pop();
               return (
-                file.filename.endsWith('.py') ||
-                file.filename.endsWith('.yml') ||
-                file.filename.endsWith('.yaml') ||
-                file.filename === 'requirements.txt' ||
-                file.filename === 'pyproject.toml' ||
-                file.filename === 'setup.cfg'
+                NON_VISUAL_EXTENSIONS.some((ext) => file.filename.endsWith(ext)) ||
+                NON_VISUAL_FILENAMES.includes(name)
               );
             });
 
@@ -95,9 +103,23 @@ jobs:
               with open("issue_num.txt", "w") as f:
                   f.write(match.group(2))
               
+          # Hosts that serve generated filler images. An image from one of these
+          # proves nothing, so it is treated as if no evidence were attached.
+          PLACEHOLDER_HOSTS = (
+              r'via\.placeholder\.com|placeholder\.com|placehold\.(co|it|jp)|'
+              r'dummyimage\.com|placekitten\.com|fakeimg\.pl|loremflickr\.com|'
+              r'baconmockup\.com|placeimg\.com'
+          )
+
           # Require Screenshot/Visual Evidence unless the PR is backend or infrastructure only
-          if not backend_only and not re.search(r'!\[.*?\]\(.*?\)|<img\s+[^>]*src=', body):
-              errors.append("- **Missing Screenshot/Visual Proof:** You must attach a UI screenshot or a terminal test log image.")
+          if not backend_only:
+              image_tags = re.findall(r'!\[.*?\]\((.*?)\)|<img\s+[^>]*src=["\']?([^"\'\s>]+)', body)
+              sources = [url for pair in image_tags for url in pair if url]
+              real_sources = [src for src in sources if not re.search(PLACEHOLDER_HOSTS, src, re.IGNORECASE)]
+              if not sources:
+                  errors.append("- **Missing Screenshot/Visual Proof:** You must attach a UI screenshot or a terminal test log image.")
+              elif not real_sources:
+                  errors.append("- **Placeholder Screenshot Detected:** Generated filler images are not accepted. Attach a real screenshot of the change or its test output.")
           
           if errors:
               with open("errors.txt", "w") as f:

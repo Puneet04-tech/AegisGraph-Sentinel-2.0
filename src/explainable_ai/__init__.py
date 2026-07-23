@@ -27,6 +27,7 @@ from .models import (
     AdverseActionNotice,
 )
 from .store import ExplainableAIStore, get_xai_store
+from .counterfactual_generator import CounterfactualGenerator
 from .shap_explainer import SHAPExplainer, get_shap_explainer
 from .lime_explainer import LIMEExplainer, get_lime_explainer
 from .decision_tracer import DecisionTracer, get_decision_tracer
@@ -47,6 +48,7 @@ __all__ = [
     "BiasAnalysis",
     "ModelAudit",
     "CounterfactualExplanation",
+    "CounterfactualGenerator",
     "AdverseActionNotice",
     # Store
     "ExplainableAIStore",
