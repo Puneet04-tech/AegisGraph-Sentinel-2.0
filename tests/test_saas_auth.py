@@ -6,14 +6,18 @@ Covers the stubs fixed in issue #1085:
 - Tenant isolation: two users in different orgs stay separate
 """
 
+import inspect
+
 import pytest
 import pyotp
 
 from src.saas.auth.service import (
+    AuthProvider,
     AuthService,
     InMemoryUserStore,
     UserRecord,
 )
+from src.saas.routes.auth import LoginRequest
 from src.exceptions import AuthenticationError
 
 
@@ -39,6 +43,7 @@ class TestVerifyMfa:
         result = svc.verify_mfa("u1", mfa_token=mfa_token, token=totp_token)
         assert result.success is True
         assert result.organization_id == "org_a"
+        assert svc.verify_token(result.access_token).org == "org_a"
 
     def test_invalid_totp_rejected(self):
         secret = pyotp.random_base32()
@@ -125,6 +130,74 @@ class TestAuthenticateUser:
         result = svc.authenticate_user("d@x.com", "correct-password")
         assert result.success is True
         assert result.organization_id == "org_d"
+        assert svc.verify_token(result.access_token).org == "org_d"
+
+    def test_password_login_uses_record_organization(self):
+        svc = _make_service()
+        password = "correct-password"
+        user = UserRecord(
+            "u_record_org",
+            "member-org",
+            "member@example.com",
+            password_hash=svc.hash_password(password),
+        )
+        svc.user_store.add(user)
+
+        result = svc.authenticate_user("member@example.com", password)
+
+        assert result.success is True
+        assert result.organization_id == "member-org"
+        assert svc.verify_token(result.access_token).org == "member-org"
+
+    def test_password_login_has_no_organization_selector(self):
+        svc = _make_service()
+
+        assert "organization_id" not in inspect.signature(
+            svc.authenticate_user
+        ).parameters
+        assert "organization_id" not in LoginRequest.model_fields
+
+    def test_refresh_uses_record_organization(self):
+        svc = _make_service()
+        password = "correct-password"
+        user = UserRecord(
+            "u_refresh_org",
+            "member-org",
+            "refresh@example.com",
+            password_hash=svc.hash_password(password),
+        )
+        svc.user_store.add(user)
+        initial = svc.authenticate_user("refresh@example.com", password)
+
+        refreshed = svc.refresh_tokens(initial.refresh_token)
+
+        assert refreshed.organization_id == "member-org"
+        assert svc.verify_token(refreshed.access_token).org == "member-org"
+
+    def test_sso_uses_record_organization(self):
+        class SsoStore(InMemoryUserStore):
+            def find_or_create_sso_user(self, provider, user_info):
+                return "u_sso_org", "foreign-org"
+
+        class SsoProvider:
+            def exchange_code(self, code, redirect_uri):
+                return {"access_token": "token"}
+
+            def get_user_info(self, access_token):
+                return {"email": "member@example.com"}
+
+        store = SsoStore()
+        store.add(UserRecord("u_sso_org", "member-org", "member@example.com"))
+        svc = AuthService({"jwt_secret": "test-secret-only"}, user_store=store)
+        svc.sso_providers[AuthProvider.GOOGLE] = SsoProvider()
+
+        result = svc.authenticate_sso(
+            AuthProvider.GOOGLE, "authorization-code", "https://example.com/callback"
+        )
+
+        assert result.success is True
+        assert result.organization_id == "member-org"
+        assert svc.verify_token(result.access_token).org == "member-org"
 
     def test_wrong_password_rejected(self):
         svc = _make_service()

@@ -1,4 +1,7 @@
+import threading
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
 from unittest.mock import MagicMock
 
 import pytest
@@ -159,3 +162,38 @@ def test_multiple_component_failures_are_reported(monkeypatch):
     assert len(result["analysis_errors"]) >= 1
     assert result["component_status"]["graph"] in {"ok", "degraded"}
     assert result["component_status"]["entropy"] == "degraded"
+
+
+def test_lateral_movement_baseline_update_is_atomic_under_concurrency(monkeypatch):
+    state = _make_state(graph=_FakeGraph(), centrality_baseline={"source": [0.01, 0.01, 0.01]})
+    monkeypatch.setattr("src.api.main.state", state)
+    monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+    monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+
+    scores = Queue()
+    scores.put({"source": 0.9})
+    scores.put({"source": 0.05})
+
+    score_barrier = threading.Barrier(2)
+    warning_events = []
+
+    def fake_centrality(graph):
+        score_barrier.wait()
+        return scores.get_nowait()
+
+    def record_warning(message, **kwargs):
+        if kwargs.get("event_type") == "lateral_movement":
+            warning_events.append(kwargs.get("metadata", {}))
+
+    monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", fake_centrality)
+    monkeypatch.setattr(risk_mod._inference_logger, "warning", record_warning)
+
+    def run_score():
+        return risk_mod.compute_risk_score({"source_account": "source", "target_account": "target", "amount": 10})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: run_score(), range(2)))
+
+    assert len(warning_events) == 1
+    assert len(state.centrality_baseline["source"]) == 3
+    assert all("risk_score" in result for result in results)
