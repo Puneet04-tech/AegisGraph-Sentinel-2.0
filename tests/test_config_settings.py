@@ -203,7 +203,8 @@ def test_production_validation_accepts_required_env(tmp_path):
         environ={
             "AEGIS_ENV": "production",
             "API_URL": "https://api.example.test",
-                "CORS_ORIGINS": "https://app.example.test",
+            "CORS_ORIGINS": "https://app.example.test",
+            "AEGIS_API_KEY_HASHES": "a" * 64,
         },
     )
 
@@ -212,6 +213,73 @@ def test_production_validation_accepts_required_env(tmp_path):
     assert report.ok
     assert report.warnings == []
     assert settings.to_runtime_dict()["api"]["api_url"] == "https://api.example.test"
+
+
+def test_development_validation_warns_for_missing_api_key_backend(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "development",
+            "API_URL": "http://localhost:8000",
+            "CORS_ORIGINS": "http://localhost:8501",
+        },
+    )
+
+    report = validate_runtime_settings(settings)
+
+    assert report.ok
+    assert any("AEGIS_API_KEY_HASHES" in warning for warning in report.warnings)
+
+
+def test_production_validation_raises_for_missing_api_key_backend(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "production",
+            "API_URL": "https://api.example.test",
+            "CORS_ORIGINS": "https://app.example.test",
+        },
+    )
+
+    with pytest.raises(ValueError, match="AEGIS_API_KEY_HASHES"):
+        validate_runtime_settings(settings)
+
+
+def test_role_scoped_hash_satisfies_api_key_backend(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "production",
+            "API_URL": "https://api.example.test",
+            "CORS_ORIGINS": "https://app.example.test",
+            "AEGIS_ROLE_ANALYST": "b" * 64,
+        },
+    )
+
+    report = validate_runtime_settings(settings)
+
+    assert report.ok
+    assert report.warnings == []
+
+
+def test_blank_api_key_hashes_does_not_satisfy_backend(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "development",
+            "API_URL": "http://localhost:8000",
+            "CORS_ORIGINS": "http://localhost:8501",
+            "AEGIS_API_KEY_HASHES": "   ",
+        },
+    )
+
+    report = validate_runtime_settings(settings)
+
+    assert any("AEGIS_API_KEY_HASHES" in warning for warning in report.warnings)
 
 
 import pytest
