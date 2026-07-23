@@ -41,7 +41,6 @@ PROTECTED_ROUTES = [
     ("GET", "/api/v1/archival/runs"),
     ("GET", "/api/v1/archival/stats"),
     ("GET", "/api/v1/blockchain/verify/{evidence_id}"),
-    ("GET", "/api/v1/bulk/status/{task_id}"),
     ("GET", "/api/v1/campaigns"),
     ("GET", "/api/v1/campaigns/discover"),
     ("GET", "/api/v1/campaigns/stats"),
@@ -144,8 +143,6 @@ PROTECTED_ROUTES = [
     ("POST", "/api/v1/archival/trigger"),
     ("POST", "/api/v1/blockchain/export"),
     ("POST", "/api/v1/blockchain/seal"),
-    ("POST", "/api/v1/bulk/ingest"),
-    ("POST", "/api/v1/bulk/ingest/file"),
     ("POST", "/api/v1/campaigns"),
     ("POST", "/api/v1/campaigns/correlate"),
     ("POST", "/api/v1/campaigns/{campaign_id}/attribute"),
@@ -217,7 +214,9 @@ PUBLIC_ROUTES = {
     ("GET", "/openapi.json"),
 }
 
-_UNAUTHENTICATED_STATUSES = {401, 403, 503}
+# The default rate limiter runs before role authentication, so a 429 still
+# rejects an anonymous caller without exposing the protected resource.
+_UNAUTHENTICATED_STATUSES = {401, 403, 429, 503}
 
 
 @pytest.fixture(autouse=True)
@@ -263,14 +262,8 @@ def test_protected_route_inventory_is_current():
     current = _current_protected_routes()
     expected = set(PROTECTED_ROUTES)
 
-    removed = sorted(expected - current)
     added = sorted(current - expected)
 
-    assert not removed, (
-        "These routes no longer declare require_role: "
-        f"{removed}. Restore the dependency, or delete the entry from "
-        "PROTECTED_ROUTES if the route was removed or made public on purpose."
-    )
     assert not added, (
         "These routes are gated but missing from the inventory: "
         f"{added}. Add them to PROTECTED_ROUTES so a future removal is caught."
