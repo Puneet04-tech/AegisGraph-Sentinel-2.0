@@ -25,6 +25,47 @@ def test_load_settings_uses_defaults_when_optional_yaml_missing(tmp_path):
     assert settings.scoring.thresholds.block == 0.90
 
 
+def test_injected_environ_is_isolated_from_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "http://leaked.example")
+    monkeypatch.setenv("API_HOST", "10.0.0.1")
+    monkeypatch.setenv("API_PORT", "9999")
+    monkeypatch.setenv("RATE_LIMIT", "1/second")
+
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={"AEGIS_ENV": "test"},
+    )
+
+    assert settings.api.allowed_origins == [
+        "http://localhost:3000",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+    ]
+    assert settings.api.host == "0.0.0.0"
+    assert settings.api.port == 8000
+    assert settings.api.rate_limit == "100/minute"
+
+
+def test_aliased_environment_variables_still_apply(tmp_path):
+    settings = load_settings(
+        config_path=tmp_path / "missing-config.yaml",
+        thresholds_path=tmp_path / "missing-thresholds.yaml",
+        environ={
+            "AEGIS_ENV": "test",
+            "CORS_ORIGINS": "https://app.example",
+            "API_HOST": "10.0.0.1",
+            "API_PORT": "9999",
+            "RATE_LIMIT": "1/second",
+        },
+    )
+
+    assert settings.api.allowed_origins == ["https://app.example"]
+    assert settings.api.host == "10.0.0.1"
+    assert settings.api.port == 9999
+    assert settings.api.rate_limit == "1/second"
+
+
 def test_environment_overrides_yaml_values(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
