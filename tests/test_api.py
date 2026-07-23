@@ -1301,8 +1301,9 @@ class TestDefaultRateLimiting:
         if not api_main.SLOWAPI_AVAILABLE:
             pytest.skip("SlowAPI is not installed")
 
-        # Set a low rate limit for testing
-        monkeypatch.setattr(api_main.settings.api, "rate_limit", "5/minute")
+        # Configure the same current settings object read by the middleware.
+        # Other test modules may reset the settings cache before this test.
+        monkeypatch.setattr(api_main.get_settings().api, "rate_limit", "5/minute")
 
         # Clear existing rate limit keys to ensure clean state
         _clear_rate_limit_storage()
