@@ -33,7 +33,6 @@ import plotly.graph_objects as go
 import requests
 from plotly.subplots import make_subplots
 
-from config.security import is_admin_role
 from src.inference.model_comparison import build_model_explanation_comparison
 from src.timeline.doubly_linked_list import DoublyLinkedList
 from utils.webhook_alerts import trigger_webhook_alert
@@ -64,41 +63,99 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# API Configuration
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+MAX_BATCH_UPLOAD_BYTES = int(os.getenv("MAX_BATCH_UPLOAD_BYTES", 5 * 1024 * 1024))
+BATCH_PREVIEW_ROWS = int(os.getenv("BATCH_PREVIEW_ROWS", 10))
+BATCH_CHUNK_SIZE = int(os.getenv("BATCH_CHUNK_SIZE", 50))
+BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", 500))
+
 # Initialize session state for login
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "role" not in st.session_state:
     st.session_state.role = None
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = None
+if "token_expires_at" not in st.session_state:
+    st.session_state.token_expires_at = None
+if "auth_username" not in st.session_state:
+    st.session_state.auth_username = ""
 if "rate_limiter" not in st.session_state:
     st.session_state.rate_limiter = RateLimiter(capacity=5.0, refill_rate=1.0)
+
+
+def _extract_token_expiry(access_token: str | None) -> float | None:
+    """Extract the JWT expiry timestamp from the access token payload."""
+    if not access_token:
+        return None
+    try:
+        parts = access_token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        data = json.loads(decoded.decode("utf-8"))
+        exp = data.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+def auth_login(username: str, password: str) -> dict:
+    """Authenticate against the backend login endpoint."""
+    response = requests.post(
+        f"{API_URL}/api/v1/auth/login",
+        json={"username": username, "password": password},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
 
 if not st.session_state.logged_in:
     st.title("🛡️ AegisGraph Sentinel 2.0 Login")
     st.markdown("Please authenticate to access the security command center.")
 
-    role_choice = st.selectbox("Select Your Role", ["Operator", "Administrator"])
-
-    # Display credential hint for testing
-    password_hint = (
-        "sentinel-operator" if role_choice == "Operator" else "sentinel-admin"
-    )
-    st.caption(f"Password hint for testing: `{password_hint}`")
-
+    username = st.text_input("Username")
     password = st.text_input("Enter Password", type="password")
 
     if st.button("Authenticate"):
-        if role_choice == "Operator" and password == "sentinel-operator":
-            st.session_state.logged_in = True
-            st.session_state.role = "Operator"
-            st.success("Authenticated as Operator!")
-            st.rerun()
-        elif role_choice == "Administrator" and password == "sentinel-admin":
-            st.session_state.logged_in = True
-            st.session_state.role = "Administrator"
-            st.success("Authenticated as Administrator!")
-            st.rerun()
+        if not username or not password:
+            st.error("Enter both username and password.")
         else:
-            st.error("Invalid password. Please check the hint.")
+            try:
+                response = auth_login(username, password)
+                access_token = response.get("access_token")
+                role = response.get("role")
+                if not access_token or not role:
+                    st.error(
+                        "Authentication succeeded but the backend returned an incomplete response."
+                    )
+                else:
+                    st.session_state.logged_in = True
+                    st.session_state.access_token = access_token
+                    st.session_state.refresh_token = response.get("refresh_token")
+                    st.session_state.role = role
+                    st.session_state.auth_username = username
+                    st.session_state.token_expires_at = _extract_token_expiry(
+                        access_token
+                    )
+                    st.rerun()
+            except requests.exceptions.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response else None
+                if status_code in (401, 403):
+                    st.error("Invalid username or password.")
+                else:
+                    st.error(f"Login failed with HTTP {status_code}.")
+            except requests.exceptions.ConnectionError:
+                st.error("Backend authentication service is unavailable.")
+            except requests.exceptions.Timeout:
+                st.error("Login request timed out. Please try again.")
+            except Exception as exc:
+                logger.error("Unexpected login error: %s", exc)
+                st.error("Login failed due to an unexpected error.")
     st.stop()
 
 # API Configuration
@@ -210,36 +267,73 @@ def _schedule_live_refresh(interval_ms: int = 1500) -> None:
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
-def _api_headers(extra: dict | None = None) -> dict:
-    """Return the base auth headers required by all protected API endpoints.
+def _token_is_expired() -> bool:
+    expiry = st.session_state.get("token_expires_at")
+    return bool(expiry and time.time() >= float(expiry))
 
-    Reads ``AEGIS_UI_API_KEY`` from the environment first, then falls back
-    to ``st.secrets`` (key ``AEGIS_UI_API_KEY``).  An optional *extra* dict
-    is merged in last so callers can add endpoint-specific headers (e.g.
-    ``X-Honeypot-Token``) without duplicating the base auth logic.
 
-    Returns an empty dict when no key is configured so that unauthenticated
-    deployments keep working — the backend will return 401/403 which the
-    helpers surface as a clear warning.
-    """
-    key = os.getenv("AEGIS_UI_API_KEY", "")
-    if not key:
-        try:
-            key = st.secrets.get("AEGIS_UI_API_KEY", "")
-        except Exception as exc:
-            import logging
+def _clear_auth_state() -> None:
+    for key in (
+        "logged_in",
+        "access_token",
+        "refresh_token",
+        "role",
+        "token_expires_at",
+        "auth_username",
+    ):
+        st.session_state.pop(key, None)
 
-            logging.getLogger(__name__).debug(
-                "Failed to access Streamlit secrets: %s", exc
-            )
-            key = ""
-    headers: dict = {}
-    if key:
-        headers["X-API-Key"] = key
+
+def logout() -> None:
+    """Clear the local session and rerun to the login screen."""
+    _clear_auth_state()
+    st.rerun()
+
+
+def authenticated_headers(extra: dict | None = None) -> dict:
+    """Return Authorization headers for the current session."""
+    headers = {}
+    token = st.session_state.get("access_token")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if extra:
         headers.update(extra)
     return headers
 
+
+def _handle_unauthorized(detail: str | None = None) -> None:
+    if detail:
+        st.warning(detail)
+    else:
+        st.warning("Your session expired. Please sign in again.")
+    _clear_auth_state()
+    st.rerun()
+
+
+def authenticated_request(
+    method: str,
+    url: str,
+    *,
+    timeout: int = 5,
+    extra_headers: dict | None = None,
+    **kwargs,
+):
+    """Send an authenticated request and auto-handle auth failures."""
+    if _token_is_expired():
+        _handle_unauthorized("Your session expired. Please sign in again.")
+
+    headers = authenticated_headers(extra_headers)
+    response = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
+    if response.status_code == 401:
+        _handle_unauthorized("Your session is no longer valid. Please sign in again.")
+    if response.status_code == 403:
+        st.error("You do not have permission to perform that action.")
+    return response
+
+
+def _api_headers(extra: dict | None = None) -> dict:
+    """Backward-compatible wrapper for authenticated headers."""
+    return authenticated_headers(extra)
 
 def _safe_api_get(
     url: str, timeout: int = 5, extra_headers: dict | None = None
@@ -251,13 +345,13 @@ def _safe_api_get(
     Streamlit warning banner is shown when the backend is unreachable so
     operators can distinguish "no data" from "API offline".
 
-    Auth headers (``X-API-Key``) are injected automatically via
-    ``_api_headers()``.  Pass *extra_headers* for endpoint-specific tokens
-    such as ``X-Honeypot-Token``.
+    Authorization headers are injected automatically via
+    ``authenticated_headers()``.  Pass *extra_headers* for endpoint-specific
+    headers such as ``X-Honeypot-Token``.
     """
     try:
-        response = requests.get(
-            url, timeout=timeout, headers=_api_headers(extra_headers)
+        response = authenticated_request(
+            "GET", url, timeout=timeout, extra_headers=extra_headers
         )
         response.raise_for_status()
         return response.json()
@@ -276,8 +370,7 @@ def _safe_api_get(
         logger.warning("API returned HTTP %s: %s", status, url)
         if status in (401, 403):
             st.warning(
-                f"⚠️ API returned {status} — verify **AEGIS_UI_API_KEY** is set correctly "
-                "in your environment or `st.secrets`."
+                f"⚠️ API returned {status} — your session may have expired or the backend denied access."
             )
         return {}
     except Exception as exc:
@@ -295,12 +388,12 @@ def _safe_api_post(
     Streamlit banner because POST calls are typically made from background
     threads where ``st.*`` calls are not safe.
 
-    Auth headers (``X-API-Key``) are injected automatically via
-    ``_api_headers()``.  Pass *extra_headers* for endpoint-specific tokens.
+    Authorization headers are injected automatically via
+    ``authenticated_headers()``.  Pass *extra_headers* for endpoint-specific tokens.
     """
     try:
-        response = requests.post(
-            url, json=payload, timeout=timeout, headers=_api_headers(extra_headers)
+        response = authenticated_request(
+            "POST", url, json=payload, timeout=timeout, extra_headers=extra_headers
         )
         response.raise_for_status()
         return response.json()
@@ -746,16 +839,14 @@ with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/security-checked.png", width=100)
     st.title("Navigation")
 
-    role_label = st.session_state.role
-    if is_admin_role(role_label):
+    role_label = str(st.session_state.get("role") or "")
+    if role_label.lower() == "administrator":
         st.sidebar.success("🔓 Administrator Mode")
     else:
         st.sidebar.warning("🔒 Operator (Read-Only) Mode")
 
     if st.sidebar.button("Logout", key="logout_btn", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.role = None
-        st.rerun()
+        logout()
 
     page = st.radio(
         "Select Page",
@@ -1083,11 +1174,11 @@ elif page == "💳 Transaction Scan":
 
                 # Make API call
                 try:
-                    response = requests.post(
+                    response = authenticated_request(
+                        "POST",
                         f"{API_URL}/api/v1/fraud/check",
-                        json=transaction,
                         timeout=10,
-                        headers=_api_headers(),
+                        json=transaction,
                     )
 
                     if response.status_code == 200:
@@ -1308,11 +1399,11 @@ elif page == "📁 Batch Triage":
                             txn["location"] = str(row["location"])
 
                         try:
-                            response = requests.post(
+                            response = authenticated_request(
+                                "POST",
                                 f"{API_URL}/api/v1/fraud/check",
-                                json=txn,
                                 timeout=30,
-                                headers=_api_headers(),
+                                json=txn,
                             )
                             if response.status_code == 200:
                                 result = response.json()
@@ -2508,7 +2599,7 @@ elif page == "📊 Risk Analytics":
 
 # Page: Innovations
 elif page == "🧪 Innovation Lab":
-    if not is_admin_role(st.session_state.role):
+    if str(st.session_state.get("role") or "").lower() != "administrator":
         st.warning(
             "🔒 Read-Only (Operator Mode): Model configuration and retraining parameters are view-only."
         )
@@ -2665,11 +2756,11 @@ elif page == "🧪 Innovation Lab":
                             "sample_rate": 16000,
                         }
 
-                        response = requests.post(
+                        response = authenticated_request(
+                            "POST",
                             f"{API_URL}/api/v1/voice/analyze",
-                            json=payload,
                             timeout=30,
-                            headers=_api_headers(),
+                            json=payload,
                         )
 
                         if response.status_code == 200:
@@ -2828,11 +2919,11 @@ elif page == "🧪 Innovation Lab":
                         "form_completion_time_seconds": form_time,
                     }
 
-                    response = requests.post(
+                    response = authenticated_request(
+                        "POST",
                         f"{API_URL}/api/v1/accounts/score-opening",
-                        json=payload,
                         timeout=10,
-                        headers=_api_headers(),
+                        json=payload,
                     )
 
                     if response.status_code == 200:
@@ -2990,11 +3081,11 @@ elif page == "🧪 Innovation Lab":
                         "flight_times": flight_times,
                     },
                 }
-                resp = requests.post(
+                resp = authenticated_request(
+                    "POST",
                     f"{API_URL}/api/v1/fraud/check",
-                    json=payload,
                     timeout=10,
-                    headers=_api_headers(),
+                    json=payload,
                 )
                 if resp.status_code == 200:
                     result = resp.json()
@@ -3036,11 +3127,11 @@ elif page == "🧪 Innovation Lab":
                 "decision": dec,
             }
             try:
-                resp = requests.post(
+                resp = authenticated_request(
+                    "POST",
                     f"{API_URL}/api/v1/explain",
-                    json=payload,
                     timeout=10,
-                    headers=_api_headers(),
+                    json=payload,
                 )
                 if resp.status_code == 200:
                     st.json(resp.json())
@@ -3087,10 +3178,10 @@ elif page == "🧪 Innovation Lab":
             ):
                 with st.spinner("Verifying across validator nodes..."):
                     try:
-                        response = requests.get(
+                        response = authenticated_request(
+                            "GET",
                             f"{API_URL}/api/v1/blockchain/verify/{evidence_id}?block_number={block_number}",
                             timeout=10,
-                            headers=_api_headers(),
                         )
 
                         if response.status_code == 200:
@@ -3185,11 +3276,11 @@ elif page == "🧪 Innovation Lab":
                                 "authorization_token": auth_token,
                             }
 
-                            response = requests.post(
+                            response = authenticated_request(
+                                "POST",
                                 f"{API_URL}/api/v1/blockchain/export",
-                                json=payload,
                                 timeout=15,
-                                headers=_api_headers(),
+                                json=payload,
                             )
 
                             if response.status_code == 200:
@@ -4250,3 +4341,4 @@ def process_incoming_stream_safely(new_log_data):
 
 
 # --- END OF SENTINEL SHIELD ENGINE CONFIGURATION ---
+

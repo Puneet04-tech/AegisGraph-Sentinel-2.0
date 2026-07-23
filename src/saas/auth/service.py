@@ -174,6 +174,7 @@ class AuthResult:
     user_id: Optional[str] = None
     email: Optional[str] = None
     organization_id: Optional[str] = None
+    role: Optional[str] = None
     session_id: Optional[str] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -382,7 +383,6 @@ class AuthService:
         self,
         email: str,
         password: str,
-        organization_id: Optional[str] = None
     ) -> AuthResult:
         """Authenticate user with email and password.
 
@@ -406,19 +406,17 @@ class AuthService:
         else:
             return AuthResult(success=False, error="Authentication is not configured")
 
-        org_id = organization_id or record.organization_id
-
         if record.mfa_enabled:
             mfa_token = self.mfa_pending_store.issue(record.user_id)
             return AuthResult(
                 success=True,
                 user_id=record.user_id,
-                organization_id=org_id,
+                organization_id=record.organization_id,
                 mfa_required=True,
                 mfa_token=mfa_token,
             )
 
-        return self._create_auth_result(record, org_id)
+        return self._create_auth_result(record)
 
     def _has_any_user_records(self) -> bool:
         if hasattr(self.user_store, "_users"):
@@ -471,13 +469,13 @@ class AuthService:
         user_info = sso_provider.get_user_info(tokens["access_token"])
 
         # Find or create user
-        user_id, org_id = self._find_or_create_sso_user(provider, user_info)
+        user_id, _ = self._find_or_create_sso_user(provider, user_info)
 
         record = self.user_store.get_by_id(user_id)
         if record is None:
             return AuthResult(success=False, error="User record not found after SSO login")
 
-        return self._create_auth_result(record, org_id, provider=provider)
+        return self._create_auth_result(record, provider=provider)
 
     def verify_mfa(self, user_id: str, mfa_token: str, token: str) -> AuthResult:
         """Verify TOTP MFA token and complete authentication.
@@ -503,12 +501,11 @@ class AuthService:
         if not self.verify_mfa_token(record.mfa_secret, token):
             return AuthResult(success=False, error="Invalid MFA token")
 
-        return self._create_auth_result(record, record.organization_id)
+        return self._create_auth_result(record)
 
     def _create_auth_result(
         self,
         record: UserRecord,
-        organization_id: str,
         provider: Optional[AuthProvider] = None,
     ) -> AuthResult:
         """Create successful authentication result"""
@@ -517,7 +514,7 @@ class AuthService:
 
         access_payload = TokenPayload(
             sub=record.user_id,
-            org=organization_id,
+            org=record.organization_id,
             email=record.email,
             role=record.role,
             permissions=record.permissions,
@@ -533,7 +530,8 @@ class AuthService:
             success=True,
             user_id=record.user_id,
             email=record.email,
-            organization_id=organization_id,
+            organization_id=record.organization_id,
+            role=record.role,
             session_id=session_id,
             access_token=access_token,
             refresh_token=refresh_token,
@@ -576,7 +574,7 @@ class AuthService:
         if record is None:
             raise AuthenticationError("User not found")
 
-        return self._create_auth_result(record, record.organization_id)
+        return self._create_auth_result(record)
 
     def revoke_token_id(self, token_id: str) -> None:
         if token_id:

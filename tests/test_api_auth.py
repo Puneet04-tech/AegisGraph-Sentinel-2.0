@@ -20,7 +20,7 @@ conftest's ``api_client`` fixture is the one place that runs lifespan,
 and it resets that state on teardown.
 
 The auth tests are exempt from the conftest's ``_bypass_api_key_for_legacy_tests``
-override (this file is listed in ``_AUTH_TEST_FILES``), so the real gate
+override (this file is not listed in ``_LEGACY_BYPASS_FILES``), so the real gate
 fires here.
 """
 
