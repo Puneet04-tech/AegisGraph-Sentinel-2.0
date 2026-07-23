@@ -53,6 +53,17 @@ def validate_runtime_settings(
         else:
             report.warnings.append(message)
 
+    if not settings.raw_environment.has_api_key_backend:
+        message = (
+            "No API key backend configured: set AEGIS_API_KEY_HASHES or a role-specific "
+            "AEGIS_ROLE_<ROLE> variable to a comma-separated list of lowercase SHA-256 hashes. "
+            "Without it every role-protected endpoint returns 503."
+        )
+        if strict_mode:
+            report.errors.append(message)
+        else:
+            report.warnings.append(message)
+
     if settings.graph.graph_path and settings.graph.graph_path.suffix:
         if settings.graph.graph_path.suffix.lower() != settings.graph.allowed_suffix:
             report.errors.append(

@@ -45,9 +45,21 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_torch)
 
 
-# Files whose tests should exercise the real API key gate. The autouse
-# bypass below skips these so the gate is active during those tests.
-_AUTH_TEST_FILES = frozenset({"test_api_auth.py", "test_rbac.py", "test_soar.py"})
+# Test files that predate the X-API-Key gate and still call protected endpoints
+# without credentials. Only these receive the bypass. Every other file runs with
+# the real security dependencies, so a new test cannot silently opt out of RBAC.
+# This list should only shrink. Port a file to a real key instead of adding one.
+_LEGACY_BYPASS_FILES = frozenset({
+    "test_api.py",
+    "test_api_hardening.py",
+    "test_blast_radius.py",
+    "test_case_management.py",
+    "test_concurrency.py",
+    "test_entity_resolution.py",
+    "test_exception_logging.py",
+    "test_memory_leak.py",
+    "test_threat_hunting.py",
+})
 
 
 @pytest.fixture
@@ -70,13 +82,13 @@ def api_client(monkeypatch):
 def _bypass_api_key_for_legacy_tests(
     request: pytest.FixtureRequest,
 ) -> Iterator[None]:
-    """Bypass ``require_api_key`` and ``require_role`` for every test file outside the auth suite.
+    """Bypass ``require_api_key`` and ``require_role`` for the legacy test files only.
 
-    The auth tests in ``_AUTH_TEST_FILES`` need the real dependencies to
-    fire to verify 401/403/503 behaviour. All other tests predate the
-    gate and would otherwise break with 503 (env var unset) or 401
-    (header missing). For those tests we install dependency overrides
-    that let requests pass straight through.
+    Files listed in ``_LEGACY_BYPASS_FILES`` predate the gate and call
+    protected endpoints without credentials, so they receive dependency
+    overrides that let requests pass straight through. Every other file
+    runs with the real dependencies, which keeps 401/403/503 behaviour
+    observable and stops a new test from opting out of RBAC by default.
 
     Two sets of overrides are installed:
 
@@ -90,8 +102,8 @@ def _bypass_api_key_for_legacy_tests(
     All overrides are installed per-test and restored on teardown so that
     parallel test runs and pytest-xdist workers do not see leaked state.
     """
-    if request.path.name in _AUTH_TEST_FILES:
-        # Auth-suite test — let the real gates run.
+    if request.path.name not in _LEGACY_BYPASS_FILES:
+        # Real security dependencies run for every file outside the legacy list.
         yield
         return
 
