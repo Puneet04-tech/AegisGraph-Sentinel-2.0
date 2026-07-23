@@ -174,6 +174,7 @@ class AuthResult:
     user_id: Optional[str] = None
     email: Optional[str] = None
     organization_id: Optional[str] = None
+    role: Optional[str] = None
     session_id: Optional[str] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -530,6 +531,7 @@ class AuthService:
             user_id=record.user_id,
             email=record.email,
             organization_id=record.organization_id,
+            role=record.role,
             session_id=session_id,
             access_token=access_token,
             refresh_token=refresh_token,
