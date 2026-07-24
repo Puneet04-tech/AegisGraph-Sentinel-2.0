@@ -1743,7 +1743,19 @@ async def metrics(
     authorization: Optional[str] = Header(default=None, alias="Authorization")
 ):
     token_hash = os.getenv("AEGIS_METRICS_SCRAPE_TOKEN_HASH")
-    if token_hash:
+    if not token_hash:
+        # Fail closed in production rather than serving operational telemetry to
+        # anonymous callers. Other environments stay open so local scraping works.
+        if state.settings.runtime.is_production:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Metrics scraping is not configured. Set "
+                    "AEGIS_METRICS_SCRAPE_TOKEN_HASH to the SHA-256 hash of the "
+                    "scrape token."
+                ),
+            )
+    else:
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization[7:]
