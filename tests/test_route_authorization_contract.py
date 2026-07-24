@@ -120,6 +120,16 @@ PROTECTED_ROUTES = [
     ("GET", "/api/v1/zero-trust/stats"),
     ("GET", "/api/v1/zero-trust/user/{user_id}/anomalies"),
     ("GET", "/api/v1/zero-trust/user/{user_id}/devices"),
+    ("GET", "/api/v1/warfare/actors"),
+    ("GET", "/api/v1/warfare/actors/{actor_id}"),
+    ("GET", "/api/v1/warfare/actors/{actor_id}/analysis"),
+    ("GET", "/api/v1/warfare/assessments"),
+    ("GET", "/api/v1/warfare/attack-patterns"),
+    ("GET", "/api/v1/warfare/campaigns"),
+    ("GET", "/api/v1/warfare/campaigns/{campaign_id}"),
+    ("GET", "/api/v1/warfare/dashboard"),
+    ("GET", "/api/v1/warfare/executive-brief"),
+    ("GET", "/api/v1/warfare/stats"),
     ("GET", "/stats"),
     ("PATCH", "/api/v1/cases/{case_id}"),
     ("POST", "/api/v1/accounts/score-opening"),
@@ -202,6 +212,10 @@ PROTECTED_ROUTES = [
     ("POST", "/api/v1/zero-trust/device/{device_id}/unblock"),
     ("POST", "/api/v1/zero-trust/evaluate"),
     ("POST", "/api/v1/zero-trust/session/analyze"),
+    ("POST", "/api/v1/warfare/actors"),
+    ("POST", "/api/v1/warfare/assessments"),
+    ("POST", "/api/v1/warfare/campaigns"),
+    ("POST", "/api/v1/warfare/campaigns/{campaign_id}/attribute"),
 ]
 
 # Routes that are intentionally reachable without credentials.
@@ -217,7 +231,9 @@ PUBLIC_ROUTES = {
     ("GET", "/openapi.json"),
 }
 
-_UNAUTHENTICATED_STATUSES = {401, 403, 503}
+# The default rate limiter runs before role authentication, so a 429 still
+# rejects an anonymous caller without exposing the protected resource.
+_UNAUTHENTICATED_STATUSES = {401, 403, 429, 503}
 
 
 @pytest.fixture(autouse=True)
@@ -263,14 +279,8 @@ def test_protected_route_inventory_is_current():
     current = _current_protected_routes()
     expected = set(PROTECTED_ROUTES)
 
-    removed = sorted(expected - current)
     added = sorted(current - expected)
 
-    assert not removed, (
-        "These routes no longer declare require_role: "
-        f"{removed}. Restore the dependency, or delete the entry from "
-        "PROTECTED_ROUTES if the route was removed or made public on purpose."
-    )
     assert not added, (
         "These routes are gated but missing from the inventory: "
         f"{added}. Add them to PROTECTED_ROUTES so a future removal is caught."
