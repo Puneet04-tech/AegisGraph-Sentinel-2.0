@@ -21,48 +21,37 @@ from src.config import defaults, loaders, schemas
 class TestEnvironmentVariableDefaults:
     """Test that defaults are loaded from environment variables."""
 
-    def test_api_host_from_env(self, monkeypatch):
+    def test_api_host_from_env(self):
         """API host should load from API_HOST env var."""
-        monkeypatch.setenv("API_HOST", "127.0.0.1")
-        # Reimport to get fresh defaults
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_API_HOST == "127.0.0.1"
+        settings = loaders.load_settings(environ={"AEGIS_ENV": "test", "API_HOST": "127.0.0.1"})
+        assert settings.api.host == "127.0.0.1"
 
-    def test_api_port_from_env(self, monkeypatch):
+    def test_api_port_from_env(self):
         """API port should load from API_PORT env var."""
-        monkeypatch.setenv("API_PORT", "9000")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_API_PORT == 9000
+        settings = loaders.load_settings(environ={"AEGIS_ENV": "test", "API_PORT": "9000"})
+        assert settings.api.port == 9000
 
-    def test_api_reload_from_env(self, monkeypatch):
+    def test_api_reload_from_env(self):
         """API reload should load from API_RELOAD env var."""
-        monkeypatch.setenv("API_RELOAD", "false")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_API_RELOAD is False
+        settings = loaders.load_settings(environ={"AEGIS_ENV": "test", "API_RELOAD": "false"})
+        assert settings.api.reload is False
 
-    def test_cors_origins_from_env(self, monkeypatch):
+    def test_cors_origins_from_env(self):
         """CORS origins should load from CORS_ORIGINS env var."""
-        monkeypatch.setenv("CORS_ORIGINS", "https://example.com,https://app.example.com")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_ALLOWED_ORIGINS == ("https://example.com", "https://app.example.com")
+        settings = loaders.load_settings(
+            environ={"AEGIS_ENV": "test", "CORS_ORIGINS": "https://example.com,https://app.example.com"}
+        )
+        assert settings.api.allowed_origins == ["https://example.com", "https://app.example.com"]
 
-    def test_rate_limit_from_env(self, monkeypatch):
+    def test_rate_limit_from_env(self):
         """Rate limit should load from RATE_LIMIT env var."""
-        monkeypatch.setenv("RATE_LIMIT", "500/minute")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_RATE_LIMIT == "500/minute"
+        settings = loaders.load_settings(environ={"AEGIS_ENV": "test", "RATE_LIMIT": "500/minute"})
+        assert settings.api.rate_limit == "500/minute"
 
-    def test_max_batch_size_from_env(self, monkeypatch):
+    def test_max_batch_size_from_env(self):
         """Max batch size should load from MAX_BATCH_SIZE env var."""
-        monkeypatch.setenv("MAX_BATCH_SIZE", "200")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_MAX_BATCH_SIZE == 200
+        env = loaders.load_environment({"MAX_BATCH_SIZE": "200"})
+        assert env.max_batch_size == "200"
 
     def test_risk_thresholds_from_env(self, monkeypatch):
         """Risk thresholds should load from environment variables."""
@@ -138,12 +127,11 @@ class TestEnvironmentVariablesPriority:
         env = loaders.load_environment({"API_PORT": "9000"})
         assert env.api_port == "9000"
 
-    def test_env_overrides_default_rate_limit(self, monkeypatch):
+    def test_env_overrides_default_rate_limit(self):
         """Environment variable should override default rate limit."""
-        monkeypatch.setenv("RATE_LIMIT", "1000/hour")
-        import importlib
-        importlib.reload(defaults)
-        assert defaults.DEFAULT_RATE_LIMIT == "1000/hour"
+        settings = loaders.load_settings(environ={"AEGIS_ENV": "test", "RATE_LIMIT": "1000/hour"})
+        assert settings.api.rate_limit == "1000/hour"
+        assert defaults.DEFAULT_RATE_LIMIT == "100/minute"
 
     def test_cors_origins_env_priority(self, monkeypatch):
         """CORS_ORIGINS env var should take priority over AEGIS_ALLOWED_ORIGINS."""

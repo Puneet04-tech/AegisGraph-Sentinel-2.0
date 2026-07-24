@@ -175,6 +175,7 @@ from ..observability import get_audit_logger, get_logger
 from ..runtime import LifecycleManager, RuntimeState, RecoveryManager, RuntimeWatchdog
 from ..runtime.background_tasks import honeypot_auto_release_loop
 from ..security import sanitize_payload
+from .middleware.multi_tenancy import TenantIsolationMiddleware
 from .adaptive_auth_routes import register_routes as register_adaptive_auth_routes
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
@@ -1779,6 +1780,7 @@ app.add_middleware(
     ],
     max_age=600,
 )
+app.add_middleware(TenantIsolationMiddleware)
 
 # Rate Limiting
 limiter = Limiter(

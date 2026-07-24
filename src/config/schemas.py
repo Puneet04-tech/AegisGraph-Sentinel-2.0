@@ -74,6 +74,27 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
         default=None,
         description="Runtime failure policy override (fail_fast, degraded, maintenance).",
     )
+    aegis_api_key_hashes: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes mapped to SUPER_ADMIN.")
+    aegis_role_super_admin: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes for the SUPER_ADMIN role.")
+    aegis_role_admin: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes for the ADMIN role.")
+    aegis_role_analyst: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes for the ANALYST role.")
+    aegis_role_auditor: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes for the AUDITOR role.")
+    aegis_role_viewer: Optional[str] = Field(default=None, description="Comma-separated SHA-256 API key hashes for the VIEWER role.")
+
+    @property
+    def has_api_key_backend(self) -> bool:
+        """Return True when at least one API key hash source is configured."""
+        return any(
+            (value or "").strip()
+            for value in (
+                self.aegis_api_key_hashes,
+                self.aegis_role_super_admin,
+                self.aegis_role_admin,
+                self.aegis_role_analyst,
+                self.aegis_role_auditor,
+                self.aegis_role_viewer,
+            )
+        )
 
     @property
     def runtime_environment(self) -> str:
