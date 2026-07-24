@@ -1711,9 +1711,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-from src.saas.routes.users import router as saas_users_router
-app.include_router(saas_users_router)
-
 TRANSACTION_DECISIONS = REGISTRY._names_to_collectors.get("aegis_transaction_decisions_total") or Counter(
     "aegis_transaction_decisions_total",
     "Total transaction decisions made by AegisGraph",
