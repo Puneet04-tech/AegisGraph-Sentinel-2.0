@@ -13,7 +13,7 @@ import io
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import secrets
 import torch
 
@@ -106,7 +106,7 @@ class ModelEncryption:
                 "MODEL_ENCRYPTION_SALT",
                 "aegisgraph-model-protection"
             ).encode()
-            kdf = PBKDF2(
+            kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=ModelEncryption.KEY_SIZE,
                 salt=salt,
