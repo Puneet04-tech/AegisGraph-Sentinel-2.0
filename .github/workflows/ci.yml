@@ -21,11 +21,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # Coverage is enabled only for one matrix leg to keep CI time bounded.
-    - name: Set run_coverage flag
-      id: coverage_flag
-      run: echo "RUN_COVERAGE=true" >> $GITHUB_OUTPUT
-
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
@@ -49,6 +44,10 @@ jobs:
       env:
         AEGIS_API_KEY_HASHES: ${{ secrets.AEGIS_API_KEY_HASHES }}
         AEGIS_GRAPH_SHA256: ${{ secrets.AEGIS_GRAPH_SHA256 }}
+        # Bound to the matrix value. Previously this was written to GITHUB_OUTPUT
+        # by a separate step and read here as a shell variable, so it was always
+        # unset and the coverage branch below never executed.
+        RUN_COVERAGE: ${{ matrix.run_coverage }}
       run: |
         # Run full suite with optional coverage (only enabled on one matrix leg).
         if [ "${RUN_COVERAGE:-false}" = "true" ]; then
@@ -64,3 +63,60 @@ jobs:
       run: |
         # Ensure the main route entry definitions can compile flawlessly in production
         python -m py_compile src/api/main.py
+
+  # Static and dependency security scanning.
+  #
+  # Both steps are advisory for now. The codebase currently reports 22 high
+  # severity bandit findings, all B324 weak hash usage tracked in #2289, and
+  # pip-audit reports known advisories in transitive packages. Making either
+  # blocking today would fail every pull request regardless of its content.
+  # Once those are resolved, drop continue-on-error so regressions are caught.
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install scanners
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit pip-audit
+
+    - name: Static analysis with Bandit
+      continue-on-error: true
+      run: |
+        bandit -r src/ database/ config/ utils/ app.py \
+          --severity-level high --confidence-level high \
+          --format screen
+
+    - name: Full Bandit report
+      continue-on-error: true
+      run: |
+        bandit -r src/ database/ config/ utils/ app.py -f json -o bandit-report.json || true
+        python - <<'PY'
+        import json
+        from collections import Counter
+        with open("bandit-report.json") as handle:
+            results = json.load(handle)["results"]
+        counts = Counter(item["issue_severity"] for item in results)
+        print("Bandit findings by severity:", dict(counts))
+        PY
+
+    - name: Dependency advisories with pip-audit
+      continue-on-error: true
+      run: pip-audit -r requirements.txt --progress-spinner off
+
+    - name: Upload Bandit report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bandit-report
+        path: bandit-report.json
+        if-no-files-found: ignore
