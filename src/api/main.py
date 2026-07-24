@@ -43,6 +43,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
+from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details
 
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
@@ -106,9 +107,11 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware to enforce default rate limits on standard API endpoints."""
 
     async def dispatch(self, request: Request, call_next):
-        # Only rate limit if slowapi is available and limiter is configured
+        # Only rate limit if the app has a limiter configured.
+        # SlowAPI is an optional acceleration path; the distributed limiter
+        # below should still run when SlowAPI is unavailable.
         limiter = getattr(request.app.state, "limiter", None)
-        if not SLOWAPI_AVAILABLE or not limiter:
+        if not limiter:
             return await call_next(request)
 
         path = request.url.path
@@ -130,38 +133,29 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
 
         if is_standard_route and not is_exempt:
             try:
-                import limits
-                # Securely get client IP
-                client_ip = get_remote_address(request)
-
-                # Get the default rate limit string from settings
                 runtime_settings = get_settings()
-                rate_limit_str = runtime_settings.api.rate_limit
+                client_ip = get_remote_address(request)
+                api_key = request.headers.get("X-API-Key")
 
-                # Parse the limit using limits library
-                parsed_limit = limits.parse(rate_limit_str)
+                checks = [("ip", client_ip)]
+                if api_key:
+                    checks.insert(0, ("api_key", api_key))
 
-                # Check rate limit using the default key_func (IP address)
-                # Use 'default_limit' namespace prefix to isolate state from other decorators
-                allowed = limiter.limiter.hit(parsed_limit, client_ip, "default_limit")
-
-                if not allowed:
-                    # Get reset time to calculate Retry-After header
-                    stats = limiter.limiter.get_window_stats(parsed_limit, client_ip, "default_limit")
-                    retry_after = max(1, int(stats.reset_time - time.time()))
-
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": {
-                                "code": 429,
-                                "message": f"Rate limit exceeded: {rate_limit_str}. Please try again later."
-                            }
-                        },
-                        headers={"Retry-After": str(retry_after)}
+                for scope, identity in checks:
+                    decision = check_rate_limit(
+                        identity,
+                        scope=scope,
+                        limit=runtime_settings.api.rate_limit_burst,
+                        burst=runtime_settings.api.rate_limit_burst,
+                        window_seconds=runtime_settings.api.rate_limit_window_seconds,
                     )
+                    if not decision.allowed:
+                        return JSONResponse(
+                            status_code=429,
+                            content=build_rate_limit_response_details(decision, scope),
+                            headers={"Retry-After": str(decision.retry_after_seconds)},
+                        )
             except Exception as exc:
-                # Log error and continue to ensure availability if rate limiter logic fails
                 logger.error(f"Error in rate limiting middleware: {exc}", exc_info=True)
 
         return await call_next(request)

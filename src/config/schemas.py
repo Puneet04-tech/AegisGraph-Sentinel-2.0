@@ -56,6 +56,8 @@ class EnvironmentVariablesSchema(ConfigBaseModel):
     api_reload: Optional[str] = Field(default=None, description="Enable API auto-reload on code changes.")
     api_log_level: Optional[str] = Field(default=None, description="API logging level (default: info).")
     rate_limit: Optional[str] = Field(default=None, description="Rate limit configuration (default: 100/minute).")
+    rate_limit_burst: Optional[str] = Field(default=None, description="Rate limit burst capacity (default: 100).")
+    rate_limit_window_seconds: Optional[str] = Field(default=None, description="Rate limit window in seconds (default: 60).")
     max_batch_size: Optional[str] = Field(default=None, description="Maximum batch processing size (default: 100).")
     log_level: Optional[str] = Field(default=None, description="Application logging level (default: INFO).")
     log_format: Optional[str] = Field(default=None, description="Log format: json or text (default: json).")
@@ -112,6 +114,8 @@ class APISettings(ConfigBaseModel):
     allowed_origins: List[str] = Field(default_factory=lambda: list(defaults.DEFAULT_ALLOWED_ORIGINS))
     api_url: Optional[str] = Field(default=None)
     rate_limit: str = Field(default=defaults.DEFAULT_RATE_LIMIT)
+    rate_limit_burst: int = Field(default=defaults.DEFAULT_RATE_LIMIT_BURST, ge=1)
+    rate_limit_window_seconds: int = Field(default=defaults.DEFAULT_RATE_LIMIT_WINDOW_SECONDS, ge=1)
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
