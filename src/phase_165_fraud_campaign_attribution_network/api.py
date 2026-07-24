@@ -4,28 +4,27 @@ from .schemas import FraudCampaignAttributionNetworkCreateSchema, FraudCampaignA
 from .store import get_store, FraudCampaignAttributionNetworkStore
 from .service import FraudCampaignAttributionNetworkService
 from .analytics import FraudCampaignAttributionNetworkAnalytics
+from src.api.security import require_role, Role
 
 router = APIRouter(prefix="/api/v1/phase165", tags=["Phase 165: Fraud Campaign Attribution Network"])
 
 
-def verify_auth(x_api_key: str = Header(...)) -> str:
+def resolve_tenant(x_api_key: str = Header(...)) -> str:
     if not x_api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
     if x_api_key.startswith("tenant_"):
         return x_api_key.split("_", 1)[1]
-    elif x_api_key == "SUPER_ADMIN":
-        return "system"
-    raise HTTPException(status_code=403, detail="Unauthorized")
+    return "system"
 
 
 def get_svc(store: FraudCampaignAttributionNetworkStore = Depends(get_store)) -> FraudCampaignAttributionNetworkService:
     return FraudCampaignAttributionNetworkService(store)
 
 
-@router.post("/records")
+@router.post("/records", dependencies=[Depends(require_role(Role.ADMIN))])
 def create_record(
     payload: FraudCampaignAttributionNetworkCreateSchema,
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: FraudCampaignAttributionNetworkService = Depends(get_svc)
 ):
     if tenant_id != "system" and payload.tenant_id != tenant_id:
@@ -40,9 +39,9 @@ def create_record(
     return {"status": "RECORD_CREATED", "record_id": record.record_id}
 
 
-@router.get("/records")
+@router.get("/records", dependencies=[Depends(require_role(Role.ADMIN))])
 def list_records(
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: FraudCampaignAttributionNetworkService = Depends(get_svc)
 ):
     records = svc.list_records(tenant_id)
@@ -51,10 +50,10 @@ def list_records(
     ]}
 
 
-@router.get("/records/{record_id}")
+@router.get("/records/{record_id}", dependencies=[Depends(require_role(Role.ADMIN))])
 def get_record(
     record_id: str,
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: FraudCampaignAttributionNetworkService = Depends(get_svc)
 ):
     record = svc.get_record(tenant_id, record_id)
@@ -63,10 +62,10 @@ def get_record(
     return {"record_id": record.record_id, "name": record.name, "status": record.status}
 
 
-@router.post("/alerts")
+@router.post("/alerts", dependencies=[Depends(require_role(Role.ADMIN))])
 def create_alert(
     payload: FraudCampaignAttributionNetworkAlertSchema,
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: FraudCampaignAttributionNetworkService = Depends(get_svc)
 ):
     alert = svc.create_alert(
@@ -78,9 +77,9 @@ def create_alert(
     return {"status": "ALERT_CREATED", "alert_id": alert.alert_id}
 
 
-@router.get("/analytics")
+@router.get("/analytics", dependencies=[Depends(require_role(Role.ADMIN))])
 def get_analytics(
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     store: FraudCampaignAttributionNetworkStore = Depends(get_store)
 ):
     analytics = FraudCampaignAttributionNetworkAnalytics(store)

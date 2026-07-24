@@ -1,12 +1,25 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.phase_65_enterprise_security_digital_twin.api import router
+import hashlib
+import pytest
 
 app = FastAPI()
 app.include_router(router)
 client = TestClient(app)
 
-HEADERS = {"x-api-key": "tenant_testco"}
+ADMIN_KEY = "tenant_testco"
+ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
+
+HEADERS = {"x-api-key": ADMIN_KEY}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _admin_auth():
+    mp = pytest.MonkeyPatch()
+    mp.setenv("AEGIS_ROLE_ADMIN", ADMIN_HASH)
+    yield
+    mp.undo()
 
 def test_create_record():
     payload = {"record_id": "rec-integ-65-001", "tenant_id": "testco", "state_id": "twin-state-001", "entity_id": "active-directory-hub", "posture_score": 94.2, "anomaly_detected": False}

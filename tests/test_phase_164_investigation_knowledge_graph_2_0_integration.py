@@ -1,12 +1,25 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.phase_164_investigation_knowledge_graph_2_0.api import router
+import hashlib
+import pytest
 
 app = FastAPI()
 app.include_router(router)
 client = TestClient(app)
 
-HEADERS = {"x-api-key": "tenant_testco"}
+ADMIN_KEY = "tenant_testco"
+ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
+
+HEADERS = {"x-api-key": ADMIN_KEY}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _admin_auth():
+    mp = pytest.MonkeyPatch()
+    mp.setenv("AEGIS_ROLE_ADMIN", ADMIN_HASH)
+    yield
+    mp.undo()
 
 
 def test_create_record():
