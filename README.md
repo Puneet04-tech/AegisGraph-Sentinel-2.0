@@ -62,7 +62,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 | 5 | **Voice Stress Analysis** | Phone coercion detection | 92% detection rate |
 | 6 | **Blockchain Evidence** | Immutable forensics | <100ms sealing, court-admissible |
 
-**📖 Detailed Innovation Guide**: See [INNOVATIONS.md](INNOVATIONS.md) for comprehensive documentation
+**📖 Detailed Innovation Guide**: See [INNOVATIONS.md](docs/INNOVATIONS.md) for comprehensive documentation
 
 ## 🧠 Core Technologies
 
@@ -197,12 +197,17 @@ All protected endpoints in AegisGraph Sentinel require an API Key. You can easil
 
 ### Training the Model
 
+Synthetic data generation builds heterogeneous graph tensors, so it additionally
+requires PyTorch Geometric. That package is not in `requirements.txt` because its
+installation is platform and torch-version specific. See the
+[PyTorch Geometric install guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
+
 ```bash
-# Generate synthetic training data
-python -m src.data.data_generator
+# Generate synthetic training data (requires torch-geometric)
+python -m src.data.synthetic_data_gen
 
 # Train the HTGNN model
-python -m src.training.trainer
+python -m src.training.train
 ```
 
 ## 📁 Project Structure
@@ -375,22 +380,22 @@ print(f"Verified: {response.json()['verified']}")
 
 ## 📚 Documentation
 
-- [System Architecture](docs/architecture.md)
-- [API Documentation](docs/api.md)
-- [Model Training Guide](docs/training.md)
-- [Deployment Guide](docs/deployment.md)
+- [System Architecture](docs/SYSTEM_ARCHITECTURE.md)
+- [API Reference](docs/api_reference.md)
+- [Model Training Guide](docs/TRAINING_WORKFLOW.md)
+- [Deployment Guide](docs/DEPLOYMENT.md)
 - [Graph Investigation Playbooks](docs/graph-investigation-playbooks.md)
 
 Detailed project documentation is available in the `docs/` directory.
 
 | Document | Description |
 |-----------|-------------|
-| `system_architecture.md` | Explains overall system architecture, component responsibilities, and transaction lifecycle |
-| `api_cookbook.md` | API examples, request/response samples, and integration guides |
-| `api_reference.md` | Complete API reference with schemas, auth guide, and error codes |
-| `contributor_handbook.md` | Contributor workflow, repository structure, and contribution guidelines |
-| `training_workflow.md` | End-to-end machine learning and HTGNN training pipeline |
-| `testing_guide.md` | Testing procedures, coverage reporting, and debugging guidance |
+| [`SYSTEM_ARCHITECTURE.md`](docs/SYSTEM_ARCHITECTURE.md) | Explains overall system architecture, component responsibilities, and transaction lifecycle |
+| [`API_COOKBOOK.md`](docs/API_COOKBOOK.md) | API examples, request/response samples, and integration guides |
+| [`api_reference.md`](docs/api_reference.md) | Complete API reference with schemas, auth guide, and error codes |
+| [`CONTRIBUTOR_HANDBOOK.md`](docs/CONTRIBUTOR_HANDBOOK.md) | Contributor workflow, repository structure, and contribution guidelines |
+| [`TRAINING_WORKFLOW.md`](docs/TRAINING_WORKFLOW.md) | End-to-end machine learning and HTGNN training pipeline |
+| [`TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing procedures, coverage reporting, and debugging guidance |
 | `graph-investigation-playbooks.md` | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
 
 These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
@@ -419,8 +424,8 @@ Click the **Fork** button at the top right of this repository to create your own
 
 ### 2. Clone Your Fork
 ```bash
-git clone https://github.com/your-username/AegisGraph-Sentinel-2.0PP.git
-cd AegisGraph-Sentinel-2.0PP
+git clone https://github.com/your-username/AegisGraph-Sentinel-2.0.git
+cd AegisGraph-Sentinel-2.0
 ```
 
 ### 3. Create a Feature Branch
@@ -457,7 +462,7 @@ git push origin feature/your-feature-name
 - One PR per issue — keep it focused
 - Be respectful and follow the project's Code of Conduct
 
-> 💡 **Tip**: Check `docs/contributor_handbook.md` for detailed contribution guidelines.
+> 💡 **Tip**: Check [docs/CONTRIBUTOR_HANDBOOK.md](docs/CONTRIBUTOR_HANDBOOK.md) for detailed contribution guidelines.
 
 ---
 ## 🛠️ Contributor Environment Setup Guide
@@ -466,8 +471,8 @@ This guide helps new contributors set up a local development environment to star
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/prernaajaypatil-oss/AegisGraph-Sentinel-2.0PP.git
-cd AegisGraph-Sentinel-2.0PP
+git clone https://github.com/Puneet04-tech/AegisGraph-Sentinel-2.0.git
+cd AegisGraph-Sentinel-2.0
 ```
 
 ### 2. Create a Virtual Environment
@@ -520,10 +525,10 @@ Interactive docs at: `http://localhost:8000/docs`
 ### 7. (Optional) Train the Model
 ```bash
 # Generate synthetic training data
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 
 # Train the HTGNN model
-python -m src.training.trainer
+python -m src.training.train
 ```
 
 > 💡 **Tip**: If you face any setup issues, check the existing docs in the `docs/` folder or open a GitHub Discussion.
@@ -540,7 +545,7 @@ Thank you to everyone who has contributed to making this project better 🚀 .
 
 ## 📄 License
 
-Copyright © 2026. All rights reserved.
+Released under the [MIT License](LICENSE).
 
 ## 📧 Contact
 
