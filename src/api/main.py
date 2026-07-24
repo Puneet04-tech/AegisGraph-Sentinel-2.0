@@ -1724,6 +1724,7 @@ API_LATENCY = REGISTRY._names_to_collectors.get("aegis_api_latency_seconds") or 
     "API request latency in seconds",
     ["endpoint"]
 )
+_UNMATCHED_METRICS_ENDPOINT = "__unmatched__"
 ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") or Gauge(
     "aegis_active_honeypots",
     "Number of currently active honeypots"
@@ -1731,10 +1732,11 @@ ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") o
 
 @app.middleware("http")
 async def prometheus_latency_middleware(request: Request, call_next):
-    endpoint = request.url.path
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
+    route = request.scope.get("route")
+    endpoint = getattr(route, "path", None) or _UNMATCHED_METRICS_ENDPOINT
     API_LATENCY.labels(endpoint=endpoint).observe(duration)
     return response
 
