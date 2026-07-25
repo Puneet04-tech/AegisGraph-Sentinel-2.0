@@ -1,0 +1,24 @@
+# Optional feature dependencies for AegisGraph Sentinel 2.0
+#
+# Install with:
+#   pip install -r requirements.txt -r requirements-optional.txt
+#
+# Nothing here is needed to run the API, the Streamlit UI, or the test suite.
+# Each entry backs a module that imports it at module level, so that module
+# raises ModuleNotFoundError until the package is installed. They are kept out
+# of requirements.txt because both are large and neither is reachable from
+# src/api/main.py or app.py.
+
+# Stripe billing integration.
+# Needed by: src/billing/stripe_integration.py
+# Note that src/saas/services/billing.py imports stripe lazily and degrades
+# without it, so only the module above hard-fails.
+stripe>=7.0,<13.0
+
+# PyTorch Geometric, used for heterogeneous graph tensors.
+# Needed by: src/data/synthetic_data_gen.py
+# src/models/htgat.py and src/inference/explainer.py already guard their imports
+# and fall back when it is absent.
+# Installation is platform and torch-version specific. See
+# https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+torch-geometric>=2.4,<3.0

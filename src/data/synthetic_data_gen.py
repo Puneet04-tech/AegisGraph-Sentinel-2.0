@@ -1,6 +1,14 @@
 import torch
-from torch_geometric.data import HeteroData
-from faker import Faker
+
+try:
+    from torch_geometric.data import HeteroData
+except ImportError as exc:  # pragma: no cover - depends on optional install
+    raise ImportError(
+        "synthetic_data_gen requires PyTorch Geometric, which is not part of "
+        "requirements.txt because its install is platform and torch-version "
+        "specific. Install it by following "
+        "https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html"
+    ) from exc
 
 def generate_synthetic_graph(
     num_accounts=1000, 
@@ -12,7 +20,6 @@ def generate_synthetic_graph(
     Generates a synthetic HeteroData graph object for AegisGraph Sentinel 2.0.
     Simulates a financial network with Accounts, Devices, and their interactions.
     """
-    fake = Faker('en_IN')
     data = HeteroData()
 
     print(f"Generating synthetic graph with {num_accounts} accounts and {num_transactions} transactions...")

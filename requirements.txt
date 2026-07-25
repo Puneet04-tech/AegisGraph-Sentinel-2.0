@@ -26,6 +26,14 @@ pyotp>=2.9,<3.0
 bcrypt>=4.0,<5.0
 PyJWT>=2.8,<3.0
 email-validator>=2.1.0
+# Imported unguarded at module level. Each previously reached this install only
+# as a transitive dependency, so removing the parent would break them:
+#   cryptography      via google-generativeai -> google-auth
+#   SQLAlchemy        via mlflow, which is itself marked optional below
+#   opentelemetry-api via mlflow -> mlflow-skinny
+cryptography>=42.0,<50.0
+SQLAlchemy>=1.4,<3.0
+opentelemetry-api>=1.9,<3.0
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 streamlit>=1.32,<2.0
