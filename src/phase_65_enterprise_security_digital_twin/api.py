@@ -4,25 +4,24 @@ from .schemas import SecurityDigitalTwinDigitalTwinStateCreateSchema, SecurityDi
 from .store import get_store, SecurityDigitalTwinStore
 from .service import SecurityDigitalTwinService
 from .analytics import SecurityDigitalTwinAnalytics
+from src.api.security import require_role, Role
 
 router = APIRouter(prefix="/api/v1/phase65", tags=["Phase 65: Enterprise Security Digital Twin"])
 
-def verify_auth(x_api_key: str = Header(...)) -> str:
+def resolve_tenant(x_api_key: str = Header(...)) -> str:
     if not x_api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
     if x_api_key.startswith("tenant_"):
         return x_api_key.split("_", 1)[1]
-    elif x_api_key == "SUPER_ADMIN":
-        return "system"
-    raise HTTPException(status_code=403, detail="Unauthorized")
+    return "system"
 
 def get_svc(store: SecurityDigitalTwinStore = Depends(get_store)) -> SecurityDigitalTwinService:
     return SecurityDigitalTwinService(store)
 
-@router.post("/records")
+@router.post("/records", dependencies=[Depends(require_role(Role.ADMIN))])
 def create_record(
     payload: SecurityDigitalTwinDigitalTwinStateCreateSchema,
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: SecurityDigitalTwinService = Depends(get_svc)
 ):
     if tenant_id != "system" and payload.tenant_id != tenant_id:
@@ -33,9 +32,9 @@ def create_record(
     )
     return {"status": "RECORD_CREATED", "record_id": item.record_id}
 
-@router.get("/records")
+@router.get("/records", dependencies=[Depends(require_role(Role.ADMIN))])
 def list_records(
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: SecurityDigitalTwinService = Depends(get_svc)
 ):
     records = svc.list_digitaltwinstates(tenant_id)
@@ -43,10 +42,10 @@ def list_records(
         {"record_id": r.record_id} for r in records
     ]}
 
-@router.get("/records/{record_id}")
+@router.get("/records/{record_id}", dependencies=[Depends(require_role(Role.ADMIN))])
 def get_record(
     record_id: str,
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     svc: SecurityDigitalTwinService = Depends(get_svc)
 ):
     record = svc.get_digitaltwinstate(tenant_id, record_id)
@@ -54,9 +53,9 @@ def get_record(
         raise HTTPException(status_code=404, detail="Record not found")
     return {"record_id": record.record_id}
 
-@router.get("/analytics")
+@router.get("/analytics", dependencies=[Depends(require_role(Role.ADMIN))])
 def get_analytics(
-    tenant_id: str = Depends(verify_auth),
+    tenant_id: str = Depends(resolve_tenant),
     store: SecurityDigitalTwinStore = Depends(get_store)
 ):
     analytics = SecurityDigitalTwinAnalytics(store)
