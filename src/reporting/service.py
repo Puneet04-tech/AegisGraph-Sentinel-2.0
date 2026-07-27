@@ -12,6 +12,7 @@ class ReportingService:
         self._store = store or get_reporting_store()
 
     def create_report(self, title: str, report_type: str, content: Dict[str, Any]) -> Report:
+        """Create and store a new report.""" -> Report:
         r = Report(title=title, report_type=report_type, content=content)
         return self._store.store_report(r)
 
