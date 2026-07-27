@@ -2,6 +2,12 @@ from datetime import datetime, timezone
 from .models import AttackCampaign, SimulationResult
 
 class SimulationEngine:
+    """Executes attack campaigns and produces structured simulation results.
+
+    Marks each SimulationStep as EXECUTED and computes the success rate
+    and detection statistics for the campaign run.
+    """
+
     def execute(self, campaign: AttackCampaign) -> SimulationResult:
         detected = 0
         for step in campaign.steps:
