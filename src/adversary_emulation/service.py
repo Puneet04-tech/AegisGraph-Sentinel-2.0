@@ -4,6 +4,13 @@ from .campaign_generator import CampaignGenerator
 from .simulation_engine import SimulationEngine
 
 class AdversaryEmulationService:
+    """Orchestrates adversary emulation workflows.
+
+    Manages the lifecycle of profiles, attack campaigns, and simulation
+    runs by delegating to the store, generator, and simulation engine
+    components.
+    """
+
     def __init__(self):
         self.store = AdversaryStore()
         self.generator = CampaignGenerator()
