@@ -463,7 +463,7 @@ def get_rate_limiter() -> RateLimiter:
     return _rate_limiter
 
 
-def reset_rate_limiter():
+def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
 
 
