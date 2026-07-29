@@ -371,7 +371,27 @@ class VoiceAnalysisRequest(BaseModel):
     # large uploads before they can consume excessive memory or CPU.
     audio_base64: str = Field(max_length=500_000, description="Base64-encoded audio WAV file (max 30 seconds)")
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
-    
+
+    @field_validator('audio_base64')
+    @classmethod
+    def validate_audio_size(cls, v):
+        """SECURITY: Prevent OOM attacks via large audio payloads.
+
+        Base64 expands to ~25% larger than decoded size.
+        Max 500K base64 chars -> ~375KB decoded -> 350KB safety limit.
+        """
+        if len(v) > 500_000:
+            raise ValueError("Audio base64 payload exceeds 500KB limit")
+
+        # Estimate decoded size (base64 is ~1.33x larger than decoded)
+        # Reject if estimated decoded size exceeds safety threshold
+        estimated_decoded_size = len(v) * 0.75
+        MAX_DECODED_SIZE = 350_000  # ~350KB safety limit
+        if estimated_decoded_size > MAX_DECODED_SIZE:
+            raise ValueError(f"Decoded audio would exceed {MAX_DECODED_SIZE} bytes limit")
+
+        return v
+
     @field_validator('sample_rate')
     @classmethod
     def validate_sample_rate(cls, v):
