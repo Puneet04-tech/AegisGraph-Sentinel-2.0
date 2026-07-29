@@ -3299,12 +3299,6 @@ def _serialise_case(case) -> FraudCaseResponse:
 from .cases_routes import router as cases_router
 app.include_router(cases_router)
 
-# SaaS user management. The router carries its own authentication and RBAC
-# (see src/saas/routes/users.py); without mounting it every /api/v1/users
-# request 404s, so the access controls could never actually run.
-from src.saas.routes.users import router as saas_users_router
-app.include_router(saas_users_router)
-
 @app.get(
     "/api/v1/cases/investigation-insights/{case_id}",
     response_model=InvestigationInsightsResponse,
