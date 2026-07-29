@@ -22,13 +22,17 @@ class BiometricsData(BaseModel):
     flight_times: List[float] = Field(default_factory=list, description="Key flight times in milliseconds")
     keystroke_events: Optional[List[Dict]] = Field(default=None, description="Raw keystroke events")
     mouse_movements: Optional[List[Dict]] = Field(default=None, description="Raw mouse movement events")
-    
+
     @field_validator('hold_times', 'flight_times')
     @classmethod
     def validate_biometric_values(cls, v):
-        """Validate biometric array constraints."""
+        """SECURITY: Validate biometric array constraints to prevent OOM.
+
+        1M-element array would consume excessive memory. Limit to reasonable
+        keystroke count (max 1000 keypresses per analysis).
+        """
         if len(v) > 1000:
-            raise ValueError("Biometric arrays cannot exceed 1000 elements")
+            raise ValueError("Biometric arrays cannot exceed 1000 elements (requested: %d)" % len(v))
         if any(not math.isfinite(x) for x in v):
             raise ValueError("Biometric values must not contain NaN or Inf")
         if any(x < 0 or x > 10000 for x in v):
