@@ -188,7 +188,11 @@ class BulkIngestionManager:
     async def _process_ingestion(
         self, task_id: str, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]
     ):
-        """Parse lists of nodes/edges and insert them safely into the global graph state."""
+        """Parse lists of nodes/edges and insert them safely into the global graph state.
+
+        SECURITY: All graph mutations are protected by asyncio.Lock to prevent
+        race conditions from concurrent requests that corrupt graph state.
+        """
         from src.api.main import state
 
         # Ensure a container exists to ingest into. graph_loaded is deliberately
@@ -199,12 +203,16 @@ class BulkIngestionManager:
             state.transaction_graph = nx.DiGraph()
             logger.info("Initializing new in-memory transaction graph.")
 
+        # SECURITY: Ensure lock exists for thread-safe NetworkX updates
+        # This prevents concurrent mutations that corrupt graph state
+        if not hasattr(state, "_graph_mutation_lock"):
+            state._graph_mutation_lock = asyncio.Lock()
+
+        lock = state._graph_mutation_lock
+
         success_count = 0
         failed_count = 0
         errors = []
-
-        # Access state lock for thread-safe NetworkX updates
-        lock = getattr(state, "_centrality_lock", None)
 
         # Process Nodes
         for i, node_data in enumerate(nodes):
@@ -222,10 +230,8 @@ class BulkIngestionManager:
 
                 node_attrs = {"type": node_type, **properties}
 
-                if lock:
-                    with lock:
-                        state.transaction_graph.add_node(node_id, **node_attrs)
-                else:
+                # SECURITY: Synchronize all graph mutations
+                async with lock:
                     state.transaction_graph.add_node(node_id, **node_attrs)
                 success_count += 1
 
@@ -253,14 +259,8 @@ class BulkIngestionManager:
 
                 edge_attrs = {"type": edge_type, **properties}
 
-                if lock:
-                    with lock:
-                        if not state.transaction_graph.has_node(source):
-                            state.transaction_graph.add_node(source, type="Account")
-                        if not state.transaction_graph.has_node(target):
-                            state.transaction_graph.add_node(target, type="Account")
-                        state.transaction_graph.add_edge(source, target, **edge_attrs)
-                else:
+                # SECURITY: Synchronize all graph mutations including compound operations
+                async with lock:
                     if not state.transaction_graph.has_node(source):
                         state.transaction_graph.add_node(source, type="Account")
                     if not state.transaction_graph.has_node(target):
