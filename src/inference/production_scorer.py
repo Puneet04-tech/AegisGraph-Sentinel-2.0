@@ -19,7 +19,7 @@ import numpy as np
 import logging
 from collections import deque, OrderedDict
 from threading import Lock
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import json
