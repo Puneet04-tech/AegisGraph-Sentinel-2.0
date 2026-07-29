@@ -124,7 +124,7 @@ class DecisionStore:
     def get_governance_decisions(self) -> List[GovernanceDecision]:
         return list(self._governance_decisions.values())
 
-    def get_metrics(self) -> Dict[str, any]:
+    def get_metrics(self) -> Dict[str, Any]:
         recommendations = list(self._recommendations.values())
         type_counts: Dict[str, int] = {}
         priority_counts: Dict[str, int] = {}
