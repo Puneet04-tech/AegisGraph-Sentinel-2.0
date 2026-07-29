@@ -10,12 +10,29 @@ from src.api.middleware.multi_tenancy import get_current_tenant
 router = APIRouter(prefix="/api/v1/phase173", tags=["Phase 173: Security Forecasting and Prediction Engine"])
 
 
-def resolve_tenant() -> str:
-    """Resolve the tenant from the authenticated request context.
+SYSTEM_TENANT = "system"
 
-    API-key validation itself is handled by the route-level
-    require_role dependency; tenant identity comes from the
-    multi-tenancy middleware, never from the raw key contents.
+
+def resolve_tenant() -> str:
+    """Tenant scope for read endpoints.
+
+    Credential validation is handled by the route-level require_role
+    dependency. Tenant identity comes from the multi-tenancy
+    middleware, never from the contents of the API key: a caller must
+    not be able to select a tenant by naming it in the header.
+
+    Reads outside any tenant context fall back to the system scope
+    rather than another tenant's data.
+    """
+    return get_current_tenant() or SYSTEM_TENANT
+
+
+def require_tenant() -> str:
+    """Tenant scope for write endpoints, which must be explicit.
+
+    Writes are never attributed to the system scope by default, so a
+    request without tenant context is rejected instead of silently
+    creating records outside any tenant.
     """
     tenant_id = get_current_tenant()
     if not tenant_id:
@@ -30,7 +47,7 @@ def get_svc(store: SecurityForecastingandPredictionEngineStore = Depends(get_sto
 @router.post("/records", dependencies=[Depends(require_role(Role.ADMIN))])
 def create_record(
     payload: SecurityForecastingandPredictionEngineCreateSchema,
-    tenant_id: str = Depends(resolve_tenant),
+    tenant_id: str = Depends(require_tenant),
     svc: SecurityForecastingandPredictionEngineService = Depends(get_svc)
 ):
     if payload.tenant_id != tenant_id:
@@ -71,7 +88,7 @@ def get_record(
 @router.post("/alerts", dependencies=[Depends(require_role(Role.ADMIN))])
 def create_alert(
     payload: SecurityForecastingandPredictionEngineAlertSchema,
-    tenant_id: str = Depends(resolve_tenant),
+    tenant_id: str = Depends(require_tenant),
     svc: SecurityForecastingandPredictionEngineService = Depends(get_svc)
 ):
     alert = svc.create_alert(
