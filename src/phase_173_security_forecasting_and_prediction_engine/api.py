@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any, Optional
 from .schemas import SecurityForecastingandPredictionEngineCreateSchema, SecurityForecastingandPredictionEngineAlertSchema
 from .store import get_store, SecurityForecastingandPredictionEngineStore
@@ -10,12 +10,17 @@ from src.api.middleware.multi_tenancy import get_current_tenant
 router = APIRouter(prefix="/api/v1/phase173", tags=["Phase 173: Security Forecasting and Prediction Engine"])
 
 
-def resolve_tenant(x_api_key: str = Header(...)) -> str:
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    if x_api_key.startswith("tenant_"):
-        return x_api_key.split("_", 1)[1]
-    return "system"
+def resolve_tenant() -> str:
+    """Resolve the tenant from the authenticated request context.
+
+    API-key validation itself is handled by the route-level
+    require_role dependency; tenant identity comes from the
+    multi-tenancy middleware, never from the raw key contents.
+    """
+    tenant_id = get_current_tenant()
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context not available")
+    return tenant_id
 
 
 def get_svc(store: SecurityForecastingandPredictionEngineStore = Depends(get_store)) -> SecurityForecastingandPredictionEngineService:
@@ -28,7 +33,7 @@ def create_record(
     tenant_id: str = Depends(resolve_tenant),
     svc: SecurityForecastingandPredictionEngineService = Depends(get_svc)
 ):
-    if tenant_id != "system" and payload.tenant_id != tenant_id:
+    if payload.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     record = svc.create_record(
         tenant_id=payload.tenant_id,
