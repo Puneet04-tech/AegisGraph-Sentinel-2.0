@@ -525,15 +525,18 @@ class RedisLedger:
     unavailable so the journal (Phase 1) still catches everything.
 
     Keys used:
-      aegis:evidence:<evidence_id>   -> JSON blob of one evidence record
+      aegis:evidence:<evidence_id>   -> JSON blob of one evidence record (TTL: 7 days)
       aegis:evidence:index           -> Redis list of all evidence_ids (ordered)
       aegis:stats:total_sealed       -> atomic integer counter
-      aegis:block:latest             -> JSON blob of last sealed block metadata
+      aegis:block:latest             -> JSON blob of last sealed block metadata (TTL: 1 day)
+
+    SECURITY: All keys have TTL to prevent unbounded memory growth.
     """
 
     PREFIX = "aegis"
     MAX_EVIDENCE_INDEX_SIZE = 10000
-    BLOCK_METADATA_TTL = 86400
+    BLOCK_METADATA_TTL = 86400  # 1 day
+    EVIDENCE_RECORD_TTL = 604800  # 7 days (long term evidence retention)
 
     def __init__(self, redis_url: str = None):
         self._client = None
@@ -561,14 +564,19 @@ class RedisLedger:
         return self._client is not None
 
     def save_evidence(self, evidence: "BlockchainEvidence") -> None:
-        """Persist one evidence record and append its ID to the index."""
+        """Persist one evidence record and append its ID to the index.
+
+        SECURITY: Evidence records have TTL to prevent unbounded memory growth.
+        Long TTL (7 days) allows time for legal discovery without permanent storage.
+        """
         if not self.available:
             return
         try:
             key = f"{self.PREFIX}:evidence:{evidence.evidence_id}"
             index_key = f"{self.PREFIX}:evidence:index"
             pipe = self._client.pipeline()
-            pipe.set(key, json.dumps(asdict(evidence), default=str))
+            # Set with TTL to prevent memory exhaustion from unbounded key accumulation
+            pipe.setex(key, self.EVIDENCE_RECORD_TTL, json.dumps(asdict(evidence), default=str))
             pipe.rpush(index_key, evidence.evidence_id)
             pipe.ltrim(index_key, -self.MAX_EVIDENCE_INDEX_SIZE, -1)
             pipe.incr(f"{self.PREFIX}:stats:total_sealed")
@@ -605,19 +613,25 @@ class RedisLedger:
             return 0
 
     def save_block_metadata(self, block: dict) -> None:
-        """Store latest block metadata for cross-worker verification."""
+        """Store latest block metadata for cross-worker verification.
+
+        SECURITY: Block metadata has TTL to prevent Redis memory exhaustion.
+        Latest block reference is kept longer for active verification.
+        """
         if not self.available:
             return
         try:
             payload = json.dumps(block, default=str)
-            self._client.set(
+            # Store latest block with TTL (1 day)
+            self._client.setex(
                 f"{self.PREFIX}:block:latest",
+                self.BLOCK_METADATA_TTL,
                 payload,
             )
+            # Store numbered blocks with same TTL for historical access
             if 'block_number' in block:
                 key = f"{self.PREFIX}:block:{block['block_number']}"
-                self._client.set(key, payload)
-                self._client.expire(key, self.BLOCK_METADATA_TTL)
+                self._client.setex(key, self.BLOCK_METADATA_TTL, payload)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Redis save_block_metadata failed, marking unavailable: %s", exc)

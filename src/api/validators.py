@@ -23,6 +23,15 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ValidationError",
+    "TransactionValidator",
+    "RateLimiter",
+    "StrictRateLimit",
+    "get_rate_limiter",
+    "reset_rate_limiter",
+]
+
 
 class ValidationError(Exception):
     """Custom validation exception with helpful suggestions."""
