@@ -12,7 +12,7 @@ from .store import ThreatHuntingStore, get_store
 class CampaignDetector:
     """Engine to cluster threat indicators into coordinated fraud campaigns."""
 
-    def __init__(self, store: Optional[ThreatHuntingStore] = None):
+    def __init__(self, store: Optional[ThreatHuntingStore] = None) -> None:
         self.store = store or get_store()
 
     def detect_campaigns(self) -> List[ThreatCampaign]:
