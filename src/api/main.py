@@ -1724,11 +1724,6 @@ ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") o
     "Number of currently active honeypots"
 )
 
-# Label used when no route matched, so unrouted paths share one series instead
-# of adding a new one each.
-UNMATCHED_ENDPOINT_LABEL = "unmatched"
-
-
 def _metric_endpoint_label(request: Request) -> str:
     """Return the route template for a request, never the raw path.
 
@@ -1736,7 +1731,7 @@ def _metric_endpoint_label(request: Request) -> str:
     series, so any caller can grow the registry without bound.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or UNMATCHED_ENDPOINT_LABEL
+    return getattr(route, "path", None) or _UNMATCHED_METRICS_ENDPOINT
 
 
 @app.middleware("http")
