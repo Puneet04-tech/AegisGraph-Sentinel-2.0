@@ -326,12 +326,12 @@ def test_protected_route_inventory_is_current():
 
 def test_public_routes_remain_reachable():
     """The documented public surface must not require credentials."""
-    client = TestClient(app)
-    for method, path in sorted(PUBLIC_ROUTES):
-        response = client.request(method, path)
-        if response.status_code == 404:
-            continue
-        assert response.status_code not in _UNAUTHENTICATED_STATUSES, (
-            f"{method} {path} is documented as public but answered "
-            f"{response.status_code} without credentials."
-        )
+    with TestClient(app) as client:
+        for method, path in sorted(PUBLIC_ROUTES):
+            response = client.request(method, path)
+            if response.status_code == 404:
+                continue
+            assert response.status_code not in _UNAUTHENTICATED_STATUSES, (
+                f"{method} {path} is documented as public but answered "
+                f"{response.status_code} without credentials."
+            )
