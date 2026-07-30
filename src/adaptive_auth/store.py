@@ -95,23 +95,30 @@ class AdaptiveAuthStore:
         return session
 
     def get_session(self, session_id: str) -> Optional[AuthenticationSession]:
-        """Get session by ID with O(1) lookup."""
-        session = self._sessions.get(session_id)
-        if session and not session.is_expired():
-            return session
-        elif session:
-            # Clean up expired session
-            session.status = SessionStatus.EXPIRED
-        return None
+        """Get session by ID with O(1) thread-safe lookup."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session and not session.is_expired():
+                import copy
+                return copy.deepcopy(session)
+            elif session:
+                session.status = SessionStatus.EXPIRED
+            return None
     
     def get_session_unsafe(self, session_id: str) -> Optional[AuthenticationSession]:
-        """Get session without expiration check."""
-        return self._sessions.get(session_id)
+        """Get session without expiration check (thread-safe)."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session:
+                import copy
+                return copy.deepcopy(session)
+            return None
     
     def update_session(self, session: AuthenticationSession) -> None:
-        """Update an existing session."""
-        session.last_activity = datetime.now(timezone.utc)
-        self._sessions[session.session_id] = session
+        """Update an existing session with thread safety."""
+        with self._lock:
+            session.last_activity = datetime.now(timezone.utc)
+            self._sessions[session.session_id] = session
     
     def terminate_session(self, session_id: str, reason: str = "") -> bool:
         """Terminate a session."""
@@ -126,15 +133,25 @@ class AdaptiveAuthStore:
             return False
     
     def get_user_sessions(self, user_id: str) -> List[AuthenticationSession]:
-        """Get all active sessions for a user."""
+        """Get all active sessions for a user safely."""
+        import copy
         now = datetime.now(timezone.utc)
         sessions = []
         with self._lock:
             for session_id in list(self._user_sessions.get(user_id, set())):
                 session = self._sessions.get(session_id)
                 if session and session.status == SessionStatus.ACTIVE and session.expires_at > now:
-                    sessions.append(session)
+                    sessions.append(copy.deepcopy(session))
         return sessions
+
+    def batch_update_scores(self, updates: Dict[str, Any]) -> int:
+        """Atomic batch update operations for multi-node graph risk scores."""
+        count = 0
+        with self._lock:
+            for item_id, score_data in updates.items():
+                self._risk_scores[item_id] = score_data
+                count += 1
+        return count
 
     def cleanup_expired_sessions(self) -> int:
         """Remove expired sessions. Returns count of removed sessions."""
