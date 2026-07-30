@@ -295,7 +295,7 @@ class ProductionRiskScorer:
         subgraph_cache = _ThreadSafeCache()
 
         executor = self._executor
-        for transaction_batch in self._iter_transaction_batches(transactions, max_workers):
+        for transaction_batch in self._iter_transaction_batches(transactions, batch_size):
             future_to_index = {
                 executor.submit(self.score_transaction, txn, reference_time, 2, subgraph_cache): idx
                 for idx, txn in transaction_batch

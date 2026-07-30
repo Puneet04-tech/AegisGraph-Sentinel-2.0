@@ -313,7 +313,7 @@ class TransactionValidator:
         Constraint:
         - source_account must not equal target_account
         """
-        if source_account == target_account:
+        if source_account is not None and target_account is not None and source_account == target_account:
             raise ValidationError(
                 field="target_account",
                 value=target_account,

@@ -59,6 +59,9 @@ class _RecordingExecutor:
     def __exit__(self, exc_type, exc, tb):
         return False
 
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        pass
+
     def submit(self, fn, *args, **kwargs):
         self.submitted += 1
         self.pending += 1
@@ -78,6 +81,9 @@ def _make_score(transaction_id: str) -> FraudScore:
         explanation="ok",
         breakdown={"graph_risk": 0.1},
         influential_neighbors=[],
+        top_relationships=[],
+        high_risk_nodes=[],
+        attention_summary="none",
         model_version="2.0.0",
         inference_time_ms=1.0,
         graph_size=1,

@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
-from src.features.voice_stress_analysis import VoiceStressAnalyzer
+from src.features.voice_stress_analysis import VoiceStressAnalyzer, AUDIO_LIBS_AVAILABLE
+
+pytestmark = pytest.mark.skipif(not AUDIO_LIBS_AVAILABLE, reason="librosa not installed")
 
 def test_voice_noise_reduction():
     analyzer = VoiceStressAnalyzer(sample_rate=16000)
