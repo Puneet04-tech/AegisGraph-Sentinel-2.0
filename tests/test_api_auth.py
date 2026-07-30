@@ -116,6 +116,23 @@ _HONEYPOT_ADMIN_ENDPOINTS = [
     "/api/v1/honeypot/stats",
 ]
 
+_WARFARE_ENDPOINTS = [
+    ("GET", "/api/v1/warfare/actors", None),
+    ("POST", "/api/v1/warfare/actors", {}),
+    ("GET", "/api/v1/warfare/actors/actor-id", None),
+    ("GET", "/api/v1/warfare/actors/actor-id/analysis", None),
+    ("GET", "/api/v1/warfare/campaigns", None),
+    ("POST", "/api/v1/warfare/campaigns", {}),
+    ("GET", "/api/v1/warfare/campaigns/campaign-id", None),
+    ("POST", "/api/v1/warfare/campaigns/campaign-id/attribute", {}),
+    ("GET", "/api/v1/warfare/attack-patterns", None),
+    ("GET", "/api/v1/warfare/assessments", None),
+    ("POST", "/api/v1/warfare/assessments", {}),
+    ("GET", "/api/v1/warfare/dashboard", None),
+    ("GET", "/api/v1/warfare/executive-brief", None),
+    ("GET", "/api/v1/warfare/stats", None),
+]
+
 
 @pytest.mark.parametrize(("method", "path", "body"), _GATED_ENDPOINTS)
 def test_gated_endpoint_rejects_missing_key(
@@ -188,6 +205,75 @@ def test_honeypot_admin_endpoint_rejects_wrong_api_key(
         f"X-API-Key; expected 401 or 403 before honeypot data is accessed. "
         f"Body: {response.text}"
     )
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _WARFARE_ENDPOINTS)
+def test_warfare_endpoint_rejects_missing_key(
+    client_with_auth_configured: TestClient,
+    method: str,
+    path: str,
+    body: dict | None,
+) -> None:
+    """Every warfare endpoint must require an API key."""
+    if method == "GET":
+        response = client_with_auth_configured.get(path)
+    else:
+        response = client_with_auth_configured.post(path, json=body)
+    assert response.status_code == 401, (
+        f"{method} {path} returned {response.status_code} without an "
+        f"X-API-Key header; expected 401. Body: {response.text}"
+    )
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _WARFARE_ENDPOINTS)
+def test_warfare_endpoint_accepts_valid_key(
+    client_with_auth_configured: TestClient,
+    method: str,
+    path: str,
+    body: dict | None,
+) -> None:
+    """A valid key must pass the warfare route auth gate."""
+    headers = {"X-API-Key": _VALID_KEY}
+    if method == "GET":
+        response = client_with_auth_configured.get(path, headers=headers)
+    else:
+        response = client_with_auth_configured.post(path, json=body, headers=headers)
+    assert response.status_code not in (401, 403, 503), (
+        f"{method} {path} returned {response.status_code} with a valid "
+        f"X-API-Key; the auth gate should not have rejected this. "
+        f"Body: {response.text}"
+    )
+
+
+def test_warfare_endpoint_requires_analyst_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Viewer keys cannot access warfare intelligence endpoints."""
+    analyst_key = "warfare-analyst-key"
+    viewer_key = "warfare-viewer-key"
+    monkeypatch.delenv("AEGIS_API_KEY_HASHES", raising=False)
+    monkeypatch.setenv(
+        "AEGIS_ROLE_ANALYST", hashlib.sha256(analyst_key.encode()).hexdigest()
+    )
+    monkeypatch.setenv(
+        "AEGIS_ROLE_VIEWER", hashlib.sha256(viewer_key.encode()).hexdigest()
+    )
+    from src.api.main import app
+    from src.api.security import _invalidate_auth_cache
+
+    _invalidate_auth_cache()
+    client = TestClient(app)
+
+    analyst_response = client.get(
+        "/api/v1/warfare/actors", headers={"X-API-Key": analyst_key}
+    )
+    viewer_response = client.get(
+        "/api/v1/warfare/actors", headers={"X-API-Key": viewer_key}
+    )
+
+    assert analyst_response.status_code == 200
+    assert viewer_response.status_code == 403
+    _invalidate_auth_cache()
 
 
 @pytest.mark.parametrize(("method", "path", "body"), _GATED_ENDPOINTS)

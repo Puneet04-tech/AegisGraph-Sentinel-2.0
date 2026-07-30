@@ -92,7 +92,7 @@ python test_all_innovations_comprehensive.py
 **Endpoints**:
 ```
 GET  /api/v1/honeypot/active          # List active traps
-POST /api/v1/honeypot/stats           # System statistics
+GET  /api/v1/honeypot/stats           # System statistics
 POST /debug/activate_honeypot         # Manual activation (debug)
 ```
 
@@ -126,7 +126,6 @@ POST /debug/activate_honeypot         # Manual activation (debug)
 **Endpoints**:
 ```
 POST /api/v1/mule/assess                    # Assess account risk
-POST /api/v1/mule/predict                   # Predict mule likelihood
 ```
 
 **Risk Levels**:

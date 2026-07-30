@@ -83,7 +83,7 @@ POST   /api/v1/blockchain/export              Legal export
 
 # System
 GET    /api/v1/health                         System status
-GET    /api/v1/stats                          Statistics
+GET    /stats                                 Statistics
 ```
 
 ## Test Commands

@@ -162,7 +162,6 @@ def _reset_rate_limit_state() -> None:
     # this remains compatible with supported SlowAPI/limits versions.
     from src.api.main import limiter
     storages = (
-        getattr(limiter, "storage", None),
         getattr(limiter, "_storage", None),
         getattr(getattr(limiter, "limiter", None), "storage", None),
     )
@@ -170,14 +169,6 @@ def _reset_rate_limit_state() -> None:
         reset = getattr(storage, "reset", None)
         if callable(reset):
             reset()
-
-
-@pytest.fixture(autouse=True)
-def _reset_global_rate_limiter() -> Iterator[None]:
-    """Isolate process-wide rate-limit state on both sides of every test."""
-    _reset_rate_limit_state()
-    yield
-    _reset_rate_limit_state()
 
 
 @pytest.fixture

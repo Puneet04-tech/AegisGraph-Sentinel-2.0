@@ -19,8 +19,13 @@ serviceAccount:
 
 service:
   type: ClusterIP
+  # Ports the Service listens on.
   port: 80
   grpcPort: 50051
+  # Ports the container listens on. The API binds 8000 and runs unprivileged,
+  # so it cannot use a port below 1024.
+  targetPort: 8000
+  grpcTargetPort: 50051
 
 ingress:
   enabled: true
@@ -122,7 +127,12 @@ config:
 
 # Security settings
 security:
-  apiKey: ""
+  # Comma-separated lowercase SHA-256 hashes of the accepted API keys, injected
+  # as AEGIS_API_KEY_HASHES. This is the variable require_role() reads. Leaving
+  # it empty makes every role-protected route return 503.
+  # Generate with:
+  #   python -c "import secrets,hashlib; k=secrets.token_hex(32); print('key:',k); print('hash:',hashlib.sha256(k.encode()).hexdigest())"
+  apiKeyHashes: ""
   jwtSecret: ""
   neo4jPassword: ""
   redisPassword: ""
@@ -142,7 +152,7 @@ persistence:
 monitoring:
   enabled: true
   prometheus:
-    port: 9090
+    # /metrics is served by the API itself, so it is scraped on the API port.
     path: "/metrics"
   grafana:
     adminUser: "admin"

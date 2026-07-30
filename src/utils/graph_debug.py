@@ -6,6 +6,8 @@ from pathlib import Path
 
 import networkx as nx
 
+from typing import Optional
+
 def print_graph_summary(graph: nx.Graph, max_nodes: int = 20, logger: logging.Logger = None):
     """
     Pretty-prints a terminal tree map / tabular view of node connections,

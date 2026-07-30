@@ -127,11 +127,33 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite floats so the payload can be JSON encoded.
+
+    Pydantic echoes the offending value back under an ``input`` key. When that
+    value is NaN or an infinity, ``JSONResponse`` raises because it encodes with
+    ``allow_nan=False``, which would turn a 422 into a 500.
+    """
+    if isinstance(value, float):
+        if value != value:
+            return "NaN"
+        if value == float("inf"):
+            return "Infinity"
+        if value == float("-inf"):
+            return "-Infinity"
+        return value
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     request_id = _request_id_for_error(request)
-    
+
     # --- UPGRADE: Unpack nested Pydantic errors into a scannable message string ---
     error_details = []
     for error in exc.errors():
@@ -141,19 +163,21 @@ async def validation_exception_handler(
     readable_message = "Request validation failed: " + " | ".join(error_details)
     # ------------------------------------------------------------------------------
 
+    encoded_errors = _json_safe(jsonable_encoder(exc.errors()))
+
     audit = get_audit_logger()
     audit.log_exception_trace(
         exc_type="ValidationException",
         message=readable_message,
         status_code=422,
-        metadata={"errors": jsonable_encoder(exc.errors()), "path": request.url.path},
+        metadata={"errors": encoded_errors, "path": request.url.path},
     )
     content = build_error_payload(
         code=ErrorCode.VALIDATION_ERROR,
         type_name="ValidationException",
         message=readable_message,
         request_id=request_id,
-        details={"validation_errors": jsonable_encoder(exc.errors())},
+        details={"validation_errors": encoded_errors},
     )
     return JSONResponse(
         status_code=422,

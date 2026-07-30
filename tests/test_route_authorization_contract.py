@@ -21,6 +21,18 @@ from src.api.security import _invalidate_auth_cache
 # Route inventory, sorted by method then path. Regenerate with the helper in
 # test_protected_route_inventory_is_current when a route is added or removed.
 PROTECTED_ROUTES = [
+    ("GET", "/api/v1/agents/agents"),
+    ("GET", "/api/v1/agents/agents/{agent_id}"),
+    ("GET", "/api/v1/agents/agents/{agent_id}/messages"),
+    ("GET", "/api/v1/agents/stats"),
+    ("GET", "/api/v1/agents/swarm/behaviors"),
+    ("GET", "/api/v1/agents/swarm/intelligence"),
+    ("GET", "/api/v1/agents/tasks"),
+    ("POST", "/api/v1/agents/agents"),
+    ("POST", "/api/v1/agents/messages"),
+    ("POST", "/api/v1/agents/tasks"),
+    ("POST", "/api/v1/agents/tasks/assign"),
+    ("POST", "/api/v1/agents/tasks/complete"),
     ("GET", "/api/v1/actors"),
     ("GET", "/api/v1/actors/{actor_id}"),
     ("GET", "/api/v1/actors/{actor_id}/profile"),
@@ -119,6 +131,16 @@ PROTECTED_ROUTES = [
     ("GET", "/api/v1/zero-trust/stats"),
     ("GET", "/api/v1/zero-trust/user/{user_id}/anomalies"),
     ("GET", "/api/v1/zero-trust/user/{user_id}/devices"),
+    ("GET", "/api/v1/warfare/actors"),
+    ("GET", "/api/v1/warfare/actors/{actor_id}"),
+    ("GET", "/api/v1/warfare/actors/{actor_id}/analysis"),
+    ("GET", "/api/v1/warfare/assessments"),
+    ("GET", "/api/v1/warfare/attack-patterns"),
+    ("GET", "/api/v1/warfare/campaigns"),
+    ("GET", "/api/v1/warfare/campaigns/{campaign_id}"),
+    ("GET", "/api/v1/warfare/dashboard"),
+    ("GET", "/api/v1/warfare/executive-brief"),
+    ("GET", "/api/v1/warfare/stats"),
     ("GET", "/stats"),
     ("PATCH", "/api/v1/cases/{case_id}"),
     ("POST", "/api/v1/accounts/score-opening"),
@@ -199,6 +221,10 @@ PROTECTED_ROUTES = [
     ("POST", "/api/v1/zero-trust/device/{device_id}/unblock"),
     ("POST", "/api/v1/zero-trust/evaluate"),
     ("POST", "/api/v1/zero-trust/session/analyze"),
+    ("POST", "/api/v1/warfare/actors"),
+    ("POST", "/api/v1/warfare/assessments"),
+    ("POST", "/api/v1/warfare/campaigns"),
+    ("POST", "/api/v1/warfare/campaigns/{campaign_id}/attribute"),
 ]
 
 # Routes that are intentionally reachable without credentials.

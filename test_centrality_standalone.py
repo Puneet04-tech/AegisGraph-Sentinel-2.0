@@ -4,8 +4,6 @@ Run with: python test_centrality_standalone.py
 """
 
 import sys
-sys.path.insert(0, '/d/opensource/AegisGraph-Sentinel-2.0')
-
 from datetime import datetime, timedelta, timezone
 import numpy as np
 

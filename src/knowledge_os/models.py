@@ -97,7 +97,7 @@ class KnowledgeGraph:
 
 @dataclass
 class KnowledgeSearch:
-    """Search result."""
+    """Represents a knowledge search result with matching entries and relevance scores."""
     query: str
     results: List[KnowledgeEntry]
     relevance_scores: Dict[str, float]

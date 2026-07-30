@@ -137,7 +137,7 @@ This sets up automatic code formatting checks before every commit.
 The project uses synthetic data for development. Generate it with:
 
 ```bash
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 ```
 
 This creates data files in the `data/` directory (created at runtime).
@@ -145,7 +145,7 @@ This creates data files in the `data/` directory (created at runtime).
 ### Step 2: Train the Model
 
 ```bash
-python -m src.training.trainer
+python -m src.training.train
 ```
 
 Trained model checkpoints are saved in the `models/` directory.

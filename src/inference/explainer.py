@@ -7,11 +7,14 @@ for regulatory compliance and transparency.
 # Working on explainable AI for regulatory compliance
 
 from typing import Dict, List, Optional
+from datetime import datetime, timezone
 import numpy as np
 import torch
 import logging
 
 logger = logging.getLogger(__name__)
+__all__ = ['Explainer', 'GNNExplainer', 'AegisModelExplainer', 'AegisOracle', 'generate_explanation']
+
 
 Explainer = None
 GNNExplainer = None
@@ -204,11 +207,20 @@ class AegisOracle:
     
     Args:
         detail_level: 'low', 'medium', or 'high'
+        case_retriever: Optional CaseRetriever; when attached, every
+            explanation cites semantically similar past cases
+            ("precedents") and is itself indexed for future citations.
     """
-    
-    def __init__(self, detail_level: str = 'high'):
+
+    # Precedent citation: how many similar past cases to cite and the
+    # minimum cosine similarity for a case to count as a precedent.
+    PRECEDENT_TOP_K = 3
+    PRECEDENT_MIN_SIMILARITY = 0.6
+
+    def __init__(self, detail_level: str = 'high', case_retriever=None):
         self.detail_level = detail_level
-    
+        self.case_retriever = case_retriever
+
     def explain_decision(
         self,
         transaction: dict,
@@ -249,7 +261,7 @@ class AegisOracle:
         # Executive summary
         summary = self._generate_summary(transaction, decision, confidence)
         
-        return {
+        report = {
             'summary': summary,
             'explanation': explanation,
             'factors': factors,
@@ -257,7 +269,87 @@ class AegisOracle:
             'confidence': f"{confidence * 100:.1f}%",
             'decision': decision,
         }
-    
+
+        if self.case_retriever is not None:
+            precedents = self._cite_precedents(transaction, report)
+            if precedents is not None:
+                report['precedent_cases'] = precedents
+                if precedents:
+                    report['explanation'] += "\n\n" + self._format_precedents(
+                        precedents
+                    )
+
+        return report
+
+    def _cite_precedents(
+        self,
+        transaction: dict,
+        report: Dict[str, str],
+    ) -> Optional[List[Dict]]:
+        """
+        Retrieve similar past cases, then index the current one.
+
+        The query runs BEFORE indexing so a case can never cite itself.
+        Retrieval failures degrade to no citations — an explanation must
+        never fail because the precedent index is unavailable.
+        """
+        try:
+            case_id = transaction.get('transaction_id')
+            similar = self.case_retriever.find_similar_by_explanation(
+                report,
+                k=self.PRECEDENT_TOP_K + 1,
+                threshold=self.PRECEDENT_MIN_SIMILARITY,
+            )
+            # A re-explained transaction must not cite its own earlier entry
+            similar = [
+                case for case in similar
+                if case['case_id'] != str(case_id)
+            ][:self.PRECEDENT_TOP_K]
+            precedents = [
+                {
+                    'case_id': case['case_id'],
+                    'similarity': case['similarity'],
+                    'similarity_percent': case['similarity_percent'],
+                    'decision': case.get('metadata', {}).get('decision', 'UNKNOWN'),
+                    'status': case.get('metadata', {}).get('status', 'UNREVIEWED'),
+                    'summary': case.get('metadata', {}).get('summary', ''),
+                }
+                for case in similar
+            ]
+
+            if case_id:
+                self.case_retriever.index_case(
+                    case_id=str(case_id),
+                    explanation={
+                        'summary': report['summary'],
+                        'explanation': report['explanation'],
+                        'factors': report['factors'],
+                    },
+                    metadata={
+                        'decision': report['decision'],
+                        'status': 'UNREVIEWED',
+                        'date': datetime.now(timezone.utc).date().isoformat(),
+                    },
+                )
+
+            return precedents
+        except Exception as exc:
+            logger.warning("Precedent retrieval failed: %s", exc)
+            return None
+
+    def _format_precedents(self, precedents: List[Dict]) -> str:
+        """Render cited precedent cases for the compliance narrative."""
+        lines = ["**Precedent Cases (semantic retrieval):**"]
+        for precedent in precedents:
+            summary = precedent['summary']
+            if len(summary) > 80:
+                summary = summary[:80] + "..."
+            lines.append(
+                f"  • Case {precedent['case_id']} [{precedent['decision']}] "
+                f"similarity {precedent['similarity_percent']} — {summary}"
+            )
+        return "\n".join(lines)
+
     def _generate_explanation(
         self,
         transaction: dict,
@@ -487,20 +579,22 @@ def generate_explanation(
     risk_result: dict,
     graph_patterns: Optional[dict] = None,
     detail_level: str = 'high',
+    case_retriever=None,
 ) -> Dict[str, str]:
     """
     Convenience function to generate explanation
-    
+
     Args:
         transaction: Transaction details
         risk_result: Risk scoring result
         graph_patterns: Detected graph patterns
         detail_level: Level of detail ('low', 'medium', 'high')
-    
+        case_retriever: Optional CaseRetriever for precedent citations
+
     Returns:
         Explanation dictionary
     """
-    oracle = AegisOracle(detail_level=detail_level)
+    oracle = AegisOracle(detail_level=detail_level, case_retriever=case_retriever)
     return oracle.explain_decision(transaction, risk_result, graph_patterns)
 
 if __name__ == "__main__":

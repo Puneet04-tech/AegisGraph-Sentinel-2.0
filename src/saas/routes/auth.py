@@ -6,30 +6,21 @@ Supports: Email/Password, SSO, MFA, API Keys
 
 import logging
 import os
-
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.security import APIKeyHeader, OAuth2PasswordBearer, HTTPBearer
-from typing import Optional, List
-from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel, EmailStr, Field
 import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Any, List, Optional
 
-import importlib.util
-from pathlib import Path
-_spec = importlib.util.spec_from_file_location(
-    "src_config_file",
-    str(Path(__file__).resolve().parents[2] / "config.py")
-)
-_src_config = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_src_config)
-settings = _src_config.settings
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import APIKeyHeader, HTTPBearer, OAuth2PasswordBearer
+from pydantic import BaseModel, EmailStr, Field
+
 from src.exceptions import AuthenticationError
 from src.saas.auth.service import (
+    ABACService,
     AuthProvider,
-    AuthService,
     AuthResult,
-    rbac_service,
-    abac_service,
+    AuthService,
+    RBACService,
 )
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
@@ -37,6 +28,10 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 # Security schemes
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
+
+logger = logging.getLogger(__name__)
+
+_AUTH_SERVICE: Optional[AuthService] = None
 
 
 class RefreshTokenRequest(BaseModel):
@@ -105,58 +100,90 @@ class APIKeyCreateRequest(BaseModel):
 class APIKeyResponse(BaseModel):
     id: str
     name: str
-    key: str  # Only shown once on creation
+    key: str
     key_prefix: str
     scopes: List[str]
     expires_at: Optional[datetime]
     created_at: datetime
 
 
-logger = logging.getLogger(__name__)
+def _load_jwt_secret() -> str:
+    """Return the configured JWT secret from the project's settings system."""
+    from src.config.settings import get_settings
 
-# Initialize auth service using the application's stable SECRET_KEY so that
-# tokens survive process restarts and remain valid across multiple workers.
-_jwt_secret = settings.SECRET_KEY.get_secret_value()
-auth_service = AuthService({
-    "jwt_secret": _jwt_secret,
-    "access_token_expiry": 3600,
-    "refresh_token_expiry": 86400 * 7,
-})
+    secret = get_settings().secret_key.strip()
+    if not secret:
+        raise RuntimeError("SECRET_KEY is not configured.")
+    return secret
 
-# ---------------------------------------------------------------------------
-# SSO provider registration — credentials loaded from environment variables
-# at startup, not per-request.  The route handler only calls
-# sso_providers.get(provider) to retrieve what was configured here.
-# ---------------------------------------------------------------------------
-_SSO_PROVIDERS = {
-    AuthProvider.GOOGLE: {
-        "client_id": os.getenv("OAUTH_GOOGLE_CLIENT_ID"),
-        "client_secret": os.getenv("OAUTH_GOOGLE_CLIENT_SECRET"),
-    },
-    AuthProvider.OKTA: {
-        "client_id": os.getenv("OAUTH_OKTA_CLIENT_ID"),
-        "client_secret": os.getenv("OAUTH_OKTA_CLIENT_SECRET"),
-        "okta_domain": os.getenv("OAUTH_OKTA_DOMAIN", ""),
-    },
-    AuthProvider.AZURE_AD: {
-        "client_id": os.getenv("OAUTH_AZURE_CLIENT_ID"),
-        "client_secret": os.getenv("OAUTH_AZURE_CLIENT_SECRET"),
-        "tenant_id": os.getenv("OAUTH_AZURE_TENANT_ID", "common"),
-    },
-}
 
-for _provider, _cfg in _SSO_PROVIDERS.items():
-    if _cfg.get("client_id") and _cfg.get("client_secret"):
-        try:
-            auth_service.add_sso_provider(_provider, _cfg)
-            logger.info("SSO provider registered: %s", _provider.value)
-        except Exception as _exc:
-            logger.warning("Failed to register SSO provider %s: %s", _provider.value, _exc)
-    else:
-        logger.debug("SSO provider %s not configured (missing env vars)", _provider.value)
+def _register_configured_sso_providers(service: AuthService) -> None:
+    """Register SSO providers from environment configuration."""
+    sso_providers = {
+        AuthProvider.GOOGLE: {
+            "client_id": os.getenv("OAUTH_GOOGLE_CLIENT_ID"),
+            "client_secret": os.getenv("OAUTH_GOOGLE_CLIENT_SECRET"),
+        },
+        AuthProvider.OKTA: {
+            "client_id": os.getenv("OAUTH_OKTA_CLIENT_ID"),
+            "client_secret": os.getenv("OAUTH_OKTA_CLIENT_SECRET"),
+            "okta_domain": os.getenv("OAUTH_OKTA_DOMAIN", ""),
+        },
+        AuthProvider.AZURE_AD: {
+            "client_id": os.getenv("OAUTH_AZURE_CLIENT_ID"),
+            "client_secret": os.getenv("OAUTH_AZURE_CLIENT_SECRET"),
+            "tenant_id": os.getenv("OAUTH_AZURE_TENANT_ID", "common"),
+        },
+    }
+
+    for provider, cfg in sso_providers.items():
+        if cfg.get("client_id") and cfg.get("client_secret"):
+            try:
+                service.add_sso_provider(provider, cfg)
+                logger.info("SSO provider registered: %s", provider.value)
+            except Exception as exc:
+                logger.warning("Failed to register SSO provider %s: %s", provider.value, exc)
+        else:
+            logger.debug("SSO provider %s not configured (missing env vars)", provider.value)
+
+
+def _build_auth_service() -> AuthService:
+    try:
+        jwt_secret = _load_jwt_secret()
+    except Exception as exc:
+        raise RuntimeError("SECRET_KEY is not configured.") from exc
+
+    service = AuthService(
+        {
+            "jwt_secret": jwt_secret,
+            "access_token_expiry": 3600,
+            "refresh_token_expiry": 86400 * 7,
+        }
+    )
+    _register_configured_sso_providers(service)
+    return service
+
+
+def _get_auth_service() -> AuthService:
+    global _AUTH_SERVICE
+    if _AUTH_SERVICE is None:
+        _AUTH_SERVICE = _build_auth_service()
+    return _AUTH_SERVICE
+
+
+class _AuthServiceProxy:
+    def __getattr__(self, item: str) -> Any:
+        return getattr(_get_auth_service(), item)
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} for AuthService>"
+
+
+auth_service = _AuthServiceProxy()
+rbac_service = RBACService()
+abac_service = ABACService()
 
 # Allow-list of permitted redirect URIs for SSO flows.
-# Add your application's callback URLs here or populate via env var.
 _SSO_REDIRECT_ALLOWLIST: List[str] = [
     uri.strip()
     for uri in os.getenv("OAUTH_REDIRECT_URIS", "").split(",")
@@ -171,10 +198,10 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
-    
+
     token = authorization.credentials
     try:
-        payload = auth_service.verify_token(token)
+        payload = _get_auth_service().verify_token(token)
         return {
             "user_id": payload.sub,
             "organization_id": payload.org,
@@ -182,7 +209,7 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             "role": payload.role,
             "jti": payload.jti,
         }
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired credentials",
@@ -197,11 +224,11 @@ async def get_optional_user(authorization: Optional[str] = Depends(bearer_scheme
     try:
         return await get_current_user(authorization)
     except HTTPException:
-        # Authentication failed, return None as expected
         return None
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("Unexpected error during optional user authentication: %s", exc)
+        logging.getLogger(__name__).warning(
+            "Unexpected error during optional user authentication: %s", exc
+        )
         return None
 
 
@@ -212,14 +239,14 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key required",
         )
-    
-    result = auth_service.authenticate_api_key(api_key)
+
+    result = _get_auth_service().authenticate_api_key(api_key)
     if not result.success:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=result.error or "Invalid API key",
         )
-    
+
     return {
         "organization_id": result.organization_id,
         "auth_method": "api_key",
@@ -229,19 +256,18 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     """Login with username and password."""
-    result = auth_service.authenticate_user(
+    result = _get_auth_service().authenticate_user(
         email=request.username,
         password=request.password,
     )
-    
+
     if not result.success:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=result.error or "Authentication failed",
         )
-    
+
     if result.mfa_required:
-        # Return MFA challenge
         return LoginResponse(
             access_token="",
             refresh_token="",
@@ -249,7 +275,7 @@ async def login(request: LoginRequest):
             user={"mfa_required": True, "mfa_token": result.mfa_token},
             organization={},
         )
-    
+
     return LoginResponse(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
@@ -260,27 +286,25 @@ async def login(request: LoginRequest):
             "email": result.email or request.username,
             "username": request.username,
         },
-        organization={
-            "id": result.organization_id,
-        },
+        organization={"id": result.organization_id},
     )
 
 
 @router.post("/mfa/verify")
 async def verify_mfa(request: MFATokenRequest):
     """Verify MFA token and complete login"""
-    result = auth_service.verify_mfa(
+    result = _get_auth_service().verify_mfa(
         user_id=request.user_id,
         mfa_token=request.mfa_token,
         token=request.totp_code,
     )
-    
+
     if not result.success:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid MFA token",
         )
-    
+
     return LoginResponse(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
@@ -294,12 +318,11 @@ async def verify_mfa(request: MFATokenRequest):
 @router.post("/mfa/enroll", response_model=MFAEnrollmentResponse)
 async def enroll_mfa(current_user: dict = Depends(get_current_user)):
     """Enroll in MFA"""
-    secret = auth_service.generate_mfa_secret()
-    uri = auth_service.get_mfa_uri(secret, current_user["email"])
-    backup_codes = auth_service.generate_backup_codes()
-    
-    # In production, store secret and backup codes securely
-    
+    service = _get_auth_service()
+    secret = service.generate_mfa_secret()
+    uri = service.get_mfa_uri(secret, current_user["email"])
+    backup_codes = service.generate_backup_codes()
+
     return MFAEnrollmentResponse(
         secret=secret,
         uri=uri,
@@ -321,30 +344,10 @@ async def list_sso_providers():
     """List available SSO providers"""
     return {
         "providers": [
-            {
-                "id": "google",
-                "name": "Google",
-                "icon": "google_icon_url",
-                "enabled": True,
-            },
-            {
-                "id": "microsoft",
-                "name": "Microsoft",
-                "icon": "microsoft_icon_url",
-                "enabled": True,
-            },
-            {
-                "id": "okta",
-                "name": "Okta",
-                "icon": "okta_icon_url",
-                "enabled": True,
-            },
-            {
-                "id": "azure_ad",
-                "name": "Azure AD",
-                "icon": "azure_icon_url",
-                "enabled": True,
-            },
+            {"id": "google", "name": "Google", "icon": "google_icon_url", "enabled": True},
+            {"id": "microsoft", "name": "Microsoft", "icon": "microsoft_icon_url", "enabled": True},
+            {"id": "okta", "name": "Okta", "icon": "okta_icon_url", "enabled": True},
+            {"id": "azure_ad", "name": "Azure AD", "icon": "azure_icon_url", "enabled": True},
         ]
     }
 
@@ -355,28 +358,24 @@ async def sso_authorize(
     redirect_uri: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Initiate SSO authorization.
-
-    Requires an authenticated session.  The redirect_uri must appear in the
-    OAUTH_REDIRECT_URIS allow-list unless the list is empty (dev mode).
-    """
+    """Initiate SSO authorization."""
     if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="redirect_uri is not in the configured allow-list",
         )
 
-    sso_provider = auth_service.sso_providers.get(provider)
+    sso_provider = _get_auth_service().sso_providers.get(provider)
     if not sso_provider:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"SSO provider '{provider.value}' is not configured. "
-                   f"Set OAUTH_{provider.value.upper()}_CLIENT_ID and "
-                   f"OAUTH_{provider.value.upper()}_CLIENT_SECRET environment variables.",
+            detail=(
+                f"SSO provider '{provider.value}' is not configured. "
+                f"Set OAUTH_{provider.value.upper()}_CLIENT_ID and "
+                f"OAUTH_{provider.value.upper()}_CLIENT_SECRET environment variables."
+            ),
         )
 
-    # Attach the per-request redirect_uri to the provider config so the
-    # authorization URL reflects the caller's callback endpoint.
     sso_provider.redirect_uri = redirect_uri
     return {"authorization_url": sso_provider.get_authorization_url()}
 
@@ -384,18 +383,18 @@ async def sso_authorize(
 @router.post("/sso/callback", response_model=LoginResponse)
 async def sso_callback(request: SSOCallbackRequest):
     """Handle SSO callback"""
-    result = auth_service.authenticate_sso(
+    result = _get_auth_service().authenticate_sso(
         provider=request.provider,
         code=request.code,
         redirect_uri="https://app.aegisgraph.com/auth/callback",
     )
-    
+
     if not result.success:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=result.error or "SSO authentication failed",
         )
-    
+
     return LoginResponse(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
@@ -410,16 +409,17 @@ async def sso_callback(request: SSOCallbackRequest):
 async def refresh_token(body: RefreshTokenRequest):
     """Exchange a valid refresh token for a new access/refresh token pair."""
     try:
-        result = auth_service.refresh_tokens(body.refresh_token)
+        result = _get_auth_service().refresh_tokens(body.refresh_token)
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
         )
+
     return LoginResponse(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
-        expires_in=auth_service.access_token_expiry,
+        expires_in=_get_auth_service().access_token_expiry,
         role=result.role or "member",
         user={"id": result.user_id},
         organization={"id": result.organization_id},
@@ -430,7 +430,7 @@ async def refresh_token(body: RefreshTokenRequest):
 async def logout(current_user: dict = Depends(get_current_user)):
     """Logout current session"""
     if current_user.get("jti"):
-        auth_service.revoke_token_id(current_user["jti"])
+        _get_auth_service().revoke_token_id(current_user["jti"])
     return {"success": True, "message": "Logged out successfully"}
 
 
@@ -515,16 +515,15 @@ async def create_api_key(
 ):
     """Create new API key"""
     import hashlib
-    
-    # Generate key
+
     raw_key = f"sk_{secrets.token_hex(32)}"
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     key_prefix = raw_key[:8]
-    
+
     return APIKeyResponse(
         id=f"key_{datetime.now(timezone.utc).timestamp()}",
         name=request.name,
-        key=raw_key,  # Only shown once
+        key=raw_key,
         key_prefix=key_prefix,
         scopes=request.scopes,
         expires_at=request.expires_at,

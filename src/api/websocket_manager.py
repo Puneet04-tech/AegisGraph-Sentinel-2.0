@@ -1,7 +1,7 @@
 import asyncio
 import time
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 from fastapi import WebSocket
 
@@ -103,10 +103,24 @@ class WebSocketManager:
 
         return True
 
-    async def disconnect(self, client_id: str) -> None:
-        """Remove a disconnected client from active connections."""
+    async def disconnect(self, client_id: str, websocket: Optional[WebSocket] = None) -> None:
+        """Remove a disconnected client from active connections.
+
+        Pass the socket whose handler is exiting. A reconnect replaces the
+        entry for a client_id while the previous handler is still unwinding,
+        and without the socket to compare against, that handler's cleanup
+        removes the connection that replaced it.
+        """
         async with self._lock:
-            if client_id not in self.active_connections:
+            state = self.active_connections.get(client_id)
+            if state is None:
+                return
+
+            if websocket is not None and state.websocket is not websocket:
+                # Already replaced by a newer connection. Record the disconnect
+                # so reconnect rate limiting still counts it, but leave the
+                # live entry alone.
+                self.disconnect_history.setdefault(client_id, []).append(time.time())
                 return
 
             del self.active_connections[client_id]

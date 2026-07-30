@@ -1,12 +1,15 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from src.api.tenant_dependency import tenant_for_key
 from src.phase_62_cross_domain_investigation_orchestrator.api import router
 
 import hashlib
 import pytest
 
-ADMIN_KEY = "tenant_testco"
+ADMIN_KEY = "phase-integration-admin-key"
 ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
+# The tenant comes from the credential, not from the text of the key.
+TENANT_ID = tenant_for_key(ADMIN_KEY)
 
 app = FastAPI()
 app.include_router(router)
@@ -24,7 +27,7 @@ def _admin_auth():
 
 
 def test_create_record():
-    payload = {"record_id": "rec-integ-62-001", "tenant_id": "testco", "workflow_id": "wf-111", "domain": "cyber", "current_state": "IN_PROGRESS", "assigned_analyst": "analyst-x"}
+    payload = {"record_id": "rec-integ-62-001", "tenant_id": TENANT_ID, "workflow_id": "wf-111", "domain": "cyber", "current_state": "IN_PROGRESS", "assigned_analyst": "analyst-x"}
     resp = client.post("/api/v1/phase62/records", json=payload, headers=HEADERS)
     assert resp.status_code == 200
     assert resp.json()["status"] == "RECORD_CREATED"

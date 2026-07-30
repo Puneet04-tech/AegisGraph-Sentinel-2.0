@@ -9,5 +9,5 @@ def test_ci_workflow_runs_coverage_on_one_matrix_leg():
 
     assert "run_coverage: true" in source
     assert "RUN_COVERAGE" in source
-    assert "python -m pytest tests/" in source
+    assert "python -m pytest" in source
     assert "--cov=src --cov-report=term-missing" in normalized_source

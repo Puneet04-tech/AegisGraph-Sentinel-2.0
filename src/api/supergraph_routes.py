@@ -71,9 +71,9 @@ async def health_check():
 
 
 @router.get("/stats")
-async def get_stats(api_key: str = Header(None)):
+async def get_stats(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get supergraph statistics."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     stats = engine.store.get_graph_stats()
     return {"stats": stats}
@@ -82,10 +82,10 @@ async def get_stats(api_key: str = Header(None)):
 @router.post("/entities")
 async def create_entity(
     request: EntityCreateRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a new entity in the supergraph."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     entity_type = EntityType(request.entity_type)
@@ -109,10 +109,10 @@ async def create_entity(
 @router.get("/entities/{entity_id}")
 async def get_entity(
     entity_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get an entity by ID."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     node = engine.store.get_node(entity_id)
@@ -125,10 +125,10 @@ async def get_entity(
 @router.post("/edges")
 async def create_edge(
     request: EdgeCreateRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a new edge in the supergraph."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     relationship = RelationshipType(request.relationship)
@@ -155,10 +155,10 @@ async def create_edge(
 async def get_entity_cluster(
     entity_id: str,
     depth: int = Query(default=2, ge=1, le=5),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get the cluster of entities connected to an entity."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     cluster = engine.get_entity_cluster(entity_id, depth=depth)
@@ -175,10 +175,10 @@ async def find_path(
     entity_id: str,
     target_id: str,
     max_hops: int = Query(default=5, ge=1, le=10),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Find paths between two entities."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     paths = engine.find_entity_path(entity_id, target_id, max_hops=max_hops)
@@ -194,10 +194,10 @@ async def find_path(
 @router.get("/entities/{entity_id}/risk")
 async def get_entity_risk(
     entity_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get risk score for an entity."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_supergraph_engine()
     
     risk_score = engine.get_risk_score(entity_id)
@@ -212,10 +212,10 @@ async def get_entity_risk(
 @router.post("/correlations")
 async def create_correlation(
     request: CorrelationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a cross-domain correlation."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_correlation_engine()
     
     confidence = ConfidenceLevel(request.confidence)
@@ -241,10 +241,10 @@ async def create_correlation(
 async def get_entity_correlations(
     entity_id: str,
     domain: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get correlations for an entity."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_correlation_engine()
     
     correlations = engine.find_correlations(entity_id, domain=domain)
@@ -259,10 +259,10 @@ async def get_entity_correlations(
 @router.get("/dashboard")
 async def get_dashboard_data(
     time_range_days: int = Query(default=30, ge=1, le=365),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get the global intelligence dashboard."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     dashboard = get_dashboard()
     
     data = dashboard.generate_dashboard(time_range_days=time_range_days)
@@ -273,10 +273,10 @@ async def get_dashboard_data(
 @router.get("/entities/{entity_id}/insights")
 async def get_entity_insights(
     entity_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get detailed insights for an entity."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     dashboard = get_dashboard()
     
     insights = dashboard.get_entity_insights(entity_id)
@@ -285,9 +285,9 @@ async def get_entity_insights(
 
 
 @router.get("/resolution/stats")
-async def get_resolution_stats(api_key: str = Header(None)):
+async def get_resolution_stats(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get entity resolution statistics."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_entity_resolution_engine()
     
     stats = engine.get_resolution_stats()
@@ -296,9 +296,9 @@ async def get_resolution_stats(api_key: str = Header(None)):
 
 
 @router.get("/correlation/stats")
-async def get_correlation_stats(api_key: str = Header(None)):
+async def get_correlation_stats(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get cross-domain correlation statistics."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_correlation_engine()
     
     stats = engine.get_domain_stats()

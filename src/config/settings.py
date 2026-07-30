@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -32,6 +33,7 @@ class RuntimeSettings(BaseModel):
     database: DatabaseConnectionSettings = Field(default_factory=DatabaseConnectionSettings)
     webhook: WebhookSettings = Field(default_factory=WebhookSettings)
     runtime: RuntimeFlags = Field(default_factory=RuntimeFlags)
+    secret_key: str = Field(default_factory=lambda: os.getenv("SECRET_KEY") or os.getenv("AEGIS_JWT_SECRET", ""))
     raw_config: Dict[str, Any] = Field(default_factory=dict)
     raw_environment: EnvironmentVariablesSchema = Field(default_factory=EnvironmentVariablesSchema)
 

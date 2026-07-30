@@ -20,6 +20,7 @@ import base64
 import html
 import json
 from config.sanitizer import sanitize_query_input
+from config.security import is_admin_role
 import os
 import random
 import time
@@ -35,6 +36,7 @@ from plotly.subplots import make_subplots
 
 from src.inference.model_comparison import build_model_explanation_comparison
 from src.timeline.doubly_linked_list import DoublyLinkedList
+from src.ui.auth import api_key_headers, whoami_url
 from utils.webhook_alerts import trigger_webhook_alert
 from utils.rate_limiter import RateLimiter
 
@@ -75,40 +77,17 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "role" not in st.session_state:
     st.session_state.role = None
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
-if "refresh_token" not in st.session_state:
-    st.session_state.refresh_token = None
-if "token_expires_at" not in st.session_state:
-    st.session_state.token_expires_at = None
-if "auth_username" not in st.session_state:
-    st.session_state.auth_username = ""
+if "api_key" not in st.session_state:
+    st.session_state.api_key = None
 if "rate_limiter" not in st.session_state:
     st.session_state.rate_limiter = RateLimiter(capacity=5.0, refill_rate=1.0)
 
 
-def _extract_token_expiry(access_token: str | None) -> float | None:
-    """Extract the JWT expiry timestamp from the access token payload."""
-    if not access_token:
-        return None
-    try:
-        parts = access_token.split(".")
-        if len(parts) != 3:
-            return None
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
-        data = json.loads(decoded.decode("utf-8"))
-        exp = data.get("exp")
-        return float(exp) if exp is not None else None
-    except Exception:
-        return None
-
-
-def auth_login(username: str, password: str) -> dict:
-    """Authenticate against the backend login endpoint."""
-    response = requests.post(
-        f"{API_URL}/api/v1/auth/login",
-        json={"username": username, "password": password},
+def auth_login(api_key: str) -> dict:
+    """Identify the caller to the backend using the supplied API key."""
+    response = requests.get(
+        whoami_url(API_URL),
+        headers=api_key_headers(api_key),
         timeout=10,
     )
     response.raise_for_status()
@@ -118,35 +97,35 @@ if not st.session_state.logged_in:
     st.title("🛡️ AegisGraph Sentinel 2.0 Login")
     st.markdown("Please authenticate to access the security command center.")
 
-    username = st.text_input("Username")
-    password = st.text_input("Enter Password", type="password")
+    api_key = st.text_input(
+        "API Key",
+        type="password",
+        help="The X-API-Key value your operator configured for this deployment.",
+    )
 
     if st.button("Authenticate"):
-        if not username or not password:
-            st.error("Enter both username and password.")
+        if not api_key:
+            st.error("Enter your API key.")
         else:
             try:
-                response = auth_login(username, password)
-                access_token = response.get("access_token")
-                role = response.get("role")
-                if not access_token or not role:
+                role = auth_login(api_key).get("role")
+                if not role:
                     st.error(
-                        "Authentication succeeded but the backend returned an incomplete response."
+                        "Authentication succeeded but the backend returned no role."
                     )
                 else:
                     st.session_state.logged_in = True
-                    st.session_state.access_token = access_token
-                    st.session_state.refresh_token = response.get("refresh_token")
+                    st.session_state.api_key = api_key
                     st.session_state.role = role
-                    st.session_state.auth_username = username
-                    st.session_state.token_expires_at = _extract_token_expiry(
-                        access_token
-                    )
                     st.rerun()
             except requests.exceptions.HTTPError as exc:
                 status_code = exc.response.status_code if exc.response else None
                 if status_code in (401, 403):
-                    st.error("Invalid username or password.")
+                    st.error("That API key was not accepted.")
+                elif status_code == 503:
+                    st.error(
+                        "The backend has no API keys configured, so nobody can sign in yet."
+                    )
                 else:
                     st.error(f"Login failed with HTTP {status_code}.")
             except requests.exceptions.ConnectionError:
@@ -157,13 +136,6 @@ if not st.session_state.logged_in:
                 logger.error("Unexpected login error: %s", exc)
                 st.error("Login failed due to an unexpected error.")
     st.stop()
-
-# API Configuration
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
-MAX_BATCH_UPLOAD_BYTES = int(os.getenv("MAX_BATCH_UPLOAD_BYTES", 5 * 1024 * 1024))
-BATCH_PREVIEW_ROWS = int(os.getenv("BATCH_PREVIEW_ROWS", 10))
-BATCH_CHUNK_SIZE = int(os.getenv("BATCH_CHUNK_SIZE", 50))
-BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", 500))
 
 
 def display_decision_badge(decision: str):
@@ -267,20 +239,8 @@ def _schedule_live_refresh(interval_ms: int = 1500) -> None:
         st_autorefresh(interval=interval_ms, key=COMMAND_CENTER_REFRESH_KEY)
 
 
-def _token_is_expired() -> bool:
-    expiry = st.session_state.get("token_expires_at")
-    return bool(expiry and time.time() >= float(expiry))
-
-
 def _clear_auth_state() -> None:
-    for key in (
-        "logged_in",
-        "access_token",
-        "refresh_token",
-        "role",
-        "token_expires_at",
-        "auth_username",
-    ):
+    for key in ("logged_in", "api_key", "role"):
         st.session_state.pop(key, None)
 
 
@@ -291,14 +251,8 @@ def logout() -> None:
 
 
 def authenticated_headers(extra: dict | None = None) -> dict:
-    """Return Authorization headers for the current session."""
-    headers = {}
-    token = st.session_state.get("access_token")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if extra:
-        headers.update(extra)
-    return headers
+    """Return the API key headers for the current session."""
+    return api_key_headers(st.session_state.get("api_key"), extra)
 
 
 def _handle_unauthorized(detail: str | None = None) -> None:
@@ -319,9 +273,6 @@ def authenticated_request(
     **kwargs,
 ):
     """Send an authenticated request and auto-handle auth failures."""
-    if _token_is_expired():
-        _handle_unauthorized("Your session expired. Please sign in again.")
-
     headers = authenticated_headers(extra_headers)
     response = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
     if response.status_code == 401:
@@ -840,7 +791,7 @@ with st.sidebar:
     st.title("Navigation")
 
     role_label = str(st.session_state.get("role") or "")
-    if role_label.lower() == "administrator":
+    if is_admin_role(role_label):
         st.sidebar.success("🔓 Administrator Mode")
     else:
         st.sidebar.warning("🔒 Operator (Read-Only) Mode")
@@ -2599,7 +2550,7 @@ elif page == "📊 Risk Analytics":
 
 # Page: Innovations
 elif page == "🧪 Innovation Lab":
-    if str(st.session_state.get("role") or "").lower() != "administrator":
+    if not is_admin_role(str(st.session_state.get("role") or "")):
         st.warning(
             "🔒 Read-Only (Operator Mode): Model configuration and retraining parameters are view-only."
         )

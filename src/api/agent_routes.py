@@ -4,10 +4,10 @@ Agent Swarm API Routes
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from src.api.security import verify_api_key
+from src.api.security import Role, require_role
 from src.agent_swarm import (
     AgentOrchestrator,
     get_orchestrator,
@@ -68,22 +68,19 @@ async def health_check():
     }
 
 
-@router.get("/stats")
-async def get_stats(api_key: str = Header(None)):
+@router.get("/stats", dependencies=[Depends(require_role(Role.ANALYST))])
+async def get_stats():
     """Get agent swarm statistics."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     return {"stats": orchestrator.get_orchestrator_stats()}
 
 
-@router.get("/agents")
+@router.get("/agents", dependencies=[Depends(require_role(Role.ANALYST))])
 async def list_agents(
     agent_type: Optional[str] = None,
     status: Optional[str] = None,
-    api_key: str = Header(None),
 ):
     """List all agents."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     agents = list(orchestrator.agents.values())
@@ -100,13 +97,11 @@ async def list_agents(
     }
 
 
-@router.post("/agents")
+@router.post("/agents", dependencies=[Depends(require_role(Role.ANALYST))])
 async def create_agent(
     request: AgentCreateRequest,
-    api_key: str = Header(None),
 ):
     """Create a new agent."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     agent_type = AgentType(request.agent_type)
@@ -123,13 +118,11 @@ async def create_agent(
     }
 
 
-@router.get("/agents/{agent_id}")
+@router.get("/agents/{agent_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def get_agent(
     agent_id: str,
-    api_key: str = Header(None),
 ):
     """Get agent by ID."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     agent = orchestrator.get_agent(agent_id)
@@ -139,13 +132,11 @@ async def get_agent(
     return {"agent": agent.to_dict()}
 
 
-@router.get("/agents/{agent_id}/messages")
+@router.get("/agents/{agent_id}/messages", dependencies=[Depends(require_role(Role.ANALYST))])
 async def get_agent_messages(
     agent_id: str,
-    api_key: str = Header(None),
 ):
     """Get messages for an agent."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     messages = orchestrator.get_agent_messages(agent_id)
@@ -166,14 +157,12 @@ async def get_agent_messages(
     }
 
 
-@router.get("/tasks")
+@router.get("/tasks", dependencies=[Depends(require_role(Role.ANALYST))])
 async def list_tasks(
     status: Optional[str] = None,
     priority: Optional[str] = None,
-    api_key: str = Header(None),
 ):
     """List all tasks."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     tasks = list(orchestrator.tasks.values())
@@ -190,13 +179,11 @@ async def list_tasks(
     }
 
 
-@router.post("/tasks")
+@router.post("/tasks", dependencies=[Depends(require_role(Role.ANALYST))])
 async def create_task(
     request: TaskCreateRequest,
-    api_key: str = Header(None),
 ):
     """Create a new task."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     priority = TaskPriority(request.priority)
@@ -214,13 +201,11 @@ async def create_task(
     }
 
 
-@router.post("/tasks/assign")
+@router.post("/tasks/assign", dependencies=[Depends(require_role(Role.ANALYST))])
 async def assign_task(
     request: TaskAssignRequest,
-    api_key: str = Header(None),
 ):
     """Assign a task to an agent."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     success = orchestrator.assign_task(request.task_id, request.agent_id)
@@ -235,13 +220,11 @@ async def assign_task(
     }
 
 
-@router.post("/tasks/complete")
+@router.post("/tasks/complete", dependencies=[Depends(require_role(Role.ANALYST))])
 async def complete_task(
     request: TaskCompleteRequest,
-    api_key: str = Header(None),
 ):
     """Complete a task."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     success = orchestrator.complete_task(request.task_id, request.output_data)
@@ -255,13 +238,11 @@ async def complete_task(
     }
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies=[Depends(require_role(Role.ANALYST))])
 async def send_message(
     request: MessageRequest,
-    api_key: str = Header(None),
 ):
     """Send a message between agents."""
-    verify_api_key(api_key)
     orchestrator = get_orchestrator()
     
     message_id = orchestrator.send_message(
@@ -278,18 +259,16 @@ async def send_message(
     }
 
 
-@router.get("/swarm/intelligence")
-async def get_swarm_intelligence_report(api_key: str = Header(None)):
+@router.get("/swarm/intelligence", dependencies=[Depends(require_role(Role.ANALYST))])
+async def get_swarm_intelligence_report():
     """Get swarm intelligence report."""
-    verify_api_key(api_key)
     swarm = get_swarm_intelligence()
     return swarm.get_intelligence_report()
 
 
-@router.get("/swarm/behaviors")
-async def get_emergent_behaviors(api_key: str = Header(None)):
+@router.get("/swarm/behaviors", dependencies=[Depends(require_role(Role.ANALYST))])
+async def get_emergent_behaviors():
     """Get emergent behaviors detected."""
-    verify_api_key(api_key)
     swarm = get_swarm_intelligence()
     return {
         "behaviors": swarm.detect_emergent_behavior(),

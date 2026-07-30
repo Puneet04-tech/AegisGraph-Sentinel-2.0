@@ -21,6 +21,7 @@ def normalize_failure_mode(value: str | None) -> str:
 
 
 def should_fail_fast(failure_mode: str) -> bool:
+    """Return True when the failure mode is fail_fast."""
     return failure_mode == "fail_fast"
 
 

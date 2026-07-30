@@ -26,6 +26,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from ..lru_cache import LRUCache
+from ..exceptions import JSONSerializationError
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
+from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details
 
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
@@ -106,9 +108,11 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware to enforce default rate limits on standard API endpoints."""
 
     async def dispatch(self, request: Request, call_next):
-        # Only rate limit if slowapi is available and limiter is configured
+        # Only rate limit if the app has a limiter configured.
+        # SlowAPI is an optional acceleration path; the distributed limiter
+        # below should still run when SlowAPI is unavailable.
         limiter = getattr(request.app.state, "limiter", None)
-        if not SLOWAPI_AVAILABLE or not limiter:
+        if not limiter:
             return await call_next(request)
 
         path = request.url.path
@@ -130,38 +134,29 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
 
         if is_standard_route and not is_exempt:
             try:
-                import limits
-                # Securely get client IP
-                client_ip = get_remote_address(request)
-
-                # Get the default rate limit string from settings
                 runtime_settings = get_settings()
-                rate_limit_str = runtime_settings.api.rate_limit
+                client_ip = get_remote_address(request)
+                api_key = request.headers.get("X-API-Key")
 
-                # Parse the limit using limits library
-                parsed_limit = limits.parse(rate_limit_str)
+                checks = [("ip", client_ip)]
+                if api_key:
+                    checks.insert(0, ("api_key", api_key))
 
-                # Check rate limit using the default key_func (IP address)
-                # Use 'default_limit' namespace prefix to isolate state from other decorators
-                allowed = limiter.limiter.hit(parsed_limit, client_ip, "default_limit")
-
-                if not allowed:
-                    # Get reset time to calculate Retry-After header
-                    stats = limiter.limiter.get_window_stats(parsed_limit, client_ip, "default_limit")
-                    retry_after = max(1, int(stats.reset_time - time.time()))
-
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": {
-                                "code": 429,
-                                "message": f"Rate limit exceeded: {rate_limit_str}. Please try again later."
-                            }
-                        },
-                        headers={"Retry-After": str(retry_after)}
+                for scope, identity in checks:
+                    decision = check_rate_limit(
+                        identity,
+                        scope=scope,
+                        limit=runtime_settings.api.rate_limit_burst,
+                        burst=runtime_settings.api.rate_limit_burst,
+                        window_seconds=runtime_settings.api.rate_limit_window_seconds,
                     )
+                    if not decision.allowed:
+                        return JSONResponse(
+                            status_code=429,
+                            content=build_rate_limit_response_details(decision, scope),
+                            headers={"Retry-After": str(decision.retry_after_seconds)},
+                        )
             except Exception as exc:
-                # Log error and continue to ensure availability if rate limiter logic fails
                 logger.error(f"Error in rate limiting middleware: {exc}", exc_info=True)
 
         return await call_next(request)
@@ -1014,6 +1009,7 @@ class AppState:
         self.settings = settings
 
         self.start_time = time.time()
+        self.startup_complete = False
         self.requests_processed = 0
         self.decisions = {decision.value: 0 for decision in FraudDecision}
         self.total_risk_score = 0.0
@@ -1388,6 +1384,7 @@ def _initialize_innovation_runtime(startup_logger):
 
 
 def _startup_ready(startup_logger):
+    state.startup_complete = True
     startup_logger.info(
         "AegisGraph Sentinel 2.0 is ready",
         event_type="startup_complete",
@@ -1710,9 +1707,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-from src.saas.routes.users import router as saas_users_router
-app.include_router(saas_users_router)
-
 TRANSACTION_DECISIONS = REGISTRY._names_to_collectors.get("aegis_transaction_decisions_total") or Counter(
     "aegis_transaction_decisions_total",
     "Total transaction decisions made by AegisGraph",
@@ -1728,13 +1722,27 @@ ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") o
     "Number of currently active honeypots"
 )
 
+# Label used when no route matched, so unrouted paths share one series instead
+# of adding a new one each.
+UNMATCHED_ENDPOINT_LABEL = "unmatched"
+
+
+def _metric_endpoint_label(request: Request) -> str:
+    """Return the route template for a request, never the raw path.
+
+    Labelling by ``request.url.path`` gives every distinct id its own time
+    series, so any caller can grow the registry without bound.
+    """
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or UNMATCHED_ENDPOINT_LABEL
+
+
 @app.middleware("http")
 async def prometheus_latency_middleware(request: Request, call_next):
-    endpoint = request.url.path
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
-    API_LATENCY.labels(endpoint=endpoint).observe(duration)
+    API_LATENCY.labels(endpoint=_metric_endpoint_label(request)).observe(duration)
     return response
 
 @app.get("/metrics", tags=["System"])
@@ -1854,6 +1862,12 @@ async def root():
     }
 
 
+@app.get("/api/v1/auth/whoami", tags=["Authentication"])
+async def whoami(role: Role = Depends(require_role(Role.VIEWER))):
+    """Return the role attached to the presented API key."""
+    return {"role": role.value}
+
+
 @app.get(
     "/api/v1/health",
     response_model=HealthCheckResponse,
@@ -1876,6 +1890,26 @@ async def liveness():
     Returns immediately to ensure responsiveness.
     """
     return {"status": "ok", "service": "AegisGraph Sentinel 2.0"}
+
+
+@app.get(
+    "/health/readiness",
+    tags=["Health"],
+    summary="Readiness probe",
+)
+async def readiness(response: Response):
+    """Report whether the process finished starting up and can serve traffic.
+
+    Returns 503 until the lifecycle manager completes, so an orchestrator does
+    not route requests to a pod that is still loading its model or graph.
+    """
+    ready = bool(getattr(state, "startup_complete", False))
+    if not ready:
+        response.status_code = 503
+    return {
+        "status": "ready" if ready else "starting",
+        "service": "AegisGraph Sentinel 2.0",
+    }
 
 
 @app.get(
@@ -2150,26 +2184,34 @@ async def check_transaction(
         # Thresholds are read from config/thresholds.yaml (fallback_scoring section)
         # so they can be tuned without a code change.
         _model_degraded = False
-        _trigger = _FALLBACK_SCORING.get("fallback_trigger_score", 0.25)
-        if _is_degraded_scoring_mode() and risk_result.get('risk_score', 0) <= _trigger:
+        if _is_degraded_scoring_mode():
             amount = request.amount
             _block_above = _FALLBACK_SCORING.get("block_above", 200000)
             _block_med_above = _FALLBACK_SCORING.get("block_medium_above", 100000)
             _review_above = _FALLBACK_SCORING.get("review_above", 50000)
             _allow_above = _FALLBACK_SCORING.get("allow_above", 10000)
 
+            _band_score = None
+            _band_decision = None
             if amount > _block_above:
-                risk_result['risk_score'] = _FALLBACK_SCORING.get("block_score", 0.85)
-                internal_decision = "BLOCK"
+                _band_score = _FALLBACK_SCORING.get("block_score", 0.85)
+                _band_decision = "BLOCK"
             elif amount > _block_med_above:
-                risk_result['risk_score'] = _FALLBACK_SCORING.get("block_medium_score", 0.72)
-                internal_decision = "BLOCK"
+                _band_score = _FALLBACK_SCORING.get("block_medium_score", 0.72)
+                _band_decision = "BLOCK"
             elif amount > _review_above:
-                risk_result['risk_score'] = _FALLBACK_SCORING.get("review_score", 0.48)
-                internal_decision = "REVIEW"
+                _band_score = _FALLBACK_SCORING.get("review_score", 0.48)
+                _band_decision = "REVIEW"
             elif amount > _allow_above:
-                risk_result['risk_score'] = _FALLBACK_SCORING.get("allow_score", 0.35)
-                internal_decision = "ALLOW"
+                _band_score = _FALLBACK_SCORING.get("allow_score", 0.35)
+                _band_decision = "ALLOW"
+
+            # The band acts as a floor. Taking the maximum means the override can
+            # only raise a score, never lower one, so a heuristic that already
+            # scored higher than its band keeps its own result and its decision.
+            if _band_score is not None and _band_score >= risk_result.get('risk_score', 0):
+                risk_result['risk_score'] = _band_score
+                internal_decision = _band_decision
 
             decision = _decision_to_api_value(internal_decision)
             _model_degraded = True
@@ -2472,7 +2514,7 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
                 await ws_manager.heartbeat(client_id)
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        await ws_manager.disconnect(client_id)
+        await ws_manager.disconnect(client_id, websocket)
 
 @app.post(
     "/api/v1/fraud/batch",
@@ -2550,7 +2592,13 @@ async def check_batch_transactions(request: BatchTransactionRequest):
                     yield ","
                 else:
                     first_result = False
-                yield json.dumps(result.model_dump(mode="json"), separators=(",", ":"))
+                try:
+                    yield json.dumps(result.model_dump(mode="json"), separators=(",", ":"))
+                except (TypeError, ValueError) as e:
+                    raise JSONSerializationError(
+                        f"Failed to serialize streaming result: {e}",
+                        details={"step": "stream_result_serialization"},
+                    )
 
         processing_time_ms = (time.time() - start_time) * 1000
         yield (
@@ -2775,15 +2823,17 @@ async def assess_mule_risk(
     tags=["Administration"],
     summary="List active honeypot traps",
     description="Innovation 2: View all active deceptive containment operations",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
 )
 async def list_active_honeypots(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
     honeypot_manager=Depends(get_honeypot_manager),
 ):
     """
-    Get list of all active honeypot traps
-    
+    Get list of all active honeypot traps.
+
+    SECURITY: Requires Firebase authentication + admin role.
+
     Shows honeypots that are currently monitoring for withdrawal attempts
     and tracking fraud networks
     """
@@ -2827,7 +2877,7 @@ async def list_active_honeypots(
     tags=["Administration"],
     summary="Get honeypot system statistics",
     description="Innovation 2: View performance metrics including arrest rate and recovery amount",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
 )
 async def get_honeypot_stats(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
@@ -3423,8 +3473,13 @@ async def link_entity(request: EntityLinkRequest):
         evidence=request.evidence or [],
     )
     
-    # Link entities
-    result = resolver.link_entities(link_req)
+    # Link entities. The resolver raises ValueError for input it cannot act on,
+    # for example an entity id that resolves to nothing, which is a client error
+    # rather than a server fault.
+    try:
+        result = resolver.link_entities(link_req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     processing_time = (time.time() - start_time) * 1000
     
@@ -6327,6 +6382,36 @@ async def create_campaign(request: dict):
     return campaign.to_dict()
 
 
+# Static campaign paths are declared before /api/v1/campaigns/{campaign_id}.
+# FastAPI matches in declaration order, so a parameterised path declared
+# first captures every sibling literal path.
+@app.get(
+    "/api/v1/campaigns/stats",
+    tags=["Campaign Attribution"],
+    summary="Get campaign statistics",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def get_campaign_stats():
+    """Get campaign attribution statistics."""
+    service = get_campaign_service()
+    stats = service.get_campaign_statistics()
+    return stats.to_dict()
+
+
+@app.get(
+    "/api/v1/campaigns/discover",
+    tags=["Campaign Attribution"],
+    summary="Discover campaigns by indicators",
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
+async def discover_campaigns(indicators: str = Query(..., description="Comma-separated indicators")):
+    """Discover campaigns by indicators."""
+    service = get_campaign_service()
+    indicator_list = [i.strip() for i in indicators.split(",")]
+    campaigns = service.discover_campaign(indicator_list)
+    return [c.to_dict() for c in campaigns]
+
+
 @app.get(
     "/api/v1/campaigns/{campaign_id}",
     tags=["Campaign Attribution"],
@@ -6505,19 +6590,6 @@ async def search_actors(
     return [a.to_dict() for a in actors]
 
 
-@app.get(
-    "/api/v1/campaigns/stats",
-    tags=["Campaign Attribution"],
-    summary="Get campaign statistics",
-    dependencies=[Depends(require_role(Role.ANALYST))],
-)
-async def get_campaign_stats():
-    """Get campaign attribution statistics."""
-    service = get_campaign_service()
-    stats = service.get_campaign_statistics()
-    return stats.to_dict()
-
-
 @app.post(
     "/api/v1/campaigns/correlate",
     tags=["Campaign Attribution"],
@@ -6531,15 +6603,3 @@ async def correlate_campaigns(request: dict):
     return service.correlate_campaigns(campaign_ids)
 
 
-@app.get(
-    "/api/v1/campaigns/discover",
-    tags=["Campaign Attribution"],
-    summary="Discover campaigns by indicators",
-    dependencies=[Depends(require_role(Role.ANALYST))],
-)
-async def discover_campaigns(indicators: str = Query(..., description="Comma-separated indicators")):
-    """Discover campaigns by indicators."""
-    service = get_campaign_service()
-    indicator_list = [i.strip() for i in indicators.split(",")]
-    campaigns = service.discover_campaign(indicator_list)
-    return [c.to_dict() for c in campaigns]

@@ -76,10 +76,10 @@ async def health_check():
 @router.post("/start")
 async def start_simulation(
     request: StartSimulationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Start a simulation run."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     try:
@@ -100,10 +100,10 @@ async def start_simulation(
 async def complete_simulation(
     run_id: str,
     request: CompleteSimulationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Complete a simulation run."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     success = simulator.complete_simulation(
@@ -120,10 +120,10 @@ async def complete_simulation(
 @router.get("/results/{run_id}")
 async def get_results(
     run_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get simulation results."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     run = simulator.get_run(run_id)
@@ -136,10 +136,10 @@ async def get_results(
 @router.get("/runs")
 async def list_runs(
     scenario_id: Optional[str] = Query(default=None, min_length=1, max_length=128, description="Filter by scenario ID"),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List simulation runs."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     if scenario_id:
@@ -156,10 +156,10 @@ async def list_runs(
 @router.get("/analytics/{run_id}")
 async def get_analytics(
     run_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get simulation analytics."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     analytics = simulator.evaluate_threat(run_id)
@@ -168,9 +168,9 @@ async def get_analytics(
 
 
 @router.get("/evaluations")
-async def list_evaluations(api_key: str = Header(None)):
+async def list_evaluations(x_api_key: str = Header(None, alias="X-API-Key")):
     """List all threat evaluations."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     from src.threat_simulation import SimulationAnalytics
@@ -180,9 +180,9 @@ async def list_evaluations(api_key: str = Header(None)):
 
 
 @router.get("/actors")
-async def list_actors(api_key: str = Header(None)):
+async def list_actors(x_api_key: str = Header(None, alias="X-API-Key")):
     """List threat actors."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     actors = list(simulator.adversary_engine.actors.values())
@@ -194,9 +194,9 @@ async def list_actors(api_key: str = Header(None)):
 
 
 @router.get("/scenarios")
-async def list_scenarios(api_key: str = Header(None)):
+async def list_scenarios(x_api_key: str = Header(None, alias="X-API-Key")):
     """List attack scenarios."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     simulator = get_threat_simulator()
     
     scenarios = list(simulator.scenario_builder.scenarios.values())

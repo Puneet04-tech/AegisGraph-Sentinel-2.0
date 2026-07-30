@@ -1,20 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any
 from .schemas import ThreatSimulationPlatformThreatScenarioCreateSchema, ThreatSimulationPlatformFraudSimulationCreateSchema, ThreatSimulationPlatformResilienceMetricsCreateSchema
 from .store import get_store, ThreatSimulationPlatformStore
 from .service import ThreatSimulationPlatformService
 from .analytics import ThreatSimulationPlatformAnalytics
 from src.api.security import require_role, Role
+from src.api.tenant_dependency import resolve_tenant
 
 router = APIRouter(prefix="/api/v1/phase64", tags=["Phase 64: Autonomous Threat Simulation Platform"])
-
-
-def resolve_tenant(x_api_key: str = Header(...)) -> str:
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    if x_api_key.startswith("tenant_"):
-        return x_api_key.split("_", 1)[1]
-    return "system"
 
 
 def get_svc(store: ThreatSimulationPlatformStore = Depends(get_store)) -> ThreatSimulationPlatformService:
@@ -28,7 +21,7 @@ def create_record(
     tenant_id: str = Depends(resolve_tenant),
     svc: ThreatSimulationPlatformService = Depends(get_svc)
 ):
-    if tenant_id != "system" and payload.tenant_id != tenant_id:
+    if payload.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     item = svc.create_threatscenario(
         tenant_id=payload.tenant_id,

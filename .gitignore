@@ -44,9 +44,11 @@ models/*.pth
 models/*.onnx
 !models/.gitkeep
 
-# Data files
-data/
-!data/.gitkeep
+# Data files (runtime artifacts at the repository root only).
+# Leading slash anchors this to the root so it cannot also match src/data/,
+# which holds tracked source.
+/data/
+!/data/.gitkeep
 
 # Logs
 logs/

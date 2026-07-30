@@ -190,7 +190,19 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         token = None
         try:
-            resolution = resolve_tenant_from_request(request)
+            try:
+                resolution = resolve_tenant_from_request(request)
+            except HTTPException as exc:
+                return JSONResponse(
+                    status_code=exc.status_code, content={"detail": exc.detail}
+                )
+            except Exception as exc:
+                logger.exception("Tenant context initialization failure")
+                raise TenantIsolationError(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Context initialization failure",
+                ) from exc
+
             if resolution is not None:
                 token = _TENANT_CONTEXT.set(resolution.tenant_id)
                 request.state.tenant_id = resolution.tenant_id
@@ -198,16 +210,11 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
             else:
                 request.state.tenant_id = None
                 request.state.tenant_source = None
-            response = await call_next(request)
-            return response
-        except HTTPException as exc:
-            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-        except Exception as exc:
-            logger.exception("Tenant context initialization failure")
-            raise TenantIsolationError(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Context initialization failure",
-            ) from exc
+
+            # Anything raised past this point came from the application, not
+            # from tenant resolution, and is left alone so it reaches the
+            # handlers registered for it with its own type and message.
+            return await call_next(request)
         finally:
             if token is not None:
                 _TENANT_CONTEXT.reset(token)

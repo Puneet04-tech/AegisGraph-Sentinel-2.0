@@ -31,10 +31,10 @@ pip install -r requirements.txt
 cp config/config.yaml.example config/config.yaml
 
 # Generate synthetic training data
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 
 # Train the model
-python -m src.training.trainer
+python -m src.training.train
 
 # Start the API server
 python -m src.api.main

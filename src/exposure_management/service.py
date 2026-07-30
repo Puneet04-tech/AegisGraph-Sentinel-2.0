@@ -21,6 +21,9 @@ from .models import (
 from .store import get_exposure_store, ExposureStore, reset_exposure_store
 
 
+__all__ = ["ExposureService", "get_exposure_service", "reset_exposure_service"]
+
+
 class ExposureService:
     """Core exposure management service."""
 

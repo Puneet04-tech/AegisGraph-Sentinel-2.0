@@ -11,6 +11,11 @@ jobs:
   check-duplicate:
     runs-on: ubuntu-latest
     steps:
+      # gh resolves the repository through git, so the job needs a checkout even
+      # though every call passes --repo. Without it gh exits 1 with
+      # "fatal: not a git repository".
+      - uses: actions/checkout@v4
+
       - name: Check for Duplicates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -25,7 +30,7 @@ jobs:
             --state all \
             --limit 10 \
             --json number,title \
-            --jq '.[] | select(.number != env.ISSUE_NUMBER) | .number')
+            --jq '.[] | select(.number != (env.ISSUE_NUMBER | tonumber)) | .number')
           
           if [ -n "$SIMILAR_ISSUES" ]; then
             FIRST_DUPLICATE=$(echo "$SIMILAR_ISSUES" | head -1)
