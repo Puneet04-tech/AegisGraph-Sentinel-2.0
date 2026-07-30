@@ -129,9 +129,9 @@ class BillingService:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         if stripe is not None:
-            stripe.api_key = config.get("stripe_api_key", "sk_test_...")
+            stripe.api_key = config.get("stripe_api_key") or __import__('os').environ.get("STRIPE_API_KEY")
         
-        self.webhook_secret = config.get("stripe_webhook_secret")
+        self.webhook_secret = config.get("stripe_webhook_secret") or __import__('os').environ.get("STRIPE_WEBHOOK_SECRET")
         self.currency = config.get("currency", "usd")
         
         # Price IDs from Stripe dashboard
@@ -613,7 +613,5 @@ class UsageMeteringService:
 
 # Initialize billing service
 billing_service = BillingService({
-    "stripe_api_key": "sk_test_...",
-    "stripe_webhook_secret": "whsec_...",
     "currency": "usd",
 })
