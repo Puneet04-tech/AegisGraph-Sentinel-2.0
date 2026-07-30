@@ -8,10 +8,14 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from .security import require_api_key, Role, require_role
+from .security import Role, require_role
 
 
-router = APIRouter(prefix="/api/v1/warfare", tags=["Cyber-Fraud Warfare"])
+router = APIRouter(
+    prefix="/api/v1/warfare",
+    tags=["Cyber-Fraud Warfare"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+)
 
 
 # Request/Response Models

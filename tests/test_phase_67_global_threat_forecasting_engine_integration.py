@@ -1,12 +1,15 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from src.api.tenant_dependency import tenant_for_key
 from src.phase_67_global_threat_forecasting_engine.api import router
 
 import hashlib
 import pytest
 
-ADMIN_KEY = "tenant_testco"
+ADMIN_KEY = "phase-integration-admin-key"
 ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
+# The tenant comes from the credential, not from the text of the key.
+TENANT_ID = tenant_for_key(ADMIN_KEY)
 
 app = FastAPI()
 app.include_router(router)
@@ -24,7 +27,7 @@ def _admin_auth():
 
 
 def test_create_record():
-    payload = {"record_id": "rec-integ-67-001", "tenant_id": "testco", "forecast_id": "fore-991", "predicted_threat_type": "APISpamming", "likelihood": 0.82, "target_sectors": ["finance", "e-commerce"]}
+    payload = {"record_id": "rec-integ-67-001", "tenant_id": TENANT_ID, "forecast_id": "fore-991", "predicted_threat_type": "APISpamming", "likelihood": 0.82, "target_sectors": ["finance", "e-commerce"]}
     resp = client.post("/api/v1/phase67/records", json=payload, headers=HEADERS)
     assert resp.status_code == 200
     assert resp.json()["status"] == "RECORD_CREATED"

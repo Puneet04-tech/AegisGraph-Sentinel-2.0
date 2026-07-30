@@ -86,7 +86,20 @@ from fastapi.security import APIKeyHeader
 
 
 class Role(str, Enum):
-    """Supported authorization roles."""
+    """Supported authorization roles.
+
+    Attributes:
+        SUPER_ADMIN: Full access to all operations and administrative functions.
+        ADMIN: Privileged operations including honeypot management, memory diagnostics,
+            blockchain export, legal evidence handling, case status updates, and debug endpoints.
+        ANALYST: Read/write access to detection endpoints: fraud check, batch processing,
+            explain, voice, mule detection, blast-radius analysis, alerts, blockchain seal,
+            and non-destructive case operations.
+        AUDITOR: Read access to audit-trail and statistics.
+        VIEWER: Read-only access to model metadata and evidence verification.
+
+    See the module docstring for the full role hierarchy and inheritance model.
+    """
     SUPER_ADMIN = "SUPER_ADMIN"
     ADMIN = "ADMIN"
     ANALYST = "ANALYST"

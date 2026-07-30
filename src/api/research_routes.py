@@ -53,10 +53,10 @@ async def health_check():
 @router.post("/create")
 async def create_experiment(
     request: CreateExperimentRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a new research experiment."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     try:
@@ -81,10 +81,10 @@ async def create_experiment(
 async def list_experiments(
     status: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List research experiments."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     experiments = list(engine.experiment_manager.experiments.values())
@@ -105,10 +105,10 @@ async def list_experiments(
 @router.get("/experiments/{experiment_id}")
 async def get_experiment(
     experiment_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a research experiment."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     experiment = engine.experiment_manager.get_experiment(experiment_id)
@@ -122,10 +122,10 @@ async def get_experiment(
 async def run_experiment(
     experiment_id: str,
     request: RunExperimentRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Run a research experiment."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     try:
@@ -146,10 +146,10 @@ async def run_experiment(
 @router.get("/experiments/{experiment_id}/results")
 async def get_experiment_results(
     experiment_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get results for an experiment."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     results = engine.get_research_results(experiment_id)
@@ -160,10 +160,10 @@ async def get_experiment_results(
 @router.get("/benchmark")
 async def list_benchmarks(
     experiment_id: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List benchmark results."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     if experiment_id:
@@ -182,10 +182,10 @@ async def list_benchmarks(
 @router.post("/models/evaluate")
 async def evaluate_model(
     request: EvaluateModelRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Evaluate a model."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     evaluation_id = engine.evaluation_service.evaluate_model(
@@ -203,10 +203,10 @@ async def evaluate_model(
 @router.get("/models/evaluations")
 async def list_evaluations(
     model_id: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List model evaluations."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     if model_id:
@@ -221,9 +221,9 @@ async def list_evaluations(
 
 
 @router.get("/datasets")
-async def list_datasets(api_key: str = Header(None)):
+async def list_datasets(x_api_key: str = Header(None, alias="X-API-Key")):
     """List research datasets."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_research_engine()
     
     datasets = list(engine.dataset_manager.datasets.values())

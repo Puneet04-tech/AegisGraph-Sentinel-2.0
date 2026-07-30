@@ -43,26 +43,26 @@ async def health_check():
 
 
 @router.get("/info")
-async def get_platform_info(api_key: str = Header(None)):
+async def get_platform_info(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get platform information."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     return platform.get_platform_info()
 
 
 @router.get("/dashboard")
-async def get_dashboard(api_key: str = Header(None)):
+async def get_dashboard(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get executive dashboard."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     dashboard = platform.generate_dashboard()
     return dashboard.to_dict()
 
 
 @router.get("/layers")
-async def list_layers(api_key: str = Header(None)):
+async def list_layers(x_api_key: str = Header(None, alias="X-API-Key")):
     """List all intelligence layers."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     layers = []
@@ -79,10 +79,10 @@ async def list_layers(api_key: str = Header(None)):
 @router.get("/layers/{layer}")
 async def get_layer(
     layer: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get status of a specific layer."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     
     try:
         layer_enum = IntelligenceLayer(layer)
@@ -99,10 +99,10 @@ async def get_layer(
 async def update_layer(
     layer: str,
     request: LayerStatusUpdateRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Update layer status."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     
     try:
         layer_enum = IntelligenceLayer(layer)
@@ -128,10 +128,10 @@ async def update_layer(
 @router.get("/capabilities")
 async def list_capabilities(
     enabled_only: bool = Query(default=False),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List all capabilities."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     capabilities = platform.capabilities
@@ -147,10 +147,10 @@ async def list_capabilities(
 @router.get("/capabilities/{capability_id}")
 async def get_capability(
     capability_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a specific capability."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     capability = platform.get_capability(capability_id)
@@ -163,10 +163,10 @@ async def get_capability(
 @router.post("/analysis/cross-layer")
 async def cross_layer_analysis(
     request: CrossLayerAnalysisRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Perform cross-layer analysis."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     layers = None
@@ -187,9 +187,9 @@ async def cross_layer_analysis(
 
 
 @router.get("/status")
-async def get_platform_status(api_key: str = Header(None)):
+async def get_platform_status(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get overall platform status."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     connected = sum(
@@ -209,9 +209,9 @@ async def get_platform_status(api_key: str = Header(None)):
 
 
 @router.get("/integrations")
-async def get_integrations(api_key: str = Header(None)):
+async def get_integrations(x_api_key: str = Header(None, alias="X-API-Key")):
     """Get all integrations."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     platform = get_nexus_platform()
     
     integrations = []

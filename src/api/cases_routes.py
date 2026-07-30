@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, Header, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional
 from datetime import datetime, timezone
+from src.api.actor import resolve_analyst_id
 from src.api.security import require_role, Role
 from src.case_management.store import get_case_store, CaseStatus, CasePriority, EvidenceType
 from src.api.schemas import *
@@ -17,7 +18,7 @@ router = APIRouter()
 )
 async def create_case(
     request: CreateCaseRequest,
-    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    analyst: str = Depends(resolve_analyst_id),
 ):
     """Open a new fraud investigation case from a detected alert."""
     store = get_case_store()
@@ -26,7 +27,7 @@ async def create_case(
         transaction_id=request.transaction_id,
         risk_score=request.risk_score,
         decision=request.decision,
-        analyst_id=x_analyst_id or "system",
+        analyst_id=analyst,
         priority=priority,
         tags=request.tags or [],
     )
@@ -114,11 +115,10 @@ async def get_case(case_id: str):
 async def update_case(
     case_id: str,
     request: UpdateCaseRequest,
-    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    analyst: str = Depends(resolve_analyst_id),
 ):
     """Partially update a fraud case (status, assigned analyst, or priority)."""
     store = get_case_store()
-    analyst = x_analyst_id or "system"
     try:
         case = store.get_case(case_id)
         if case is None:
@@ -146,11 +146,10 @@ async def update_case(
 )
 async def claim_case(
     case_id: str,
-    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    analyst: str = Depends(resolve_analyst_id),
 ):
     """Analyst claims an unassigned case to begin investigation."""
     store = get_case_store()
-    analyst = x_analyst_id or "system"
     try:
         case = store.claim_case(case_id, analyst)
         return _serialise_case(case)
@@ -170,11 +169,10 @@ async def claim_case(
 async def add_case_comment(
     case_id: str,
     request: AddCommentRequest,
-    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    analyst: str = Depends(resolve_analyst_id),
 ):
     """Attach an investigation note or comment to a fraud case."""
     store = get_case_store()
-    analyst = x_analyst_id or "system"
     try:
         comment = store.add_comment(case_id, analyst, request.text)
         return CaseCommentResponse(
@@ -198,11 +196,10 @@ async def add_case_comment(
 async def add_case_evidence(
     case_id: str,
     request: AddEvidenceRequest,
-    x_analyst_id: Optional[str] = Header(default="system", alias="X-Analyst-ID"),
+    analyst: str = Depends(resolve_analyst_id),
 ):
     """Attach a piece of evidence (transaction link, graph snapshot, etc.) to a case."""
     store = get_case_store()
-    analyst = x_analyst_id or "system"
     try:
         evidence = store.add_evidence(
             case_id=case_id,

@@ -34,7 +34,7 @@ Synthetic financial transaction data is generated.
 Command:
 
 ```bash
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 ```
 
 Generated data contains:
@@ -94,7 +94,7 @@ Responsibilities:
 Training command:
 
 ```bash
-python -m src.training.trainer
+python -m src.training.train
 ```
 
 ---

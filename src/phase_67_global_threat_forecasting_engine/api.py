@@ -1,20 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any
 from .schemas import ThreatForecastingEngineThreatForecastCreateSchema, ThreatForecastingEngineTrendIndicatorCreateSchema, ThreatForecastingEngineCampaignPredictionCreateSchema
 from .store import get_store, ThreatForecastingEngineStore
 from .service import ThreatForecastingEngineService
 from .analytics import ThreatForecastingEngineAnalytics
 from src.api.security import require_role, Role
+from src.api.tenant_dependency import resolve_tenant
 
 router = APIRouter(prefix="/api/v1/phase67", tags=["Phase 67: Global Threat Forecasting Engine"])
-
-
-def resolve_tenant(x_api_key: str = Header(...)) -> str:
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    if x_api_key.startswith("tenant_"):
-        return x_api_key.split("_", 1)[1]
-    return "system"
 
 
 def get_svc(store: ThreatForecastingEngineStore = Depends(get_store)) -> ThreatForecastingEngineService:
@@ -28,7 +21,7 @@ def create_record(
     tenant_id: str = Depends(resolve_tenant),
     svc: ThreatForecastingEngineService = Depends(get_svc)
 ):
-    if tenant_id != "system" and payload.tenant_id != tenant_id:
+    if payload.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     item = svc.create_threatforecast(
         tenant_id=payload.tenant_id,

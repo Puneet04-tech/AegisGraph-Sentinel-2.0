@@ -50,10 +50,12 @@ jobs:
         RUN_COVERAGE: ${{ matrix.run_coverage }}
       run: |
         # Run full suite with optional coverage (only enabled on one matrix leg).
+        # No path argument, so pytest.ini's testpaths decides what runs. Passing
+        # tests/ here overrode it and silently dropped the rest.
         if [ "${RUN_COVERAGE:-false}" = "true" ]; then
-          python -m pytest tests/ -ra --maxfail=3 --durations=20 --cov=src --cov-report=term-missing
+          python -m pytest -ra --maxfail=3 --durations=20 --cov=src --cov-report=term-missing
         else
-          python -m pytest tests/ -ra --maxfail=3 --durations=20
+          python -m pytest -ra --maxfail=3 --durations=20
         fi
 
     - name: Verify API Entry Point Compilation Surface

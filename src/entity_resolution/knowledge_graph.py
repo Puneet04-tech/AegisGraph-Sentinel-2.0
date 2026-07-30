@@ -630,7 +630,8 @@ class KnowledgeGraph:
             if len(self._nx_graph) > 0:
                 try:
                     stats["graph_diameter"] = nx.diameter(self._nx_graph.to_undirected())
-                except nx.NetworkXError:
+                except (nx.NetworkXError, ValueError):
+                    # NetworkXError: disconnected graph; ValueError: empty graph
                     stats["graph_diameter"] = -1
             else:
                 stats["graph_diameter"] = -1

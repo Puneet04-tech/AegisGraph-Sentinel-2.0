@@ -23,6 +23,15 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ValidationError",
+    "TransactionValidator",
+    "RateLimiter",
+    "StrictRateLimit",
+    "get_rate_limiter",
+    "reset_rate_limiter",
+]
+
 
 class ValidationError(Exception):
     """Custom validation exception with helpful suggestions."""
@@ -463,7 +472,7 @@ def get_rate_limiter() -> RateLimiter:
     return _rate_limiter
 
 
-def reset_rate_limiter():
+def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
 
 
@@ -472,23 +481,43 @@ def reset_rate_limiter():
         _rate_limiter.reset()
 
 class StrictRateLimit:
-    """FastAPI Dependency to enforce strict endpoint-specific LRU rate limits."""
-    
-    def __init__(self, ip_limit: Optional[int] = None, api_key_limit: Optional[int] = None):
+    """FastAPI Dependency to enforce strict endpoint-specific LRU rate limits.
+
+    The counters live in one shared LRU per bucket, so the identifier carries a
+    scope. Without it every endpoint would increment the same counter while
+    checking it against its own limit, and traffic to a generous endpoint would
+    exhaust the budget of a stricter one.
+    """
+
+    def __init__(
+        self,
+        ip_limit: Optional[int] = None,
+        api_key_limit: Optional[int] = None,
+        scope: Optional[str] = None,
+    ):
         self.ip_limit = ip_limit
         self.api_key_limit = api_key_limit
-        
+        self.scope = scope
+
+    def _scope_for(self, request: Request) -> str:
+        """Return the counter namespace, the route path unless one was given."""
+        if self.scope:
+            return self.scope
+        route = request.scope.get("route")
+        return getattr(route, "path", None) or request.url.path
+
     async def __call__(
-        self, 
-        request: Request, 
+        self,
+        request: Request,
         x_api_key: Optional[str] = Header(None, alias="X-API-Key")
-    ):
+    ) -> None:
         limiter = get_rate_limiter()
+        scope = self._scope_for(request)
         
         # Enforce IP Limit
         if self.ip_limit is not None:
             client_ip = request.client.host if request.client else "unknown"
-            allowed, retry = limiter.check_ip_limit(client_ip, limit_override=self.ip_limit)
+            allowed, retry = limiter.check_ip_limit(f"{scope}|{client_ip}", limit_override=self.ip_limit)
             if not allowed:
                 raise HTTPException(
                     status_code=429,
@@ -499,7 +528,9 @@ class StrictRateLimit:
         # Enforce API Key Limit
         if self.api_key_limit is not None and x_api_key:
             key_hash = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
-            allowed, retry = limiter.check_api_key_limit(key_hash, limit_override=self.api_key_limit)
+            allowed, retry = limiter.check_api_key_limit(
+                f"{scope}|{key_hash}", limit_override=self.api_key_limit
+            )
             if not allowed:
                 raise HTTPException(
                     status_code=429,

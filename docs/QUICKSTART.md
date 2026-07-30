@@ -24,7 +24,7 @@ pip install -r requirements.txt
 ### 3. Generate Synthetic Data
 
 ```bash
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 ```
 
 This will create:

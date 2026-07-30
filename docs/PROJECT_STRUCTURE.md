@@ -76,7 +76,7 @@ aegis/AegisGraph-Sentinel-2.0/
 │       ├── train_production_model.py    ✓ Production training harness
 │       ├── evaluate_model.py            ✓ Evaluation script
 │       ├── api_server.py                ✓ Start API
-│       └── data_generator.py            ✓ Synthetic data
+│       └── synthetic_data_gen.py       ✓ Synthetic data
 │
 ├── 📦 Models & Checkpoints
 │   ├── models/
@@ -150,7 +150,7 @@ aegis/AegisGraph-Sentinel-2.0/
 │   └── CHANGELOG.md                     ○ Version history
 │
 └── 🚀 Root Files
-    ├── setup.py                         ○ Package installation
+    ├── check_environment.py             ○ Environment verification
     ├── pyproject.toml                   ○ Modern Python config
     └── Makefile                         ○ Common commands
 
@@ -220,7 +220,7 @@ REST API service:
 
 ### `src/data/`
 Data generation and processing:
-- **data_generator.py**: Synthetic fraud data with chain/star/mesh topologies
+- **synthetic_data_gen.py**: Synthetic fraud data with chain/star/mesh topologies
 
 ### `src/utils/`
 Common utilities:
@@ -275,7 +275,7 @@ python -m src.api.main
 
 ### Generate Synthetic Data
 ```bash
-python -m src.data.data_generator
+python -m src.data.synthetic_data_gen
 ```
 
 ### Train Model

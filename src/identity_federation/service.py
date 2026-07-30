@@ -16,6 +16,7 @@ from .models import (
     IdentityProviderType,
     SSOProvider,
 )
+from .issuer import default_issuer
 from .store import IdentityFederationStore
 from .providers import IdentityProviderRegistry
 from .saml_provider import SAMLProvider
@@ -43,17 +44,22 @@ class IdentityFederationService:
     def __init__(
         self,
         service_provider_id: str = "aegisgraph-sentinel",
-        issuer: str = "https://aegisgraph.example.com",
+        issuer: Optional[str] = None,
         session_ttl: int = 3600,
         auto_provision: bool = True,
         audit_retention_days: int = 90,
     ):
+        # Every federated flow hands this host back to an external identity
+        # provider, so it is read from configuration rather than defaulted to a
+        # placeholder domain.
+        issuer = (issuer or default_issuer()).rstrip("/")
+
         # Initialize store
         self._store = IdentityFederationStore(session_ttl=session_ttl)
         
         # Initialize components
         self._registry = IdentityProviderRegistry(self._store)
-        self._saml = SAMLProvider(self._store, service_provider_id)
+        self._saml = SAMLProvider(self._store, service_provider_id, issuer)
         self._oidc = OIDCProvider(self._store, issuer)
         self._oauth = OAuthProvider(self._store, issuer)
         self._federation = FederationManager(self._store, service_provider_id, issuer)

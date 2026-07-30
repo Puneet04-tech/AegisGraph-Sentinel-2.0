@@ -5,6 +5,8 @@ Covers: creation, status transitions, assignment, claiming, comments,
 evidence, audit timeline, pagination, and RBAC enforcement.
 """
 import hashlib
+
+from src.api.actor import analyst_id_for_key
 import sys
 from pathlib import Path
 
@@ -27,14 +29,17 @@ _ANALYST_HASH = hashlib.sha256(_ANALYST_KEY.encode()).hexdigest()
 _AUDITOR_KEY = "auditor-test-key-phase4"
 _AUDITOR_HASH = hashlib.sha256(_AUDITOR_KEY.encode()).hexdigest()
 
+# The actor recorded in the audit trail is derived from the API key, not from a
+# request header, so the key is what identifies the caller here.
 ANA_HEADERS = {
     "Authorization": f"Bearer {_ANALYST_KEY}",
-    "X-Analyst-ID": "analyst_001",
+    "X-API-Key": _ANALYST_KEY,
 }
 AUD_HEADERS = {
     "Authorization": f"Bearer {_AUDITOR_KEY}",
-    "X-Analyst-ID": "auditor_001",
+    "X-API-Key": _AUDITOR_KEY,
 }
+_ANALYST_ACTOR = analyst_id_for_key(_ANALYST_KEY)
 
 
 @pytest.fixture(autouse=True)
@@ -252,7 +257,7 @@ class TestCaseManagementAPI:
         case_id = create_resp.json()["case_id"]
         claim_resp = client.post(f"/api/v1/cases/{case_id}/claim", headers=ANA_HEADERS)
         assert claim_resp.status_code == 200
-        assert claim_resp.json()["assigned_analyst"] == "analyst_001"
+        assert claim_resp.json()["assigned_analyst"] == _ANALYST_ACTOR
         assert claim_resp.json()["status"] == "IN_PROGRESS"
 
     def test_add_comment(self, fresh_store):

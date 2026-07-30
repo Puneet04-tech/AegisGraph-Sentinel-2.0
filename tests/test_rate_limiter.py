@@ -1,5 +1,6 @@
 import threading
 import time
+from unittest import mock
 
 from utils.rate_limiter import RateLimiter
 
@@ -26,6 +27,35 @@ def test_rate_limiter_refill():
     # Sleep again to refill
     time.sleep(0.15)
     assert limiter.consume() is True
+
+
+def test_rate_limiter_ignores_wall_clock_changes():
+    """A wall clock adjustment must not affect refill.
+
+    time.time can step backwards on an NTP correction. Measuring refill against
+    it left the bucket unable to recover until the wall clock passed its former
+    value, locking the caller out for the size of the correction.
+    """
+    limiter = RateLimiter(capacity=2, refill_rate=100)
+    assert limiter.consume() is True
+    assert limiter.consume() is True
+    assert limiter.consume() is False
+
+    with mock.patch("time.time", return_value=time.time() - 3600):
+        time.sleep(0.05)
+        assert limiter.consume() is True, (
+            "the bucket did not refill while the wall clock was set back, so "
+            "refill is still measured against a non-monotonic clock"
+        )
+
+
+def test_rate_limiter_uses_a_monotonic_reference():
+    """The stored reference point must come from the monotonic clock."""
+    before = time.monotonic()
+    limiter = RateLimiter(capacity=1, refill_rate=1)
+    after = time.monotonic()
+
+    assert before <= limiter.last_refill <= after
 
 
 def test_rate_limiter_concurrency():

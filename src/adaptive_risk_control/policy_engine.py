@@ -54,7 +54,7 @@ class PolicyDecisionEngine:
         return {
             "applicable_policies": [p.policy_id for p in applicable_policies],
             "triggered_rules": [a.value for a in triggered_rules[:5]],
-            "recommended_actions": list(set([a.value for a in recommended_actions[:5]])),
+            "recommended_actions": list(set(recommended_actions[:5])),
             "requires_escalation": assessment.risk_score >= 0.8,
         }
 

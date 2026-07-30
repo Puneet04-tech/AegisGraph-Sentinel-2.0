@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode, parse_qs, urlparse
 
+from .issuer import default_issuer
 from .models import (
     IdentityProvider,
     AuthenticationRequest,
@@ -40,11 +41,19 @@ class SAMLProvider:
         "ds": "http://www.w3.org/2000/09/xmldsig#",
     }
     
-    def __init__(self, store: IdentityFederationStore, service_provider_id: str):
+    def __init__(
+        self,
+        store: IdentityFederationStore,
+        service_provider_id: str,
+        issuer: Optional[str] = None,
+    ):
         self._store = store
         self._sp_id = service_provider_id
-        self._sp_sso_url = f"https://aegisgraph.example.com/api/v1/identity/saml/acs"
-        self._sp_slo_url = f"https://aegisgraph.example.com/api/v1/identity/saml/slo"
+        # The identity provider posts the assertion back to these URLs, so they
+        # have to name this deployment rather than a placeholder host.
+        self._issuer = (issuer or default_issuer()).rstrip("/")
+        self._sp_sso_url = f"{self._issuer}/api/v1/identity/saml/acs"
+        self._sp_slo_url = f"{self._issuer}/api/v1/identity/saml/slo"
     
     def initiate_login(
         self,

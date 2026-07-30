@@ -19,7 +19,7 @@ import numpy as np
 import logging
 from collections import deque, OrderedDict
 from threading import Lock
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import json
@@ -44,10 +44,12 @@ class FraudScore:
     inference_time_ms: float
     graph_size: int  # Number of nodes in subgraph
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the fraud score to a dictionary."""
         return asdict(self)
     
     def to_json(self) -> str:
+        """Serialize the fraud score to a JSON string."""
         return json.dumps(self.to_dict(), default=str)
 
 
@@ -64,6 +66,7 @@ class _ThreadSafeCache:
         self._maxsize = maxsize
 
     def get(self, key: str) -> Optional[Dict]:
+        """Retrieve a cached value and move it to the end (most recently used)."""
         with self._lock:
             if key not in self._data:
                 return None
@@ -71,6 +74,7 @@ class _ThreadSafeCache:
             return self._data[key]
 
     def set(self, key: str, value: Dict) -> None:
+        """Store a value in the cache, evicting the least recently used item if at capacity."""
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
@@ -313,14 +317,14 @@ class ProductionRiskScorer:
             self._executor.shutdown(wait=True)
             self._executor = None
 
-    def __enter__(self):
+    def __enter__(self) -> "ProductionRiskScorer":
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> bool:
         self.close()
         return False
 
-    def __del__(self):
+    def __del__(self) -> None:
         if getattr(self, "_executor", None) is not None:
             import warnings
             warnings.warn(
@@ -356,6 +360,9 @@ class ProductionRiskScorer:
         Returns:
             (decision, confidence)
         """
+        if risk_score is None:
+            return "ALLOW", 0.0
+        risk_score = max(0.0, min(1.0, risk_score))
         if risk_score >= 0.90:
             return 'BLOCK', risk_score
         elif risk_score >= 0.60:

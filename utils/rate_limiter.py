@@ -3,7 +3,15 @@ import time
 
 
 class RateLimiter:
-    """A thread-safe Token-Bucket rate limiter."""
+    """A thread-safe Token-Bucket rate limiter.
+
+    Refill is measured with ``time.monotonic`` rather than ``time.time`` so a
+    wall clock adjustment cannot strand the bucket. ``time.time`` can move
+    backwards, and the guard that skips a negative interval also skips updating
+    the reference point, which leaves the bucket unable to refill until the wall
+    clock passes its previous value. ``src/api/security.py`` uses the same clock
+    for its cache expiry.
+    """
 
     def __init__(self, capacity: float, refill_rate: float):
         """Initialize the rate limiter.
@@ -15,7 +23,7 @@ class RateLimiter:
         self.capacity = float(capacity)
         self.refill_rate = float(refill_rate)
         self.tokens = float(capacity)
-        self.last_refill = time.time()
+        self.last_refill = time.monotonic()
         self.lock = threading.Lock()
 
     def consume(self, tokens: int = 1) -> bool:
@@ -28,7 +36,7 @@ class RateLimiter:
             True if tokens were consumed (request allowed), False otherwise.
         """
         with self.lock:
-            now = time.time()
+            now = time.monotonic()
             # Calculate elapsed time and add refilled tokens
             elapsed = now - self.last_refill
             if elapsed > 0:

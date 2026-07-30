@@ -19,6 +19,12 @@ DEFAULT_THRESHOLDS: Dict[int, str] = {
 
 
 class ThreatDetector:
+    """Threshold-based runtime threat detector.
+
+    Tracks event counts per event type against configurable severity thresholds.
+    When a threshold is crossed, a Threat is emitted and registered.
+    """
+
     def __init__(
         self,
         registry: ThreatRegistry,

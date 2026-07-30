@@ -1,20 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any
 from .schemas import InvestigationOrchestratorInvestigationWorkflowCreateSchema, InvestigationOrchestratorEvidenceCorrelationCreateSchema, InvestigationOrchestratorEscalationRecordCreateSchema
 from .store import get_store, InvestigationOrchestratorStore
 from .service import InvestigationOrchestratorService
 from .analytics import InvestigationOrchestratorAnalytics
 from src.api.security import require_role, Role
+from src.api.tenant_dependency import resolve_tenant
 
 router = APIRouter(prefix="/api/v1/phase62", tags=["Phase 62: Cross-Domain Investigation Orchestrator"])
-
-
-def resolve_tenant(x_api_key: str = Header(...)) -> str:
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    if x_api_key.startswith("tenant_"):
-        return x_api_key.split("_", 1)[1]
-    return "system"
 
 
 def get_svc(store: InvestigationOrchestratorStore = Depends(get_store)) -> InvestigationOrchestratorService:
@@ -28,7 +21,7 @@ def create_record(
     tenant_id: str = Depends(resolve_tenant),
     svc: InvestigationOrchestratorService = Depends(get_svc)
 ):
-    if tenant_id != "system" and payload.tenant_id != tenant_id:
+    if payload.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     item = svc.create_investigationworkflow(
         tenant_id=payload.tenant_id,

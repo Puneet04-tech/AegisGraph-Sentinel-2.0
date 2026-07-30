@@ -58,10 +58,10 @@ async def health_check():
 @router.post("/create")
 async def create_twin(
     request: CreateTwinRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a digital twin."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     try:
@@ -83,9 +83,9 @@ async def create_twin(
 
 
 @router.get("/twins")
-async def list_twins(api_key: str = Header(None)):
+async def list_twins(x_api_key: str = Header(None, alias="X-API-Key")):
     """List all digital twins."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     twins = list(engine.twins.values())
@@ -99,10 +99,10 @@ async def list_twins(api_key: str = Header(None)):
 @router.get("/twins/{twin_id}")
 async def get_twin(
     twin_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a digital twin."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     twin = engine.get_twin(twin_id)
@@ -118,10 +118,10 @@ async def update_twin(
     entities: Optional[List[Dict[str, Any]]] = None,
     relationships: Optional[List[Dict[str, Any]]] = None,
     metrics: Optional[Dict[str, float]] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Update a digital twin."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     success = engine.update_twin(
@@ -141,10 +141,10 @@ async def update_twin(
 async def simulate(
     twin_id: str,
     request: SimulationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Run a simulation."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     try:
@@ -165,10 +165,10 @@ async def simulate(
 @router.get("/simulations")
 async def list_simulations(
     twin_id: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List simulations."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     if twin_id:
@@ -185,10 +185,10 @@ async def list_simulations(
 @router.get("/simulations/{simulation_id}")
 async def get_simulation(
     simulation_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a simulation."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     sim = engine.simulation_manager.get_simulation(simulation_id)
@@ -201,10 +201,10 @@ async def get_simulation(
 @router.post("/scenarios")
 async def create_scenario(
     request: ScenarioRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a scenario."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     try:
@@ -232,10 +232,10 @@ async def create_scenario(
 @router.get("/scenarios")
 async def list_scenarios(
     scenario_type: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List scenarios."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     scenarios = list(engine.scenario_builder.scenarios.values())
@@ -258,10 +258,10 @@ async def analyze_risk(
     twin_id: str,
     affected_entities: List[str],
     threat_level: float = Query(default=0.5, ge=0, le=1),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Analyze risk."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     analysis = engine.risk_analyzer.analyze(
@@ -276,10 +276,10 @@ async def analyze_risk(
 @router.get("/dashboard/{twin_id}")
 async def get_dashboard(
     twin_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get dashboard for a twin."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_digital_twin_engine()
     
     dashboard = engine.get_dashboard(twin_id)

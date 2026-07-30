@@ -34,7 +34,7 @@ class ThreatHuntingEngine:
         self.execute_hunt(hunt.hunt_id)
         return hunt
 
-    def execute_hunt(self, hunt_id: str):
+    def execute_hunt(self, hunt_id: str) -> None:
         """Execute the query criteria matching against currently stored entities."""
         hunt = self.store.get_hunt(hunt_id)
         if not hunt:

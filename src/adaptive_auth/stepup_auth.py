@@ -102,6 +102,10 @@ class StepUpAuthService:
         self._totp_secrets: LRUCache = LRUCache(maxsize=100000)  # user_id -> secret
         self._verification_codes: Dict[str, str] = {}  # challenge_id -> code
         self._callback_pending: Dict[str, Dict[str, Any]] = {}  # challenge_id -> callback info
+        # challenge_id -> set of factors an out-of-band channel has confirmed.
+        # Only record_external_verification writes here; nothing a caller sends
+        # in a verify request can reach it.
+        self._external_attestations: Dict[str, set] = {}
 
     def configure_challenge(
         self,
@@ -227,6 +231,7 @@ class StepUpAuthService:
             self._verification_codes.pop(challenge_id, None)
             self._verification_codes.pop(f"{challenge_id}_otp", None)
             self._callback_pending.pop(challenge_id, None)
+            self._external_attestations.pop(challenge_id, None)
             return ChallengeResponse(
                 challenge_id=challenge_id,
                 success=False,
@@ -247,6 +252,7 @@ class StepUpAuthService:
             self._verification_codes.pop(challenge_id, None)
             self._verification_codes.pop(f"{challenge_id}_otp", None)
             self._callback_pending.pop(challenge_id, None)
+            self._external_attestations.pop(challenge_id, None)
 
             # Update session trust
             session = self.store.get_session_unsafe(challenge.session_id)
@@ -277,13 +283,31 @@ class StepUpAuthService:
                 remaining_attempts=remaining,
             )
 
+    def record_external_verification(self, challenge_id: str, factor: str) -> None:
+        """Record that an out-of-band channel confirmed *factor* for a challenge.
+
+        Biometric, push and callback challenges are satisfied by something that
+        happens away from the verify request: a device attestation, a tap on a
+        phone, an answered call. The confirmation has to arrive through that
+        channel and be recorded here. A caller cannot assert it for itself.
+        """
+        self._external_attestations.setdefault(challenge_id, set()).add(factor)
+
+    def _has_external_attestation(self, challenge_id: str, factor: str) -> bool:
+        return factor in self._external_attestations.get(challenge_id, set())
+
     def _verify_response(
         self,
         challenge: StepUpChallenge,
         response: str,
         context: Optional[Dict[str, Any]],
     ) -> bool:
-        """Verify the response based on challenge type."""
+        """Verify the response based on challenge type.
+
+        Nothing here may be decided by the caller. ``context`` arrives in the
+        verify request body, so it is evidence about the attempt, never a
+        verdict on it.
+        """
         challenge_type = challenge.challenge_type
 
         if challenge_type == ChallengeType.TOTP:
@@ -298,26 +322,30 @@ class StepUpAuthService:
             return hmac.compare_digest(stored_otp or "", response or "")
 
         elif challenge_type == ChallengeType.PUSH_NOTIFICATION:
-            return response.lower() == "approved"
+            return self._has_external_attestation(challenge.challenge_id, "push")
 
         elif challenge_type == ChallengeType.BIOMETRIC:
-            return context and context.get("biometric_verified", False)
+            return self._has_external_attestation(challenge.challenge_id, "biometric")
 
         elif challenge_type == ChallengeType.HARDWARE_TOKEN:
             return self._verify_totp(challenge.user_id, response)
 
         elif challenge_type == ChallengeType.SECURITY_QUESTIONS:
             correct_answers = challenge.metadata.get("correct_answers", {})
+            if not correct_answers:
+                # Nothing to check against. An empty mapping used to make the
+                # loop below vacuous and pass.
+                return False
             provided_answers = context.get("answers", {}) if context else {}
             all_match = True
             for question, correct in correct_answers.items():
-                provided = provided_answers.get(question, "").lower()
-                if not hmac.compare_digest(provided, correct.lower()):
+                provided = provided_answers.get(question, "")
+                if not hmac.compare_digest(str(provided).lower(), str(correct).lower()):
                     all_match = False
             return all_match
 
         elif challenge_type == ChallengeType.CALLBACK:
-            return context and context.get("callback_verified", False)
+            return self._has_external_attestation(challenge.challenge_id, "callback")
 
         return False
 
@@ -377,6 +405,7 @@ class StepUpAuthService:
             self._verification_codes.pop(challenge_id, None)
             self._verification_codes.pop(f"{challenge_id}_otp", None)
             self._callback_pending.pop(challenge_id, None)
+            self._external_attestations.pop(challenge_id, None)
             return True
         return False
 

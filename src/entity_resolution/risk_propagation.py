@@ -20,6 +20,8 @@ from .store import EntityStore, get_entity_store
 from .knowledge_graph import KnowledgeGraph, get_knowledge_graph
 
 logger = logging.getLogger(__name__)
+__all__ = ['PropagationConfig', 'PropagationResult', 'RiskPropagator', 'get_risk_propagator']
+
 
 
 @dataclass

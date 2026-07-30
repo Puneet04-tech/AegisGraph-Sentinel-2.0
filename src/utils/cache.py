@@ -22,8 +22,6 @@ import networkx as nx
 from src.config.settings import get_settings
 from src.runtime.failure_policy import should_fail_fast
 
-from src.config.settings import get_settings
-
 logger = logging.getLogger(__name__)
 
 # Optional Redis import for production

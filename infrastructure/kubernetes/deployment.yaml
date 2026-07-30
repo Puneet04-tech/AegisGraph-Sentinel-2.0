@@ -41,10 +41,13 @@ metadata:
   namespace: aegisgraph
 type: Opaque
 stringData:
-  API_KEY: "${API_KEY}"
-  NEO4J_PASSWORD: "${NEO4J_PASSWORD}"
-  REDIS_PASSWORD: "${REDIS_PASSWORD}"
-  JWT_SECRET: "${JWT_SECRET}"
+  # Comma-separated lowercase SHA-256 hashes of the accepted API keys. This is
+  # the variable require_role() reads. Without it every role-protected route
+  # returns 503, so the service starts and answers health checks but serves
+  # nothing.
+  AEGIS_API_KEY_HASHES: "${AEGIS_API_KEY_HASHES}"
+  AEGIS_NEO4J_PASSWORD: "${AEGIS_NEO4J_PASSWORD}"
+  AEGIS_JWT_SECRET: "${AEGIS_JWT_SECRET}"
 
 ---
 apiVersion: apps/v1
@@ -92,26 +95,21 @@ spec:
         - configMapRef:
             name: aegisgraph-config
         env:
-        - name: API_KEY
+        - name: AEGIS_API_KEY_HASHES
           valueFrom:
             secretKeyRef:
               name: aegisgraph-secrets
-              key: API_KEY
-        - name: NEO4J_PASSWORD
+              key: AEGIS_API_KEY_HASHES
+        - name: AEGIS_NEO4J_PASSWORD
           valueFrom:
             secretKeyRef:
               name: aegisgraph-secrets
-              key: NEO4J_PASSWORD
-        - name: REDIS_PASSWORD
+              key: AEGIS_NEO4J_PASSWORD
+        - name: AEGIS_JWT_SECRET
           valueFrom:
             secretKeyRef:
               name: aegisgraph-secrets
-              key: REDIS_PASSWORD
-        - name: JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: aegisgraph-secrets
-              key: JWT_SECRET
+              key: AEGIS_JWT_SECRET
         resources:
           requests:
             memory: "2Gi"
@@ -123,7 +121,7 @@ spec:
             nvidia.com/gpu: "1"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /health/liveness
             port: http
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -131,7 +129,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /ready
+            path: /health/readiness
             port: http
           initialDelaySeconds: 10
           periodSeconds: 5

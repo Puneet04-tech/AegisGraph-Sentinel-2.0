@@ -68,10 +68,10 @@ async def health_check():
 @router.post("/visualizations/network")
 async def create_network_graph(
     request: VisualizationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a network graph visualization."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_visualization_engine()
     
     scene = engine.create_network_graph(
@@ -86,10 +86,10 @@ async def create_network_graph(
 @router.post("/visualizations/3d")
 async def create_3d_graph(
     request: VisualizationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a 3D graph visualization."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_visualization_engine()
     
     scene = engine.create_3d_graph(
@@ -104,10 +104,10 @@ async def create_3d_graph(
 @router.post("/visualizations/timeline")
 async def create_timeline(
     request: VisualizationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a timeline visualization."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_visualization_engine()
     
     scene = engine.create_timeline(
@@ -121,10 +121,10 @@ async def create_timeline(
 @router.post("/visualizations/heatmap")
 async def create_heatmap(
     request: VisualizationRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a heatmap visualization."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_visualization_engine()
     
     scene = engine.create_heatmap(
@@ -138,10 +138,10 @@ async def create_heatmap(
 @router.get("/visualizations/{scene_id}")
 async def get_visualization(
     scene_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a visualization scene by ID."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     engine = get_visualization_engine()
     
     scene = engine.get_scene(scene_id)
@@ -154,10 +154,10 @@ async def get_visualization(
 @router.get("/rings")
 async def list_fraud_rings(
     min_risk: float = Query(default=0.0, ge=0, le=1),
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List fraud rings."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     discovery = get_fraud_ring_discovery()
     
     rings = discovery.get_all_rings()
@@ -173,10 +173,10 @@ async def list_fraud_rings(
 @router.post("/rings/discover")
 async def discover_fraud_ring(
     request: FraudRingRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Discover a fraud ring."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     discovery = get_fraud_ring_discovery()
     
     ring = discovery.discover_ring(
@@ -191,10 +191,10 @@ async def discover_fraud_ring(
 @router.get("/rings/{ring_id}")
 async def get_fraud_ring(
     ring_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a fraud ring by ID."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     discovery = get_fraud_ring_discovery()
     
     ring = discovery.get_ring(ring_id)
@@ -207,10 +207,10 @@ async def get_fraud_ring(
 @router.get("/rings/{ring_id}/analysis")
 async def analyze_fraud_ring(
     ring_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Analyze a fraud ring."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     discovery = get_fraud_ring_discovery()
     
     analysis = discovery.analyze_ring_connections(ring_id)
@@ -221,10 +221,10 @@ async def analyze_fraud_ring(
 @router.get("/cases")
 async def list_cases(
     status: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """List investigation cases."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     manager = get_investigation_manager()
     
     cases = manager.get_active_cases() if status == "ACTIVE" else list(manager.cases.values())
@@ -238,10 +238,10 @@ async def list_cases(
 @router.post("/cases")
 async def create_case(
     request: CaseCreateRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Create a new investigation case."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     manager = get_investigation_manager()
     
     case = manager.create_case(
@@ -256,10 +256,10 @@ async def create_case(
 @router.get("/cases/{case_id}")
 async def get_case(
     case_id: str,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Get a case by ID."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     manager = get_investigation_manager()
     
     case = manager.get_case(case_id)
@@ -273,10 +273,10 @@ async def get_case(
 async def update_case(
     case_id: str,
     status: Optional[str] = None,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Update a case."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     manager = get_investigation_manager()
     
     status_enum = InvestigationStatus(status) if status else None
@@ -292,10 +292,10 @@ async def update_case(
 async def add_timeline_event(
     case_id: str,
     request: TimelineEventRequest,
-    api_key: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Add a timeline event to a case."""
-    verify_api_key(api_key)
+    verify_api_key(x_api_key)
     manager = get_investigation_manager()
     
     event = {

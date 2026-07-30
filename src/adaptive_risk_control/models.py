@@ -90,7 +90,7 @@ class RiskDecision:
     risk_score: float
     confidence: float
     factors: List[str]
-    recommended_actions: List[str]
+    recommended_actions: List[MitigationAction]
     controls_applied: List[str] = field(default_factory=list)
     decision_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None

@@ -1,6 +1,7 @@
 """Workflow Engine"""
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from .models import Workflow, Case, CaseStatus, Priority, SLALevel, SLA, Escalation, Assignment
 
 class WorkflowEngine:
@@ -231,6 +232,3 @@ class WorkflowEngine:
             "cases_by_status": status_counts,
             "cases_by_priority": priority_counts
         }
-
-
-from uuid import uuid4

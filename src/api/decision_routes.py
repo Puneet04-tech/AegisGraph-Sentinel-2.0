@@ -80,7 +80,9 @@ async def get_decision_history(
         try:
             dtype = DecisionType(decision_type)
         except ValueError:
-            pass
+            # Swallowing this used to drop the filter and return every
+            # decision, which is the opposite of what was asked for.
+            raise HTTPException(status_code=400, detail="Invalid decision type")
     
     decisions = engine.get_decision_history(decision_type=dtype, limit=limit)
     

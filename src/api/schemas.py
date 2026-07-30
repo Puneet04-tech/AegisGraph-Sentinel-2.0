@@ -22,13 +22,17 @@ class BiometricsData(BaseModel):
     flight_times: List[float] = Field(default_factory=list, description="Key flight times in milliseconds")
     keystroke_events: Optional[List[Dict]] = Field(default=None, description="Raw keystroke events")
     mouse_movements: Optional[List[Dict]] = Field(default=None, description="Raw mouse movement events")
-    
+
     @field_validator('hold_times', 'flight_times')
     @classmethod
     def validate_biometric_values(cls, v):
-        """Validate biometric array constraints."""
+        """SECURITY: Validate biometric array constraints to prevent OOM.
+
+        1M-element array would consume excessive memory. Limit to reasonable
+        keystroke count (max 1000 keypresses per analysis).
+        """
         if len(v) > 1000:
-            raise ValueError("Biometric arrays cannot exceed 1000 elements")
+            raise ValueError("Biometric arrays cannot exceed 1000 elements (requested: %d)" % len(v))
         if any(not math.isfinite(x) for x in v):
             raise ValueError("Biometric values must not contain NaN or Inf")
         if any(x < 0 or x > 10000 for x in v):
@@ -371,7 +375,27 @@ class VoiceAnalysisRequest(BaseModel):
     # large uploads before they can consume excessive memory or CPU.
     audio_base64: str = Field(max_length=500_000, description="Base64-encoded audio WAV file (max 30 seconds)")
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
-    
+
+    @field_validator('audio_base64')
+    @classmethod
+    def validate_audio_size(cls, v):
+        """SECURITY: Prevent OOM attacks via large audio payloads.
+
+        Base64 expands to ~25% larger than decoded size.
+        Max 500K base64 chars -> ~375KB decoded -> 350KB safety limit.
+        """
+        if len(v) > 500_000:
+            raise ValueError("Audio base64 payload exceeds 500KB limit")
+
+        # Estimate decoded size (base64 is ~1.33x larger than decoded)
+        # Reject if estimated decoded size exceeds safety threshold
+        estimated_decoded_size = len(v) * 0.75
+        MAX_DECODED_SIZE = 350_000  # ~350KB safety limit
+        if estimated_decoded_size > MAX_DECODED_SIZE:
+            raise ValueError(f"Decoded audio would exceed {MAX_DECODED_SIZE} bytes limit")
+
+        return v
+
     @field_validator('sample_rate')
     @classmethod
     def validate_sample_rate(cls, v):
@@ -972,6 +996,20 @@ class EntityLinkRequest(BaseModel):
         if v.upper() not in valid_types:
             raise ValueError(f"relationship_type must be one of: {valid_types}")
         return v.upper()
+
+    @model_validator(mode="after")
+    def require_an_identifier_for_each_side(self) -> "EntityLinkRequest":
+        """Each side needs an id or a value.
+
+        EntityResolver.link_entities enforces this too, but by raising ValueError
+        from the service layer, which reaches the caller as a 500. Declaring it
+        here makes it a 422 and puts the constraint in the OpenAPI schema.
+        """
+        if not self.source_entity_id and not self.source_value:
+            raise ValueError("Either source_entity_id or source_value must be provided")
+        if not self.target_entity_id and not self.target_value:
+            raise ValueError("Either target_entity_id or target_value must be provided")
+        return self
 
 
 class EntityResponse(BaseModel):
