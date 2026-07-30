@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from src.api.main import app
 from src.saas.routes import users as users_routes
 from src.saas.routes.auth import get_current_user
+
+# The users router is deliberately NOT mounted on the production app
+# (see test_saas_limit_enforcement.test_placeholder_user_api_is_not_mounted),
+# so its authentication and RBAC are exercised on a router-local app.
+app = FastAPI()
+app.include_router(users_routes.router)
+
+
+@pytest.fixture
+def api_client():
+    with TestClient(app) as client:
+        yield client
 
 
 def _override_user(user):
