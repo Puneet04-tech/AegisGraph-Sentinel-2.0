@@ -68,8 +68,10 @@ class ThreatDetector:
                     **threat.metadata,
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Audit log failed: {e}", exc_info=True)
+            raise RuntimeError(f"Audit logging failed: {e}") from e
 
     def _audit(self, event_type: str, threat: Threat) -> None:
         if self.audit_logger is None:
@@ -85,5 +87,7 @@ class ThreatDetector:
                     **threat.metadata,
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Audit log failed: {e}", exc_info=True)
+            raise RuntimeError(f"Audit logging failed: {e}") from e

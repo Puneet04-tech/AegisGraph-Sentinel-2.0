@@ -73,5 +73,7 @@ class IncidentManager:
                     "contained": incident.contained,
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Audit log failed: {e}", exc_info=True)
+            raise RuntimeError(f"Audit logging failed: {e}") from e
