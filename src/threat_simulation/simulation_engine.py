@@ -5,7 +5,7 @@ Advanced environment for simulating attacks and threats.
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-import random
+import secrets
 
 from .models import (
     ThreatActor,
@@ -231,7 +231,7 @@ class ThreatSimulator:
             "action": step.get("action"),
             "duration": step.get("duration", 0),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "outcome": random.choice(["success", "partial", "blocked"]),
+            "outcome": secrets.SystemRandom().choice(["success", "partial", "blocked"]),
         }
         
         run.events.append(event)
@@ -279,8 +279,8 @@ class ThreatSimulator:
         total = len(run.events)
         
         threat_score = successful / max(1, total) if total > 0 else 0
-        detection_rate = random.uniform(0.5, 0.95)
-        response_time = random.uniform(30, 300)
+        detection_rate = secrets.SystemRandom().uniform(0.5, 0.95)
+        response_time = secrets.SystemRandom().uniform(30, 300)
         
         return ThreatEvaluation(
             evaluation_id=str(uuid4()),

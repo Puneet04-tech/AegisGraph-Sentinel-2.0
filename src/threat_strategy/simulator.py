@@ -81,8 +81,8 @@ class StrategySimulator:
         steps_detected = []
         
         for step in scenario["steps"]:
-            import random
-            detected = random.random() < simulated_detection
+            import secrets
+            detected = secrets.SystemRandom().random() < simulated_detection
             if detected:
                 steps_detected.append(step)
             else:
@@ -151,7 +151,7 @@ class StrategySimulator:
         timeframe_days: int = 30
     ) -> CampaignForecast:
         """Generate threat campaign forecast"""
-        import random
+        import secrets
         
         predictions = {
             "FRAUD": "Increased account takeover attacks expected",
@@ -166,10 +166,10 @@ class StrategySimulator:
             forecast_id=str(uuid4()),
             threat_type=threat_type,
             prediction=predictions.get(threat_type, "General threat activity"),
-            confidence=0.7 + random.random() * 0.2,
+            confidence=0.7 + secrets.SystemRandom().random() * 0.2,
             timeframe_start=datetime.now(timezone.utc),
             timeframe_end=datetime.now(timezone.utc) + timedelta(days=timeframe_days),
-            affected_sectors=random.sample(sectors, random.randint(2, 4))
+            affected_sectors=secrets.SystemRandom().sample(sectors, secrets.SystemRandom().randint(2, 4))
         )
         
         return forecast
