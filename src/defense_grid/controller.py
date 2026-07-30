@@ -103,7 +103,7 @@ class DefenseGridController:
         
         # Log defense event
         event = {
-            "event_id": str(hashlib.md5(f"{threat_id}{start_time}".encode()).hexdigest()[:16]),
+            "event_id": str(hashlib.sha256(f"{threat_id}{start_time}".encode()).hexdigest()[:16]),
             "event_type": "THREAT_DETECTED",
             "severity": severity,
             "source": threat_data.get("source", "UNKNOWN"),

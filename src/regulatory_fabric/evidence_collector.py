@@ -100,7 +100,7 @@ class EvidenceCollector:
             Collection job details
         """
         job = EvidenceCollectionJob(
-            job_id=hashlib.md5(f"{control_id}{evidence_type}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
+            job_id=hashlib.sha256(f"{control_id}{evidence_type}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
             control_id=control_id,
             evidence_type=evidence_type,
         )
@@ -113,7 +113,7 @@ class EvidenceCollector:
             evidence_data = self._execute_collection(evidence_type, source_id)
             
             evidence = {
-                "evidence_id": str(hashlib.md5(f"{job.job_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
+                "evidence_id": str(hashlib.sha256(f"{job.job_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
                 "control_id": control_id,
                 "evidence_type": evidence_type,
                 "description": description,
@@ -183,7 +183,7 @@ class EvidenceCollector:
         Returns:
             Schedule ID
         """
-        schedule_id = hashlib.md5(f"{control_id}{evidence_type}{schedule}".encode()).hexdigest()[:16]
+        schedule_id = hashlib.sha256(f"{control_id}{evidence_type}{schedule}".encode()).hexdigest()[:16]
         
         # In production, this would integrate with a scheduler
         return schedule_id

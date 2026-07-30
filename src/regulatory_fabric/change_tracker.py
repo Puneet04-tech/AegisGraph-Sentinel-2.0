@@ -64,7 +64,7 @@ class RegulatoryChangeTracker:
         
         # Create alert
         alert = ChangeAlert(
-            alert_id=hashlib.md5(f"{update_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
+            alert_id=hashlib.sha256(f"{update_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
             update_id=update_id,
             regulation_id=update.get("regulation_id", ""),
             change_type=update.get("update_type", "UPDATE"),

@@ -90,7 +90,7 @@ class AuditAutomationEngine:
             return {"error": "Regulation not found"}
         
         plan = AuditPlan(
-            plan_id=hashlib.md5(f"{regulation_id}{title}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
+            plan_id=hashlib.sha256(f"{regulation_id}{title}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
             regulation_id=regulation_id,
             title=title,
             scope=scope,
@@ -163,7 +163,7 @@ class AuditAutomationEngine:
         
         # Create assessment
         assessment = {
-            "assessment_id": str(hashlib.md5(f"{plan_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
+            "assessment_id": str(hashlib.sha256(f"{plan_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
             "regulation_id": plan.regulation_id,
             "assessment_date": datetime.now(timezone.utc),
             "status": "COMPLETED",
@@ -202,7 +202,7 @@ class AuditAutomationEngine:
             return {"passed": True}
         
         finding = {
-            "finding_id": str(hashlib.md5(f"{control_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
+            "finding_id": str(hashlib.sha256(f"{control_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
             "control_id": control_id,
             "severity": "HIGH" if status == "NON_COMPLIANT" else "MEDIUM",
             "title": f"Control {control_id} not compliant",
@@ -239,7 +239,7 @@ class AuditAutomationEngine:
         failed = len([a for a in assessments if a.get("controls_failed", 0) > 0])
         
         return {
-            "report_id": str(hashlib.md5(f"report{plan_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
+            "report_id": str(hashlib.sha256(f"report{plan_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "plan": {
                 "plan_id": plan.plan_id,
@@ -274,7 +274,7 @@ class AuditAutomationEngine:
         Returns:
             Schedule details
         """
-        schedule_id = hashlib.md5(f"schedule{regulation_id}{frequency_days}".encode()).hexdigest()[:16]
+        schedule_id = hashlib.sha256(f"schedule{regulation_id}{frequency_days}".encode()).hexdigest()[:16]
         
         controls = self.store.get_controls_for_regulation(regulation_id)
         control_ids = [c.get("control_id") for c in controls]

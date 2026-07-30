@@ -67,7 +67,7 @@ class ComplianceDriftDetector:
         """
         with self._lock:
             snapshot = BaselineSnapshot(
-                snapshot_id=hashlib.md5(f"{name}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
+                snapshot_id=hashlib.sha256(f"{name}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
                 controls_state={k: v.copy() for k, v in self.store.controls.items()},
                 policies_state={k: v.copy() for k, v in self.store.policies.items()},
                 mappings_state={k: v.copy() for k, v in self.store.control_mappings.items()},
@@ -137,7 +137,7 @@ class ComplianceDriftDetector:
             if not current_ctrl:
                 # Control was removed
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{ctrl_id}_removed{current_time}".encode()).hexdigest()[:16],
                     drift_type="CONTROL_REMOVED",
                     severity="CRITICAL",
                     description=f"Control {ctrl_id} has been removed",
@@ -163,7 +163,7 @@ class ComplianceDriftDetector:
                 severity = severity_map.get(current_status, "MEDIUM")
                 
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_status{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{ctrl_id}_status{current_time}".encode()).hexdigest()[:16],
                     drift_type="CONTROL_STATUS_CHANGED",
                     severity=severity,
                     description=f"Control {ctrl_id} status changed from {baseline_status} to {current_status}",
@@ -182,7 +182,7 @@ class ComplianceDriftDetector:
             
             if baseline_eff and current_eff and baseline_eff != current_eff:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_effectiveness{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{ctrl_id}_effectiveness{current_time}".encode()).hexdigest()[:16],
                     drift_type="CONTROL_EFFECTIVENESS_CHANGED",
                     severity="HIGH",
                     description=f"Control {ctrl_id} effectiveness changed from {baseline_eff} to {current_eff}",
@@ -197,7 +197,7 @@ class ComplianceDriftDetector:
         for ctrl_id in self.store.controls:
             if ctrl_id not in baseline.controls_state:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_new{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{ctrl_id}_new{current_time}".encode()).hexdigest()[:16],
                     drift_type="NEW_CONTROL_ADDED",
                     severity="LOW",
                     description=f"New control {ctrl_id} has been added",
@@ -227,7 +227,7 @@ class ComplianceDriftDetector:
             
             if not current_policy:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{policy_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{policy_id}_removed{current_time}".encode()).hexdigest()[:16],
                     drift_type="POLICY_REMOVED",
                     severity="HIGH",
                     description=f"Policy {policy_id} has been removed",
@@ -242,7 +242,7 @@ class ComplianceDriftDetector:
             # Check for version changes
             if baseline_policy.get("version") != current_policy.get("version"):
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{policy_id}_version{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{policy_id}_version{current_time}".encode()).hexdigest()[:16],
                     drift_type="POLICY_UPDATED",
                     severity="MEDIUM",
                     description=f"Policy {policy_id} updated from v{baseline_policy.get('version')} to v{current_policy.get('version')}",
@@ -271,7 +271,7 @@ class ComplianceDriftDetector:
         for mapping_id, baseline_mapping in baseline.mappings_state.items():
             if mapping_id not in self.store.control_mappings:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{mapping_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=hashlib.sha256(f"{mapping_id}_removed{current_time}".encode()).hexdigest()[:16],
                     drift_type="MAPPING_REMOVED",
                     severity="MEDIUM",
                     description=f"Control mapping {mapping_id} has been removed",

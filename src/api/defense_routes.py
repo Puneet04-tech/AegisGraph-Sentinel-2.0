@@ -77,7 +77,7 @@ async def process_threat(
 ):
     """Process a detected threat."""
     threat_data = {
-        "threat_id": str(hashlib.md5(f"{threat.type}{datetime.now()}".encode()).hexdigest()[:16]),
+        "threat_id": str(hashlib.sha256(f"{threat.type}{datetime.now()}".encode()).hexdigest()[:16]),
         "type": threat.type,
         "severity": threat.severity,
         "source": threat.source,

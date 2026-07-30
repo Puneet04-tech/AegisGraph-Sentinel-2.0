@@ -163,7 +163,7 @@ class CampaignAttributionEngine:
         
         # Store attribution
         attribution = {
-            "attribution_id": str(hashlib.md5(f"{campaign_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
+            "attribution_id": str(hashlib.sha256(f"{campaign_id}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16]),
             "campaign_id": campaign_id,
             "primary_actor_id": primary_actor_id,
             "secondary_actor_ids": [a[0] for a in sorted_actors[1:3]],

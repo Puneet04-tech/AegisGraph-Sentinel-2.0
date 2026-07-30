@@ -121,7 +121,7 @@ class RegulationIntelligenceEngine:
                 self.store.add_regulatory_update(update)
                 
                 alert = IntelligenceAlert(
-                    alert_id=hashlib.md5(f"{update['update_id']}".encode()).hexdigest()[:12],
+                    alert_id=hashlib.sha256(f"{update['update_id']}".encode()).hexdigest()[:12],
                     alert_type="REGULATORY_UPDATE",
                     severity=update.get("compliance_impact", "MEDIUM"),
                     title=f"New {update.get('update_type', 'UPDATE')} for {update.get('regulation_id', 'Unknown')}",
