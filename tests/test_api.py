@@ -1294,6 +1294,35 @@ class TestFallbackScoringConfigDriven:
         assert expected_decision == "BLOCK"
 
 
+class _FakeTokenBucketRedis:
+    """In-memory stand-in for the Redis token bucket used by
+    src.security.rate_limit — same semantics as its Lua script."""
+
+    def __init__(self):
+        self._state = {}
+
+    def eval(self, script, numkeys, key, now, refill_rate, capacity, ttl):
+        import math
+
+        now = float(now)
+        refill_rate = float(refill_rate)
+        capacity = float(capacity)
+
+        tokens, ts = self._state.get(key, (capacity, now))
+        elapsed = max(0.0, now - ts)
+        tokens = min(capacity, tokens + elapsed * refill_rate)
+
+        if tokens >= 1:
+            tokens -= 1
+            allowed, retry_after = 1, 0
+        else:
+            allowed = 0
+            retry_after = max(1, int(math.ceil((1 - tokens) / refill_rate)))
+
+        self._state[key] = (tokens, now)
+        return [allowed, retry_after, tokens]
+
+
 class TestDefaultRateLimiting:
     """Test standard API default rate limiting middleware."""
 
@@ -1302,11 +1331,25 @@ class TestDefaultRateLimiting:
             pytest.skip("SlowAPI is not installed")
 
         # Give the middleware a test-local settings object instead of mutating
-        # the process-wide settings cache used by later tests.
+        # the process-wide settings cache used by later tests. The middleware
+        # reads the token-bucket fields (rate_limit_burst / window_seconds).
         test_settings = types.SimpleNamespace(
-            api=types.SimpleNamespace(rate_limit="5/minute")
+            api=types.SimpleNamespace(
+                rate_limit="5/minute",
+                rate_limit_burst=5,
+                rate_limit_window_seconds=60,
+            )
         )
         monkeypatch.setattr(api_main, "get_settings", lambda: test_settings)
+
+        # The production bucket lives in Redis and fails open when Redis is
+        # unreachable (as in CI); back it with an in-memory equivalent so
+        # the limit is actually enforced.
+        fake_redis = _FakeTokenBucketRedis()
+        monkeypatch.setattr(
+            "src.security.rate_limit.get_redis_client",
+            lambda url: fake_redis,
+        )
 
         # Clear existing rate limit keys to ensure clean state
         _clear_rate_limit_storage()

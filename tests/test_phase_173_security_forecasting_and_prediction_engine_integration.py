@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.phase_173_security_forecasting_and_prediction_engine.api import router
+from src.api.middleware.multi_tenancy import set_current_tenant, clear_current_tenant
 import hashlib
 import pytest
 
@@ -8,7 +9,7 @@ app = FastAPI()
 app.include_router(router)
 client = TestClient(app)
 
-ADMIN_KEY = "tenant_testco"
+ADMIN_KEY = "phase173_integration_admin_key"
 ADMIN_HASH = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()
 
 HEADERS = {"x-api-key": ADMIN_KEY}
@@ -20,6 +21,14 @@ def _admin_auth():
     mp.setenv("AEGIS_ROLE_ADMIN", ADMIN_HASH)
     yield
     mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _tenant_context():
+    """Tenant identity comes from the authenticated context, not the key."""
+    set_current_tenant("testco")
+    yield
+    clear_current_tenant()
 
 
 def test_create_record():
