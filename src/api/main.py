@@ -2826,15 +2826,17 @@ async def assess_mule_risk(
     tags=["Administration"],
     summary="List active honeypot traps",
     description="Innovation 2: View all active deceptive containment operations",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
 )
 async def list_active_honeypots(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
     honeypot_manager=Depends(get_honeypot_manager),
 ):
     """
-    Get list of all active honeypot traps
-    
+    Get list of all active honeypot traps.
+
+    SECURITY: Requires Firebase authentication + admin role.
+
     Shows honeypots that are currently monitoring for withdrawal attempts
     and tracking fraud networks
     """
@@ -2878,7 +2880,7 @@ async def list_active_honeypots(
     tags=["Administration"],
     summary="Get honeypot system statistics",
     description="Innovation 2: View performance metrics including arrest rate and recovery amount",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
 )
 async def get_honeypot_stats(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
