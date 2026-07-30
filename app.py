@@ -39,14 +39,14 @@ from src.timeline.doubly_linked_list import DoublyLinkedList
 from src.ui.auth import api_key_headers, whoami_url
 from utils.webhook_alerts import trigger_webhook_alert
 from utils.rate_limiter import RateLimiter
+from utils.rate_limit import TokenBucketRateLimiter, _streamlit_limiter
 
 
-def check_rate_limit() -> bool:
-    """Check rate limit. Show warning and return False if exceeded."""
-    if not st.session_state.rate_limiter.consume():
-        st.warning(
-            "⚠️ Slow down! You are exceeding the rate limit. Please wait a moment."
-        )
+def check_rate_limit(client_key: str = "streamlit_client") -> bool:
+    """Check rate limit. Show error and return False if exceeded."""
+    limiter = getattr(st.session_state, "token_rate_limiter", _streamlit_limiter)
+    if not limiter.consume(client_key):
+        st.error("Too many requests. Please try again after 60 seconds.")
         return False
     return True
 
