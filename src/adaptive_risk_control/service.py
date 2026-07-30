@@ -388,6 +388,82 @@ class AdaptiveRiskControlService:
         self._store.store_audit_record(record)
 
 
+def is_private_ip_or_host(url: str) -> bool:
+    """
+    Validates if target URL resolves to internal or private IP address ranges.
+    Prevents Server-Side Request Forgery (SSRF) attacks.
+    """
+    import ipaddress
+    import urllib.parse
+    import socket
+
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname or ""
+
+    if not hostname:
+        return True
+
+    # Block metadata service endpoints & loopback names
+    blocked_hosts = {"localhost", "169.254.169.254", "metadata.google.internal"}
+    if hostname.lower() in blocked_hosts:
+        return True
+
+    try:
+        ip_str = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip_str)
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+    except (socket.gaierror, ValueError):
+        return False
+
+
+def scan_external_security_endpoint(
+    target_url: str,
+    timeout: tuple[float, float] = (3.0, 10.0),
+    verify: bool = True,
+) -> Dict[str, Any]:
+    """
+    Safely execute external security scanner HTTP requests enforcing TLS certificate validation,
+    connection timeouts, and private IP range SSRF filtering.
+
+    Args:
+        target_url: Destination URL for external security scan
+        timeout: Tuple of (connect_timeout, read_timeout)
+        verify: Enforce TLS SSL certificate verification (must be True)
+
+    Returns:
+        Scan result payload dictionary
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not verify:
+        logger.critical(f"[SECURITY AUDIT] Attempted unverified SSL request to: {target_url}")
+        raise ValueError("Security violation: verify=True is mandatory for external security scanner calls.")
+
+    if is_private_ip_or_host(target_url):
+        logger.critical(f"[SECURITY AUDIT] SSRF attempt blocked targeting internal/private address: {target_url}")
+        raise ValueError(f"Security violation: Target URL resolves to a restricted private network range: {target_url}")
+
+    try:
+        import requests
+        response = requests.get(target_url, timeout=timeout, verify=True)
+        return {
+            "status_code": response.status_code,
+            "url": response.url,
+            "scan_status": "success",
+            "content_length": len(response.content),
+        }
+    except Exception as e:
+        logger.warning(f"External security scanner HTTP request failed gracefully: {e}")
+        return {
+            "status_code": 0,
+            "url": target_url,
+            "scan_status": "error",
+            "error_detail": str(e),
+        }
+
+
 # Global service instance
 _service: Optional[AdaptiveRiskControlService] = None
 
@@ -397,4 +473,4 @@ def get_prevention_service() -> AdaptiveRiskControlService:
     global _service
     if _service is None:
         _service = AdaptiveRiskControlService()
-    return _service
+    return _service
