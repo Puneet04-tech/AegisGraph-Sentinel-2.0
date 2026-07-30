@@ -216,7 +216,11 @@ class WorkflowEngine:
         return [s for s in self.slas.values() if s.breached]
     
     def get_dashboard(self) -> Dict[str, Any]:
-        """Get workflow dashboard"""
+        """Get workflow dashboard data.
+
+        Returns:
+            A dictionary containing workflow dashboard statistics.
+        """
         status_counts: Dict[str, int] = {}
         priority_counts: Dict[str, int] = {}
         
