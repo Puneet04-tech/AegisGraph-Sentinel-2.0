@@ -364,7 +364,7 @@ class KnowledgeRetrievalEngine:
         
         return recommendations
     
-    def _log_retrieval(self, query: str, result_count: int):
+    def _log_retrieval(self, query: str, result_count: int) -> None:
         """Log a retrieval action."""
         self.audit_log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
