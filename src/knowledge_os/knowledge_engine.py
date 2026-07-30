@@ -28,7 +28,7 @@ class KnowledgeEngine:
         self.graphs: Dict[str, KnowledgeGraph] = {}
         self._initialize_default_knowledge()
     
-    def _initialize_default_knowledge(self):
+    def _initialize_default_knowledge(self) -> None:
         """Initialize with default knowledge entries."""
         entries = [
             KnowledgeEntry(
