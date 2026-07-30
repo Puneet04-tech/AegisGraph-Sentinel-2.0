@@ -19,6 +19,28 @@ terraform {
   }
 }
 
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+  }
+}
+
 provider "aws" {
   region = var.aws_region
 }
@@ -140,6 +162,27 @@ data "aws_availability_zones" "available" {
 
 output "aws_availability_zones" {
   value = data.aws_availability_zones.available.names
+}
+
+module "vpc" {
+  source = "./modules/vpc"
+  
+  environment  = var.environment
+  cluster_name = var.cluster_name
+  common_tags  = local.common_tags
+}
+
+module "eks" {
+  source = "./modules/eks"
+  
+  cluster_name    = var.cluster_name
+  cluster_version = local.kubernetes_version
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnet_ids
+  instance_types  = [var.instance_type]
+  node_count      = var.node_count
+  environment     = var.environment
+  common_tags     = local.common_tags
 }
 
 output "cluster_endpoint" {
