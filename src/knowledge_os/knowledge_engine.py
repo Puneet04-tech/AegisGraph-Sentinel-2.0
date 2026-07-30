@@ -28,7 +28,7 @@ class KnowledgeEngine:
         self.graphs: Dict[str, KnowledgeGraph] = {}
         self._initialize_default_knowledge()
     
-    def _initialize_default_knowledge(self):
+    def _initialize_default_knowledge(self) -> None:
         """Initialize with default knowledge entries."""
         entries = [
             KnowledgeEntry(
@@ -364,7 +364,7 @@ class KnowledgeRetrievalEngine:
         
         return recommendations
     
-    def _log_retrieval(self, query: str, result_count: int):
+    def _log_retrieval(self, query: str, result_count: int) -> None:
         """Log a retrieval action."""
         self.audit_log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),

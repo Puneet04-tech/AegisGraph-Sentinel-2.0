@@ -463,7 +463,7 @@ def get_rate_limiter() -> RateLimiter:
     return _rate_limiter
 
 
-def reset_rate_limiter():
+def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
 
 
@@ -498,10 +498,10 @@ class StrictRateLimit:
         return getattr(route, "path", None) or request.url.path
 
     async def __call__(
-        self, 
-        request: Request, 
+        self,
+        request: Request,
         x_api_key: Optional[str] = Header(None, alias="X-API-Key")
-    ):
+    ) -> None:
         limiter = get_rate_limiter()
         scope = self._scope_for(request)
         

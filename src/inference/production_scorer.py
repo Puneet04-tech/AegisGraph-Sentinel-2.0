@@ -317,14 +317,14 @@ class ProductionRiskScorer:
             self._executor.shutdown(wait=True)
             self._executor = None
 
-    def __enter__(self):
+    def __enter__(self) -> "ProductionRiskScorer":
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> bool:
         self.close()
         return False
 
-    def __del__(self):
+    def __del__(self) -> None:
         if getattr(self, "_executor", None) is not None:
             import warnings
             warnings.warn(

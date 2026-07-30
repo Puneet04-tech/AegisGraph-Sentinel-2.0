@@ -16,10 +16,31 @@ def _payload(event_payload: Any) -> str:
 
 
 def compute_hash(previous_hash: str, event_payload: Any) -> str:
+    """Compute the SHA256 hash for an audit event in the tamper-evident chain.
+
+    Args:
+        previous_hash: The hash of the preceding record, or empty string for the first record.
+        event_payload: The event data to include in the hash computation.
+
+    Returns:
+        A lowercase hex-encoded SHA256 hash of the concatenation of previous_hash and
+        the JSON-serialized event payload.
+    """
     return hashlib.sha256((previous_hash + _payload(event_payload)).encode("utf-8")).hexdigest()
 
 
 def verify_chain(records: Iterable[Mapping[str, Any]]) -> bool:
+    """Verify the tamper-evident hash chain of audit records.
+
+    Args:
+        records: An iterable of audit record mappings, each containing 'event',
+            'previous_hash', and 'current_hash' keys.
+
+    Returns:
+        True if the chain is intact (every record's hash matches the computed hash
+        and previous_hash values form a continuous chain); False if any record
+        has been tampered with or the chain is broken.
+    """
     previous_hash = None
     for record in records:
         event = record["event"]
