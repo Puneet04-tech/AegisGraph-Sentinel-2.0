@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 import threading
-import hashlib
+import uuid
 
 
 @dataclass
@@ -67,7 +67,7 @@ class ComplianceDriftDetector:
         """
         with self._lock:
             snapshot = BaselineSnapshot(
-                snapshot_id=hashlib.md5(f"{name}{datetime.now(timezone.utc)}".encode()).hexdigest()[:16],
+                snapshot_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{name}:{datetime.now(timezone.utc).isoformat()}")),
                 controls_state={k: v.copy() for k, v in self.store.controls.items()},
                 policies_state={k: v.copy() for k, v in self.store.policies.items()},
                 mappings_state={k: v.copy() for k, v in self.store.control_mappings.items()},
@@ -92,19 +92,26 @@ class ComplianceDriftDetector:
         if not baseline:
             return []
         
-        drift_events = []
         current_time = datetime.now(timezone.utc)
+
+        # Snapshot store state under lock to prevent concurrent iteration crash
+        with self._lock:
+            controls_snapshot = dict(self.store.controls)
+            policies_snapshot = dict(self.store.policies)
+            mappings_snapshot = dict(self.store.control_mappings)
+
+        drift_events = []
         
         # Detect control drift
-        control_drift = self._detect_control_drift(baseline, current_time)
+        control_drift = self._detect_control_drift(baseline, current_time, controls_snapshot)
         drift_events.extend(control_drift)
         
         # Detect policy drift
-        policy_drift = self._detect_policy_drift(baseline, current_time)
+        policy_drift = self._detect_policy_drift(baseline, current_time, policies_snapshot)
         drift_events.extend(policy_drift)
         
         # Detect mapping drift
-        mapping_drift = self._detect_mapping_drift(baseline, current_time)
+        mapping_drift = self._detect_mapping_drift(baseline, current_time, mappings_snapshot)
         drift_events.extend(mapping_drift)
         
         # Store and notify
@@ -119,25 +126,27 @@ class ComplianceDriftDetector:
         
         return drift_events
 
-    def _detect_control_drift(self, baseline: BaselineSnapshot, current_time: datetime) -> List[DriftEvent]:
+    def _detect_control_drift(self, baseline: BaselineSnapshot, current_time: datetime, controls_snapshot: Dict[str, Any]) -> List[DriftEvent]:
         """Detect drift in control states.
         
         Args:
             baseline: Baseline snapshot
             current_time: Current timestamp
+            controls_snapshot: Thread-safe snapshot of current controls
             
         Returns:
             List of drift events
         """
         events = []
+        time_iso = current_time.isoformat()
         
         for ctrl_id, baseline_ctrl in baseline.controls_state.items():
-            current_ctrl = self.store.controls.get(ctrl_id)
+            current_ctrl = controls_snapshot.get(ctrl_id)
             
             if not current_ctrl:
                 # Control was removed
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{ctrl_id}:removed:{time_iso}")),
                     drift_type="CONTROL_REMOVED",
                     severity="CRITICAL",
                     description=f"Control {ctrl_id} has been removed",
@@ -163,7 +172,7 @@ class ComplianceDriftDetector:
                 severity = severity_map.get(current_status, "MEDIUM")
                 
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_status{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{ctrl_id}:status:{time_iso}")),
                     drift_type="CONTROL_STATUS_CHANGED",
                     severity=severity,
                     description=f"Control {ctrl_id} status changed from {baseline_status} to {current_status}",
@@ -182,7 +191,7 @@ class ComplianceDriftDetector:
             
             if baseline_eff and current_eff and baseline_eff != current_eff:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_effectiveness{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{ctrl_id}:effectiveness:{time_iso}")),
                     drift_type="CONTROL_EFFECTIVENESS_CHANGED",
                     severity="HIGH",
                     description=f"Control {ctrl_id} effectiveness changed from {baseline_eff} to {current_eff}",
@@ -194,40 +203,42 @@ class ComplianceDriftDetector:
                 events.append(event)
         
         # Check for new controls
-        for ctrl_id in self.store.controls:
+        for ctrl_id in controls_snapshot:
             if ctrl_id not in baseline.controls_state:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{ctrl_id}_new{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{ctrl_id}:new:{time_iso}")),
                     drift_type="NEW_CONTROL_ADDED",
                     severity="LOW",
                     description=f"New control {ctrl_id} has been added",
                     affected_entities=[ctrl_id],
                     previous_state={},
-                    current_state=self.store.controls[ctrl_id],
+                    current_state=controls_snapshot[ctrl_id],
                     recommended_actions=["Review new control mapping", "Update baseline"],
                 )
                 events.append(event)
         
         return events
 
-    def _detect_policy_drift(self, baseline: BaselineSnapshot, current_time: datetime) -> List[DriftEvent]:
+    def _detect_policy_drift(self, baseline: BaselineSnapshot, current_time: datetime, policies_snapshot: Dict[str, Any]) -> List[DriftEvent]:
         """Detect drift in policy states.
         
         Args:
             baseline: Baseline snapshot
             current_time: Current timestamp
+            policies_snapshot: Thread-safe snapshot of current policies
             
         Returns:
             List of drift events
         """
         events = []
+        time_iso = current_time.isoformat()
         
         for policy_id, baseline_policy in baseline.policies_state.items():
-            current_policy = self.store.policies.get(policy_id)
+            current_policy = policies_snapshot.get(policy_id)
             
             if not current_policy:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{policy_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{policy_id}:removed:{time_iso}")),
                     drift_type="POLICY_REMOVED",
                     severity="HIGH",
                     description=f"Policy {policy_id} has been removed",
@@ -242,7 +253,7 @@ class ComplianceDriftDetector:
             # Check for version changes
             if baseline_policy.get("version") != current_policy.get("version"):
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{policy_id}_version{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{policy_id}:version:{time_iso}")),
                     drift_type="POLICY_UPDATED",
                     severity="MEDIUM",
                     description=f"Policy {policy_id} updated from v{baseline_policy.get('version')} to v{current_policy.get('version')}",
@@ -255,23 +266,25 @@ class ComplianceDriftDetector:
         
         return events
 
-    def _detect_mapping_drift(self, baseline: BaselineSnapshot, current_time: datetime) -> List[DriftEvent]:
+    def _detect_mapping_drift(self, baseline: BaselineSnapshot, current_time: datetime, mappings_snapshot: Dict[str, Any]) -> List[DriftEvent]:
         """Detect drift in control-regulation mappings.
         
         Args:
             baseline: Baseline snapshot
             current_time: Current timestamp
+            mappings_snapshot: Thread-safe snapshot of current mappings
             
         Returns:
             List of drift events
         """
         events = []
+        time_iso = current_time.isoformat()
         
         # Check for removed mappings
         for mapping_id, baseline_mapping in baseline.mappings_state.items():
-            if mapping_id not in self.store.control_mappings:
+            if mapping_id not in mappings_snapshot:
                 event = DriftEvent(
-                    event_id=hashlib.md5(f"{mapping_id}_removed{current_time}".encode()).hexdigest()[:16],
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{mapping_id}:removed:{time_iso}")),
                     drift_type="MAPPING_REMOVED",
                     severity="MEDIUM",
                     description=f"Control mapping {mapping_id} has been removed",
