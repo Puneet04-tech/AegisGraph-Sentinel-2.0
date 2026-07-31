@@ -211,7 +211,11 @@ class AlertCorrelationEngine:
         return False
     
     def get_dashboard(self) -> Dict[str, Any]:
-        """Get alert dashboard"""
+        """Get alert correlation dashboard statistics.
+
+        Returns:
+            A dictionary with alert counts by status, severity, and source.
+        """
         status_counts: Dict[str, int] = {}
         severity_counts: Dict[str, int] = {}
         source_counts: Dict[str, int] = {}
