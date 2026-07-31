@@ -23,7 +23,7 @@ __all__ = ['KnowledgeEngine', 'KnowledgeGraphManager', 'KnowledgeRetrievalEngine
 class KnowledgeEngine:
     """Main knowledge engine."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.entries: Dict[str, KnowledgeEntry] = {}
         self.graphs: Dict[str, KnowledgeGraph] = {}
         self._initialize_default_knowledge()
