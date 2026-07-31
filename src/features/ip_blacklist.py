@@ -28,6 +28,8 @@ def _parse_ip(ip_str: str):
 
     Returns None when the string is not a valid IP address.
     """
+    if not isinstance(ip_str, str):
+        return None
     if not ip_str:
         return None
     ip_str = ip_str.strip()
@@ -70,7 +72,7 @@ def is_ip_blacklisted(ip_str: str) -> bool:
 
 def is_location_blacklisted(location_str: str) -> bool:
     """Check if the transaction location contains blacklisted countries/codes."""
-    if not location_str:
+    if not location_str or not isinstance(location_str, str):
         return False
     
     upper_loc = location_str.upper()
