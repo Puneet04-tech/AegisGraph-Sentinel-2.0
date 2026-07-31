@@ -77,20 +77,28 @@ class KeystrokeDynamicsAnalyzer:
     ) -> Dict[str, float]:
         """
         Extract keystroke dynamics features
-        
+
         Args:
             keystroke_sequence: Sequence of keystroke events
-        
+
         Returns:
             Dictionary of extracted features
+
+        Note: Hold times are clipped at median + 3*std to prevent single
+        tab-switch gaps from inflating the stress score (issue #2589).
         """
         events = keystroke_sequence.events
-        
+
         if len(events) < 2:
             return self._empty_features()
-        
+
         # Extract timing features
         hold_times = [e.release_time - e.press_time for e in events]
+
+        # Apply outlier clipping to hold_times
+        # Prevents a single tab-switch gap (30+ seconds) from inflating mean
+        hold_times = self._clip_outliers(hold_times)
+
         press_times = [e.press_time for e in events]
         flight_times = [
             events[i+1].press_time - events[i].release_time
@@ -272,12 +280,42 @@ class KeystrokeDynamicsAnalyzer:
         """
         if len(flight_times) < 2:
             return 0.5
-        
+
         cv = _safe_float(variation(flight_times))
         # Map CV to consistency score (lower CV = higher consistency)
         consistency = 1.0 / (1.0 + cv)
         return _safe_float(consistency, 0.5)
-    
+
+    def _clip_outliers(self, values: List[float], num_std: float = 3.0) -> List[float]:
+        """
+        Clip outliers using median-based bounds.
+
+        Prevents a single tab-switch gap (30,000+ ms hold time) from inflating
+        the mean and triggering false fraud blocks. Uses median + num_std * std
+        as the upper bound.
+
+        Args:
+            values: List of timing values (in seconds)
+            num_std: Number of standard deviations for outlier threshold
+
+        Returns:
+            Clipped list of values
+        """
+        if len(values) < 3:
+            return values
+
+        arr = np.array(values)
+        median = np.median(arr)
+        std = np.std(arr)
+
+        # Upper bound: median + num_std * std
+        upper_bound = median + num_std * std
+
+        # Clip all values to [0, upper_bound]
+        clipped = np.clip(arr, 0, upper_bound)
+
+        return clipped.tolist()
+
     def _empty_features(self) -> Dict[str, float]:
         """Return empty feature dict"""
         return {
