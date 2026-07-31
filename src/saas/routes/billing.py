@@ -9,11 +9,19 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from src.exceptions import BillingError
-from src.saas.services.billing import PLANS, PriceTier, billing_service
+from src.saas.services.billing import (
+    PLANS,
+    PriceTier,
+    billing_service,
+    UsageMeteringService,
+)
 from src.saas.routes.auth import get_current_user
 from src.saas.routes.organizations import _require_org_access
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
+
+# Initialize usage metering service
+usage_metering_service = UsageMeteringService(billing_service)
 
 
 class SubscriptionResponse(BaseModel):
@@ -59,6 +67,26 @@ class UsageResponse(BaseModel):
     usage_percentage: float
 
 
+def _get_customer_id(organization_id: str) -> str:
+    """Resolve Stripe customer ID from organization.
+
+    In a full implementation this would query a mapping table.
+    For now, returns a deterministic customer ID derived from the org ID.
+    """
+    return f"cus_{organization_id}"
+
+
+def _ensure_stripe_configured() -> None:
+    """Raise 503 if Stripe is not properly configured."""
+    try:
+        billing_service._check_stripe()
+    except BillingError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Billing service unavailable: Stripe is not configured",
+        )
+
+
 @router.get("/plans", response_model=List[PlanResponse])
 async def list_plans():
     """List available subscription plans"""
@@ -79,20 +107,30 @@ async def list_plans():
 @router.get("/subscription", response_model=SubscriptionResponse)
 async def get_subscription(
     organization_id: str,
+    subscription_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Get current subscription"""
+    """Get current subscription details from Stripe"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    try:
+        sub = billing_service.get_subscription(subscription_id)
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return SubscriptionResponse(
-        id="sub_123",
-        tier="professional",
-        status="active",
-        billing_cycle="monthly",
-        current_period_start=datetime.now(timezone.utc),
-        current_period_end=datetime.now(timezone.utc),
+        id=sub["id"],
+        tier=sub.get("tier", "professional"),
+        status=sub["status"],
+        billing_cycle=sub.get("billing_cycle", "monthly"),
+        current_period_start=sub["current_period_start"],
+        current_period_end=sub["current_period_end"],
         trial_ends_at=None,
-        cancel_at_period_end=False,
+        cancel_at_period_end=sub.get("cancel_at_period_end", False),
     )
 
 
@@ -101,63 +139,123 @@ async def create_subscription(
     organization_id: str,
     tier: PriceTier,
     billing_cycle: str = "monthly",
+    trial_days: int = 14,
     current_user: dict = Depends(get_current_user),
 ):
-    """Create new subscription"""
+    """Create new subscription via Stripe"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    customer_id = _get_customer_id(organization_id)
+
+    try:
+        result = billing_service.create_subscription(
+            customer_id=customer_id,
+            tier=tier,
+            billing_cycle=billing_cycle,
+            trial_days=trial_days,
+            metadata={"organization_id": organization_id},
+        )
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return {
-        "subscription_id": f"sub_{datetime.now(timezone.utc).timestamp()}",
+        "subscription_id": result["subscription_id"],
         "tier": tier.value,
-        "status": "active",
-        "checkout_url": "https://checkout.stripe.com/...",
+        "status": result["status"],
+        "current_period_start": result["current_period_start"],
+        "current_period_end": result["current_period_end"],
+        "trial_end": result.get("trial_end"),
     }
 
 
 @router.patch("/subscription")
 async def update_subscription(
     organization_id: str,
+    subscription_id: str,
     tier: Optional[PriceTier] = None,
     billing_cycle: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Update subscription (upgrade/downgrade)"""
+    """Update subscription (upgrade/downgrade) via Stripe"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    try:
+        result = billing_service.update_subscription(
+            subscription_id=subscription_id,
+            new_tier=tier,
+            billing_cycle=billing_cycle,
+        )
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return {
-        "success": True,
-        "subscription_id": "sub_123",
-        "new_tier": tier.value if tier else "professional",
+        "success": result.get("updated", True),
+        "subscription_id": result["subscription_id"],
+        "new_tier": tier.value if tier else None,
     }
 
 
 @router.post("/subscription/cancel")
 async def cancel_subscription(
     organization_id: str,
+    subscription_id: str,
     cancel_at_period_end: bool = True,
     reason: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Cancel subscription"""
+    """Cancel subscription via Stripe"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    try:
+        result = billing_service.cancel_subscription(
+            subscription_id=subscription_id,
+            cancel_at_period_end=cancel_at_period_end,
+            reason=reason,
+        )
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return {
-        "success": True,
-        "subscription_id": "sub_123",
+        "success": result.get("canceled", True),
+        "subscription_id": result["subscription_id"],
         "cancel_at_period_end": cancel_at_period_end,
-        "effective_date": datetime.now(timezone.utc),
+        "effective_date": result.get("effective_date"),
     }
 
 
 @router.post("/subscription/resume")
 async def resume_subscription(
     organization_id: str,
+    subscription_id: str,
     current_user: dict = Depends(get_current_user),
 ):
     """Resume canceled subscription"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
-    return {"success": True}
+    try:
+        result = billing_service.update_subscription(
+            subscription_id=subscription_id,
+        )
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
+
+    return {"success": True, "subscription_id": result["subscription_id"]}
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
@@ -166,21 +264,33 @@ async def list_invoices(
     limit: int = 10,
     current_user: dict = Depends(get_current_user),
 ):
-    """List invoices"""
+    """List invoices from Stripe"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    customer_id = _get_customer_id(organization_id)
+
+    try:
+        invoices = billing_service.get_invoices(customer_id, limit=limit)
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return [
         InvoiceResponse(
-            id="inv_1",
-            number="INV-2024-001",
-            status="paid",
-            amount=49900,
-            currency="usd",
-            period_start=datetime.now(timezone.utc),
-            period_end=datetime.now(timezone.utc),
-            pdf_url="https://...",
-            paid_at=datetime.now(timezone.utc),
+            id=inv["id"],
+            number=inv.get("number", ""),
+            status=inv["status"],
+            amount=inv.get("amount_due", 0),
+            currency=inv.get("currency", "usd"),
+            period_start=inv.get("created", datetime.now(timezone.utc)),
+            period_end=inv.get("created", datetime.now(timezone.utc)),
+            pdf_url=inv.get("pdf_url"),
+            paid_at=inv.get("created") if inv["status"] == "paid" else None,
         )
+        for inv in invoices
     ]
 
 
@@ -192,36 +302,76 @@ async def get_invoice(
 ):
     """Get invoice details"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
+    customer_id = _get_customer_id(organization_id)
+
+    try:
+        invoices = billing_service.get_invoices(customer_id, limit=100)
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
+
+    matching = [inv for inv in invoices if inv["id"] == invoice_id]
+    if not matching:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice {invoice_id} not found",
+        )
+
+    inv = matching[0]
     return InvoiceResponse(
-        id=invoice_id,
-        number="INV-2024-001",
-        status="paid",
-        amount=49900,
-        currency="usd",
-        period_start=datetime.now(timezone.utc),
-        period_end=datetime.now(timezone.utc),
-        pdf_url="https://...",
-        paid_at=datetime.now(timezone.utc),
+        id=inv["id"],
+        number=inv.get("number", ""),
+        status=inv["status"],
+        amount=inv.get("amount_due", 0),
+        currency=inv.get("currency", "usd"),
+        period_start=inv.get("created", datetime.now(timezone.utc)),
+        period_end=inv.get("created", datetime.now(timezone.utc)),
+        pdf_url=inv.get("pdf_url"),
+        paid_at=inv.get("created") if inv["status"] == "paid" else None,
     )
 
 
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(
     organization_id: str,
+    plan: PriceTier = PriceTier.PROFESSIONAL,
     current_user: dict = Depends(get_current_user),
 ):
-    """Get usage metrics"""
+    """Get usage metrics from UsageMeteringService"""
     _require_org_access(organization_id, current_user)
 
+    api_limit_check = usage_metering_service.check_limit(
+        organization_id=organization_id,
+        limit_type="api_calls_per_month",
+        current_usage=0,
+        plan=plan,
+    )
+
+    storage_limit_check = usage_metering_service.check_limit(
+        organization_id=organization_id,
+        limit_type="storage_gb",
+        current_usage=0,
+        plan=plan,
+    )
+
+    max_api = api_limit_check.get("limit") or -1
+    max_storage = storage_limit_check.get("limit") or -1
+
+    now = datetime.now(timezone.utc)
+    period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     return UsageResponse(
-        api_calls_this_period=75000,
-        max_api_calls=100000,
-        storage_used_gb=45.2,
-        max_storage_gb=100,
-        period_start=datetime.now(timezone.utc),
-        period_end=datetime.now(timezone.utc),
-        usage_percentage=75.0,
+        api_calls_this_period=api_limit_check["current_usage"],
+        max_api_calls=max_api,
+        storage_used_gb=float(storage_limit_check["current_usage"]),
+        max_storage_gb=max_storage,
+        period_start=period_start,
+        period_end=now,
+        usage_percentage=api_limit_check.get("percentage", 0.0),
     )
 
 
@@ -235,15 +385,9 @@ async def get_daily_usage(
     _require_org_access(organization_id, current_user)
 
     return {
-        "daily_usage": [
-            {
-                "date": datetime.now(timezone.utc).isoformat(),
-                "api_calls": 2500,
-                "storage_gb": 45.2,
-            }
-        ],
-        "total_api_calls": 75000,
-        "avg_daily_calls": 2500,
+        "daily_usage": [],
+        "total_api_calls": 0,
+        "avg_daily_calls": 0,
     }
 
 
@@ -252,14 +396,33 @@ async def create_checkout_session(
     organization_id: str,
     tier: PriceTier,
     billing_cycle: str = "monthly",
+    success_url: str = "https://app.aegisgraph.com/billing/success",
+    cancel_url: str = "https://app.aegisgraph.com/billing/cancel",
     current_user: dict = Depends(get_current_user),
 ):
     """Create Stripe checkout session"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
+
+    customer_id = _get_customer_id(organization_id)
+
+    try:
+        checkout_url = billing_service.create_checkout_session(
+            customer_id=customer_id,
+            tier=tier,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            billing_cycle=billing_cycle,
+        )
+    except BillingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
 
     return {
-        "checkout_url": "https://checkout.stripe.com/...",
-        "session_id": "cs_123",
+        "checkout_url": checkout_url,
+        "session_id": None,
     }
 
 
@@ -270,9 +433,11 @@ async def create_customer_portal(
 ):
     """Create Stripe customer portal session"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
     return {
-        "portal_url": "https://billing.stripe.com/...",
+        "portal_url": None,
+        "message": "Customer portal requires Stripe portal configuration",
     }
 
 
@@ -305,20 +470,9 @@ async def list_payment_methods(
 ):
     """List saved payment methods"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
-    return {
-        "payment_methods": [
-            {
-                "id": "pm_1",
-                "type": "card",
-                "brand": "visa",
-                "last4": "4242",
-                "exp_month": 12,
-                "exp_year": 2025,
-                "is_default": True,
-            }
-        ]
-    }
+    return {"payment_methods": []}
 
 
 @router.post("/payment-methods")
@@ -329,6 +483,7 @@ async def add_payment_method(
 ):
     """Add payment method"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
     return {"success": True, "payment_method_id": payment_method_id}
 
@@ -341,5 +496,6 @@ async def remove_payment_method(
 ):
     """Remove payment method"""
     _require_org_access(organization_id, current_user)
+    _ensure_stripe_configured()
 
     return {"success": True}
