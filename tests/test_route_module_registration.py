@@ -36,6 +36,10 @@ MAIN = API_DIR / "main.py"
 # serve anything. Those three are also the ones with no per-route auth, so the
 # import should not be corrected without adding the missing dependencies.
 KNOWN_UNMOUNTED = {
+    # Bulk ingestion remains an internal worker only; PR #2266 unmounts its
+    # public endpoints because their previous route-level authorization was
+    # unsafe.
+    "bulk_ingest_routes.py",
     "compliance_routes.py",
     "defense_routes.py",
     "digital_twin_routes.py",
@@ -72,7 +76,6 @@ def test_route_modules_are_discovered():
 
 def test_every_route_module_is_mounted_or_listed():
     unmounted = set(_route_modules()) - _mounted_modules()
-
     unexpected = sorted(unmounted - KNOWN_UNMOUNTED)
     assert not unexpected, (
         "These route modules are not imported by src/api/main.py, so their "
@@ -83,7 +86,6 @@ def test_every_route_module_is_mounted_or_listed():
 
 def test_known_unmounted_list_has_no_stale_entries():
     unmounted = set(_route_modules()) - _mounted_modules()
-
     stale = sorted(KNOWN_UNMOUNTED - unmounted)
     assert not stale, (
         f"These modules are listed as unmounted but are no longer: {stale}. "
