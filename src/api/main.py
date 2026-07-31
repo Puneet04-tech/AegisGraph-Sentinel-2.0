@@ -1999,11 +1999,24 @@ async def check_transaction(
     Returns risk score, decision (ALLOW/REVIEW/BLOCK), and explanation.
     """
     start_time = time.time()
-    
+
     try:
         # Prepare transaction data
         transaction = request.model_dump()
-        
+
+        # Prevent fraud cache bypass (issue #2586)
+        # Reject duplicate transaction IDs to prevent replay attacks
+        from .fraud_cache_security import get_fraud_cache
+        fraud_cache = get_fraud_cache()
+
+        if fraud_cache.is_duplicate_transaction(request.transaction_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate transaction_id: {request.transaction_id}. "
+                       "Each transaction must have a unique ID assigned by the issuing bank. "
+                       "Replay attacks are not permitted."
+            )
+
         # Check IP/location blacklist
         from src.features.ip_blacklist import check_blacklist
         behavioral_stress_detected = False
