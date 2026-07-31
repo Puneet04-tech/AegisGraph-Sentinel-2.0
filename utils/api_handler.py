@@ -238,6 +238,12 @@ def validate_api_response(response: Dict, required_fields: list) -> bool:
     if not isinstance(response, dict):
         raise APIError(f"API response is not a dictionary: {type(response)}")
 
+    # Accept a single field name given as a string and tolerate None/empty.
+    if required_fields is None:
+        required_fields = []
+    elif isinstance(required_fields, str):
+        required_fields = [required_fields]
+
     missing_fields = [f for f in required_fields if f not in response]
     if missing_fields:
         raise APIError(f"API response missing required fields: {missing_fields}")
