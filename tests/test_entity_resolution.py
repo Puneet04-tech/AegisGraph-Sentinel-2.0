@@ -592,6 +592,23 @@ class TestRiskPropagator:
         result = propagator.propagate_risk(e1.id)
         assert result.source_entity_id == e1.id
         assert result.original_risk_score == 0.95
+
+    def test_update_entity_risk_no_double_counting(self, propagator):
+        """Test that update_entity_risk propagates the updated risk score without double-counting delta."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="ACC_REGR_1", risk_score=0.5)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="ACC_REGR_2", risk_score=0.1)
+        propagator._store.store_entity(e1)
+        propagator._store.store_entity(e2)
+        propagator._store.store_relationship(
+            EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=1.0)
+        )
+
+        propagator.update_entity_risk(e1.id, 0.9)
+        result = propagator.propagate_risk(e1.id)
+
+        # original_risk_score should equal 0.9, NOT 1.3 (0.9 + 0.4 double counting)
+        assert result.original_risk_score == 0.9
+
     
     def test_propagate_risk_bidirectional(self, propagator):
         """Test bidirectional risk propagation."""

@@ -122,6 +122,8 @@ class RiskPropagator:
             )
 
         base_risk = source_entity.risk_score + additional_risk
+
+
         propagated: Dict[str, float] = {}
         visited: Set[str] = {source_entity_id}
         current_depth = 0
@@ -386,7 +388,8 @@ class RiskPropagator:
 
         # Propagate if risk increased significantly
         if new_risk > old_risk + 0.2:
-            self.propagate_risk(entity_id, new_risk - old_risk)
+            self.propagate_risk(entity_id)
+
 
         logger.info(f"Updated entity {entity_id} risk from {old_risk:.2f} to {new_risk:.2f}")
         return True
