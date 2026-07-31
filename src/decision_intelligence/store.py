@@ -5,7 +5,7 @@ Autonomous Security Decision Engine Store - Thread-safe storage
 from __future__ import annotations
 
 from threading import Lock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import (
     SecurityRecommendation,

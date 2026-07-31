@@ -1,5 +1,8 @@
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .validators import ValidationReport
 
 logger = logging.getLogger(__name__)
 
