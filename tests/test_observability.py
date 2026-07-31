@@ -175,6 +175,83 @@ class TestPerformanceTracker:
         assert "overall_health" in summary
         assert "components" in summary
 
+    def test_get_throughput_stats_empty(self, performance_tracker):
+        """Throughput is zero when no metrics exist."""
+        stats = performance_tracker.get_throughput_stats("empty_component")
+
+        assert stats["requests_last_hour"] == 0
+        assert stats["avg_per_second"] == 0
+
+    def test_get_throughput_stats_sums_recent_requests(self, performance_tracker):
+        """Throughput sums request values within the last hour."""
+        performance_tracker.record_throughput(component="api", count=100)
+        performance_tracker.record_throughput(component="api", count=200)
+
+        stats = performance_tracker.get_throughput_stats("api")
+
+        assert stats["requests_last_hour"] == 300
+        assert stats["avg_per_second"] == pytest.approx(300 / 3600)
+
+    def test_get_throughput_stats_is_component_scoped(self, performance_tracker):
+        """Requests recorded for one component do not leak into another."""
+        performance_tracker.record_throughput(component="api", count=100)
+        performance_tracker.record_throughput(component="worker", count=900)
+
+        stats = performance_tracker.get_throughput_stats("api")
+
+        assert stats["requests_last_hour"] == 100
+
+    def test_get_latency_stats_exact_percentiles(self, performance_tracker):
+        """Percentiles are computed from sorted values."""
+        for i in range(100):
+            performance_tracker.record_request_latency(
+                component="api", endpoint="/v1/score", latency_ms=float(i)
+            )
+
+        stats = performance_tracker.get_latency_stats("api")
+
+        assert stats["count"] == 100
+        assert stats["min"] == 0
+        assert stats["max"] == 99
+        assert stats["avg"] == pytest.approx(49.5)
+        assert stats["p50"] == 50
+        assert stats["p95"] == 95
+        assert stats["p99"] == 99
+
+    def test_get_latency_stats_no_metrics(self, performance_tracker):
+        """Latency stats report an error when no metrics exist."""
+        stats = performance_tracker.get_latency_stats("empty_component")
+        assert "error" in stats
+
+    def test_record_metric_stores_tags(self, performance_tracker):
+        """Tags recorded with a metric are retrievable through get_metrics."""
+        performance_tracker.record_metric(
+            metric_name="latency_ms",
+            component="api",
+            value=12.5,
+            unit="ms",
+            tags={"endpoint": "/v1/score", "region": "ap-south"},
+        )
+
+        metrics = performance_tracker.get_metrics(component="api", metric_name="latency_ms")
+        assert len(metrics) == 1
+        assert metrics[0].tags["endpoint"] == "/v1/score"
+        assert metrics[0].tags["region"] == "ap-south"
+
+    def test_get_metrics_honors_limit(self, performance_tracker):
+        """get_metrics limits the number of returned records."""
+        for i in range(25):
+            performance_tracker.record_metric(
+                metric_name="latency_ms",
+                component="api",
+                value=float(i),
+                unit="ms",
+            )
+
+        metrics = performance_tracker.get_metrics(component="api", limit=10)
+
+        assert len(metrics) == 10
+
     def test_get_error_rate_no_metrics(self, performance_tracker):
         """Error rate is zero when no metrics recorded."""
         stats = performance_tracker.get_error_rate("empty_component")
