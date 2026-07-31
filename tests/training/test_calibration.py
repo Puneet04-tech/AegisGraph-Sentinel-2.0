@@ -76,7 +76,7 @@ if TORCH_AVAILABLE:
             return buffer.getvalue()
 
         def decrypt_checkpoint(self, data):
-            return torch.load(io.BytesIO(data), weights_only=False)
+            return torch.load(io.BytesIO(data), weights_only=True)
 
 
 def _synthetic_data(n=4000, seed=0):
