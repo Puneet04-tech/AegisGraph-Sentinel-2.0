@@ -152,15 +152,17 @@ def _bypass_api_key_for_legacy_tests(
             else:
                 app.dependency_overrides[fn] = saved
 
-@pytest.fixture(autouse=True)
-def _reset_global_rate_limiter():
-    """Reset rate limits before each test."""
+def _reset_rate_limit_state() -> None:
+    """Clear all process-wide rate-limit state used by the API test client."""
     from src.api.validators import reset_rate_limiter
     reset_rate_limiter()
 
-    # Clear slowapi's storage to prevent 429s across test execution
+    # SlowAPI keeps its fixed-window counters separately from the validator
+    # limiter.  Reset both public and implementation-level storage paths so
+    # this remains compatible with supported SlowAPI/limits versions.
     from src.api.main import limiter
     storages = (
+        getattr(limiter, "storage", None),
         getattr(limiter, "_storage", None),
         getattr(getattr(limiter, "limiter", None), "storage", None),
     )
@@ -168,6 +170,14 @@ def _reset_global_rate_limiter():
         reset = getattr(storage, "reset", None)
         if callable(reset):
             reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_rate_limiter() -> Iterator[None]:
+    """Isolate process-wide rate-limit state on both sides of every test."""
+    _reset_rate_limit_state()
+    yield
+    _reset_rate_limit_state()
 
 
 @pytest.fixture

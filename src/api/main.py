@@ -1718,15 +1718,11 @@ API_LATENCY = REGISTRY._names_to_collectors.get("aegis_api_latency_seconds") or 
     "API request latency in seconds",
     ["endpoint"]
 )
+_UNMATCHED_METRICS_ENDPOINT = "__unmatched__"
 ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") or Gauge(
     "aegis_active_honeypots",
     "Number of currently active honeypots"
 )
-
-# Label used when no route matched, so unrouted paths share one series instead
-# of adding a new one each.
-UNMATCHED_ENDPOINT_LABEL = "unmatched"
-
 
 def _metric_endpoint_label(request: Request) -> str:
     """Return the route template for a request, never the raw path.
@@ -1735,7 +1731,7 @@ def _metric_endpoint_label(request: Request) -> str:
     series, so any caller can grow the registry without bound.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or UNMATCHED_ENDPOINT_LABEL
+    return getattr(route, "path", None) or _UNMATCHED_METRICS_ENDPOINT
 
 
 @app.middleware("http")
@@ -2826,7 +2822,7 @@ async def assess_mule_risk(
     tags=["Administration"],
     summary="List active honeypot traps",
     description="Innovation 2: View all active deceptive containment operations",
-    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def list_active_honeypots(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
@@ -2880,7 +2876,7 @@ async def list_active_honeypots(
     tags=["Administration"],
     summary="Get honeypot system statistics",
     description="Innovation 2: View performance metrics including arrest rate and recovery amount",
-    dependencies=[Depends(require_firebaseauth), Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def get_honeypot_stats(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
