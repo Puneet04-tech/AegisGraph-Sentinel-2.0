@@ -78,7 +78,8 @@ class RiskPropagationEngine:
             return []
 
         propagations: List[RiskPropagation] = []
-        visited: Set[str] = {source_entity_id}
+        best_risk: Dict[str, float] = {source_entity_id: source.risk_score}
+        records_by_target: Dict[str, RiskPropagation] = {}
         queue = deque([(source_entity_id, source.risk_score, 1.0, [source_entity_id])])
 
         while queue:
@@ -92,7 +93,7 @@ class RiskPropagationEngine:
             for edge in edges:
                 target_id = edge.target_id if edge.source_id == current_id else edge.source_id
 
-                if target_id in visited:
+                if target_id == source_entity_id:
                     continue
 
                 # Calculate propagated risk
@@ -104,23 +105,36 @@ class RiskPropagationEngine:
                 if propagation_strength < self._config.min_propagation_strength:
                     continue
 
-                visited.add(target_id)
+                # A target already reached through a weaker path can still be
+                # reached through a stronger one; only propagate the maximum.
+                if propagated_risk <= best_risk.get(target_id, -1.0):
+                    continue
+                best_risk[target_id] = propagated_risk
+
                 new_path = path + [target_id]
 
-                # Create propagation record
-                propagation = RiskPropagation(
-                    propagation_id=str(uuid.uuid4()),
-                    source_entity_id=source_entity_id,
-                    target_entity_id=target_id,
-                    propagation_path=new_path,
-                    risk_score=propagated_risk,
-                    propagation_strength=propagation_strength,
-                    hop_count=hop_count,
-                    risk_factors=self._identify_risk_factors(current_id, target_id, edge),
-                    calculated_at=datetime.now(timezone.utc),
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-                )
-                propagations.append(propagation)
+                if target_id in records_by_target:
+                    record = records_by_target[target_id]
+                    record.risk_score = propagated_risk
+                    record.propagation_strength = propagation_strength
+                    record.propagation_path = new_path
+                    record.hop_count = hop_count
+                    record.risk_factors = self._identify_risk_factors(current_id, target_id, edge)
+                else:
+                    record = RiskPropagation(
+                        propagation_id=str(uuid.uuid4()),
+                        source_entity_id=source_entity_id,
+                        target_entity_id=target_id,
+                        propagation_path=new_path,
+                        risk_score=propagated_risk,
+                        propagation_strength=propagation_strength,
+                        hop_count=hop_count,
+                        risk_factors=self._identify_risk_factors(current_id, target_id, edge),
+                        calculated_at=datetime.now(timezone.utc),
+                        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                    )
+                    records_by_target[target_id] = record
+                    propagations.append(record)
 
                 # Update entity risk score
                 target = self._store.get_entity(target_id)
@@ -128,7 +142,7 @@ class RiskPropagationEngine:
                     target.risk_score = max(target.risk_score, propagated_risk)
                     self._store.store_entity(target)
 
-                # Continue propagation
+                # Continue propagation through the strongest path
                 queue.append((target_id, propagated_risk, propagation_strength, new_path))
 
         # Cache results
