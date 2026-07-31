@@ -175,6 +175,65 @@ class TestPerformanceTracker:
         assert "overall_health" in summary
         assert "components" in summary
 
+    def test_get_error_rate_no_metrics(self, performance_tracker):
+        """Error rate is zero when no metrics recorded."""
+        stats = performance_tracker.get_error_rate("empty_component")
+
+        assert stats["total_requests"] == 0
+        assert stats["errors"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_single_batch(self, performance_tracker):
+        """Error rate uses summed request values, not record counts."""
+        performance_tracker.record_throughput(component="api", count=1000)
+        performance_tracker.record_errors(component="api", count=50)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 1000
+        assert stats["errors"] == 50
+        assert stats["error_rate_percent"] == 5.0
+
+    def test_get_error_rate_multiple_batches(self, performance_tracker):
+        """Error rate sums requests across multiple throughput records."""
+        performance_tracker.record_throughput(component="api", count=400)
+        performance_tracker.record_throughput(component="api", count=600)
+        performance_tracker.record_errors(component="api", count=20)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 1000
+        assert stats["error_rate_percent"] == 2.0
+
+    def test_get_error_rate_no_errors(self, performance_tracker):
+        """Error rate is zero when requests succeed."""
+        performance_tracker.record_throughput(component="api", count=500)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["errors"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_errors_without_requests(self, performance_tracker):
+        """Error rate is zero when there are no request metrics."""
+        performance_tracker.record_errors(component="api", count=10)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_component_isolation(self, performance_tracker):
+        """Errors in one component do not affect another component's rate."""
+        performance_tracker.record_throughput(component="api", count=1000)
+        performance_tracker.record_errors(component="api", count=10)
+        performance_tracker.record_errors(component="worker", count=900)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["errors"] == 10
+        assert stats["error_rate_percent"] == 1.0
+
 
 # =============================================================================
 # Alert Manager Tests
