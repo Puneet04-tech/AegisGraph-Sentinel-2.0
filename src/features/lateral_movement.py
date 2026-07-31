@@ -284,11 +284,16 @@ class LateralMovementDetector:
                 history = list(history_deque)
 
         # 2. Evaluate Triggers
+        # The current sample must not be part of its own baseline, otherwise a
+        # genuine spike inflates the mean and the detection threshold, masking
+        # the anomaly it is supposed to surface. Compare against the previous
+        # history only.
         if len(history) < 3:
             return 0.0, False
 
-        baseline_mean = np.mean(history)
-        baseline_std = np.std(history)
+        baseline = history[:-1]
+        baseline_mean = np.mean(baseline)
+        baseline_std = np.std(baseline)
 
         threshold = baseline_mean + (self.std_multiplier * baseline_std)
         std_trigger = current_score > threshold
