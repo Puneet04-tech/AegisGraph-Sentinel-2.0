@@ -202,12 +202,14 @@ class FederatedSearchEngine:
                 continue
 
             # Request intelligence from partner (simulated)
-            partner_query = {
+            partner_query: Dict[str, Any] = {
                 "query": query.query_text,
-                "entity_type": [e.value for e in query.entity_types] if query.entity_types else None,
-                "threat_levels": [t.value for t in query.threat_levels] if query.threat_levels else None,
                 "max_results": query.max_results_per_source,
             }
+            if query.entity_types:
+                partner_query["entity_type"] = [e.value for e in query.entity_types]
+            if query.threat_levels:
+                partner_query["threat_levels"] = [t.value for t in query.threat_levels]
 
             # Get matching entities from partner's shared data
             partner_entities = self._federation.request_intelligence(
