@@ -8,7 +8,7 @@ from .store import get_reporting_store, ReportingStore
 class ReportingService:
     """Core reporting service."""
 
-    def __init__(self, store: Optional[ReportingStore] = None):
+    def __init__(self, store: Optional[ReportingStore] = None) -> None:
         self._store = store or get_reporting_store()
 
     def create_report(self, title: str, report_type: str, content: Dict[str, Any]) -> Report:
@@ -38,6 +38,7 @@ _service: Optional[ReportingService] = None
 
 
 def get_reporting_service() -> ReportingService:
+    """Get or create the singleton ReportingService instance."""
     global _service
     if _service is None:
         _service = ReportingService()
