@@ -2,7 +2,7 @@
 
 Thread-safe in-memory storage for adversary profiles, campaigns, and results.
 """
-from typing import Dict
+from typing import Dict, Optional
 from threading import Lock
 from .models import AdversaryProfile, AttackCampaign, SimulationResult
 
