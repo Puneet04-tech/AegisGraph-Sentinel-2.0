@@ -99,6 +99,10 @@ class RiskPropagator:
     def propagate_risk(self, source_entity_id: str, additional_risk: float = 0.0) -> PropagationResult:
         """Propagate risk from a source entity to all connected entities.
 
+        Uses a max-propagated-risk dictionary instead of a binary visited set,
+        allowing re-propagation along higher-risk paths. Risk updates use a
+        damped probabilistic formula to prevent saturation at 1.0.
+
         Args:
             source_entity_id: ID of the source entity
             additional_risk: Additional risk to add (e.g., from a new transaction)
@@ -123,10 +127,13 @@ class RiskPropagator:
 
         base_risk = source_entity.risk_score + additional_risk
         propagated: Dict[str, float] = {}
-        visited: Set[str] = {source_entity_id}
+        # Track the maximum propagated risk that has reached each node
+        max_propagated_risk: Dict[str, float] = {source_entity_id: base_risk}
         current_depth = 0
 
-        # Queue for BFS propagation: (entity_id, current_risk, depth)
+        # Epsilon threshold: re-propagate only if new risk exceeds previous by this margin
+        epsilon = 0.01
+
         # Queue for BFS propagation: (entity_id, current_risk, depth)
         queue: deque[Tuple[str, float, int]] = deque([(source_entity_id, base_risk, 0)])
 
@@ -152,11 +159,6 @@ class RiskPropagator:
                 # Get connected entity
                 connected_id = rel.target_id if rel.source_id == current_id else rel.source_id
 
-                if connected_id in visited:
-                    continue
-
-                visited.add(connected_id)
-
                 # Get relationship type weight
                 rel_weight = self._config.propagation_weights.get(rel.relationship_type, 0.5)
 
@@ -166,18 +168,30 @@ class RiskPropagator:
                 # Apply confidence modifier
                 propagated_risk *= rel.confidence_score
 
-                if propagated_risk >= self._config.risk_threshold:
-                    propagated[connected_id] = propagated_risk
+                if propagated_risk < self._config.risk_threshold:
+                    continue
 
-                    # Update the entity's risk score (additive)
-                    connected_entity = self._store.get_entity(connected_id)
-                    if connected_entity:
-                        new_risk = min(connected_entity.risk_score + propagated_risk * 0.3, 1.0)
-                        connected_entity.update_risk_score(new_risk)
-                        self._store.store_entity(connected_entity)
+                # Only re-queue if this path delivers meaningfully higher risk
+                previous_max = max_propagated_risk.get(connected_id, 0.0)
+                if propagated_risk <= previous_max + epsilon:
+                    continue
 
-                    # Add to queue for further propagation
-                    queue.append((connected_id, propagated_risk, depth + 1))
+                max_propagated_risk[connected_id] = propagated_risk
+                propagated[connected_id] = propagated_risk
+
+                # Update the entity's risk score using damped probabilistic combination
+                # new_risk = 1 - (1 - current) * (1 - propagated * weight)
+                connected_entity = self._store.get_entity(connected_id)
+                if connected_entity:
+                    weight = 0.3
+                    current_entity_risk = connected_entity.risk_score
+                    new_risk = 1.0 - (1.0 - current_entity_risk) * (1.0 - propagated_risk * weight)
+                    new_risk = min(max(new_risk, 0.0), 1.0)
+                    connected_entity.update_risk_score(new_risk)
+                    self._store.store_entity(connected_entity)
+
+                # Add to queue for further propagation
+                queue.append((connected_id, propagated_risk, depth + 1))
 
         processing_time = (time.time() - start_time) * 1000
 
