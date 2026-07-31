@@ -17,20 +17,55 @@ BLACKLISTED_COUNTRIES = {
     "SUDAN", "SD"
 }
 
+def _parse_ip(ip_str: str):
+    """Parse an IP string into an ipaddress object.
+
+    Handles bare IPv4/IPv6 addresses as well as addresses carrying a port:
+    - ``192.0.2.5``
+    - ``192.0.2.5:8080``
+    - ``2001:db8::1``
+    - ``[2001:db8::1]:8080``
+
+    Returns None when the string is not a valid IP address.
+    """
+    if not ip_str:
+        return None
+    ip_str = ip_str.strip()
+    if not ip_str:
+        return None
+    # Bracketed IPv6 with optional port: [2001:db8::1] or [2001:db8::1]:8080
+    if ip_str.startswith("["):
+        close = ip_str.find("]")
+        if close == -1:
+            return None
+        try:
+            return ipaddress.ip_address(ip_str[1:close])
+        except ValueError:
+            return None
+    # Bare address first: covers IPv4 and full IPv6 addresses
+    try:
+        return ipaddress.ip_address(ip_str)
+    except ValueError:
+        pass
+    # IPv4 with a port suffix: exactly one colon separates host and port
+    if ip_str.count(":") == 1:
+        host, _, _ = ip_str.rpartition(":")
+        try:
+            return ipaddress.ip_address(host)
+        except ValueError:
+            return None
+    return None
+
+
 def is_ip_blacklisted(ip_str: str) -> bool:
     """Check if the given IP address is in the blacklisted subnets."""
-    if not ip_str:
-        return False
-    try:
-        # Strip port or whitespace if present
-        clean_ip = ip_str.split(":")[0].strip()
-        ip_obj = ipaddress.ip_address(clean_ip)
-        for subnet in BLACKLISTED_SUBNETS:
-            if ip_obj in subnet:
-                return True
-    except ValueError:
+    ip_obj = _parse_ip(ip_str)
+    if ip_obj is None:
         # Invalid IP address format
         return False
+    for subnet in BLACKLISTED_SUBNETS:
+        if ip_obj in subnet:
+            return True
     return False
 
 def is_location_blacklisted(location_str: str) -> bool:
