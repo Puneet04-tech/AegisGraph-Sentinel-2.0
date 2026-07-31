@@ -86,6 +86,32 @@ def test_escalate_case():
     assert escalation is not None
     assert escalation["reason"] == "Priority escalation"
 
+    updated_case = service.get_case(case["case_id"])
+    assert updated_case["current_state"] == "ESCALATED"
+    assert updated_case["status"] == "ESCALATED"
+
+def test_escalated_case_transition_lifecycle():
+    """Test lifecycle: NEW -> ASSIGNED -> IN_PROGRESS -> ESCALATED -> ASSIGNED."""
+    service = CaseWorkflowService()
+    case = service.create_case("Lifecycle Test", "Desc", workflow_id="wf-standard")
+    case_id = case["case_id"]
+
+    assert service.transition_case(case_id, "ASSIGNED") is not None
+    assert service.transition_case(case_id, "IN_PROGRESS") is not None
+
+    service.escalate_case(case_id, "senior@example.com", "High Risk")
+    escalated_case = service.get_case(case_id)
+    assert escalated_case["current_state"] == "ESCALATED"
+    assert escalated_case["status"] == "ESCALATED"
+
+
+    # Transition out of escalation (ESCALATED -> ASSIGNED)
+    reassigned_case = service.transition_case(case_id, "ASSIGNED")
+    assert reassigned_case is not None
+    assert reassigned_case["current_state"] == "ASSIGNED"
+    assert reassigned_case["status"] == "ASSIGNED"
+
+
 def test_get_sla_status():
     """Test getting SLA status"""
     service = CaseWorkflowService()
