@@ -1958,13 +1958,13 @@ def _analyze_keystrokes_sync(biometrics: dict) -> bool:
     try:
         hold_times = biometrics.get('hold_times', [])
         flight_times = biometrics.get('flight_times', [])
-        
+
         if hold_times and len(hold_times) > 1:
             hold_times_arr = np.array(hold_times)
             hold_cv = np.std(hold_times_arr) / np.mean(hold_times_arr)
             if hold_cv > 0.30:
                 behavioral_stress_detected = True
-        
+
         if flight_times and len(flight_times) > 1:
             flight_times_arr = np.array(flight_times)
             flight_cv = np.std(flight_times_arr) / np.mean(flight_times_arr)
@@ -1973,6 +1973,46 @@ def _analyze_keystrokes_sync(biometrics: dict) -> bool:
     except Exception as exc:
         _api_logger.debug("Keystroke stress analysis failed: %s", exc)
     return behavioral_stress_detected
+
+
+def _extract_client_ip(http_request: Request) -> str:
+    """
+    Extract the real client IP address from HTTP request.
+
+    Prevents attackers from spoofing trusted internal IPs (127.0.0.1, 10.0.0.1)
+    via the request body (issue #2588). Checks headers in order of preference:
+    1. X-Forwarded-For (most common in proxied environments)
+    2. CF-Connecting-IP (Cloudflare)
+    3. X-Real-IP (nginx reverse proxy)
+    4. Connection metadata (direct connection)
+
+    Args:
+        http_request: FastAPI Request object
+
+    Returns:
+        Client IP address string (never from request body)
+    """
+    # Check X-Forwarded-For first (may contain multiple IPs in reverse proxy chain)
+    forwarded_for = http_request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # Take the first IP (leftmost in chain) as the original client
+        client_ip = forwarded_for.split(",")[0].strip()
+        if client_ip:
+            return client_ip
+
+    # Check Cloudflare IP header
+    cf_ip = http_request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+
+    # Check nginx reverse proxy header
+    real_ip = http_request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+
+    # Fall back to direct connection IP
+    return http_request.client.host if http_request.client else "unknown"
+
 
 @app.post(
     "/api/v1/fraud/check",
@@ -2739,19 +2779,29 @@ async def analyze_voice(
 )
 async def score_account_opening(
     request: AccountOpeningRequest,
+    http_request: Request,
     mule_scorer=Depends(get_mule_scorer),
 ):
     """
     Score a new account opening for mule recruitment risk
-    
+
     Analyzes 12 features including temporal clustering, device novelty,
     geographic mismatch, and more to identify potential mule accounts
+
+    Security: IP address is extracted from HTTP headers (X-Forwarded-For,
+    CF-Connecting-IP, or connection metadata) to prevent attackers from
+    spoofing trusted IPs via the request body. Client-supplied ip_address
+    field is ignored for risk scoring (issue #2588).
     """
     start_time = time.time()
-    
+
     try:
         if not hasattr(mule_scorer, "MAX_HISTORY_SIZE"):
             mule_scorer.MAX_HISTORY_SIZE = 10000
+
+        # Extract real client IP from HTTP request headers
+        # Prevents attackers from spoofing trusted internal IPs via request body
+        client_ip = _extract_client_ip(http_request)
 
         # Score the account opening using thread pool to prevent blocking event loop
         result = await asyncio.to_thread(
@@ -2763,7 +2813,7 @@ async def score_account_opening(
             email=request.email,
             phone=request.phone,
             device_id=request.device_id,
-            ip_address=request.ip_address,
+            ip_address=client_ip,
             stated_address=request.stated_address,
             facial_match=request.facial_match,
             document_type=request.document_type,
