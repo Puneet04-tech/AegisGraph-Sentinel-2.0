@@ -85,3 +85,27 @@ def test_corporate_domain_scores_low(scorer):
 
 def test_email_without_at_sign_scores_low(scorer):
     assert _email_risk(scorer, "not-an-email") == 10.0
+
+
+def test_other_temp_domains_score_high(scorer):
+    assert _email_risk(scorer, "abc@10minutemail.com") == 90.0
+    assert _email_risk(scorer, "abc@throwaway.email") == 90.0
+    assert _email_risk(scorer, "abc@maildrop.cc") == 90.0
+    assert _email_risk(scorer, "abc@sub.maildrop.cc") == 90.0
+
+
+def test_other_free_domains_score_low(scorer):
+    assert _email_risk(scorer, "user@yahoo.com") == 20.0
+    assert _email_risk(scorer, "user@outlook.com") == 20.0
+    assert _email_risk(scorer, "user@hotmail.com") == 20.0
+    assert _email_risk(scorer, "user@mail.hotmail.com") == 20.0
+
+
+def test_email_with_surrounding_whitespace(scorer):
+    assert _email_risk(scorer, "  abc@mailinator.com  ") == 90.0
+    assert _email_risk(scorer, " user@gmail.com ") == 20.0
+
+
+def test_empty_and_whitespace_only_email(scorer):
+    assert _email_risk(scorer, "") == 10.0
+    assert _email_risk(scorer, "   ") == 10.0
