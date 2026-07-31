@@ -79,7 +79,7 @@ class EntityResolver:
         RelationshipType.MULE_ACCOUNT: 0.95,
     }
 
-    def __init__(self, store: Optional[EntityStore] = None):
+    def __init__(self, store: Optional[EntityStore] = None) -> None:
         """Initialize the entity resolver.
 
         Args:

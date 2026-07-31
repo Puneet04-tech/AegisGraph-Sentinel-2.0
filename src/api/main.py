@@ -181,7 +181,6 @@ from .adaptive_auth_routes import register_routes as register_adaptive_auth_rout
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
 from .decision_routes import router as decision_router
-from .bulk_ingest_routes import router as bulk_ingest_router
 from src.phase_61_autonomous_security_knowledge_graph_engine.api import router as phase61_router
 from src.phase_62_cross_domain_investigation_orchestrator.api import router as phase62_router
 from src.phase_63_enterprise_security_decision_intelligence_platform.api import router as phase63_router
@@ -1718,15 +1717,11 @@ API_LATENCY = REGISTRY._names_to_collectors.get("aegis_api_latency_seconds") or 
     "API request latency in seconds",
     ["endpoint"]
 )
+_UNMATCHED_METRICS_ENDPOINT = "__unmatched__"
 ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") or Gauge(
     "aegis_active_honeypots",
     "Number of currently active honeypots"
 )
-
-# Label used when no route matched, so unrouted paths share one series instead
-# of adding a new one each.
-UNMATCHED_ENDPOINT_LABEL = "unmatched"
-
 
 def _metric_endpoint_label(request: Request) -> str:
     """Return the route template for a request, never the raw path.
@@ -1735,7 +1730,7 @@ def _metric_endpoint_label(request: Request) -> str:
     series, so any caller can grow the registry without bound.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or UNMATCHED_ENDPOINT_LABEL
+    return getattr(route, "path", None) or _UNMATCHED_METRICS_ENDPOINT
 
 
 @app.middleware("http")
@@ -1838,8 +1833,6 @@ register_archival_routes(app)
 app.include_router(agent_router)
 # Register Decision Intelligence routes (Issue #1496)
 app.include_router(decision_router)
-# Register Bulk Ingestion routes
-app.include_router(bulk_ingest_router)
 # Register Phase 61-67 module routes (Issue #1508)
 app.include_router(phase61_router)
 app.include_router(phase62_router)
@@ -2826,7 +2819,7 @@ async def assess_mule_risk(
     tags=["Administration"],
     summary="List active honeypot traps",
     description="Innovation 2: View all active deceptive containment operations",
-    dependencies=[Depends(require_api_key), Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def list_active_honeypots(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),
@@ -2880,7 +2873,7 @@ async def list_active_honeypots(
     tags=["Administration"],
     summary="Get honeypot system statistics",
     description="Innovation 2: View performance metrics including arrest rate and recovery amount",
-    dependencies=[Depends(require_api_key), Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def get_honeypot_stats(
     x_honeypot_token: Optional[str] = Header(default=None, alias="X-Honeypot-Token"),

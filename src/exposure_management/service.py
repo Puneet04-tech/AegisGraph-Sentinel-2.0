@@ -27,7 +27,7 @@ __all__ = ["ExposureService", "get_exposure_service", "reset_exposure_service"]
 class ExposureService:
     """Core exposure management service."""
 
-    def __init__(self, store: Optional[ExposureStore] = None):
+    def __init__(self, store: Optional[ExposureStore] = None) -> None:
         self._store = store or get_exposure_store()
 
     def discover_exposure(
