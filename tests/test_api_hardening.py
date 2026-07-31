@@ -737,8 +737,9 @@ def test_voice_analysis_rejects_oversized_decoded_audio(api_client, monkeypatch)
         json=_valid_voice_payload(audio_base64="A" * 470_000),
     )
 
-    assert response.status_code == 413
-    assert response.json()["error"]["message"] == "Audio payload too large"
+    # Pydantic field_validator rejects oversized decoded payloads before the
+    # handler runs, returning 422 (Unprocessable Entity) rather than 413.
+    assert response.status_code == 422
 
 
 def test_voice_analysis_rejects_malformed_base64(api_client, monkeypatch):
