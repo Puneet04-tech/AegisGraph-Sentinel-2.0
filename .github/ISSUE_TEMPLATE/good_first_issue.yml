@@ -1,0 +1,36 @@
+name: "Good First Issue / Starter Task"
+description: "Small, beginner-friendly tasks ideal for new contributors."
+title: "[Task]: "
+labels: ["good first issue", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Welcome new contributors! Use this template to log beginner-friendly tasks or refactoring goals.
+        
+  - type: input
+    id: task-title
+    attributes:
+      label: "Task Summary"
+      placeholder: "e.g., Fix directory casing for `.github/ISSUE_TEMPLATE`"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: task-description
+    attributes:
+      label: "Task Description"
+      placeholder: "Describe the task clearly so a first-time contributor can pick it up easily."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: getting-started-guidance
+    attributes:
+      label: "Guidance for Beginners"
+      placeholder: "Mention relevant file paths, helper docs, or setup steps to guide the contributor."
+    validations:
+      required: false
+
+      
