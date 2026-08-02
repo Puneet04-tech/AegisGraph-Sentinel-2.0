@@ -16,7 +16,6 @@ Features extracted:
 
 import math
 import numpy as np
-import torch
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from scipy.stats import variation
@@ -447,6 +446,12 @@ def analyze_keystroke_data(
         key_ids = [f"key_{i}" for i in range(len(press_times))]
     if is_backspace is None:
         is_backspace = [False] * len(press_times)
+
+    # Validate optional list lengths so zip() below cannot silently drop events
+    if len(key_ids) != len(press_times) or len(is_backspace) != len(press_times):
+        raise ValueError(
+            "key_ids and is_backspace must have the same length as press_times/release_times"
+        )
 
     events = [
         KeystrokeEvent(kid, pt, rt, bs)
