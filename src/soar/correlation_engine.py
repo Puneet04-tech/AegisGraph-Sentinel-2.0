@@ -54,26 +54,90 @@ class SOARCorrelationEngine:
         return correlation
 
     def auto_correlate_all_incidents(self) -> List[ThreatCorrelation]:
-        """Scans the store and auto-groups active incidents sharing common entities."""
+        """Scans the store and auto-groups active incidents sharing common entities.
+
+        Uses union-find to build connected components of incidents across all
+        shared entities, producing a single composite correlation per cluster.
+        Checks existing correlations in the store to avoid creating duplicates.
+        """
         incidents = self.store.list_incidents()
-        entity_map = {}
-        
+        if not incidents:
+            return []
+
+        # Build union-find structure over incident IDs
+        parent: dict = {}
+
+        def find(x: str) -> str:
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Map entity -> list of incident IDs
+        entity_map: dict = {}
         for inc in incidents:
+            parent.setdefault(inc.incident_id, inc.incident_id)
             for entity in inc.entities:
                 if entity not in entity_map:
                     entity_map[entity] = []
                 entity_map[entity].append(inc.incident_id)
-                
-        correlations = []
+
+        # Union incidents sharing the same entity
+        for entity, inc_ids in entity_map.items():
+            for i in range(1, len(inc_ids)):
+                union(inc_ids[0], inc_ids[i])
+
+        # Group incidents by connected component root
+        clusters: dict = {}
+        for inc in incidents:
+            root = find(inc.incident_id)
+            if root not in clusters:
+                clusters[root] = set()
+            clusters[root].add(inc.incident_id)
+
+        # Collect shared entities per cluster
+        cluster_entities: dict = {}
         for entity, inc_ids in entity_map.items():
             if len(inc_ids) > 1:
-                # We have a correlation!
-                name = f"Auto-correlation for {entity}"
-                corr = self.correlate_incidents(
-                    name=name,
-                    incident_ids=inc_ids,
-                    entities=[entity]
-                )
-                correlations.append(corr)
-                
+                root = find(inc_ids[0])
+                if root not in cluster_entities:
+                    cluster_entities[root] = set()
+                cluster_entities[root].add(entity)
+
+        # Build existing correlation index for deduplication
+        existing_correlations = self.store.list_correlations()
+        existing_incident_sets: dict = {}
+        for corr in existing_correlations:
+            key = frozenset(corr.linked_incidents)
+            existing_incident_sets[key] = corr
+
+        correlations = []
+        for root, incident_ids in clusters.items():
+            if len(incident_ids) < 2:
+                continue
+
+            sorted_ids = sorted(incident_ids)
+            entities = sorted(cluster_entities.get(root, set()))
+            key = frozenset(sorted_ids)
+
+            # Skip if an identical correlation already exists
+            if key in existing_incident_sets:
+                continue
+
+            name = f"Auto-correlation for {', '.join(entities[:3])}"
+            if len(entities) > 3:
+                name += f" (+{len(entities) - 3} more)"
+
+            corr = self.correlate_incidents(
+                name=name,
+                incident_ids=sorted_ids,
+                entities=entities,
+            )
+            correlations.append(corr)
+
         return correlations
