@@ -585,14 +585,15 @@ class UsageMeteringService:
         percentage = (current_usage / limit) * 100 if limit > 0 else 0
         
         return {
-            "within_limit": current_usage < limit,
+            "within_limit": current_usage <= limit,
             "current_usage": current_usage,
             "limit": limit,
             "remaining": max(0, limit - current_usage),
             "percentage": percentage,
             "approaching_limit": percentage >= 80,
-            "over_limit": current_usage >= limit,
+            "over_limit": current_usage > limit,
         }
+
 
     def enforce_rate_limit(
         self,

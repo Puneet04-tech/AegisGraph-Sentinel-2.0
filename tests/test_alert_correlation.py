@@ -96,3 +96,117 @@ def test_get_dashboard():
     assert dashboard is not None
     assert "total_alerts" in dashboard
     assert "alerts_by_severity" in dashboard
+
+
+def test_suppression_rule_multi_condition_and_semantics():
+    """Test that multi-condition suppression rules require ALL conditions to match (AND semantics)."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    # 1. Multi-condition AND behavior (one condition matches, one fails -> NOT suppressed)
+    engine.create_suppression_rule(
+        name="Scanner Noise",
+        description="Suppress scanner alerts with LOW severity",
+        conditions={"source": "scanner_v2", "severity": "LOW"}
+    )
+    critical_alert = engine.ingest_alert(
+        title="Ransomware Detected",
+        description="Breach",
+        severity="CRITICAL",
+        source="scanner_v2"
+    )
+    assert engine.should_suppress(critical_alert) is False
+
+    # 2. All conditions satisfied -> Suppressed
+    low_alert = engine.ingest_alert(
+        title="Port Scan",
+        description="Scan",
+        severity="LOW",
+        source="scanner_v2"
+    )
+    assert engine.should_suppress(low_alert) is True
+
+
+def test_suppression_rule_tag_severity_combination():
+    """Test tag + severity combination suppression rules."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    engine.create_suppression_rule(
+        name="Internal Low Noise",
+        description="Suppress internal low alerts",
+        conditions={"tag": "internal", "severity": "LOW"}
+    )
+
+    # LOW + internal -> suppressed
+    a1 = engine.ingest_alert("Low Internal", "Desc", "LOW", "SIEM", tags=["internal"])
+    assert engine.should_suppress(a1) is True
+
+    # LOW without tag -> not suppressed
+    a2 = engine.ingest_alert("Low External", "Desc", "LOW", "SIEM", tags=["external"])
+    assert engine.should_suppress(a2) is False
+
+    # HIGH + internal -> not suppressed
+    a3 = engine.ingest_alert("High Internal", "Desc", "HIGH", "SIEM", tags=["internal"])
+    assert engine.should_suppress(a3) is False
+
+
+def test_suppression_rule_single_condition_backwards_compatibility():
+    """Test backward compatibility for single-condition suppression rules."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    engine.create_suppression_rule("Single Source", "Desc", conditions={"source": "scanner_v2"})
+    engine.create_suppression_rule("Single Severity", "Desc", conditions={"severity": "HIGH"})
+    engine.create_suppression_rule("Single Tag", "Desc", conditions={"tag": "phishing"})
+
+    a_src = engine.ingest_alert("Source Alert", "Desc", "INFO", "scanner_v2")
+    assert engine.should_suppress(a_src) is True
+
+    a_sev = engine.ingest_alert("Severity Alert", "Desc", "HIGH", "other_source")
+    assert engine.should_suppress(a_sev) is True
+
+    a_tag = engine.ingest_alert("Tag Alert", "Desc", "INFO", "other_source", tags=["phishing"])
+    assert engine.should_suppress(a_tag) is True
+
+
+def test_suppression_rule_empty_conditions():
+    """Test that empty conditions dictionary does not suppress alerts."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    engine.create_suppression_rule("Empty Rule", "Desc", conditions={})
+    alert = engine.ingest_alert("Any Alert", "Desc", "HIGH", "SIEM")
+    assert engine.should_suppress(alert) is False
+
+
+
+def test_suppression_rule_three_condition_and_semantics():
+    """Test 3-condition AND semantics (source + severity + tag)."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    engine.create_suppression_rule(
+        name="Three Condition Rule",
+        description="Suppress only if source, severity, and tag all match",
+        conditions={"source": "scanner_v2", "severity": "LOW", "tag": "internal"}
+    )
+
+    # 2 match, 1 fails (tag fails) -> NOT suppressed
+    a1 = engine.ingest_alert("Partial Match", "Desc", "LOW", "scanner_v2", tags=["external"])
+    assert engine.should_suppress(a1) is False
+
+    # All 3 match -> Suppressed
+    a2 = engine.ingest_alert("Full Match", "Desc", "LOW", "scanner_v2", tags=["internal"])
+    assert engine.should_suppress(a2) is True
+
+
+def test_suppression_rule_unknown_condition_key():
+    """Test that rules with unrecognized condition keys return False safely."""
+    service = AlertCorrelationService()
+    engine = service.engine
+
+    engine.create_suppression_rule("Unknown Key Rule", "Desc", conditions={"hostname": "server01"})
+    alert = engine.ingest_alert("Any Alert", "Desc", "HIGH", "SIEM")
+
+    assert engine.should_suppress(alert) is False

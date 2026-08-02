@@ -93,15 +93,16 @@ class WebSocketManager:
 
         async with self._lock:
             old = self.active_connections.get(client_id)
-            if old is not None:
-                try:
-                    await old.websocket.close(code=1000, reason="Replaced by new connection")
-                except Exception as exc:
-                    logger.debug("Failed to close old WebSocket connection for client %s: %s", client_id, exc)
-
             self.active_connections[client_id] = ConnectionState(websocket)
 
+        if old is not None:
+            try:
+                await old.websocket.close(code=1000, reason="Replaced by new connection")
+            except Exception as exc:
+                logger.debug("Failed to close old WebSocket connection for client %s: %s", client_id, exc)
+
         return True
+
 
     async def disconnect(self, client_id: str, websocket: Optional[WebSocket] = None) -> None:
         """Remove a disconnected client from active connections.
