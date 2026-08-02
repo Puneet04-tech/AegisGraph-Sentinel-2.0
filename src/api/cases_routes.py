@@ -264,6 +264,75 @@ async def get_case_timeline(case_id: str):
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Find similar fraud cases using semantic retrieval",
 )
+async def find_similar_cases(request: SimilarCaseRequest):
+    """
+    Find fraud cases similar to a query using semantic embeddings (RAG).
+
+    Search can be performed in two ways:
+    1. By text query: Provide `query_text` to search for similar cases
+    2. By reference case: Provide `case_id` to find cases similar to it
+
+    Results are ranked by semantic similarity (cosine distance).
+    """
+    import time
+    from src.case_management.retriever import CaseRetriever
+
+    start_time = time.time()
+
+    try:
+        retriever = CaseRetriever()
+
+        if request.query_text:
+            results = retriever.find_similar(
+                query_text=request.query_text,
+                k=request.k,
+                threshold=request.threshold,
+                status=request.status,
+                priority=request.priority,
+                start_date=request.start_date,
+                end_date=request.end_date,
+            )
+            query_used = request.query_text
+            reference_case = None
+        else:
+            results = retriever.find_similar_by_case(
+                case_id=request.case_id,
+                k=request.k,
+                exclude_self=True,
+                threshold=request.threshold,
+            )
+            query_used = None
+            reference_case = request.case_id
+
+        similar_cases = [
+            CaseSimilarityResult(
+                case_id=result["case_id"],
+                similarity=result["similarity"],
+                similarity_percent=result["similarity_percent"],
+                metadata=result["metadata"],
+            )
+            for result in results
+        ]
+
+        processing_time = (time.time() - start_time) * 1000
+
+        return SimilarCaseResponse(
+            similar_cases=similar_cases,
+            total_found=len(similar_cases),
+            query_text_used=query_used,
+            reference_case_id=reference_case,
+            processing_time_ms=processing_time,
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+        )
+
+    except Exception as e:
+        _api_logger.error(f"Error finding similar cases: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal error retrieving similar cases",
+        )
+
+
 @router.post(
     "/api/v1/cases/generate-embedding",
     response_model=GenerateEmbeddingResponse,
@@ -304,5 +373,5 @@ async def generate_case_embedding(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating embedding: {str(e)}",
+            detail="Internal error generating embedding",
         )
