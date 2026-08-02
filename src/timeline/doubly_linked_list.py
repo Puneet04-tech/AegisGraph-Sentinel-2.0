@@ -121,17 +121,26 @@ class DoublyLinkedList:
         """Boolean check based on whether the list is empty."""
         return self._size > 0
 
-    def __getitem__(self, index: int) -> Any:
-        """Get the item at index.
+    def __getitem__(self, index):
+        """Get the item at index, or a list of items for a slice.
         
         Optimized for:
           - index `0` (head): O(1)
           - index `-1` or `size - 1` (tail): O(1)
+          - Indices in the upper half traverse backward from tail: O(N/2)
           
-        Other indices have O(N) complexity.
+        Supports slice objects to return sub-sequences.
         """
+        if isinstance(index, slice):
+            indices = range(*index.indices(self._size))
+            return [self[i] for i in indices]
+
         if not isinstance(index, int):
             raise TypeError("Index must be an integer")
+
+        if self._size == 0:
+            raise IndexError("Index out of range")
+
         if index < 0:
             index += self._size
         if index < 0 or index >= self._size:
@@ -141,8 +150,14 @@ class DoublyLinkedList:
             return self.head.value
         if index == self._size - 1:
             return self.tail.value
-            
-        current = self.head
-        for _ in range(index):
-            current = current.next
+
+        # Traverse from whichever end is closer
+        if index <= self._size // 2:
+            current = self.head
+            for _ in range(index):
+                current = current.next
+        else:
+            current = self.tail
+            for _ in range(self._size - 1 - index):
+                current = current.prev
         return current.value
