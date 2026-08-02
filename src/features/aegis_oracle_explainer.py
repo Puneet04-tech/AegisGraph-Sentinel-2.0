@@ -8,6 +8,9 @@ Generates human-readable explanations for every fraud decision:
 - Supports legal proceedings and appeals
 
 The Oracle pattern: Combine model reasoning with LLM narrative generation.
+
+SECURITY: This module sanitizes all user-controlled transaction fields
+before including them in explanations to prevent prompt injection attacks.
 """
 
 import json
@@ -15,6 +18,7 @@ import logging
 import math
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+from ..inference.prompt_security import sanitize_transaction_data
 
 
 class AegisOracleExplainer:
@@ -93,18 +97,25 @@ class AegisOracleExplainer:
     ) -> Dict[str, any]:
         """
         Generate comprehensive explanation for fraud decision
-        
+
         Args:
             transaction: Transaction details
             risk_assessment: Full risk assessment output
             attention_weights: HTGNN attention weights
             break_down: Risk component breakdown
             innovations_triggered: List of activated innovations
-            
+
         Returns:
             Dictionary with explanation
+
+        Security: All user-controlled transaction fields are sanitized
+        to prevent prompt injection attacks in LLM integration.
         """
-        
+
+        # Sanitize transaction data to prevent prompt injection
+        # This protects merchant_name, description, and other user-controlled fields
+        transaction = sanitize_transaction_data(transaction)
+
         decision = risk_assessment.get('decision', 'UNKNOWN')
         risk_score = risk_assessment.get('risk_score', 0)
         confidence = risk_assessment.get('confidence', 0)
