@@ -373,5 +373,5 @@ async def generate_case_embedding(
 
         raise HTTPException(
             status_code=500,
-            detail="Internal error generating embedding",
+            detail=f"Error generating embedding: {str(e)}",
         )
