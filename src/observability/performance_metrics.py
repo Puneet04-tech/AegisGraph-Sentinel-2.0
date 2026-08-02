@@ -111,7 +111,7 @@ class PerformanceTracker:
         """Get error rate for component."""
         metrics = self._store.get_metrics(component=component, limit=1000)
         
-        total_requests = sum(1 for m in metrics if m.metric_name == "requests")
+        total_requests = sum(m.value for m in metrics if m.metric_name == "requests")
         errors = sum(m.value for m in metrics if m.metric_name == "errors")
         
         error_rate = (errors / total_requests * 100) if total_requests > 0 else 0
