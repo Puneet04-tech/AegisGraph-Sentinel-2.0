@@ -771,15 +771,84 @@ class RBACService:
 
 
 # ABAC Service
+@dataclass(frozen=True)
+class ABACDecision:
+    """Outcome of an ABAC evaluation, with the reason it was reached.
+
+    Mirrors ``src.security.authorization.AuthorizationResult`` so a denial can
+    be audit-logged with the policy that produced it rather than as a bare
+    ``False``.
+    """
+
+    allowed: bool
+    reason: str
+    matched_policy: Optional[str] = None
+
+
+# Effects a policy may declare. Anything else is rejected at registration
+# rather than being silently treated as a deny, because a typo like
+# "Allow" would otherwise turn an intended grant into a refusal — or, before
+# the default was fixed, into a fallthrough that allowed everything.
+_VALID_EFFECTS = frozenset({"allow", "deny"})
+
+# Comparison operators understood in an attribute constraint.
+_VALID_OPERATORS = frozenset({"eq", "neq", "gt", "lt", "in"})
+
+
 class ABACService:
-    """Attribute-Based Access Control service"""
+    """Attribute-Based Access Control service.
+
+    Evaluation is **default-deny with deny-override**: a request is permitted
+    only when at least one policy explicitly allows it and no policy explicitly
+    denies it.  Anything unanticipated — no policies loaded, no policy matching,
+    a malformed constraint — refuses access.
+    """
 
     def __init__(self):
         self.policies: List[Dict[str, Any]] = []
 
     def add_policy(self, policy: Dict[str, Any]):
-        """Add access control policy"""
+        """Add access control policy.
+
+        Validates at registration so a malformed policy fails loudly here
+        rather than silently widening access at evaluation time.
+        """
+        self._validate_policy(policy)
         self.policies.append(policy)
+
+    @staticmethod
+    def _validate_policy(policy: Dict[str, Any]) -> None:
+        if not isinstance(policy, dict):
+            raise ValueError("Policy must be a dictionary")
+
+        effect = policy.get("effect")
+        if effect not in _VALID_EFFECTS:
+            raise ValueError(
+                f"Policy effect must be one of {sorted(_VALID_EFFECTS)}, got {effect!r}"
+            )
+
+        for section in ("subjects", "resources", "environment"):
+            constraints = policy.get(section)
+            if constraints is None:
+                continue
+            if not isinstance(constraints, dict):
+                raise ValueError(f"Policy section {section!r} must be a dictionary")
+            for key, constraint in constraints.items():
+                if not isinstance(constraint, dict):
+                    continue  # Direct equality match; nothing to validate.
+                op = constraint.get("op", "eq")
+                if op not in _VALID_OPERATORS:
+                    # An unrecognised operator used to fall through every
+                    # comparison branch, making the constraint a no-op and
+                    # quietly broadening the policy.
+                    raise ValueError(
+                        f"Unsupported operator {op!r} on attribute {key!r}; "
+                        f"expected one of {sorted(_VALID_OPERATORS)}"
+                    )
+
+        actions = policy.get("actions")
+        if actions is not None and not isinstance(actions, (list, tuple, set)):
+            raise ValueError("Policy 'actions' must be a list, tuple, or set")
 
     def evaluate(
         self,
@@ -788,11 +857,72 @@ class ABACService:
         action: str,  # Action being performed
         environment: Dict[str, Any],  # Context attributes
     ) -> bool:
-        """Evaluate access control policy"""
-        for policy in self.policies:
-            if self._matches_policy(policy, subject, resource, action, environment):
-                return policy.get("effect") == "allow"
-        return True  # Default deny
+        """Evaluate access control policy. Returns True only if explicitly allowed."""
+        return self.evaluate_detailed(subject, resource, action, environment).allowed
+
+    def evaluate_detailed(
+        self,
+        subject: Dict[str, Any],
+        resource: Dict[str, Any],
+        action: str,
+        environment: Dict[str, Any],
+    ) -> ABACDecision:
+        """Evaluate access control policy and report why.
+
+        Uses deny-override rather than first-match: every policy is considered,
+        an explicit deny wins outright, and an allow is only honoured when no
+        deny matched.  First-match-wins made the security outcome depend on the
+        order policies happened to be registered in, so appending an allow could
+        shadow an existing deny.
+        """
+        subject = subject or {}
+        resource = resource or {}
+        environment = environment or {}
+
+        allowed_by: Optional[str] = None
+        for index, policy in enumerate(self.policies):
+            try:
+                matched = self._matches_policy(
+                    policy, subject, resource, action, environment
+                )
+            except Exception as exc:
+                # A policy that cannot be evaluated must not be skipped as
+                # though it did not apply — it might have been the deny.
+                logger.warning(
+                    "ABAC policy %s could not be evaluated, denying: %s",
+                    policy.get("id", index),
+                    exc,
+                )
+                return ABACDecision(
+                    allowed=False,
+                    reason="Policy evaluation failed",
+                    matched_policy=str(policy.get("id", index)),
+                )
+
+            if not matched:
+                continue
+
+            identifier = str(policy.get("id", index))
+            if policy.get("effect") == "deny":
+                return ABACDecision(
+                    allowed=False,
+                    reason="Explicitly denied by policy",
+                    matched_policy=identifier,
+                )
+            if allowed_by is None:
+                allowed_by = identifier
+
+        if allowed_by is not None:
+            return ABACDecision(
+                allowed=True,
+                reason="Explicitly allowed by policy",
+                matched_policy=allowed_by,
+            )
+
+        return ABACDecision(
+            allowed=False,
+            reason="No policy grants this request (default deny)",
+        )
 
     def _matches_policy(
         self,
@@ -830,29 +960,61 @@ class ABACService:
         attributes: Dict[str, Any],
         constraints: Dict[str, Any],
     ) -> bool:
-        """Check if attributes match constraints"""
+        """Check if attributes match constraints.
+
+        A constraint that cannot be evaluated — missing attribute, unknown
+        operator, or an ordering comparison against an incompatible type —
+        does not match.  Returning False here means the policy does not apply;
+        combined with default-deny in ``evaluate_detailed``, an unevaluable
+        constraint can never widen access.
+        """
         for key, constraint in constraints.items():
             if key not in attributes:
                 return False
+            attr_value = attributes[key]
+
             if isinstance(constraint, dict):
                 # Operator-based constraint
                 op = constraint.get("op", "eq")
                 value = constraint.get("value")
-                attr_value = attributes[key]
-                
-                if op == "eq" and attr_value != value:
+
+                if op not in _VALID_OPERATORS:
+                    # Defence in depth: add_policy rejects these, but a policy
+                    # appended directly to self.policies bypasses that check.
+                    logger.warning(
+                        "Ignoring ABAC constraint on %r with unsupported operator %r",
+                        key,
+                        op,
+                    )
                     return False
-                elif op == "neq" and attr_value == value:
-                    return False
-                elif op == "gt" and not (attr_value > value):
-                    return False
-                elif op == "lt" and not (attr_value < value):
-                    return False
-                elif op == "in" and attr_value not in value:
+
+                try:
+                    if op == "eq" and attr_value != value:
+                        return False
+                    elif op == "neq" and attr_value == value:
+                        return False
+                    elif op == "gt" and not (attr_value > value):
+                        return False
+                    elif op == "lt" and not (attr_value < value):
+                        return False
+                    elif op == "in" and attr_value not in value:
+                        return False
+                except TypeError:
+                    # e.g. "admin" > 5, or `in` against a non-container. This
+                    # used to escape evaluate() as an unhandled TypeError,
+                    # which callers would see as a 500 rather than a denial.
+                    logger.warning(
+                        "ABAC constraint on %r compared incompatible types "
+                        "(%s %s %s); treating as no match",
+                        key,
+                        type(attr_value).__name__,
+                        op,
+                        type(value).__name__,
+                    )
                     return False
             else:
                 # Direct match
-                if attributes[key] != constraint:
+                if attr_value != constraint:
                     return False
         return True
 
