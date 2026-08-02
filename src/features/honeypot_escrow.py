@@ -115,6 +115,8 @@ class HoneypotEscrowManager:
         # Active honeypots
         self.active_honeypots: Dict[str, HoneypotTransaction] = {}
         self._active_honeypots_by_account: Dict[str, HoneypotTransaction] = {}
+        # Honeypots already counted as dismantled networks (dedup guard)
+        self._dismantled_honeypot_ids: set = set()
         
         # Historical honeypots
         self.honeypot_history: deque = deque(maxlen=10000)
@@ -378,16 +380,28 @@ class HoneypotEscrowManager:
             first_withdrawal = honeypot.withdrawal_attempts[0] if honeypot.withdrawal_attempts else None
             
         if first_withdrawal:
-            withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
-            arrest_time = datetime.fromisoformat(arrest_details['arrest_time'])
-            response_minutes = (arrest_time - withdrawal_time).total_seconds() / 60
-            
-            with self._lock:
-                # Update average response time
-                total_arrests = self.stats['total_arrests']
-                old_avg = self.stats['average_response_time_minutes']
-                new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
-                self.stats['average_response_time_minutes'] = new_avg
+            # Response time is best-effort: missing or malformed timestamps
+            # must not abort the arrest recording after stats were mutated.
+            arrest_time = arrest_details.get('arrest_time')
+            if arrest_time:
+                try:
+                    withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
+                    arrest_time_dt = datetime.fromisoformat(arrest_time)
+                    response_minutes = (arrest_time_dt - withdrawal_time).total_seconds() / 60
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Skipping response-time calculation for honeypot %s (invalid timestamps)",
+                        honeypot_id,
+                    )
+                    response_minutes = None
+
+                if response_minutes is not None:
+                    with self._lock:
+                        # Update average response time
+                        total_arrests = self.stats['total_arrests']
+                        old_avg = self.stats['average_response_time_minutes']
+                        new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
+                        self.stats['average_response_time_minutes'] = new_avg
         
         logger.info(
             "Arrest confirmed for honeypot",
@@ -459,8 +473,13 @@ class HoneypotEscrowManager:
                 honeypot.network_members = list(network_members)
                 honeypot.status = HoneypotStatus.NETWORK_TRACED
 
-                # Count as network dismantled if >5 accounts
-                if len(network_members) > 5:
+                # Count as network dismantled if >5 accounts, but only once
+                # per honeypot (repeat traces must not inflate the metric).
+                if (
+                    len(network_members) > 5
+                    and honeypot_id not in self._dismantled_honeypot_ids
+                ):
+                    self._dismantled_honeypot_ids.add(honeypot_id)
                     self.stats['total_networks_dismantled'] += 1
         
         logger.info(

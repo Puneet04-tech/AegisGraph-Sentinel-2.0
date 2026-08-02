@@ -304,20 +304,23 @@ class RiskSignalEvaluator:
                     # For demo, use location hash difference
                     latest_loc = latest.get("location", {})
                     prev_loc = previous.get("location", {})
-                    
+
                     # Simple distance proxy using country/city
                     latest_key = f"{latest_loc.get('country')}:{latest_loc.get('city')}"
                     prev_key = f"{prev_loc.get('country')}:{prev_loc.get('city')}"
-                    
+
                     if latest_key != prev_key:
-                        # Different location - check if travel is possible
-                        # Assume max realistic travel speed of 1000 km/h (plane)
-                        # If locations are in different continents, assume 12+ hours
+                        # Different location - check if travel is possible in the
+                        # elapsed time. Use conservative minimum travel times:
+                        # crossing countries needs ~12+ hours (flight + transfers),
+                        # moving between cities in the same country at least ~2
+                        # hours. When enough time has elapsed the movement is
+                        # plausible and must not be flagged.
                         if latest_loc.get("country") != prev_loc.get("country"):
-                            # Different countries
-                            score = 0.8  # Likely impossible
-                        else:
-                            score = 0.3  # Same country, might be possible
+                            if time_diff_hours < 12:
+                                score = 0.8  # Impossible: not enough time to cross countries
+                        elif time_diff_hours < 2:
+                            score = 0.3  # Same country, short window between cities
         
         return RiskSignal(
             signal_type="impossible_travel",

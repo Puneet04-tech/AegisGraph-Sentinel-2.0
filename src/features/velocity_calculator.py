@@ -254,16 +254,19 @@ class VelocityCalculator:
             baseline = self._normalize_transactions(current_time)
             return self._burst_score_from_windows(recent, baseline)
 
-        # Get transactions in burst window
+        # Get transactions in burst window.
+        # Only elapsed times in [0, burst_window] count as recent; a bare
+        # `<= burst_window` also admits transactions from arbitrarily far in
+        # the past (and the future), inflating burst_count and burst_amount.
         recent = [
             t for t in normalized
-            if current_time - t.timestamp <= self.burst_window
+            if 0 <= current_time - t.timestamp <= self.burst_window
         ]
 
         # Get transactions in longer window for comparison
         baseline = [
             t for t in normalized
-            if current_time - t.timestamp <= self.time_window
+            if 0 <= current_time - t.timestamp <= self.time_window
         ]
         
         # Count transactions

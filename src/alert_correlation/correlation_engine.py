@@ -193,14 +193,23 @@ class AlertCorrelationEngine:
     
     def _matches_conditions(self, alert: Alert, conditions: Dict[str, Any]) -> bool:
         """Check if alert matches conditions"""
+        if not conditions:
+            return False
         for key, value in conditions.items():
-            if key == "source" and alert.source == value:
-                return True
-            if key == "severity" and alert.severity.name == value:
-                return True
-            if key == "tag" and value in alert.tags:
-                return True
-        return False
+            if key == "source":
+                if alert.source != value:
+                    return False
+            elif key == "severity":
+                if alert.severity.name != value:
+                    return False
+            elif key == "tag":
+                if value not in alert.tags:
+                    return False
+            else:
+                return False
+        return True
+
+
     
     def link_to_incident(self, alert_id: str, incident_id: str) -> bool:
         """Link alert to an incident"""

@@ -51,6 +51,8 @@ class WorkflowEngine:
                 initial_state="NEW"
             )
         ]
+
+
         for wf in workflows:
             self.workflows[wf.workflow_id] = wf
     
@@ -175,7 +177,10 @@ class WorkflowEngine:
         
         case.escalated_to = to_assignee
         case.status = CaseStatus.ESCALATED
+        case.current_state = "ESCALATED"
         case.updated_at = datetime.now(timezone.utc)
+
+
         
         return escalation
     

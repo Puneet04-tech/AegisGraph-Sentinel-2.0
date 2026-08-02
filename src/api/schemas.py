@@ -381,18 +381,14 @@ class VoiceAnalysisRequest(BaseModel):
     def validate_audio_size(cls, v):
         """SECURITY: Prevent OOM attacks via large audio payloads.
 
-        Base64 expands to ~25% larger than decoded size.
-        Max 500K base64 chars -> ~375KB decoded -> 350KB safety limit.
+        This bounds the encoded string so an oversized body is refused before
+        anything decodes it. The decoded size is checked in the handler, which
+        measures the real bytes and answers 413. Estimating the decoded size
+        here as well would reject those payloads first, as a 422, and leave
+        that 413 unreachable.
         """
         if len(v) > 500_000:
             raise ValueError("Audio base64 payload exceeds 500KB limit")
-
-        # Estimate decoded size (base64 is ~1.33x larger than decoded)
-        # Reject if estimated decoded size exceeds safety threshold
-        estimated_decoded_size = len(v) * 0.75
-        MAX_DECODED_SIZE = 350_000  # ~350KB safety limit
-        if estimated_decoded_size > MAX_DECODED_SIZE:
-            raise ValueError(f"Decoded audio would exceed {MAX_DECODED_SIZE} bytes limit")
 
         return v
 

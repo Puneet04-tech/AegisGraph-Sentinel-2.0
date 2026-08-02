@@ -84,8 +84,10 @@ class VectorStore:
             if case_id in self._embeddings:
                 self._embeddings.move_to_end(case_id)
             
-            # Store
-            self._embeddings[case_id] = (embedding, metadata or {})
+            # Store a copy of the metadata so caller-owned dicts and the
+            # store never alias the same object. Without this, update_metadata
+            # on one case mutates every case sharing that dict.
+            self._embeddings[case_id] = (embedding, dict(metadata) if metadata else {})
             self._stats["total_added"] += 1
             
             # LRU eviction: remove oldest if exceeds maxsize
@@ -119,7 +121,10 @@ class VectorStore:
                 f"embeddings batch size ({len(embeddings)})"
             )
         
-        metadatas = metadatas or [{}] * len(case_ids)
+        # Distinct dict per case; [{}] * n would alias every entry to the
+        # same object (add() defensively copies, but the default should not
+        # rely on that masking the aliasing).
+        metadatas = metadatas or [{} for _ in case_ids]
         
         for case_id, embedding, metadata in zip(case_ids, embeddings, metadatas):
             self.add(case_id, embedding, metadata)
@@ -247,8 +252,10 @@ class VectorStore:
         with self._lock:
             if case_id in self._embeddings:
                 embedding, existing_metadata = self._embeddings[case_id]
-                existing_metadata.update(metadata)
-                self._embeddings[case_id] = (embedding, existing_metadata)
+                # Build a fresh dict instead of mutating in place so the
+                # caller's input and any aliased metadata stay untouched.
+                merged = {**existing_metadata, **metadata}
+                self._embeddings[case_id] = (embedding, merged)
                 return True
             return False
     

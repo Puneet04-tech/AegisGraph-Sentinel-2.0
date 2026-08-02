@@ -1,0 +1,37 @@
+name: "Documentation Improvement"
+description: "Suggest fixes or updates for documentation and setup guides."
+title: "[Docs]: "
+labels: ["type:documentation"]
+
+body:
+
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve our documentation!
+        
+  - type: input
+    id: doc-title
+    attributes:
+      label: "Doc Update Summary"
+      placeholder: "e.g., Update installation instructions for PyTorch Geometric dependencies"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: doc-description
+    attributes:
+      label: "Description of Changes Needed"
+      placeholder: "Which document needs updating? What information is outdated, missing, or incorrect?"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: proposed-doc-changes
+    attributes:
+      label: "Proposed Text / Changes"
+      placeholder: "Provide the updated text or outline the documentation additions."
+    validations:
+      required: false
+
+      

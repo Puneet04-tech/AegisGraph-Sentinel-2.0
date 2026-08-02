@@ -5902,12 +5902,11 @@ async def saml_login(
     force_authn: bool = Body(False),
 ):
     """Initiate SAML authentication."""
-    from src.identity_federation import SAMLProvider
     service = get_identity_federation_service()
-    store = service._store
-    
-    saml = SAMLProvider(store, "aegisgraph-sentinel")
-    response = saml.initiate_login(provider_id=provider_id, return_url=return_url, force_authn=force_authn)
+
+    response = service._saml.initiate_login(
+        provider_id=provider_id, return_url=return_url, force_authn=force_authn
+    )
     
     if not response.success:
         raise HTTPException(status_code=400, detail=response.error_description or response.error)
@@ -5932,12 +5931,12 @@ async def oidc_login(
     scope: str = Body("openid profile email"),
 ):
     """Initiate OIDC authentication."""
-    from src.identity_federation import OIDCProvider
+    # Use the service's provider rather than building one here. A local
+    # instance carries whatever issuer is written at this call site, and the
+    # issuer is the host the identity provider redirects the user back to.
     service = get_identity_federation_service()
-    store = service._store
-    
-    oidc = OIDCProvider(store, "https://aegisgraph.example.com")
-    response = oidc.initiate_login(
+
+    response = service._oidc.initiate_login(
         provider_id=provider_id,
         return_url=return_url,
         prompt=prompt,

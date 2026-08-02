@@ -252,12 +252,19 @@ class AegisOracleExplainer:
                     'evidence': 'High variance in hold times and flight times',
                 })
             elif innovation == 'blockchain_evidence_id':
+                evidence_id = transaction.get('blockchain_evidence_id')
+                if evidence_id:
+                    evidence = f'Evidence ID: {evidence_id}'
+                else:
+                    evidence = (
+                        'Evidence sealed on-chain; ID available in the evidence chain'
+                    )
                 factors.append({
                     'type': 'INNOVATION_BLOCKCHAIN',
                     'impact': 'MEDIUM',
                     'description': 'Evidence sealed in blockchain for legal admissibility',
                     'weight': 0.7,
-                    'evidence': f'Evidence ID: {innovation}',
+                    'evidence': evidence,
                 })
         
         # Sort by impact and weight

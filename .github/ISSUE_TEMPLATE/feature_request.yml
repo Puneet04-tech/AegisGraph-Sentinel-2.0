@@ -1,0 +1,36 @@
+name: "Feature Request"
+description: "Suggest a new feature or enhancement for AegisGraph-Sentinel-2.0."
+title: "[Feature]: "
+labels: ["type:feature"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for proposing an enhancement! Please describe your feature request below.
+        
+  - type: input
+    id: feature-title
+    attributes:
+      label: "Feature Title"
+      placeholder: "e.g., Add automatic status labels upon issue assignment"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: feature-goal
+    attributes:
+      label: "Problem / Feature Goal"
+      placeholder: "What problem does this feature solve? Describe the context and motivation."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: "Proposed Solution & Implementation Plan"
+      placeholder: "Describe your proposed solution and how it should be implemented."
+    validations:
+      required: true
+
+      

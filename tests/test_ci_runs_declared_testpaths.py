@@ -94,3 +94,23 @@ def test_every_declared_testpath_file_carries_tests():
             empty.append(path)
 
     assert not empty, f"testpaths declares files with no test functions: {empty}"
+
+
+def test_ci_does_not_stop_early_on_failures():
+    """--maxfail hides the size of a breakage.
+
+    A capped run reports the cap, not the count, so a red branch looks smaller
+    than it is and each fix appears to uncover a new problem rather than
+    shortening a known list.
+    """
+    text = io.open(CI_WORKFLOW, encoding="utf-8").read()
+    capped = [
+        line
+        for line, positional in _pytest_invocations(text)
+        if "--maxfail" in line or "-x" in line.split()
+    ]
+
+    assert not capped, (
+        f"These CI pytest commands stop early on failure: {capped}. The run "
+        "then reports the cap rather than how many tests are failing."
+    )
