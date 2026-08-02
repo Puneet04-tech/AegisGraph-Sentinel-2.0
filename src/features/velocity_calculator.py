@@ -40,15 +40,18 @@ class VelocityCalculator:
     Args:
         time_window: Time window for velocity calculation (seconds)
         burst_window: Time window for burst detection (seconds)
+        max_hop_delay: Maximum allowed time gap between consecutive hops (seconds)
     """
     
     def __init__(
         self,
         time_window: float = 3600.0,  # 1 hour
         burst_window: float = 300.0,   # 5 minutes
+        max_hop_delay: float = 3600.0,  # 1 hour max between hops
     ):
         self.time_window = time_window
         self.burst_window = burst_window
+        self.max_hop_delay = max_hop_delay
 
     def calculate_kinetic_energy(self, transactions) -> float:
         """Compatibility wrapper for legacy callers."""
@@ -103,6 +106,34 @@ class VelocityCalculator:
         
         return energy
     
+    def prune_stale_edges(self, graph: nx.Graph, cutoff_timestamp: float) -> nx.Graph:
+        """Remove edges older than cutoff_timestamp from the graph.
+        
+        Args:
+            graph: NetworkX graph with 'timestamp' edge attributes
+            cutoff_timestamp: Remove edges with timestamp < this value
+            
+        Returns:
+            Pruned graph (modified in place)
+        """
+        edges_to_remove = []
+        if graph.is_multigraph():
+            for u, v, k, data in graph.edges(data=True, keys=True):
+                if data.get('timestamp', float('inf')) < cutoff_timestamp:
+                    edges_to_remove.append((u, v, k))
+        else:
+            for u, v, data in graph.edges(data=True):
+                if data.get('timestamp', float('inf')) < cutoff_timestamp:
+                    edges_to_remove.append((u, v))
+
+        graph.remove_edges_from(edges_to_remove)
+
+        # Remove isolated nodes left after edge removal
+        isolated = list(nx.isolates(graph))
+        graph.remove_nodes_from(isolated)
+
+        return graph
+
     def compute_chain_velocity(
         self,
         transactions: List[Transaction],
@@ -111,7 +142,10 @@ class VelocityCalculator:
         """
         Compute velocity through transaction chain
         
-        Measures how quickly funds traverse the social network
+        Measures how quickly funds traverse the social network.
+        Only considers transaction hops with monotonically increasing
+        timestamps within max_hop_delay to avoid false positives from
+        stale historical paths.
         
         Args:
             transactions: Transaction sequence
@@ -127,14 +161,43 @@ class VelocityCalculator:
                 'total_time': 0.0,
                 'avg_hop_time': 0.0,
             }
-        
-        # Compute network distances with a per-source SSSP cache so repeated
-        # adjacent pairs do not retraverse the graph.
+
+        # Prune stale edges from graph based on time_window
+        if transactions:
+            latest_ts = max(t.timestamp for t in transactions)
+            cutoff = latest_ts - self.time_window
+            self.prune_stale_edges(graph, cutoff)
+
+        # Filter to valid temporal chain: monotonically increasing timestamps
+        # with max_hop_delay between consecutive hops.
+        # When a gap exceeds max_hop_delay, start a new chain segment from that point.
+        # Use the longest valid segment.
+        segments: List[List[Transaction]] = [[transactions[0]]]
+        for i in range(1, len(transactions)):
+            hop_delay = transactions[i].timestamp - transactions[i - 1].timestamp
+            if hop_delay >= 0 and hop_delay <= self.max_hop_delay:
+                segments[-1].append(transactions[i])
+            else:
+                # Start a new segment
+                segments.append([transactions[i]])
+
+        # Use the longest valid segment
+        valid_transactions = max(segments, key=len)
+
+        if len(valid_transactions) < 2:
+            return {
+                'chain_velocity': 0.0,
+                'total_distance': 0,
+                'total_time': 0.0,
+                'avg_hop_time': 0.0,
+            }
+
+        # Compute network distances with a per-source SSSP cache
         shortest_path_cache: Dict[str, Dict[str, int]] = {}
         total_distance = 0
-        for i in range(len(transactions) - 1):
-            source = transactions[i].source
-            target = transactions[i+1].target
+        for i in range(len(valid_transactions) - 1):
+            source = valid_transactions[i].source
+            target = valid_transactions[i+1].target
             
             if source not in shortest_path_cache:
                 try:
@@ -144,10 +207,10 @@ class VelocityCalculator:
 
             distance = shortest_path_cache[source].get(target)
             if distance is None:
-                distance = len(transactions)  # Use chain length as proxy
+                distance = len(valid_transactions)  # Use chain length as proxy
             total_distance += distance
         
-        total_time = transactions[-1].timestamp - transactions[0].timestamp
+        total_time = valid_transactions[-1].timestamp - valid_transactions[0].timestamp
         
         if total_time <= 0:
             return {
@@ -159,8 +222,7 @@ class VelocityCalculator:
         
         # Velocity = distance / time
         velocity = total_distance / total_time
-        # N transactions span N-1 hops; average time between consecutive hops.
-        avg_hop_time = total_time / (len(transactions) - 1)
+        avg_hop_time = total_time / len(valid_transactions)
         
         return {
             'chain_velocity': velocity,
