@@ -2,16 +2,14 @@ name: "Issue AI-less Classifier"
 
 on:
   issues:
-    types: [opened, edited]
-    
+    types: [opened, edited]    
   workflow_dispatch:
 
 jobs:
   label-issue:
     runs-on: ubuntu-latest
     permissions:
-      issues: write
-      
+      issues: write    
     steps:
       - name: Analyze Content and Apply Labels
         env:
