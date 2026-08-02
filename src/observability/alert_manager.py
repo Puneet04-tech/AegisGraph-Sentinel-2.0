@@ -35,6 +35,7 @@ class AlertManager:
         self._module_id = "alert_manager"
         self._recent_alerts: Dict[str, datetime] = {}
         self._dedup_window_seconds = 300  # 5 minutes
+        self._max_dedup_window_seconds = self._dedup_window_seconds
     
     def create_rule(
         self,
@@ -95,17 +96,25 @@ class AlertManager:
         rule_id: str = None,
         metric_value: float = None,
         threshold: float = None,
+        cooldown_seconds: int = None,
     ) -> Alert:
         """Create an alert."""
         logger.info(f"Creating alert: {title}")
+        
+        # Per-rule cooldown overrides the manager default when supplied.
+        dedup_window = cooldown_seconds if cooldown_seconds is not None else self._dedup_window_seconds
+        if dedup_window > self._max_dedup_window_seconds:
+            self._max_dedup_window_seconds = dedup_window
         
         # Check deduplication
         alert_key = f"{component}:{title}"
         if alert_key in self._recent_alerts:
             last_alert_time = self._recent_alerts[alert_key]
-            if (datetime.now(timezone.utc) - last_alert_time).total_seconds() < self._dedup_window_seconds:
+            if (datetime.now(timezone.utc) - last_alert_time).total_seconds() < dedup_window:
                 logger.info(f"Alert deduplicated: {alert_key}")
                 return None
+        
+        self._prune_stale_alert_keys()
         
         alert = Alert(
             rule_id=rule_id,
@@ -121,6 +130,21 @@ class AlertManager:
         self._recent_alerts[alert_key] = alert.triggered_at
         
         return alert
+    
+    def _prune_stale_alert_keys(self) -> None:
+        """Remove dedup keys whose cooldown window has fully elapsed.
+
+        Keeps ``_recent_alerts`` bounded by the largest cooldown window seen
+        so long-running instances do not accumulate stale entries.
+        """
+        now = datetime.now(timezone.utc)
+        stale = [
+            key
+            for key, triggered_at in self._recent_alerts.items()
+            if (now - triggered_at).total_seconds() >= self._max_dedup_window_seconds
+        ]
+        for key in stale:
+            del self._recent_alerts[key]
     
     def acknowledge_alert(
         self,
@@ -209,6 +233,7 @@ class AlertManager:
                     rule_id=rule.rule_id,
                     metric_value=value,
                     threshold=threshold,
+                    cooldown_seconds=rule.cooldown_seconds,
                 )
                 if alert:
                     alerts.append(alert)

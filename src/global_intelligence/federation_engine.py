@@ -401,12 +401,20 @@ class FederationEngine:
         """Check if entity matches query."""
         # Check entity type
         if "entity_type" in query:
-            if entity.entity_type.value != query["entity_type"]:
+            allowed_types = query["entity_type"]
+            if isinstance(allowed_types, (list, tuple, set)):
+                if allowed_types and entity.entity_type.value not in allowed_types:
+                    return False
+            elif allowed_types is not None and entity.entity_type.value != allowed_types:
                 return False
 
         # Check threat level
         if "threat_levels" in query:
-            if entity.threat_level.value not in query["threat_levels"]:
+            allowed_levels = query["threat_levels"]
+            if isinstance(allowed_levels, (list, tuple, set)):
+                if allowed_levels and entity.threat_level.value not in allowed_levels:
+                    return False
+            elif allowed_levels is not None and entity.threat_level.value != allowed_levels:
                 return False
 
         # Check attributes

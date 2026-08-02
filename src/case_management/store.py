@@ -297,10 +297,18 @@ class CaseStore:
 
         # Log to external syslog compliance server
         try:
+            # Classify severity from the action AND the affected values.
+            # Checking the action name alone misses escalations/blocked
+            # decisions carried in old_value/new_value (e.g. a STATUS_CHANGED
+            # to ESCALATED or a decision of BLOCK) which then silently ship to
+            # the compliance server as informational instead of warning.
+            risk_marker = " ".join(
+                part for part in (action, old_value, new_value) if part
+            )
             self.syslog_client.log_event(
                 msg_id=action,
                 message=f"Case {case_id} audit event by analyst {analyst_id}",
-                severity=4 if any(kw in action for kw in ("FAILED", "REJECTED", "ESCALATED", "BLOCKED")) else 6,
+                severity=4 if any(kw in risk_marker for kw in ("FAILED", "REJECTED", "ESCALATED", "BLOCK", "BLOCKED")) else 6,
                 metadata={
                     "case_id": case_id,
                     "analyst_id": analyst_id,

@@ -62,7 +62,7 @@ class VelocityCalculator:
                 return 0.0
             total_time = normalized[-1].timestamp - normalized[0].timestamp
             if total_time == 0:
-                return float('inf')
+                return 0.0
             return float((len(normalized) - 1) / total_time)
 
         chain_features = self.compute_chain_velocity(normalized, graph)
@@ -159,7 +159,8 @@ class VelocityCalculator:
         
         # Velocity = distance / time
         velocity = total_distance / total_time
-        avg_hop_time = total_time / len(transactions)
+        # N transactions span N-1 hops; average time between consecutive hops.
+        avg_hop_time = total_time / (len(transactions) - 1)
         
         return {
             'chain_velocity': velocity,
@@ -191,16 +192,19 @@ class VelocityCalculator:
             baseline = self._normalize_transactions(current_time)
             return self._burst_score_from_windows(recent, baseline)
 
-        # Get transactions in burst window
+        # Get transactions in burst window.
+        # Only elapsed times in [0, burst_window] count as recent; a bare
+        # `<= burst_window` also admits transactions from arbitrarily far in
+        # the past (and the future), inflating burst_count and burst_amount.
         recent = [
             t for t in normalized
-            if current_time - t.timestamp <= self.burst_window
+            if 0 <= current_time - t.timestamp <= self.burst_window
         ]
 
         # Get transactions in longer window for comparison
         baseline = [
             t for t in normalized
-            if current_time - t.timestamp <= self.time_window
+            if 0 <= current_time - t.timestamp <= self.time_window
         ]
         
         # Count transactions
