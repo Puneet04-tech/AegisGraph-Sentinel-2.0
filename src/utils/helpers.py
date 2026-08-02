@@ -3,14 +3,22 @@ Helper utilities for AegisGraph Sentinel
 """
 # Working on utility functions for the project
 
+# torch is imported inside the three functions that need it rather than at
+# module scope. This module also carries load_thresholds, which the API reads
+# while importing, and a module scope import would pull the whole ML stack into
+# every process that touches configuration.
+from __future__ import annotations
+
 import yaml
-import torch
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import TYPE_CHECKING, Dict, Any, Optional
 import logging
 from datetime import datetime, timezone
 import functools
+
+if TYPE_CHECKING:  # imported for annotations only, never at runtime
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +193,9 @@ def set_seed(seed: int = 42):
         seed: Random seed
     """
     import random
+
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -223,6 +234,8 @@ def get_device(device: Optional[str] = None) -> torch.device:
     Returns:
         torch.device
     """
+    import torch
+
     requested_device = device.strip().lower() if isinstance(device, str) else device
 
     if requested_device is not None and requested_device not in _VALID_DEVICES:
