@@ -372,6 +372,7 @@ class PredictiveMuleScorer:
         Temporary services = high risk
         """
         email = account_data.email.lower()
+        domain = email.rsplit('@', 1)[-1].strip().strip('.')
         
         # Temporary email domains
         temp_domains = [
@@ -379,12 +380,17 @@ class PredictiveMuleScorer:
             'tempmail.com', 'throwaway.email', 'maildrop.cc',
         ]
         
-        if any(domain in email for domain in temp_domains):
+        def matches(candidate: str) -> bool:
+            """Exact domain match including subdomains, e.g. mail.guerrillamail.com.
+            Rejects lookalikes such as notmailinator.com or gmail.com.attacker.io."""
+            return domain == candidate or domain.endswith('.' + candidate)
+        
+        if any(matches(d) for d in temp_domains):
             return 90.0
         
         # Free email but ok
         free_domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com']
-        if any(domain in email for domain in free_domains):
+        if any(matches(d) for d in free_domains):
             return 20.0
         
         # Corporate/custom domain
