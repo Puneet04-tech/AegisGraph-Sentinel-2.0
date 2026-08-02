@@ -6000,10 +6000,15 @@ async def oauth_token(
     "/api/v1/identity/user/{user_id}",
     tags=["Identity Federation"],
     summary="Get Federated User",
-    dependencies=[Depends(require_role(Role.VIEWER))],
+    dependencies=[Depends(require_role(Role.ADMIN, Role.AUDITOR))],
 )
 async def get_user(user_id: str):
-    """Get federated user by ID."""
+    """Get federated user by ID.
+
+    Restricted to elevated roles (ADMIN/AUDITOR): the federated user
+    directory exposes PII (email, provider binding, groups, roles and
+    last-login), which must not be readable by every VIEWER-scoped key.
+    """
     service = get_identity_federation_service()
     user = service.get_user(user_id)
     if not user:
