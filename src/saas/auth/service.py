@@ -19,6 +19,17 @@ import jwt
 from pydantic import BaseModel, EmailStr
 
 from src.exceptions import AuthenticationError, AuthorizationError
+from src.saas.auth.credential_stores import (
+    APIKeyStore,
+    InMemoryAPIKeyStore,
+    InMemoryPasswordResetTokenStore,
+    InMemorySessionStore,
+    LoggingNotificationSender,
+    NotificationSender,
+    PasswordResetTokenStore,
+    SessionStore,
+)
+from src.saas.auth.password_policy import enforce_password_policy
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +71,43 @@ class UserStore(ABC):
         """Return (user_id, organization_id) for an SSO login, creating the
         user if this is their first sign-in."""
 
+    # Write paths. The store originally exposed reads only, which is why
+    # password change and MFA enrolment had nowhere to persist to. These raise
+    # by default so a third-party store missing them fails loudly rather than
+    # silently discarding a credential change.
+
+    def update_password_hash(self, user_id: str, password_hash: str) -> None:
+        """Persist a new password hash for *user_id*."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support password updates"
+        )
+
+    def set_mfa(
+        self, user_id: str, enabled: bool, secret: str = ""
+    ) -> None:
+        """Enable or disable MFA for *user_id*."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support MFA updates"
+        )
+
+    def set_backup_codes(self, user_id: str, code_hashes: List[str]) -> None:
+        """Replace the user's MFA backup codes (stored hashed)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support backup codes"
+        )
+
+    def consume_backup_code(self, user_id: str, code: str) -> bool:
+        """Single-use-consume an MFA backup code."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support backup codes"
+        )
+
+    def update_last_login(self, user_id: str) -> None:
+        """Record a successful sign-in timestamp."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support login tracking"
+        )
+
 
 class InMemoryUserStore(UserStore):
     """Thread-unsafe in-memory user store for development and testing only.
@@ -71,10 +119,48 @@ class InMemoryUserStore(UserStore):
     def __init__(self) -> None:
         self._users: Dict[str, UserRecord] = {}
         self._email_index: Dict[str, str] = {}
+        self._backup_codes: Dict[str, List[str]] = {}
+        self._last_login: Dict[str, datetime] = {}
 
     def add(self, record: UserRecord) -> None:
         self._users[record.user_id] = record
         self._email_index[record.email] = record.user_id
+
+    def update_password_hash(self, user_id: str, password_hash: str) -> None:
+        record = self._users.get(user_id)
+        if record is None:
+            raise KeyError(f"Unknown user: {user_id}")
+        record.password_hash = password_hash
+
+    def set_mfa(self, user_id: str, enabled: bool, secret: str = "") -> None:
+        record = self._users.get(user_id)
+        if record is None:
+            raise KeyError(f"Unknown user: {user_id}")
+        record.mfa_enabled = enabled
+        record.mfa_secret = secret if enabled else ""
+        if not enabled:
+            self._backup_codes.pop(user_id, None)
+
+    def set_backup_codes(self, user_id: str, code_hashes: List[str]) -> None:
+        if user_id not in self._users:
+            raise KeyError(f"Unknown user: {user_id}")
+        self._backup_codes[user_id] = list(code_hashes)
+
+    def consume_backup_code(self, user_id: str, code: str) -> bool:
+        stored = self._backup_codes.get(user_id)
+        if not stored:
+            return False
+        candidate = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        for index, code_hash in enumerate(stored):
+            if secrets.compare_digest(code_hash, candidate):
+                # Single-use: a backup code cannot be replayed.
+                del stored[index]
+                return True
+        return False
+
+    def update_last_login(self, user_id: str) -> None:
+        if user_id in self._users:
+            self._last_login[user_id] = datetime.now(timezone.utc)
 
     def get_by_id(self, user_id: str) -> Optional[UserRecord]:
         return self._users.get(user_id)
@@ -156,6 +242,7 @@ class AuthProvider(str, Enum):
     OKTA = "okta"
     AZURE_AD = "azure_ad"
     SAML = "saml"
+    API_KEY = "api_key"
     
 class AuthMethod(str, Enum):
     """Authentication methods"""
@@ -205,6 +292,10 @@ class AuthService:
         config: Dict[str, Any],
         user_store: Optional[UserStore] = None,
         mfa_pending_store: Optional["MFAPendingStore"] = None,
+        reset_token_store: Optional[PasswordResetTokenStore] = None,
+        session_store: Optional[SessionStore] = None,
+        api_key_store: Optional[APIKeyStore] = None,
+        notification_sender: Optional[NotificationSender] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -227,6 +318,18 @@ class AuthService:
             mfa_pending_store or InMemoryMFAPendingStore()
         )
         self.revoked_token_ids: set[str] = set()
+        # Secrets generated by begin_mfa_enrolment() but not yet confirmed with
+        # a valid TOTP code. Held here rather than on the user record so an
+        # abandoned enrolment never enables MFA.
+        self._pending_mfa_secrets: Dict[str, str] = {}
+        self.reset_token_store: PasswordResetTokenStore = (
+            reset_token_store or InMemoryPasswordResetTokenStore()
+        )
+        self.session_store: SessionStore = session_store or InMemorySessionStore()
+        self.api_key_store: APIKeyStore = api_key_store or InMemoryAPIKeyStore()
+        self.notification_sender: NotificationSender = (
+            notification_sender or LoggingNotificationSender()
+        )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
 
@@ -426,24 +529,32 @@ class AuthService:
     def authenticate_api_key(self, api_key: str) -> AuthResult:
         """Authenticate using API key.
 
-        The caller is responsible for supplying a ``UserStore`` that can
-        resolve API key hashes to organization records.  The base
-        implementation hashes the key and delegates to the store's
-        ``get_by_id`` path; concrete stores should index keys appropriately.
-
-        Note: Full API-key-to-org resolution requires a store implementation
-        with an API key index.  The current ``InMemoryUserStore`` does not
-        support this lookup — production deployments must provide a store that
-        does.
+        Resolves the presented key through the injected ``APIKeyStore``, which
+        indexes keys by SHA-256 hash.  Revoked and expired keys resolve to
+        ``None`` and are refused.
         """
-        _key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        logger.debug("API key authentication attempted (hash prefix: %s)", _key_hash[:8])
-        # Concrete store implementations should resolve _key_hash to a UserRecord.
-        # Until a store with key-index support is wired in, return a failed result
-        # rather than silently granting access with a hardcoded org.
+        if not api_key:
+            return AuthResult(
+                success=False,
+                error="API key is required",
+                provider=AuthProvider.API_KEY,
+            )
+
+        record = self.api_key_store.resolve(api_key)
+        if record is None:
+            # Deliberately uniform: a revoked key, an expired key, and a key
+            # that never existed are indistinguishable to the caller.
+            return AuthResult(
+                success=False,
+                error="Invalid API key",
+                provider=AuthProvider.API_KEY,
+            )
+
         return AuthResult(
-            success=False,
-            error="API key authentication requires a configured user store with key-index support",
+            success=True,
+            user_id=record.user_id,
+            organization_id=record.organization_id,
+            role="member",
             provider=AuthProvider.API_KEY,
         )
 
@@ -507,10 +618,32 @@ class AuthService:
         self,
         record: UserRecord,
         provider: Optional[AuthProvider] = None,
+        device: str = "Unknown device",
+        ip_address: str = "unknown",
     ) -> AuthResult:
-        """Create successful authentication result"""
+        """Create successful authentication result.
+
+        The ``session_id`` minted here is now recorded in the ``SessionStore``,
+        so ``GET /sessions`` reports real sign-ins rather than placeholders and
+        ``DELETE /sessions/{id}`` has something to revoke.
+        """
         session_id = secrets.token_hex(16)
         now = datetime.now(timezone.utc)
+
+        try:
+            self.session_store.create(
+                session_id=session_id,
+                user_id=record.user_id,
+                device=device,
+                ip_address=ip_address,
+            )
+            self.user_store.update_last_login(record.user_id)
+        except NotImplementedError:
+            # A third-party UserStore without login tracking must not prevent
+            # sign-in; the session itself is still recorded above.
+            logger.debug("User store does not support login tracking")
+        except Exception as exc:
+            logger.warning("Could not record session: %s", exc)
 
         access_payload = TokenPayload(
             sub=record.user_id,
@@ -579,6 +712,117 @@ class AuthService:
     def revoke_token_id(self, token_id: str) -> None:
         if token_id:
             self.revoked_token_ids.add(token_id)
+
+    # ------------------------------------------------------------------
+    # Credential lifecycle
+    # ------------------------------------------------------------------
+
+    def change_password(
+        self,
+        user_id: str,
+        current_password: str,
+        new_password: str,
+    ) -> None:
+        """Verify the current password and persist a new one.
+
+        Raises ``AuthenticationError`` when the current password is wrong and
+        ``PasswordPolicyError`` when the new one fails the policy.  The caller
+        is expected to revoke the user's other sessions afterwards — a password
+        change is usually a response to suspected compromise, so leaving other
+        devices signed in would defeat the point.
+        """
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+        if not record.password_hash:
+            raise AuthenticationError("Password authentication is not configured")
+        if not self.verify_password(current_password, record.password_hash):
+            raise AuthenticationError("Current password is incorrect")
+
+        enforce_password_policy(
+            new_password, email=record.email, username=record.username
+        )
+        if self.verify_password(new_password, record.password_hash):
+            raise AuthenticationError("New password must differ from the current one")
+
+        self.user_store.update_password_hash(user_id, self.hash_password(new_password))
+
+    def set_password(self, user_id: str, new_password: str) -> None:
+        """Set a password without knowing the previous one.
+
+        Used by the reset flow, where possession of a valid single-use token
+        stands in for knowledge of the old password.
+        """
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+        enforce_password_policy(
+            new_password, email=record.email, username=record.username
+        )
+        self.user_store.update_password_hash(user_id, self.hash_password(new_password))
+
+    def begin_mfa_enrolment(self, user_id: str) -> Tuple[str, str, List[str]]:
+        """Generate an MFA secret and backup codes without enabling MFA yet.
+
+        Enrolment is two-phase deliberately: enabling on the first call would
+        let a user who scans the QR code and navigates away lock themselves out
+        of an account whose second factor they never confirmed.
+        """
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+        if record.mfa_enabled:
+            raise AuthorizationError("MFA is already enabled for this account")
+
+        secret = self.generate_mfa_secret()
+        uri = self.get_mfa_uri(secret, record.email)
+        backup_codes = self.generate_backup_codes()
+        self._pending_mfa_secrets[user_id] = secret
+        return secret, uri, backup_codes
+
+    def complete_mfa_enrolment(
+        self,
+        user_id: str,
+        totp_code: str,
+        backup_codes: Optional[List[str]] = None,
+    ) -> None:
+        """Confirm enrolment with a valid TOTP code and enable MFA."""
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+
+        secret = self._pending_mfa_secrets.get(user_id)
+        if not secret:
+            raise AuthenticationError("No pending MFA enrolment for this account")
+        if not self.verify_mfa_token(secret, totp_code):
+            raise AuthenticationError("Invalid MFA code")
+
+        self.user_store.set_mfa(user_id, True, secret)
+        if backup_codes:
+            self.user_store.set_backup_codes(
+                user_id,
+                [hashlib.sha256(c.encode("utf-8")).hexdigest() for c in backup_codes],
+            )
+        self._pending_mfa_secrets.pop(user_id, None)
+
+    def disable_mfa(self, user_id: str, current_password: str) -> None:
+        """Disable MFA after verifying the account password.
+
+        The password check is the point of this endpoint: without it, anyone
+        holding a stolen access token could strip the second factor.
+        """
+        record = self.user_store.get_by_id(user_id)
+        if record is None:
+            raise AuthenticationError("User not found")
+        if not record.password_hash:
+            raise AuthenticationError("Password authentication is not configured")
+        if not self.verify_password(current_password, record.password_hash):
+            raise AuthenticationError("Current password is incorrect")
+        if not record.mfa_enabled:
+            raise AuthorizationError("MFA is not enabled for this account")
+
+        self.user_store.set_mfa(user_id, False)
+        self._pending_mfa_secrets.pop(user_id, None)
 
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""

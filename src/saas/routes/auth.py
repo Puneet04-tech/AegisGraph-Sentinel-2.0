@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPBearer, OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr, Field
 
-from src.exceptions import AuthenticationError
+from src.exceptions import AuthenticationError, AuthorizationError
+from src.saas.auth.password_policy import PasswordPolicyError
 from src.saas.auth.service import (
     ABACService,
     AuthProvider,
@@ -88,6 +89,23 @@ class PasswordResetConfirm(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
+
+
+class MFAConfirmRequest(BaseModel):
+    totp_code: str = Field(..., min_length=6, max_length=10)
+
+
+class MFADisableRequest(BaseModel):
+    current_password: str
+
+
+class SessionResponse(BaseModel):
+    id: str
+    device: str
+    ip_address: str
+    created_at: datetime
+    last_active: datetime
+    current: bool
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -178,6 +196,10 @@ class _AuthServiceProxy:
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} for AuthService>"
 
+
+# Backup codes shown at enrolment, held until the user confirms with a TOTP
+# code. Dropped on confirmation so the plaintext does not linger.
+_pending_backup_codes: dict[str, List[str]] = {}
 
 auth_service = _AuthServiceProxy()
 rbac_service = RBACService()
@@ -317,26 +339,65 @@ async def verify_mfa(request: MFATokenRequest):
 
 @router.post("/mfa/enroll", response_model=MFAEnrollmentResponse)
 async def enroll_mfa(current_user: dict = Depends(get_current_user)):
-    """Enroll in MFA"""
-    service = _get_auth_service()
-    secret = service.generate_mfa_secret()
-    uri = service.get_mfa_uri(secret, current_user["email"])
-    backup_codes = service.generate_backup_codes()
+    """Begin MFA enrolment.
 
-    return MFAEnrollmentResponse(
-        secret=secret,
-        uri=uri,
-        backup_codes=backup_codes,
-    )
+    The secret is held pending until confirmed via ``/mfa/enroll/confirm``.
+    Enabling here would let a user who scans the QR code and navigates away
+    lock themselves out of an account whose second factor they never proved
+    they hold.
+    """
+    try:
+        secret, uri, backup_codes = _get_auth_service().begin_mfa_enrolment(
+            current_user["user_id"]
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+    _pending_backup_codes[current_user["user_id"]] = backup_codes
+    return MFAEnrollmentResponse(secret=secret, uri=uri, backup_codes=backup_codes)
+
+
+@router.post("/mfa/enroll/confirm")
+async def confirm_mfa_enrollment(
+    request: MFAConfirmRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Confirm MFA enrolment with a code from the authenticator app."""
+    user_id = current_user["user_id"]
+    try:
+        _get_auth_service().complete_mfa_enrolment(
+            user_id,
+            request.totp_code,
+            backup_codes=_pending_backup_codes.pop(user_id, None),
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+    return {"success": True, "message": "MFA enabled", "mfa_enabled": True}
 
 
 @router.post("/mfa/disable")
 async def disable_mfa(
-    current_password: str,
+    request: MFADisableRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Disable MFA"""
-    return {"success": True, "message": "MFA disabled"}
+    """Disable MFA after verifying the account password.
+
+    The password check is the whole point of this endpoint: without it, anyone
+    holding a stolen access token could strip the second factor.
+    """
+    try:
+        _get_auth_service().disable_mfa(
+            current_user["user_id"], request.current_password
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+    return {"success": True, "message": "MFA disabled", "mfa_enabled": False}
 
 
 @router.get("/sso/providers")
@@ -436,7 +497,22 @@ async def logout(current_user: dict = Depends(get_current_user)):
 
 @router.post("/password/reset")
 async def request_password_reset(request: PasswordResetRequest):
-    """Request password reset email"""
+    """Request a password reset email.
+
+    The response is identical whether or not the address exists, so this
+    endpoint cannot be used to enumerate accounts.
+    """
+    service = _get_auth_service()
+    record = service.user_store.get_by_email(request.email)
+    if record is not None:
+        token = service.reset_token_store.issue(record.user_id)
+        try:
+            service.notification_sender.send_password_reset(record.email, token)
+        except Exception as exc:
+            # A delivery failure must not change the response, or the
+            # difference becomes the enumeration oracle this avoids.
+            logger.error("Password reset dispatch failed: %s", exc)
+
     return {
         "success": True,
         "message": "If email exists, password reset instructions have been sent",
@@ -445,10 +521,33 @@ async def request_password_reset(request: PasswordResetRequest):
 
 @router.post("/password/reset/confirm")
 async def confirm_password_reset(request: PasswordResetConfirm):
-    """Confirm password reset with token"""
+    """Confirm a password reset with a single-use token."""
+    service = _get_auth_service()
+    user_id = service.reset_token_store.consume(request.token)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token is invalid, expired, or already used",
+        )
+
+    try:
+        service.set_password(user_id, request.new_password)
+    except PasswordPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    # A reset is a recovery action, so every existing session is ended — the
+    # attacker who prompted the reset must not keep a live session.
+    revoked = service.session_store.revoke_all_for_user(user_id)
+    service.reset_token_store.invalidate_for_user(user_id)
+
     return {
         "success": True,
         "message": "Password has been reset successfully",
+        "sessions_revoked": revoked,
     }
 
 
@@ -457,45 +556,75 @@ async def change_password(
     request: PasswordChangeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Change password for authenticated user"""
-    return {"success": True, "message": "Password changed successfully"}
+    """Change the password for the authenticated user."""
+    service = _get_auth_service()
+    try:
+        service.change_password(
+            current_user["user_id"],
+            request.current_password,
+            request.new_password,
+        )
+    except PasswordPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+    # Sign out the user's other devices. A password change is usually a
+    # response to suspected compromise, so leaving them signed in would defeat
+    # the point.
+    revoked = service.session_store.revoke_all_for_user(
+        current_user["user_id"], except_session=current_user.get("sid")
+    )
+    service.reset_token_store.invalidate_for_user(current_user["user_id"])
+
+    return {
+        "success": True,
+        "message": "Password changed successfully",
+        "other_sessions_revoked": revoked,
+    }
 
 
 @router.get("/me")
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
     """Get current user information"""
+    record = _get_auth_service().user_store.get_by_id(current_user["user_id"])
     return {
         "id": current_user["user_id"],
         "email": current_user["email"],
         "organization_id": current_user["organization_id"],
         "role": current_user["role"],
-        "mfa_enabled": False,
+        "mfa_enabled": bool(record.mfa_enabled) if record else False,
         "sso_provider": None,
     }
 
 
 @router.get("/sessions")
 async def list_active_sessions(current_user: dict = Depends(get_current_user)):
-    """List active sessions for current user"""
+    """List the caller's active sessions.
+
+    Previously returned two invented sessions with fabricated IPs, which is
+    worse than returning nothing: a user checking for unauthorised access saw a
+    device that was not theirs and could not tell it from a real intrusion.
+    """
+    service = _get_auth_service()
+    current_sid = current_user.get("sid")
+    sessions = service.session_store.list_for_user(current_user["user_id"])
+
     return {
         "sessions": [
             {
-                "id": "session_1",
-                "device": "Chrome on Windows",
-                "ip_address": "192.168.1.1",
-                "location": "Mumbai, India",
-                "last_active": datetime.now(timezone.utc).isoformat(),
-                "current": True,
-            },
-            {
-                "id": "session_2",
-                "device": "Safari on iOS",
-                "ip_address": "10.0.0.1",
-                "location": "Unknown",
-                "last_active": (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
-                "current": False,
-            },
-        ]
+                "id": s.session_id,
+                "device": s.device,
+                "ip_address": s.ip_address,
+                "created_at": s.created_at.isoformat(),
+                "last_active": s.last_seen_at.isoformat(),
+                "current": s.session_id == current_sid,
+            }
+            for s in sessions
+        ],
+        "total": len(sessions),
     }
 
 
@@ -504,8 +633,25 @@ async def revoke_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Revoke a session"""
-    return {"success": True, "message": "Session revoked"}
+    """Revoke one of the caller's own sessions."""
+    service = _get_auth_service()
+    record = service.session_store.get(session_id)
+
+    # Ownership is checked before existence is revealed, so a caller cannot
+    # probe for other users' session ids by comparing 403 against 404.
+    if record is None or record.user_id != current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    if not service.session_store.revoke(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Session is already revoked",
+        )
+
+    return {"success": True, "message": "Session revoked", "session_id": session_id}
 
 
 @router.post("/api-keys", response_model=APIKeyResponse)
@@ -513,39 +659,67 @@ async def create_api_key(
     request: APIKeyCreateRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Create new API key"""
-    import hashlib
+    """Create a new API key.
 
-    raw_key = f"sk_{secrets.token_hex(32)}"
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    key_prefix = raw_key[:8]
+    The raw key is returned exactly once; only its SHA-256 hash is stored.
+    Previously the hash was computed and then discarded, so the key returned to
+    the caller could never authenticate.
+    """
+    if request.expires_at is not None:
+        expires_at = request.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="expires_at must be in the future",
+            )
+    else:
+        expires_at = None
+
+    raw_key, record = _get_auth_service().api_key_store.create(
+        name=request.name,
+        organization_id=current_user["organization_id"],
+        user_id=current_user["user_id"],
+        scopes=request.scopes,
+        expires_at=expires_at,
+    )
 
     return APIKeyResponse(
-        id=f"key_{datetime.now(timezone.utc).timestamp()}",
-        name=request.name,
+        id=record.key_id,
+        name=record.name,
         key=raw_key,
-        key_prefix=key_prefix,
-        scopes=request.scopes,
-        expires_at=request.expires_at,
-        created_at=datetime.now(timezone.utc),
+        key_prefix=record.key_prefix,
+        scopes=record.scopes,
+        expires_at=record.expires_at,
+        created_at=record.created_at,
     )
 
 
 @router.get("/api-keys")
 async def list_api_keys(current_user: dict = Depends(get_current_user)):
-    """List API keys for organization"""
+    """List the organization's API keys.
+
+    Only prefixes are returned — the raw key is unrecoverable by design.
+    """
+    records = _get_auth_service().api_key_store.list_for_organization(
+        current_user["organization_id"]
+    )
     return {
         "api_keys": [
             {
-                "id": "key_1",
-                "name": "Production Key",
-                "key_prefix": "sk_1234ab",
-                "scopes": ["read", "write"],
-                "is_active": True,
-                "last_used": datetime.now(timezone.utc).isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "id": r.key_id,
+                "name": r.name,
+                "key_prefix": r.key_prefix,
+                "scopes": r.scopes,
+                "is_active": r.is_active(),
+                "last_used": r.last_used_at.isoformat() if r.last_used_at else None,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "created_at": r.created_at.isoformat(),
             }
-        ]
+            for r in records
+        ],
+        "total": len(records),
     }
 
 
@@ -554,5 +728,15 @@ async def delete_api_key(
     key_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Delete API key"""
-    return {"success": True, "message": "API key deleted"}
+    """Revoke an API key owned by the caller's organization."""
+    revoked = _get_auth_service().api_key_store.revoke(
+        key_id, current_user["organization_id"]
+    )
+    if not revoked:
+        # Uniform 404 whether the key belongs to another organization or does
+        # not exist, so key ids cannot be probed across tenants.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found",
+        )
+    return {"success": True, "message": "API key deleted", "id": key_id}
