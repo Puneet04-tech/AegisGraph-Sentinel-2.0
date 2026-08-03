@@ -274,6 +274,8 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             "email": payload.email,
             "role": payload.role,
             "jti": payload.jti,
+            "sid": payload.sid,
+            "exp": payload.exp,
         }
     except Exception:
         raise HTTPException(
@@ -497,9 +499,26 @@ async def refresh_token(body: RefreshTokenRequest):
 
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
-    """Logout current session"""
+    """Logout current session.
+
+    Revokes the whole session, so the refresh token issued alongside the
+    presented access token stops working too. Revoking only the access token
+    would leave the session refreshable for the remainder of the refresh
+    token's lifetime.
+    """
+    service = _get_auth_service()
+    expires_at = current_user.get("exp")
+
+    session_id = current_user.get("sid")
+    if session_id:
+        service.revoke_session(session_id, expires_at)
+
+    # Tokens issued before sessions were stamped into the access token carry no
+    # `sid`. Revoking the individual jti is all that is possible for those, and
+    # they age out within the access-token lifetime.
     if current_user.get("jti"):
-        _get_auth_service().revoke_token_id(current_user["jti"])
+        service.revoke_token_id(current_user["jti"], expires_at)
+
     return {"success": True, "message": "Logged out successfully"}
 
 
@@ -606,7 +625,26 @@ async def revoke_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Revoke a session"""
+    """Revoke a session.
+
+    Only the caller's own session may be revoked. There is no session registry
+    yet (tracked separately), so a caller cannot enumerate or revoke sessions
+    other than the one they are currently authenticated with — attempting to
+    is rejected rather than silently reported as successful.
+    """
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Session id is required",
+        )
+
+    if session_id != current_user.get("sid"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot revoke a session that is not your own",
+        )
+
+    _get_auth_service().revoke_session(session_id, current_user.get("exp"))
     return {"success": True, "message": "Session revoked"}
 
 

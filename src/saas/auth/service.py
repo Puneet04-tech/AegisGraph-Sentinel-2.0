@@ -210,6 +210,35 @@ class TokenPayload:
     exp: datetime
     iat: datetime
     jti: str  # JWT ID for revocation
+    sid: str = ""  # Session ID — ties this token to its sibling refresh token
+
+
+class _RevokedTokenIdsView:
+    """Set-like adapter over a ``TokenRevocationStore``.
+
+    ``AuthService.revoked_token_ids`` used to be a plain ``set``. Revocation now
+    lives behind a store so it can be shared between workers and bounded by a
+    TTL, but membership tests and ``.add()`` calls against the old attribute
+    still need to work. This adapter provides exactly those two operations and
+    nothing else — the store is not enumerable, so ``len()`` and iteration are
+    deliberately unsupported rather than silently wrong.
+    """
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: TokenRevocationStore) -> None:
+        self._store = store
+
+    def __contains__(self, token_id: object) -> bool:
+        return isinstance(token_id, str) and self._store.is_token_revoked(token_id)
+
+    def add(self, token_id: str) -> None:
+        self._store.revoke_token(token_id)
+
+    def discard(self, token_id: str) -> None:  # pragma: no cover - parity only
+        raise NotImplementedError(
+            "Revocations expire on their own and cannot be withdrawn"
+        )
 
 
 class AuthService:
@@ -371,6 +400,7 @@ class AuthService:
             "exp": payload.exp,
             "iat": payload.iat,
             "jti": payload.jti,
+            "sid": payload.sid,
         }
         return jwt.encode(data, self.jwt_secret, algorithm=self.jwt_algorithm)
 
@@ -388,11 +418,27 @@ class AuthService:
         return jwt.encode(payload, self.jwt_secret, algorithm=self.jwt_algorithm)
 
     def verify_token(self, token: str) -> Optional[TokenPayload]:
-        """Verify and decode JWT token"""
+        """Verify and decode JWT token.
+
+        Rejects the token when its own ``jti`` was revoked, and also when the
+        session it belongs to was revoked — the latter is what makes a logout
+        invalidate every credential minted for that session rather than only
+        the one presented at logout.
+        """
         try:
             payload = jwt.decode(token, self.jwt_secret, algorithms=[self.jwt_algorithm])
-            if payload.get("jti") in self.revoked_token_ids:
-                raise AuthenticationError("Token has been revoked")
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationError("Token has expired")
+        except jwt.InvalidTokenError:
+            raise AuthenticationError("Invalid token")
+
+        session_id = payload.get("sid", "")
+        if self.revocation_store.is_token_revoked(payload.get("jti", "")):
+            raise AuthenticationError("Token has been revoked")
+        if session_id and self.revocation_store.is_session_revoked(session_id):
+            raise AuthenticationError("Session has been revoked")
+
+        try:
             return TokenPayload(
                 sub=payload["sub"],
                 org=payload["org"],
@@ -402,11 +448,13 @@ class AuthService:
                 exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
                 iat=datetime.fromtimestamp(payload["iat"], tz=timezone.utc),
                 jti=payload["jti"],
+                sid=session_id,
             )
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except jwt.InvalidTokenError:
-            raise AuthenticationError("Invalid token")
+        except KeyError as exc:
+            # A correctly signed token missing a required claim is malformed,
+            # not merely unauthorized. Treat it as invalid rather than letting
+            # the KeyError escape to the caller as a 500.
+            raise AuthenticationError(f"Malformed token: missing claim {exc}")
 
     @staticmethod
     def _account_identity(email: str) -> str:
@@ -624,9 +672,17 @@ class AuthService:
         self,
         record: UserRecord,
         provider: Optional[AuthProvider] = None,
+        session_id: Optional[str] = None,
     ) -> AuthResult:
-        """Create successful authentication result"""
-        session_id = secrets.token_hex(16)
+        """Create successful authentication result.
+
+        A fresh login starts a new session. A token refresh passes the existing
+        *session_id* through so the rotated pair stays in the same session
+        family — otherwise revoking a session on replay would only reach the
+        tokens issued before the rotation, and the attacker's newer pair would
+        survive.
+        """
+        session_id = session_id or secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
         access_payload = TokenPayload(
@@ -638,6 +694,7 @@ class AuthService:
             exp=now + timedelta(seconds=self.access_token_expiry),
             iat=now,
             jti=secrets.token_hex(16),
+            sid=session_id,
         )
 
         access_token = self.create_access_token(access_payload)
@@ -667,9 +724,14 @@ class AuthService:
         """Issue a new access/refresh token pair from a valid refresh token.
 
         Decodes the supplied JWT, confirms it carries ``type == "refresh"``,
-        then delegates to ``_create_auth_result`` to mint fresh tokens.
-        Raises ``AuthenticationError`` on any validation failure so the caller
-        can map it to an appropriate HTTP response.
+        confirms its session is still live, and single-use-consumes its ``jti``
+        so the presented token cannot be used a second time.  Only then are
+        fresh tokens minted.  Raises ``AuthenticationError`` on any validation
+        failure so the caller can map it to an appropriate HTTP response.
+
+        The session check is what makes logout stick: without it a refresh
+        token captured before logout keeps minting access tokens for the rest
+        of its multi-day lifetime.
         """
         try:
             payload = jwt.decode(
@@ -687,15 +749,73 @@ class AuthService:
         if not user_id:
             raise AuthenticationError("Malformed refresh token: missing subject")
 
+        session_id = payload.get("session", "")
+        token_id = payload.get("jti", "")
+        if not session_id or not token_id:
+            raise AuthenticationError("Malformed refresh token: missing session")
+
+        if self.revocation_store.is_session_revoked(session_id):
+            raise AuthenticationError("Session has been revoked")
+        if self.revocation_store.is_token_revoked(token_id):
+            raise AuthenticationError("Refresh token has been revoked")
+
+        expires_at = self._claim_to_datetime(payload.get("exp"))
+
+        # Rotation. Consuming the jti fails on a second presentation, which
+        # means the token is held by more than one party — the store revokes
+        # the whole session in that case, so both the attacker and the
+        # legitimate holder are forced to re-authenticate.
+        if not self.revocation_store.consume_refresh_jti(
+            token_id, session_id, expires_at
+        ):
+            raise AuthenticationError("Refresh token has already been used")
+
         record = self.user_store.get_by_id(user_id)
         if record is None:
+            # The account was deleted after the token was issued. Kill the
+            # session so the remaining tokens for it stop working too.
+            self.revocation_store.revoke_session(session_id, expires_at)
             raise AuthenticationError("User not found")
 
-        return self._create_auth_result(record)
+        return self._create_auth_result(record, session_id=session_id)
 
-    def revoke_token_id(self, token_id: str) -> None:
+    @staticmethod
+    def _claim_to_datetime(claim: Any) -> Optional[datetime]:
+        """Convert a numeric JWT ``exp``/``iat`` claim to an aware datetime."""
+        if claim is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(claim), tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+
+    def revoke_token_id(self, token_id: str, expires_at: Optional[datetime] = None) -> None:
+        """Revoke a single token id.
+
+        Prefer :meth:`revoke_session` for logout — revoking one id leaves the
+        sibling refresh token live.
+        """
         if token_id:
-            self.revoked_token_ids.add(token_id)
+            self.revocation_store.revoke_token(token_id, expires_at)
+
+    def revoke_session(self, session_id: str, expires_at: Optional[datetime] = None) -> None:
+        """Revoke every token issued for *session_id*.
+
+        This is the operation logout needs: it invalidates the access token and
+        the refresh token minted alongside it in a single call.
+        """
+        if session_id:
+            self.revocation_store.revoke_session(session_id, expires_at)
+
+    @property
+    def revoked_token_ids(self) -> "_RevokedTokenIdsView":
+        """Backward-compatible view over revoked token ids.
+
+        Retained so existing callers that did ``jti in svc.revoked_token_ids``
+        or ``svc.revoked_token_ids.add(jti)`` keep working now that revocation
+        lives in a store rather than a plain set.
+        """
+        return _RevokedTokenIdsView(self.revocation_store)
 
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
