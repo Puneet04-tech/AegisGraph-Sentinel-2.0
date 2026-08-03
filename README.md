@@ -62,7 +62,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 | 5 | **Voice Stress Analysis** | Phone coercion detection | 92% detection rate |
 | 6 | **Blockchain Evidence** | Immutable forensics | <100ms sealing, court-admissible |
 
-**📖 Detailed Innovation Guide**: See [INNOVATIONS.md](docs/INNOVATIONS.md) for comprehensive documentation
+**📖 Detailed Innovation Guide**: See [`INNOVATIONS.md`](./docs/INNOVATIONS.md) for comprehensive documentation.
 
 ## 🧠 Core Technologies
 
@@ -258,6 +258,19 @@ Explainable AI engine that generates human-readable explanations for regulatory 
 
 ## 💻 API Usage
 
+### Quick Endpoint Summary
+
+| Category | Endpoint | Method | Description | Auth Header |
+|---|---|---|---|---|
+| **Core** | `/api/v1/fraud/check` | `POST` | Real-time HTGNN risk scoring | `X-API-Key` |
+| **Innovations** | `/api/v1/voice/analyze` | `POST` | Voice stress analysis | `X-API-Key` |
+| **Innovations** | `/api/v1/accounts/score-opening` | `POST` | Predictive mule account scoring | `X-API-Key` |
+| **Honeypot** | `/api/v1/honeypot/active` | `GET` | List active virtual honeypots | `X-API-Key` |
+| **Honeypot** | `/api/v1/honeypot/stats` | `GET` | Retrieve arrest & recovery stats | `X-API-Key` |
+| **Blockchain** | `/api/v1/blockchain/seal` | `POST` | Seal evidence to Hyperledger | `X-API-Key` |
+| **Blockchain** | `/api/v1/blockchain/verify/{id}`| `GET` | Verify sealed evidence integrity | `X-API-Key` |
+
+
 ```python
 import requests
 
@@ -396,7 +409,7 @@ Detailed project documentation is available in the `docs/` directory.
 | [`CONTRIBUTOR_HANDBOOK.md`](docs/CONTRIBUTOR_HANDBOOK.md) | Contributor workflow, repository structure, and contribution guidelines |
 | [`TRAINING_WORKFLOW.md`](docs/TRAINING_WORKFLOW.md) | End-to-end machine learning and HTGNN training pipeline |
 | [`TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing procedures, coverage reporting, and debugging guidance |
-| `graph-investigation-playbooks.md` | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
+| [`graph-investigation-playbooks.md`](docs/graph-investigation-playbooks.md) | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
 
 These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
 ## 🧪 Testing
