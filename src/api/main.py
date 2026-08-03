@@ -5764,12 +5764,31 @@ async def register_provider(
     """Register a new identity provider."""
     from src.identity_federation import IdentityProviderType, SSOProvider as IdpSSOProvider
     service = get_identity_federation_service()
-    
+
+    # Convert the raw enum strings outside validation. Invalid values raise
+    # ValueError, which must surface as a structured 400 instead of a 500.
+    try:
+        provider_type_enum = IdentityProviderType(provider_type)
+        sso_provider_enum = IdpSSOProvider(sso_provider) if sso_provider else None
+    except ValueError:
+        errors = []
+        if provider_type not in {t.value for t in IdentityProviderType}:
+            errors.append(
+                f"Invalid provider_type: '{provider_type}'. "
+                f"Must be one of: {', '.join(t.value for t in IdentityProviderType)}"
+            )
+        if sso_provider and sso_provider not in {t.value for t in IdpSSOProvider}:
+            errors.append(
+                f"Invalid sso_provider: '{sso_provider}'. "
+                f"Must be one of: {', '.join(t.value for t in IdpSSOProvider)}"
+            )
+        raise HTTPException(status_code=400, detail={"message": "Validation failed", "errors": errors})
+
     provider, is_valid, errors = service.register_provider(
         name=name,
-        provider_type=IdentityProviderType(provider_type),
+        provider_type=provider_type_enum,
         issuer=issuer,
-        sso_provider=IdpSSOProvider(sso_provider) if sso_provider else None,
+        sso_provider=sso_provider_enum,
         client_id=client_id,
         client_secret=client_secret,
         metadata_url=metadata_url,
