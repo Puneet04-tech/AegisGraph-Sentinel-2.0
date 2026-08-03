@@ -276,7 +276,7 @@ class OAuthProvider:
 
         # Validate client
         client = self._clients.get(client_id)
-        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+        if not client or client_secret is None or client["client_secret_hash"] != self._hash_secret(client_secret):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
