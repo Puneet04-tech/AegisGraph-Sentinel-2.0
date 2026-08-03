@@ -127,7 +127,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('mode')
     @classmethod
-    def validate_mode(cls, v):
+    def validate_mode(cls, v: str) -> str:
         """Validate transaction mode."""
         try:
             TransactionValidator.validate_mode(v)
