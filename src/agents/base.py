@@ -184,7 +184,7 @@ class BaseAgent(ABC):
         """Submit task to agent queue"""
         await self.message_queue.put(task)
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop agent"""
         self._running = False
 
