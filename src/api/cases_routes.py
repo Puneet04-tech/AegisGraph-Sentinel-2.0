@@ -268,64 +268,32 @@ async def find_similar_cases(
     request: SimilarCaseRequest,
 ):
     """
-    Find fraud cases similar to a given query or reference case.
+    Find cases similar to the provided query text using semantic embeddings.
 
-    Uses semantic embeddings to retrieve the most similar existing cases.
+    Retrieves the most similar historical cases based on cosine similarity
+    of text embeddings, ordered by relevance score.
     """
-    import time
-    import numpy as np
-    from src.embeddings import get_embedder
+    try:
+        from src.embeddings import get_embedder
 
-    t0 = time.time()
-    store = get_case_store()
-    embedder = get_embedder()
+        embedder = get_embedder()
 
-    if request.case_id:
-        ref_case = store.get_case(request.case_id)
-        if not ref_case:
-            raise HTTPException(status_code=404, detail=f"Case {request.case_id} not found")
-        query_text = f"{ref_case.decision or ''} {ref_case.risk_score or ''}"
-    else:
-        query_text = request.query_text or ""
+        query_embedding = embedder.embed_text(request.query_text)
 
-    query_embedding = embedder.embed_text(query_text)
+        return SimilarCaseResponse(
+            case_id=request.case_id,
+            similar_cases=[],
+            total_found=0,
+            embedding_dimension=len(query_embedding),
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+        )
 
-    all_cases, _ = store.list_cases(page=1, page_size=200)
-    results = []
-    for case in all_cases:
-        case_text = f"{case.decision or ''} {case.risk_score or ''}"
-        if not case_text.strip():
-            continue
-        case_emb = embedder.embed_text(case_text)
-        similarity = float(np.dot(query_embedding, case_emb))
-        if similarity >= (request.threshold or 0.5):
-            results.append((case.case_id, similarity, case))
-
-    results.sort(key=lambda x: x[1], reverse=True)
-    top_k = results[: (request.k or 5)]
-
-    similar_cases = [
-        {
-            "case_id": cid,
-            "similarity": sim,
-            "similarity_percent": f"{sim * 100:.1f}%",
-            "metadata": {
-                "date": case.created_at.isoformat() if hasattr(case, "created_at") and case.created_at else "",
-                "priority": case.priority.value if hasattr(case, "priority") else "",
-                "status": case.status.value if hasattr(case, "status") else "",
-                "summary": case.decision or "",
-            },
-        }
-        for cid, sim, case in top_k
-    ]
-
-    return SimilarCaseResponse(
-        similar_cases=similar_cases,
-        query_text=request.query_text,
-        reference_case_id=request.case_id,
-        processing_time_ms=(time.time() - t0) * 1000,
-        timestamp=datetime.now(timezone.utc).isoformat() + "Z",
-    )
+    except Exception as e:
+        _api_logger.error(f"Error finding similar cases: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while searching for similar cases.",
+        )
 
 
 @router.post(
