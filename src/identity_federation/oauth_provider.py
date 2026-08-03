@@ -218,7 +218,7 @@ class OAuthProvider:
         
         # Refresh Token Flow
         if grant_type == "refresh_token":
-            return self._refresh_token_grant(refresh_token, scope)
+            return self._refresh_token_grant(refresh_token, scope, client_id, client_secret)
         
         # Authorization Code Flow
         if grant_type == "authorization_code":
@@ -268,7 +268,7 @@ class OAuthProvider:
         
         # Validate client
         client = self._clients.get(client_id)
-        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+        if not client or client_secret is None or client["client_secret_hash"] != self._hash_secret(client_secret):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
@@ -384,8 +384,10 @@ class OAuthProvider:
         self,
         refresh_token: str,
         scope: Optional[str],
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
     ) -> AuthenticationResponse:
-        """Process refresh token grant."""
+        """Process refresh token grant with client credential validation and token rotation."""
         # Find token by refresh token
         token_info = None
         for access_token, info in self._tokens.items():
@@ -399,7 +401,22 @@ class OAuthProvider:
                 error="invalid_grant",
                 error_description="Invalid refresh token",
             )
-        
+
+        # Validate client credentials
+        stored_client = self._clients.get(token_info.get("client_id"))
+        if client_id != token_info.get("client_id"):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Client ID mismatch",
+            )
+        if stored_client and stored_client.get("client_secret_hash") != self._hash_secret(client_secret):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
         # Check expiration
         if datetime.now(timezone.utc) > token_info.get("refresh_expires_at", datetime.now(timezone.utc)):
             return AuthenticationResponse(
@@ -408,26 +425,27 @@ class OAuthProvider:
                 error_description="Refresh token expired",
             )
         
-        # Generate new access token
+        # Generate new tokens (rotation)
         new_access_token = self._generate_access_token()
+        new_refresh_token = self._generate_refresh_token()
         expires_in = 3600
-        
+
         # Revoke old token
         self._revoke_token(token_info["access_token"])
-        
+
         self._store_token(
             access_token=new_access_token,
             token_type="Bearer",
             expires_in=expires_in,
             scope=scope or token_info["scope"],
             client_id=token_info["client_id"],
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
         )
-        
+
         return AuthenticationResponse(
             success=True,
             access_token=new_access_token,
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
             authentication_method="oauth2",
             metadata={
                 "token_type": "Bearer",

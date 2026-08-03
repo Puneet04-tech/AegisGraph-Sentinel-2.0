@@ -165,6 +165,26 @@ def _register_configured_sso_providers(service: AuthService) -> None:
             logger.debug("SSO provider %s not configured (missing env vars)", provider.value)
 
 
+def _build_attempt_limiter() -> AuthAttemptLimiter:
+    """Build the limiter named by ``AEGIS_AUTH_LIMITER_BACKEND``.
+
+    Defaults to in-memory so local development and the test suite need no
+    external service. Multi-worker deployments must set this to ``redis``,
+    otherwise each worker enforces the threshold independently and the
+    effective budget is multiplied by the worker count.
+    """
+    from src.config.settings import get_settings
+
+    backend = os.getenv("AEGIS_AUTH_LIMITER_BACKEND", "memory")
+    redis_url = None
+    if backend.strip().lower() == "redis":
+        try:
+            redis_url = get_settings().innovations.redis_url
+        except Exception as exc:
+            logger.warning("Could not read Redis URL from settings: %s", exc)
+    return build_attempt_limiter(backend, redis_url)
+
+
 def _build_auth_service() -> AuthService:
     try:
         jwt_secret = _load_jwt_secret()
@@ -176,7 +196,8 @@ def _build_auth_service() -> AuthService:
             "jwt_secret": jwt_secret,
             "access_token_expiry": 3600,
             "refresh_token_expiry": 86400 * 7,
-        }
+        },
+        attempt_limiter=_build_attempt_limiter(),
     )
     _register_configured_sso_providers(service)
     return service
@@ -213,6 +234,44 @@ _SSO_REDIRECT_ALLOWLIST: List[str] = [
 ]
 
 
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Resolve the caller's address for the per-address lockout budget.
+
+    Uses the project's proxy-aware resolver rather than reading headers
+    directly, so a spoofed ``X-Forwarded-For`` cannot be used to dodge the
+    budget or to lock out somebody else's address. Returns ``None`` when the
+    address cannot be determined; the per-account budget still applies.
+    """
+    if request is None:
+        return None
+    try:
+        from src.api.dependencies.ip_resolution import get_remote_address
+
+        return get_remote_address(request)
+    except Exception as exc:
+        logger.warning("Could not resolve client address for rate limiting: %s", exc)
+        return None
+
+
+def _raise_if_rate_limited(result: AuthResult) -> None:
+    """Translate a lockout refusal into 429 with ``Retry-After``.
+
+    Kept separate from the 401 path so the two are never conflated: a client
+    must be able to tell "wrong password" from "stop trying for a while".
+    """
+    if not result.rate_limited:
+        return
+    retry_after = max(1, result.retry_after_seconds)
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=build_rate_limit_error_payload(
+            retry_after_seconds=retry_after,
+            limit_type="authentication",
+        ),
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)):
     """Get current authenticated user"""
     if not authorization:
@@ -230,6 +289,8 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             "email": payload.email,
             "role": payload.role,
             "jti": payload.jti,
+            "sid": payload.sid,
+            "exp": payload.exp,
         }
     except Exception:
         raise HTTPException(
@@ -276,14 +337,16 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http_request: Request):
     """Login with username and password."""
     result = _get_auth_service().authenticate_user(
         email=request.username,
         password=request.password,
+        ip_address=_client_ip(http_request),
     )
 
     if not result.success:
+        _raise_if_rate_limited(result)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=result.error or "Authentication failed",
@@ -322,6 +385,7 @@ async def verify_mfa(request: MFATokenRequest):
     )
 
     if not result.success:
+        _raise_if_rate_limited(result)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid MFA token",
@@ -489,9 +553,26 @@ async def refresh_token(body: RefreshTokenRequest):
 
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
-    """Logout current session"""
+    """Logout current session.
+
+    Revokes the whole session, so the refresh token issued alongside the
+    presented access token stops working too. Revoking only the access token
+    would leave the session refreshable for the remainder of the refresh
+    token's lifetime.
+    """
+    service = _get_auth_service()
+    expires_at = current_user.get("exp")
+
+    session_id = current_user.get("sid")
+    if session_id:
+        service.revoke_session(session_id, expires_at)
+
+    # Tokens issued before sessions were stamped into the access token carry no
+    # `sid`. Revoking the individual jti is all that is possible for those, and
+    # they age out within the access-token lifetime.
     if current_user.get("jti"):
-        _get_auth_service().revoke_token_id(current_user["jti"])
+        service.revoke_token_id(current_user["jti"], expires_at)
+
     return {"success": True, "message": "Logged out successfully"}
 
 

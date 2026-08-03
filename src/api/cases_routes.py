@@ -264,6 +264,70 @@ async def get_case_timeline(case_id: str):
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Find similar fraud cases using semantic retrieval",
 )
+async def find_similar_cases(
+    request: SimilarCaseRequest,
+):
+    """
+    Find fraud cases similar to a given query or reference case.
+
+    Uses semantic embeddings to retrieve the most similar existing cases.
+    """
+    import time
+    import numpy as np
+    from src.embeddings import get_embedder
+
+    t0 = time.time()
+    store = get_case_store()
+    embedder = get_embedder()
+
+    if request.case_id:
+        ref_case = store.get_case(request.case_id)
+        if not ref_case:
+            raise HTTPException(status_code=404, detail=f"Case {request.case_id} not found")
+        query_text = f"{ref_case.decision or ''} {ref_case.risk_score or ''}"
+    else:
+        query_text = request.query_text or ""
+
+    query_embedding = embedder.embed_text(query_text)
+
+    all_cases, _ = store.list_cases(page=1, page_size=200)
+    results = []
+    for case in all_cases:
+        case_text = f"{case.decision or ''} {case.risk_score or ''}"
+        if not case_text.strip():
+            continue
+        case_emb = embedder.embed_text(case_text)
+        similarity = float(np.dot(query_embedding, case_emb))
+        if similarity >= (request.threshold or 0.5):
+            results.append((case.case_id, similarity, case))
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    top_k = results[: (request.k or 5)]
+
+    similar_cases = [
+        {
+            "case_id": cid,
+            "similarity": sim,
+            "similarity_percent": f"{sim * 100:.1f}%",
+            "metadata": {
+                "date": case.created_at.isoformat() if hasattr(case, "created_at") and case.created_at else "",
+                "priority": case.priority.value if hasattr(case, "priority") else "",
+                "status": case.status.value if hasattr(case, "status") else "",
+                "summary": case.decision or "",
+            },
+        }
+        for cid, sim, case in top_k
+    ]
+
+    return SimilarCaseResponse(
+        similar_cases=similar_cases,
+        query_text=request.query_text,
+        reference_case_id=request.case_id,
+        processing_time_ms=(time.time() - t0) * 1000,
+        timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+    )
+
+
 @router.post(
     "/api/v1/cases/generate-embedding",
     response_model=GenerateEmbeddingResponse,
@@ -301,8 +365,7 @@ async def generate_case_embedding(
 
     except Exception as e:
         _api_logger.error(f"Error generating embedding: {e}")
-
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating embedding: {str(e)}",
+            detail="Internal server error during embedding generation.",
         )
