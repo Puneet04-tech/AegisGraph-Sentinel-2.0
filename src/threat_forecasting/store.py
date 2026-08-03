@@ -86,6 +86,12 @@ class ThreatForecastingStore:
     def get_risk(self, forecast_id: str) -> Optional[RiskForecast]:
         return self._risks.get(forecast_id)
 
+    def get_all_attacks(self) -> List[AttackPrediction]:
+        return list(self._attacks.values())
+
+    def get_all_risks(self) -> List[RiskForecast]:
+        return list(self._risks.values())
+
     def get_metrics(self) -> Dict[str, Any]:
         return {
             "total_forecasts": len(self._forecasts),
