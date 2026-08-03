@@ -1,154 +1,147 @@
+"""Dedicated unit tests for src/threat_hunting/threat_scoring.py.
+
+``ThreatScoringEngine.calculate_score`` was only exercised indirectly.
+These tests pin the weighted-sum math, input clamping, severity-mapping
+boundaries and the in-memory store integration.
 """
-Unit tests for ThreatScoringEngine in src/threat_hunting/threat_scoring.py
-"""
+
+from __future__ import annotations
+
+from datetime import datetime
 
 import pytest
-from unittest.mock import MagicMock
 
+from src.threat_hunting.models import ThreatScore, ThreatSeverity
+from src.threat_hunting.store import ThreatHuntingStore
 from src.threat_hunting.threat_scoring import ThreatScoringEngine
-from src.threat_hunting.models import ThreatSeverity
-from src.threat_hunting.store import ThreatHuntingStore, get_store
-
-
-@pytest.fixture(autouse=True)
-def reset_store():
-    store = get_store()
-    store.reset()
-    yield
-    store.reset()
 
 
 @pytest.fixture
-def mock_store():
-    return MagicMock(spec=ThreatHuntingStore)
+def store() -> ThreatHuntingStore:
+    return ThreatHuntingStore()
 
 
-class TestThreatScoringEngine:
-    """Tests for ThreatScoringEngine.calculate_score."""
+@pytest.fixture
+def engine(store: ThreatHuntingStore) -> ThreatScoringEngine:
+    return ThreatScoringEngine(store=store)
 
-    def test_zero_scores_yields_low_severity(self, mock_store):
-        """All-zero input scores should produce LOW severity."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-zero",
-            entity_type="user",
-            behavior_score=0.0,
-            campaign_score=0.0,
-            graph_score=0.0,
-            intel_score=0.0,
-        )
-        assert result.severity == ThreatSeverity.LOW
-        assert 0.0 <= result.score <= 0.25
 
-    def test_all_max_scores_yields_critical_severity(self, mock_store):
-        """All-maximum scores should produce CRITICAL severity."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-max",
-            entity_type="user",
-            behavior_score=1.0,
-            campaign_score=1.0,
-            graph_score=1.0,
-            intel_score=1.0,
-        )
-        assert result.severity == ThreatSeverity.CRITICAL
-        assert result.score == 1.0
+def test_all_zero_components_score_zero_and_low(engine):
+    score = engine.calculate_score("entity-1")
+    assert score.score == 0.0
+    assert score.severity == ThreatSeverity.LOW
+    assert score.entity_id == "entity-1"
+    assert score.breakdown == {
+        "behavioral": 0.0,
+        "campaign": 0.0,
+        "graph": 0.0,
+        "intelligence": 0.0,
+    }
 
-    def test_behavioral_only_score(self, mock_store):
-        """Only behavioral component set should weight correctly."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-behave",
-            entity_type="user",
-            behavior_score=1.0,
-        )
-        expected_score = 1.0 * 0.35
-        assert abs(result.score - expected_score) < 1e-9
 
-    def test_input_clamping_behavioral(self, mock_store):
-        """Behavior score above 1.0 is clamped to 1.0."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-clamp",
-            behavior_score=2.0,
-        )
-        assert result.score <= 1.0
+def test_all_max_components_score_one_and_critical(engine):
+    score = engine.calculate_score(
+        "entity-1",
+        behavior_score=1.0,
+        campaign_score=1.0,
+        graph_score=1.0,
+        intel_score=1.0,
+    )
+    assert score.score == 1.0
+    assert score.severity == ThreatSeverity.CRITICAL
 
-    def test_input_clamping_negative(self, mock_store):
-        """Negative scores are clamped to 0.0."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-neg",
-            behavior_score=-0.5,
-        )
-        assert result.score >= 0.0
 
-    def test_severity_breakdown(self, mock_store):
-        """Verify severity thresholds: LOW < 0.25, MEDIUM < 0.5, HIGH < 0.75, CRITICAL >= 0.75.
+def test_weighted_sum_is_exact_for_partial_inputs(engine):
+    # 0.35*1.0 + 0.25*0.5 + 0.20*0 + 0.20*0 == 0.475
+    score = engine.calculate_score(
+        "entity-1", behavior_score=1.0, campaign_score=0.5
+    )
+    assert score.score == pytest.approx(0.475)
+    assert score.severity == ThreatSeverity.MEDIUM
 
-        Inputs are clamped to [0, 1] before weighting: score = sum(clamp(x) * weight).
-        With only behavioral component (weight 0.35), max score is 0.35 -> MEDIUM.
-        """
-        engine = ThreatScoringEngine(store=mock_store)
-        # LOW: zero score
-        result = engine.calculate_score(entity_id="s-low", behavior_score=0.0)
-        assert result.severity == ThreatSeverity.LOW
-        # LOW boundary: 0.7 * 0.35 = 0.245 < 0.25
-        result = engine.calculate_score(entity_id="s-low-bound", behavior_score=0.7)
-        assert result.severity == ThreatSeverity.LOW
-        # MEDIUM: 0.72 * 0.35 = 0.252 >= 0.25
-        result = engine.calculate_score(entity_id="s-med-bound", behavior_score=0.72)
-        assert result.severity == ThreatSeverity.MEDIUM
-        # MEDIUM: 1.0 * 0.35 = 0.35 -> MEDIUM
-        result = engine.calculate_score(entity_id="s-med", behavior_score=1.0)
-        assert result.severity == ThreatSeverity.MEDIUM
-        # CRITICAL: all max = 0.35 + 0.25 + 0.20 + 0.20 = 1.0 -> CRITICAL
-        result = engine.calculate_score(
-            entity_id="s-critical",
-            behavior_score=1.0, campaign_score=1.0,
-            graph_score=1.0, intel_score=1.0,
-        )
-        assert result.severity == ThreatSeverity.CRITICAL
 
-    def test_breakdown_includes_all_components(self, mock_store):
-        """The breakdown dict should include all four scoring components."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-breakdown",
-            entity_type="device",
-            behavior_score=0.5,
-            campaign_score=0.5,
-            graph_score=0.5,
-            intel_score=0.5,
-        )
-        assert "behavioral" in result.breakdown
-        assert "campaign" in result.breakdown
-        assert "graph" in result.breakdown
-        assert "intelligence" in result.breakdown
-        assert result.breakdown["behavioral"] == 0.5
+def test_inputs_above_one_are_clamped(engine):
+    score = engine.calculate_score("entity-1", behavior_score=2.0)
+    assert score.score == pytest.approx(0.35)
 
-    def test_active_indicators_registered(self, mock_store):
-        """Active indicator IDs are stored in the result."""
-        engine = ThreatScoringEngine(store=mock_store)
-        indicators = ["ind-1", "ind-2"]
-        result = engine.calculate_score(
-            entity_id="user-ind",
-            active_indicators=indicators,
-        )
-        assert result.active_indicators == indicators
 
-    def test_store_defaults_to_get_store(self):
-        """No store passed uses the global get_store() instance."""
-        store = get_store()
-        store.reset()
-        engine = ThreatScoringEngine()
-        assert engine.store is store
+def test_inputs_below_zero_are_clamped(engine):
+    score = engine.calculate_score("entity-1", behavior_score=-1.0)
+    assert score.score == 0.0
 
-    def test_entity_type_preserved(self, mock_store):
-        """Entity type is stored in the result."""
-        engine = ThreatScoringEngine(store=mock_store)
-        result = engine.calculate_score(
-            entity_id="user-type",
-            entity_type="device",
-        )
-        assert result.entity_type == "device"
+
+def test_severity_boundary_low_to_medium():
+    store = ThreatHuntingStore()
+    engine = ThreatScoringEngine(store=store)
+    # score just below 0.25 -> LOW
+    low = engine.calculate_score("e", behavior_score=0.3)  # 0.105
+    assert low.severity == ThreatSeverity.LOW
+    # score exactly 0.25 -> MEDIUM (>= 0.25)
+    mid = engine.calculate_score("e", behavior_score=0.25 / 0.35)  # 0.25
+    assert mid.score == pytest.approx(0.25)
+    assert mid.severity == ThreatSeverity.MEDIUM
+
+
+def test_severity_boundary_medium_to_high():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    # 0.35 + 0.25*0.6 == 0.5 -> HIGH (>= 0.5)
+    score = engine.calculate_score("e", behavior_score=1.0, campaign_score=0.6)
+    assert score.score == pytest.approx(0.5)
+    assert score.severity == ThreatSeverity.HIGH
+
+
+def test_severity_boundary_high_to_critical():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    # 0.35 + 0.25 + 0.20*0.75 == 0.75 -> CRITICAL (>= 0.75)
+    score = engine.calculate_score(
+        "e", behavior_score=1.0, campaign_score=1.0, graph_score=0.75
+    )
+    assert score.score == pytest.approx(0.75)
+    assert score.severity == ThreatSeverity.CRITICAL
+
+
+def test_active_indicators_default_empty():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    score = engine.calculate_score("e")
+    assert score.active_indicators == []
+
+
+def test_active_indicators_preserved():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    score = engine.calculate_score(
+        "e", behavior_score=1.0, active_indicators=["ind-1", "ind-2"]
+    )
+    assert score.active_indicators == ["ind-1", "ind-2"]
+
+
+def test_entity_type_defaults_to_user():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    score = engine.calculate_score("e", behavior_score=1.0)
+    assert score.entity_type == "user"
+    assert score.entity_id == "e"
+
+
+def test_custom_entity_type_is_preserved():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    score = engine.calculate_score("e", entity_type="account", behavior_score=1.0)
+    assert score.entity_type == "account"
+
+
+def test_score_is_cached_in_store(engine, store):
+    engine.calculate_score("e", behavior_score=1.0)
+    cached = store.get_threat_score("e")
+    assert cached is not None
+    assert isinstance(cached, ThreatScore)
+    assert cached.score == pytest.approx(0.35)
+
+
+def test_calculated_at_is_valid_isoformat(engine):
+    score = engine.calculate_score("e", behavior_score=1.0)
+    # Should round-trip through fromisoformat.
+    parsed = datetime.fromisoformat(score.calculated_at)
+    assert parsed.tzinfo is not None
+
+
+def test_weights_sum_to_one_for_normalised_score():
+    engine = ThreatScoringEngine(store=ThreatHuntingStore())
+    assert sum(engine.weights.values()) == pytest.approx(1.0)
