@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.main import app
+from src.api.main import app, DefaultRateLimitMiddleware
 from src.security import rate_limit as rate_limit_mod
 
 
@@ -123,3 +123,13 @@ def test_rate_limit_middleware_allows_normal_request(monkeypatch):
         response = client.get("/api/v1/model/info")
 
     assert response.status_code != 429
+
+
+def test_default_rate_limit_middleware_registered_without_slowapi():
+    """Regression test: must stay outside the `if SLOWAPI_AVAILABLE` block.
+
+    It was previously only registered when slowapi imported successfully,
+    so rate limiting silently no-op'd on every request without it.
+    """
+    registered = {m.cls for m in app.user_middleware}
+    assert DefaultRateLimitMiddleware in registered

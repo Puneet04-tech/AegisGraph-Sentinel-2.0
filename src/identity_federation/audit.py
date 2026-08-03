@@ -14,10 +14,26 @@ from .store import IdentityFederationStore
 
 
 class AuditLogger:
-    """
-    Provides comprehensive audit logging for identity federation events.
-    
-    Logs all authentication, authorization, and provisioning events.
+    """Comprehensive audit logging for identity federation events.
+
+    Provides a structured, in-memory audit trail for all identity federation
+    operations including authentication, authorization, session management,
+    token lifecycle, and identity provider events. Supports querying by user,
+    provider, action type, and time range.
+
+    The logger maintains event counters and performs automatic cleanup of
+    events older than the configured retention period. In production deployments,
+    events should be persisted to an external store (e.g., database, SIEM).
+
+    Usage:
+        store = IdentityFederationStore()
+        logger = AuditLogger(store, retention_days=90)
+        logger.log_authentication(success=True, provider_id="okta", user_id="user@example.com")
+        events = logger.query(user_id="user@example.com", action="authentication")
+
+    Args:
+        store: IdentityFederationStore instance for persistence.
+        retention_days: Number of days to retain events before cleanup. Defaults to 90.
     """
     
     def __init__(self, store: IdentityFederationStore, retention_days: int = 90):
