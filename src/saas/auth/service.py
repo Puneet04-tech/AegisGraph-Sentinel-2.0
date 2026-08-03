@@ -19,10 +19,17 @@ import jwt
 from pydantic import BaseModel, EmailStr
 
 from src.exceptions import AuthenticationError, AuthorizationError
-from src.saas.auth.revocation import (
-    InMemoryTokenRevocationStore,
-    TokenRevocationStore,
+from src.saas.auth.attempt_limiter import (
+    SCOPE_ACCOUNT,
+    SCOPE_ADDRESS,
+    SCOPE_TOTP,
+    AuthAttemptLimiter,
+    InMemoryAttemptLimiter,
+    LockoutState,
 )
+
+# Shared "no lockout" sentinel, used where a budget was not consulted at all.
+_UNLOCKED_STATE = LockoutState(locked=False)
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +193,10 @@ class AuthResult:
     mfa_token: Optional[str] = None
     error: Optional[str] = None
     provider: Optional[AuthProvider] = None
+    # Set when the attempt was refused by the lockout policy rather than by a
+    # credential mismatch, so the route can answer 429 instead of 401.
+    rate_limited: bool = False
+    retry_after_seconds: int = 0
 
 
 @dataclass
@@ -238,7 +249,7 @@ class AuthService:
         config: Dict[str, Any],
         user_store: Optional[UserStore] = None,
         mfa_pending_store: Optional["MFAPendingStore"] = None,
-        revocation_store: Optional[TokenRevocationStore] = None,
+        attempt_limiter: Optional[AuthAttemptLimiter] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -260,17 +271,19 @@ class AuthService:
         self.mfa_pending_store: MFAPendingStore = (
             mfa_pending_store or InMemoryMFAPendingStore()
         )
-        self.revocation_store: TokenRevocationStore = (
-            revocation_store or InMemoryTokenRevocationStore()
+        self.revoked_token_ids: set[str] = set()
+        self.attempt_limiter: AuthAttemptLimiter = (
+            attempt_limiter or InMemoryAttemptLimiter()
         )
-        if not self.revocation_store.is_shared:
-            # A process-local store cannot see a logout handled by a sibling
-            # worker, so the token stays live everywhere else. Say so loudly
-            # rather than letting a multi-worker deployment look protected.
+        if not self.attempt_limiter.is_shared:
+            # Per-process counters mean an attacker spread across N workers
+            # gets N times the budget, so the effective threshold is not the
+            # configured one. Say so rather than looking protected.
             logger.warning(
-                "Token revocation is process-local. Configure the Redis "
-                "revocation backend before running more than one worker, or "
-                "logout will not invalidate tokens on the other processes."
+                "Authentication lockout state is process-local. Configure the "
+                "Redis attempt-limiter backend before running more than one "
+                "worker, or the effective lockout threshold is multiplied by "
+                "the worker count."
             )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
@@ -443,17 +456,58 @@ class AuthService:
             # the KeyError escape to the caller as a 500.
             raise AuthenticationError(f"Malformed token: missing claim {exc}")
 
+    @staticmethod
+    def _account_identity(email: str) -> str:
+        """Normalise an email into a stable lockout key.
+
+        Case and surrounding whitespace must not create separate budgets, or an
+        attacker gets a fresh allowance per capitalisation of the same address.
+        """
+        return (email or "").strip().casefold()
+
+    @staticmethod
+    def _lockout_result(state: LockoutState) -> AuthResult:
+        """Build the refusal returned for a locked identity.
+
+        The message is identical whether or not the account exists, so the
+        lockout does not become an account-enumeration oracle — the same
+        property ``authenticate_user`` already has for wrong passwords.
+        """
+        return AuthResult(
+            success=False,
+            error="Too many failed attempts. Try again later.",
+            rate_limited=True,
+            retry_after_seconds=state.retry_after_seconds,
+        )
+
     def authenticate_user(
         self,
         email: str,
         password: str,
+        ip_address: Optional[str] = None,
     ) -> AuthResult:
         """Authenticate user with email and password.
 
         Looks up the user via the injected ``UserStore``.  Returns an
         ``AuthResult`` with ``success=False`` when the user is not found or
         the password does not match.
+
+        Both the account and the source address are checked against the
+        lockout policy *before* the bcrypt comparison, so a locked identity
+        costs no hashing work.  ``ip_address`` is optional; callers that cannot
+        determine it lose only the per-address budget.
         """
+        account_key = self._account_identity(email)
+
+        account_state = self.attempt_limiter.check(account_key, SCOPE_ACCOUNT)
+        if account_state.locked:
+            return self._lockout_result(account_state)
+
+        if ip_address:
+            address_state = self.attempt_limiter.check(ip_address, SCOPE_ADDRESS)
+            if address_state.locked:
+                return self._lockout_result(address_state)
+
         record = self.user_store.get_by_email(email)
         if record is None:
             record = self._lookup_runtime_user(email)
@@ -462,13 +516,24 @@ class AuthService:
             return AuthResult(success=False, error="Authentication is not configured")
 
         if record is None:
+            # Count the attempt even though the account does not exist,
+            # otherwise enumerating usernames is free and only the guessing of
+            # real accounts is throttled.
+            self._record_failed_attempt(account_key, ip_address)
             return AuthResult(success=False, error="Invalid credentials")
 
         if record.password_hash:
             if not self.verify_password(password, record.password_hash):
+                state = self._record_failed_attempt(account_key, ip_address)
+                if state.locked:
+                    return self._lockout_result(state)
                 return AuthResult(success=False, error="Invalid credentials")
         else:
             return AuthResult(success=False, error="Authentication is not configured")
+
+        self.attempt_limiter.record_success(account_key, SCOPE_ACCOUNT)
+        if ip_address:
+            self.attempt_limiter.record_success(ip_address, SCOPE_ADDRESS)
 
         if record.mfa_enabled:
             mfa_token = self.mfa_pending_store.issue(record.user_id)
@@ -481,6 +546,31 @@ class AuthService:
             )
 
         return self._create_auth_result(record)
+
+    def _record_failed_attempt(
+        self,
+        account_key: str,
+        ip_address: Optional[str],
+    ) -> LockoutState:
+        """Charge a failure to both budgets and report the stricter outcome.
+
+        Both are always charged — returning early on the first lockout would
+        leave the other counter under-recording, so an attacker could keep one
+        budget permanently below its threshold.
+        """
+        account_state = self.attempt_limiter.record_failure(account_key, SCOPE_ACCOUNT)
+        address_state = _UNLOCKED_STATE
+        if ip_address:
+            address_state = self.attempt_limiter.record_failure(
+                ip_address, SCOPE_ADDRESS
+            )
+
+        if account_state.locked or address_state.locked:
+            retry_after = max(
+                account_state.retry_after_seconds, address_state.retry_after_seconds
+            )
+            return LockoutState(locked=True, retry_after_seconds=retry_after)
+        return account_state
 
     def _has_any_user_records(self) -> bool:
         if hasattr(self.user_store, "_users"):
@@ -556,6 +646,13 @@ class AuthService:
         if not record.mfa_enabled or not record.mfa_secret:
             return AuthResult(success=False, error="MFA is not configured for this user")
         
+        # TOTP gets its own, tighter budget. The code space is 10^6 and the
+        # drift window makes roughly three codes valid at once, so without this
+        # the second factor falls in minutes given an unthrottled first factor.
+        totp_state = self.attempt_limiter.check(user_id, SCOPE_TOTP)
+        if totp_state.locked:
+            return self._lockout_result(totp_state)
+
         if not self.mfa_pending_store.consume(user_id, mfa_token):
             return AuthResult(
                 success=False,
@@ -563,8 +660,12 @@ class AuthService:
             )
 
         if not self.verify_mfa_token(record.mfa_secret, token):
+            state = self.attempt_limiter.record_failure(user_id, SCOPE_TOTP)
+            if state.locked:
+                return self._lockout_result(state)
             return AuthResult(success=False, error="Invalid MFA token")
 
+        self.attempt_limiter.record_success(user_id, SCOPE_TOTP)
         return self._create_auth_result(record)
 
     def _create_auth_result(
