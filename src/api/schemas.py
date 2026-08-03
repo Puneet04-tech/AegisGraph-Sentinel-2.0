@@ -136,7 +136,7 @@ class TransactionCheckRequest(BaseModel):
         return v
     
     @model_validator(mode='after')
-    def validate_cross_fields(self):
+    def validate_cross_fields(self) -> "TransactionCheckRequest":
         """Validate cross-field constraints."""
         try:
             TransactionValidator.validate_cross_fields(
