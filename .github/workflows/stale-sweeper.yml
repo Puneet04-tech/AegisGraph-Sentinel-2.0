@@ -61,7 +61,7 @@ jobs:
           close-pr-message: >
             This pull request has been automatically closed after 21 days
             of inactivity. Please reopen or raise a fresh PR rebased on the
-            latest main branch if you would like to continue. Thank you!
+            latest master branch if you would like to continue. Thank you!
 
           # Issues and PRs with these labels are never touched by the sweeper
           
