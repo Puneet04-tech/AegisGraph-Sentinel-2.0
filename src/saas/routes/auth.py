@@ -15,6 +15,13 @@ from fastapi.security import APIKeyHeader, HTTPBearer, OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr, Field
 
 from src.exceptions import AuthenticationError
+from src.exceptions.error_responses import build_rate_limit_error_payload
+from src.saas.auth.attempt_limiter import (
+    SCOPE_ACCOUNT,
+    SCOPE_ADDRESS,
+    AuthAttemptLimiter,
+    build_attempt_limiter,
+)
 from src.saas.auth.service import (
     ABACService,
     AuthProvider,
@@ -147,6 +154,26 @@ def _register_configured_sso_providers(service: AuthService) -> None:
             logger.debug("SSO provider %s not configured (missing env vars)", provider.value)
 
 
+def _build_attempt_limiter() -> AuthAttemptLimiter:
+    """Build the limiter named by ``AEGIS_AUTH_LIMITER_BACKEND``.
+
+    Defaults to in-memory so local development and the test suite need no
+    external service. Multi-worker deployments must set this to ``redis``,
+    otherwise each worker enforces the threshold independently and the
+    effective budget is multiplied by the worker count.
+    """
+    from src.config.settings import get_settings
+
+    backend = os.getenv("AEGIS_AUTH_LIMITER_BACKEND", "memory")
+    redis_url = None
+    if backend.strip().lower() == "redis":
+        try:
+            redis_url = get_settings().innovations.redis_url
+        except Exception as exc:
+            logger.warning("Could not read Redis URL from settings: %s", exc)
+    return build_attempt_limiter(backend, redis_url)
+
+
 def _build_auth_service() -> AuthService:
     try:
         jwt_secret = _load_jwt_secret()
@@ -158,7 +185,8 @@ def _build_auth_service() -> AuthService:
             "jwt_secret": jwt_secret,
             "access_token_expiry": 3600,
             "refresh_token_expiry": 86400 * 7,
-        }
+        },
+        attempt_limiter=_build_attempt_limiter(),
     )
     _register_configured_sso_providers(service)
     return service
@@ -191,6 +219,44 @@ _SSO_REDIRECT_ALLOWLIST: List[str] = [
 ]
 
 
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Resolve the caller's address for the per-address lockout budget.
+
+    Uses the project's proxy-aware resolver rather than reading headers
+    directly, so a spoofed ``X-Forwarded-For`` cannot be used to dodge the
+    budget or to lock out somebody else's address. Returns ``None`` when the
+    address cannot be determined; the per-account budget still applies.
+    """
+    if request is None:
+        return None
+    try:
+        from src.api.dependencies.ip_resolution import get_remote_address
+
+        return get_remote_address(request)
+    except Exception as exc:
+        logger.warning("Could not resolve client address for rate limiting: %s", exc)
+        return None
+
+
+def _raise_if_rate_limited(result: AuthResult) -> None:
+    """Translate a lockout refusal into 429 with ``Retry-After``.
+
+    Kept separate from the 401 path so the two are never conflated: a client
+    must be able to tell "wrong password" from "stop trying for a while".
+    """
+    if not result.rate_limited:
+        return
+    retry_after = max(1, result.retry_after_seconds)
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=build_rate_limit_error_payload(
+            retry_after_seconds=retry_after,
+            limit_type="authentication",
+        ),
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)):
     """Get current authenticated user"""
     if not authorization:
@@ -208,6 +274,8 @@ async def get_current_user(authorization: Optional[str] = Depends(bearer_scheme)
             "email": payload.email,
             "role": payload.role,
             "jti": payload.jti,
+            "sid": payload.sid,
+            "exp": payload.exp,
         }
     except Exception:
         raise HTTPException(
@@ -254,14 +322,16 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http_request: Request):
     """Login with username and password."""
     result = _get_auth_service().authenticate_user(
         email=request.username,
         password=request.password,
+        ip_address=_client_ip(http_request),
     )
 
     if not result.success:
+        _raise_if_rate_limited(result)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=result.error or "Authentication failed",
@@ -300,6 +370,7 @@ async def verify_mfa(request: MFATokenRequest):
     )
 
     if not result.success:
+        _raise_if_rate_limited(result)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid MFA token",
@@ -428,15 +499,65 @@ async def refresh_token(body: RefreshTokenRequest):
 
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
-    """Logout current session"""
+    """Logout current session.
+
+    Revokes the whole session, so the refresh token issued alongside the
+    presented access token stops working too. Revoking only the access token
+    would leave the session refreshable for the remainder of the refresh
+    token's lifetime.
+    """
+    service = _get_auth_service()
+    expires_at = current_user.get("exp")
+
+    session_id = current_user.get("sid")
+    if session_id:
+        service.revoke_session(session_id, expires_at)
+
+    # Tokens issued before sessions were stamped into the access token carry no
+    # `sid`. Revoking the individual jti is all that is possible for those, and
+    # they age out within the access-token lifetime.
     if current_user.get("jti"):
-        _get_auth_service().revoke_token_id(current_user["jti"])
+        service.revoke_token_id(current_user["jti"], expires_at)
+
     return {"success": True, "message": "Logged out successfully"}
 
 
 @router.post("/password/reset")
-async def request_password_reset(request: PasswordResetRequest):
-    """Request password reset email"""
+async def request_password_reset(request: PasswordResetRequest, http_request: Request):
+    """Request password reset email.
+
+    Throttled per email and per source address. The endpoint is unauthenticated
+    and, once the reset flow is implemented, triggers outbound mail — without a
+    budget it is usable as a free amplifier and as a way to spam a victim's
+    inbox.
+    """
+    service = _get_auth_service()
+    limiter = service.attempt_limiter
+    account_key = service._account_identity(request.email)
+    client_ip = _client_ip(http_request)
+
+    for identity, scope in ((account_key, SCOPE_ACCOUNT), (client_ip, SCOPE_ADDRESS)):
+        if not identity:
+            continue
+        state = limiter.check(identity, scope)
+        if state.locked:
+            retry_after = max(1, state.retry_after_seconds)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=build_rate_limit_error_payload(
+                    retry_after_seconds=retry_after,
+                    limit_type="password_reset",
+                ),
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    # Every request is charged, successful or not: there is no "correct"
+    # outcome to distinguish here, and the uniform response below means a
+    # caller cannot tell whether the address existed.
+    limiter.record_failure(account_key, SCOPE_ACCOUNT)
+    if client_ip:
+        limiter.record_failure(client_ip, SCOPE_ADDRESS)
+
     return {
         "success": True,
         "message": "If email exists, password reset instructions have been sent",
@@ -504,7 +625,26 @@ async def revoke_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Revoke a session"""
+    """Revoke a session.
+
+    Only the caller's own session may be revoked. There is no session registry
+    yet (tracked separately), so a caller cannot enumerate or revoke sessions
+    other than the one they are currently authenticated with — attempting to
+    is rejected rather than silently reported as successful.
+    """
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Session id is required",
+        )
+
+    if session_id != current_user.get("sid"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot revoke a session that is not your own",
+        )
+
+    _get_auth_service().revoke_session(session_id, current_user.get("exp"))
     return {"success": True, "message": "Session revoked"}
 
 

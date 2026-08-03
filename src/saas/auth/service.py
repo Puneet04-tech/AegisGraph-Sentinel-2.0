@@ -19,6 +19,17 @@ import jwt
 from pydantic import BaseModel, EmailStr
 
 from src.exceptions import AuthenticationError, AuthorizationError
+from src.saas.auth.attempt_limiter import (
+    SCOPE_ACCOUNT,
+    SCOPE_ADDRESS,
+    SCOPE_TOTP,
+    AuthAttemptLimiter,
+    InMemoryAttemptLimiter,
+    LockoutState,
+)
+
+# Shared "no lockout" sentinel, used where a budget was not consulted at all.
+_UNLOCKED_STATE = LockoutState(locked=False)
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +193,10 @@ class AuthResult:
     mfa_token: Optional[str] = None
     error: Optional[str] = None
     provider: Optional[AuthProvider] = None
+    # Set when the attempt was refused by the lockout policy rather than by a
+    # credential mismatch, so the route can answer 429 instead of 401.
+    rate_limited: bool = False
+    retry_after_seconds: int = 0
 
 
 @dataclass
@@ -195,6 +210,35 @@ class TokenPayload:
     exp: datetime
     iat: datetime
     jti: str  # JWT ID for revocation
+    sid: str = ""  # Session ID — ties this token to its sibling refresh token
+
+
+class _RevokedTokenIdsView:
+    """Set-like adapter over a ``TokenRevocationStore``.
+
+    ``AuthService.revoked_token_ids`` used to be a plain ``set``. Revocation now
+    lives behind a store so it can be shared between workers and bounded by a
+    TTL, but membership tests and ``.add()`` calls against the old attribute
+    still need to work. This adapter provides exactly those two operations and
+    nothing else — the store is not enumerable, so ``len()`` and iteration are
+    deliberately unsupported rather than silently wrong.
+    """
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: TokenRevocationStore) -> None:
+        self._store = store
+
+    def __contains__(self, token_id: object) -> bool:
+        return isinstance(token_id, str) and self._store.is_token_revoked(token_id)
+
+    def add(self, token_id: str) -> None:
+        self._store.revoke_token(token_id)
+
+    def discard(self, token_id: str) -> None:  # pragma: no cover - parity only
+        raise NotImplementedError(
+            "Revocations expire on their own and cannot be withdrawn"
+        )
 
 
 class AuthService:
@@ -205,6 +249,7 @@ class AuthService:
         config: Dict[str, Any],
         user_store: Optional[UserStore] = None,
         mfa_pending_store: Optional["MFAPendingStore"] = None,
+        attempt_limiter: Optional[AuthAttemptLimiter] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -227,6 +272,19 @@ class AuthService:
             mfa_pending_store or InMemoryMFAPendingStore()
         )
         self.revoked_token_ids: set[str] = set()
+        self.attempt_limiter: AuthAttemptLimiter = (
+            attempt_limiter or InMemoryAttemptLimiter()
+        )
+        if not self.attempt_limiter.is_shared:
+            # Per-process counters mean an attacker spread across N workers
+            # gets N times the budget, so the effective threshold is not the
+            # configured one. Say so rather than looking protected.
+            logger.warning(
+                "Authentication lockout state is process-local. Configure the "
+                "Redis attempt-limiter backend before running more than one "
+                "worker, or the effective lockout threshold is multiplied by "
+                "the worker count."
+            )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
 
@@ -342,6 +400,7 @@ class AuthService:
             "exp": payload.exp,
             "iat": payload.iat,
             "jti": payload.jti,
+            "sid": payload.sid,
         }
         return jwt.encode(data, self.jwt_secret, algorithm=self.jwt_algorithm)
 
@@ -359,11 +418,27 @@ class AuthService:
         return jwt.encode(payload, self.jwt_secret, algorithm=self.jwt_algorithm)
 
     def verify_token(self, token: str) -> Optional[TokenPayload]:
-        """Verify and decode JWT token"""
+        """Verify and decode JWT token.
+
+        Rejects the token when its own ``jti`` was revoked, and also when the
+        session it belongs to was revoked — the latter is what makes a logout
+        invalidate every credential minted for that session rather than only
+        the one presented at logout.
+        """
         try:
             payload = jwt.decode(token, self.jwt_secret, algorithms=[self.jwt_algorithm])
-            if payload.get("jti") in self.revoked_token_ids:
-                raise AuthenticationError("Token has been revoked")
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationError("Token has expired")
+        except jwt.InvalidTokenError:
+            raise AuthenticationError("Invalid token")
+
+        session_id = payload.get("sid", "")
+        if self.revocation_store.is_token_revoked(payload.get("jti", "")):
+            raise AuthenticationError("Token has been revoked")
+        if session_id and self.revocation_store.is_session_revoked(session_id):
+            raise AuthenticationError("Session has been revoked")
+
+        try:
             return TokenPayload(
                 sub=payload["sub"],
                 org=payload["org"],
@@ -373,23 +448,66 @@ class AuthService:
                 exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
                 iat=datetime.fromtimestamp(payload["iat"], tz=timezone.utc),
                 jti=payload["jti"],
+                sid=session_id,
             )
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except jwt.InvalidTokenError:
-            raise AuthenticationError("Invalid token")
+        except KeyError as exc:
+            # A correctly signed token missing a required claim is malformed,
+            # not merely unauthorized. Treat it as invalid rather than letting
+            # the KeyError escape to the caller as a 500.
+            raise AuthenticationError(f"Malformed token: missing claim {exc}")
+
+    @staticmethod
+    def _account_identity(email: str) -> str:
+        """Normalise an email into a stable lockout key.
+
+        Case and surrounding whitespace must not create separate budgets, or an
+        attacker gets a fresh allowance per capitalisation of the same address.
+        """
+        return (email or "").strip().casefold()
+
+    @staticmethod
+    def _lockout_result(state: LockoutState) -> AuthResult:
+        """Build the refusal returned for a locked identity.
+
+        The message is identical whether or not the account exists, so the
+        lockout does not become an account-enumeration oracle — the same
+        property ``authenticate_user`` already has for wrong passwords.
+        """
+        return AuthResult(
+            success=False,
+            error="Too many failed attempts. Try again later.",
+            rate_limited=True,
+            retry_after_seconds=state.retry_after_seconds,
+        )
 
     def authenticate_user(
         self,
         email: str,
         password: str,
+        ip_address: Optional[str] = None,
     ) -> AuthResult:
         """Authenticate user with email and password.
 
         Looks up the user via the injected ``UserStore``.  Returns an
         ``AuthResult`` with ``success=False`` when the user is not found or
         the password does not match.
+
+        Both the account and the source address are checked against the
+        lockout policy *before* the bcrypt comparison, so a locked identity
+        costs no hashing work.  ``ip_address`` is optional; callers that cannot
+        determine it lose only the per-address budget.
         """
+        account_key = self._account_identity(email)
+
+        account_state = self.attempt_limiter.check(account_key, SCOPE_ACCOUNT)
+        if account_state.locked:
+            return self._lockout_result(account_state)
+
+        if ip_address:
+            address_state = self.attempt_limiter.check(ip_address, SCOPE_ADDRESS)
+            if address_state.locked:
+                return self._lockout_result(address_state)
+
         record = self.user_store.get_by_email(email)
         if record is None:
             record = self._lookup_runtime_user(email)
@@ -398,13 +516,24 @@ class AuthService:
             return AuthResult(success=False, error="Authentication is not configured")
 
         if record is None:
+            # Count the attempt even though the account does not exist,
+            # otherwise enumerating usernames is free and only the guessing of
+            # real accounts is throttled.
+            self._record_failed_attempt(account_key, ip_address)
             return AuthResult(success=False, error="Invalid credentials")
 
         if record.password_hash:
             if not self.verify_password(password, record.password_hash):
+                state = self._record_failed_attempt(account_key, ip_address)
+                if state.locked:
+                    return self._lockout_result(state)
                 return AuthResult(success=False, error="Invalid credentials")
         else:
             return AuthResult(success=False, error="Authentication is not configured")
+
+        self.attempt_limiter.record_success(account_key, SCOPE_ACCOUNT)
+        if ip_address:
+            self.attempt_limiter.record_success(ip_address, SCOPE_ADDRESS)
 
         if record.mfa_enabled:
             mfa_token = self.mfa_pending_store.issue(record.user_id)
@@ -417,6 +546,31 @@ class AuthService:
             )
 
         return self._create_auth_result(record)
+
+    def _record_failed_attempt(
+        self,
+        account_key: str,
+        ip_address: Optional[str],
+    ) -> LockoutState:
+        """Charge a failure to both budgets and report the stricter outcome.
+
+        Both are always charged — returning early on the first lockout would
+        leave the other counter under-recording, so an attacker could keep one
+        budget permanently below its threshold.
+        """
+        account_state = self.attempt_limiter.record_failure(account_key, SCOPE_ACCOUNT)
+        address_state = _UNLOCKED_STATE
+        if ip_address:
+            address_state = self.attempt_limiter.record_failure(
+                ip_address, SCOPE_ADDRESS
+            )
+
+        if account_state.locked or address_state.locked:
+            retry_after = max(
+                account_state.retry_after_seconds, address_state.retry_after_seconds
+            )
+            return LockoutState(locked=True, retry_after_seconds=retry_after)
+        return account_state
 
     def _has_any_user_records(self) -> bool:
         if hasattr(self.user_store, "_users"):
@@ -492,6 +646,13 @@ class AuthService:
         if not record.mfa_enabled or not record.mfa_secret:
             return AuthResult(success=False, error="MFA is not configured for this user")
         
+        # TOTP gets its own, tighter budget. The code space is 10^6 and the
+        # drift window makes roughly three codes valid at once, so without this
+        # the second factor falls in minutes given an unthrottled first factor.
+        totp_state = self.attempt_limiter.check(user_id, SCOPE_TOTP)
+        if totp_state.locked:
+            return self._lockout_result(totp_state)
+
         if not self.mfa_pending_store.consume(user_id, mfa_token):
             return AuthResult(
                 success=False,
@@ -499,17 +660,29 @@ class AuthService:
             )
 
         if not self.verify_mfa_token(record.mfa_secret, token):
+            state = self.attempt_limiter.record_failure(user_id, SCOPE_TOTP)
+            if state.locked:
+                return self._lockout_result(state)
             return AuthResult(success=False, error="Invalid MFA token")
 
+        self.attempt_limiter.record_success(user_id, SCOPE_TOTP)
         return self._create_auth_result(record)
 
     def _create_auth_result(
         self,
         record: UserRecord,
         provider: Optional[AuthProvider] = None,
+        session_id: Optional[str] = None,
     ) -> AuthResult:
-        """Create successful authentication result"""
-        session_id = secrets.token_hex(16)
+        """Create successful authentication result.
+
+        A fresh login starts a new session. A token refresh passes the existing
+        *session_id* through so the rotated pair stays in the same session
+        family — otherwise revoking a session on replay would only reach the
+        tokens issued before the rotation, and the attacker's newer pair would
+        survive.
+        """
+        session_id = session_id or secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
         access_payload = TokenPayload(
@@ -521,6 +694,7 @@ class AuthService:
             exp=now + timedelta(seconds=self.access_token_expiry),
             iat=now,
             jti=secrets.token_hex(16),
+            sid=session_id,
         )
 
         access_token = self.create_access_token(access_payload)
@@ -550,9 +724,14 @@ class AuthService:
         """Issue a new access/refresh token pair from a valid refresh token.
 
         Decodes the supplied JWT, confirms it carries ``type == "refresh"``,
-        then delegates to ``_create_auth_result`` to mint fresh tokens.
-        Raises ``AuthenticationError`` on any validation failure so the caller
-        can map it to an appropriate HTTP response.
+        confirms its session is still live, and single-use-consumes its ``jti``
+        so the presented token cannot be used a second time.  Only then are
+        fresh tokens minted.  Raises ``AuthenticationError`` on any validation
+        failure so the caller can map it to an appropriate HTTP response.
+
+        The session check is what makes logout stick: without it a refresh
+        token captured before logout keeps minting access tokens for the rest
+        of its multi-day lifetime.
         """
         try:
             payload = jwt.decode(
@@ -570,15 +749,73 @@ class AuthService:
         if not user_id:
             raise AuthenticationError("Malformed refresh token: missing subject")
 
+        session_id = payload.get("session", "")
+        token_id = payload.get("jti", "")
+        if not session_id or not token_id:
+            raise AuthenticationError("Malformed refresh token: missing session")
+
+        if self.revocation_store.is_session_revoked(session_id):
+            raise AuthenticationError("Session has been revoked")
+        if self.revocation_store.is_token_revoked(token_id):
+            raise AuthenticationError("Refresh token has been revoked")
+
+        expires_at = self._claim_to_datetime(payload.get("exp"))
+
+        # Rotation. Consuming the jti fails on a second presentation, which
+        # means the token is held by more than one party — the store revokes
+        # the whole session in that case, so both the attacker and the
+        # legitimate holder are forced to re-authenticate.
+        if not self.revocation_store.consume_refresh_jti(
+            token_id, session_id, expires_at
+        ):
+            raise AuthenticationError("Refresh token has already been used")
+
         record = self.user_store.get_by_id(user_id)
         if record is None:
+            # The account was deleted after the token was issued. Kill the
+            # session so the remaining tokens for it stop working too.
+            self.revocation_store.revoke_session(session_id, expires_at)
             raise AuthenticationError("User not found")
 
-        return self._create_auth_result(record)
+        return self._create_auth_result(record, session_id=session_id)
 
-    def revoke_token_id(self, token_id: str) -> None:
+    @staticmethod
+    def _claim_to_datetime(claim: Any) -> Optional[datetime]:
+        """Convert a numeric JWT ``exp``/``iat`` claim to an aware datetime."""
+        if claim is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(claim), tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+
+    def revoke_token_id(self, token_id: str, expires_at: Optional[datetime] = None) -> None:
+        """Revoke a single token id.
+
+        Prefer :meth:`revoke_session` for logout — revoking one id leaves the
+        sibling refresh token live.
+        """
         if token_id:
-            self.revoked_token_ids.add(token_id)
+            self.revocation_store.revoke_token(token_id, expires_at)
+
+    def revoke_session(self, session_id: str, expires_at: Optional[datetime] = None) -> None:
+        """Revoke every token issued for *session_id*.
+
+        This is the operation logout needs: it invalidates the access token and
+        the refresh token minted alongside it in a single call.
+        """
+        if session_id:
+            self.revocation_store.revoke_session(session_id, expires_at)
+
+    @property
+    def revoked_token_ids(self) -> "_RevokedTokenIdsView":
+        """Backward-compatible view over revoked token ids.
+
+        Retained so existing callers that did ``jti in svc.revoked_token_ids``
+        or ``svc.revoked_token_ids.add(jti)`` keep working now that revocation
+        lives in a store rather than a plain set.
+        """
+        return _RevokedTokenIdsView(self.revocation_store)
 
     def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
@@ -771,15 +1008,84 @@ class RBACService:
 
 
 # ABAC Service
+@dataclass(frozen=True)
+class ABACDecision:
+    """Outcome of an ABAC evaluation, with the reason it was reached.
+
+    Mirrors ``src.security.authorization.AuthorizationResult`` so a denial can
+    be audit-logged with the policy that produced it rather than as a bare
+    ``False``.
+    """
+
+    allowed: bool
+    reason: str
+    matched_policy: Optional[str] = None
+
+
+# Effects a policy may declare. Anything else is rejected at registration
+# rather than being silently treated as a deny, because a typo like
+# "Allow" would otherwise turn an intended grant into a refusal — or, before
+# the default was fixed, into a fallthrough that allowed everything.
+_VALID_EFFECTS = frozenset({"allow", "deny"})
+
+# Comparison operators understood in an attribute constraint.
+_VALID_OPERATORS = frozenset({"eq", "neq", "gt", "lt", "in"})
+
+
 class ABACService:
-    """Attribute-Based Access Control service"""
+    """Attribute-Based Access Control service.
+
+    Evaluation is **default-deny with deny-override**: a request is permitted
+    only when at least one policy explicitly allows it and no policy explicitly
+    denies it.  Anything unanticipated — no policies loaded, no policy matching,
+    a malformed constraint — refuses access.
+    """
 
     def __init__(self):
         self.policies: List[Dict[str, Any]] = []
 
     def add_policy(self, policy: Dict[str, Any]):
-        """Add access control policy"""
+        """Add access control policy.
+
+        Validates at registration so a malformed policy fails loudly here
+        rather than silently widening access at evaluation time.
+        """
+        self._validate_policy(policy)
         self.policies.append(policy)
+
+    @staticmethod
+    def _validate_policy(policy: Dict[str, Any]) -> None:
+        if not isinstance(policy, dict):
+            raise ValueError("Policy must be a dictionary")
+
+        effect = policy.get("effect")
+        if effect not in _VALID_EFFECTS:
+            raise ValueError(
+                f"Policy effect must be one of {sorted(_VALID_EFFECTS)}, got {effect!r}"
+            )
+
+        for section in ("subjects", "resources", "environment"):
+            constraints = policy.get(section)
+            if constraints is None:
+                continue
+            if not isinstance(constraints, dict):
+                raise ValueError(f"Policy section {section!r} must be a dictionary")
+            for key, constraint in constraints.items():
+                if not isinstance(constraint, dict):
+                    continue  # Direct equality match; nothing to validate.
+                op = constraint.get("op", "eq")
+                if op not in _VALID_OPERATORS:
+                    # An unrecognised operator used to fall through every
+                    # comparison branch, making the constraint a no-op and
+                    # quietly broadening the policy.
+                    raise ValueError(
+                        f"Unsupported operator {op!r} on attribute {key!r}; "
+                        f"expected one of {sorted(_VALID_OPERATORS)}"
+                    )
+
+        actions = policy.get("actions")
+        if actions is not None and not isinstance(actions, (list, tuple, set)):
+            raise ValueError("Policy 'actions' must be a list, tuple, or set")
 
     def evaluate(
         self,
@@ -788,11 +1094,72 @@ class ABACService:
         action: str,  # Action being performed
         environment: Dict[str, Any],  # Context attributes
     ) -> bool:
-        """Evaluate access control policy"""
-        for policy in self.policies:
-            if self._matches_policy(policy, subject, resource, action, environment):
-                return policy.get("effect") == "allow"
-        return True  # Default deny
+        """Evaluate access control policy. Returns True only if explicitly allowed."""
+        return self.evaluate_detailed(subject, resource, action, environment).allowed
+
+    def evaluate_detailed(
+        self,
+        subject: Dict[str, Any],
+        resource: Dict[str, Any],
+        action: str,
+        environment: Dict[str, Any],
+    ) -> ABACDecision:
+        """Evaluate access control policy and report why.
+
+        Uses deny-override rather than first-match: every policy is considered,
+        an explicit deny wins outright, and an allow is only honoured when no
+        deny matched.  First-match-wins made the security outcome depend on the
+        order policies happened to be registered in, so appending an allow could
+        shadow an existing deny.
+        """
+        subject = subject or {}
+        resource = resource or {}
+        environment = environment or {}
+
+        allowed_by: Optional[str] = None
+        for index, policy in enumerate(self.policies):
+            try:
+                matched = self._matches_policy(
+                    policy, subject, resource, action, environment
+                )
+            except Exception as exc:
+                # A policy that cannot be evaluated must not be skipped as
+                # though it did not apply — it might have been the deny.
+                logger.warning(
+                    "ABAC policy %s could not be evaluated, denying: %s",
+                    policy.get("id", index),
+                    exc,
+                )
+                return ABACDecision(
+                    allowed=False,
+                    reason="Policy evaluation failed",
+                    matched_policy=str(policy.get("id", index)),
+                )
+
+            if not matched:
+                continue
+
+            identifier = str(policy.get("id", index))
+            if policy.get("effect") == "deny":
+                return ABACDecision(
+                    allowed=False,
+                    reason="Explicitly denied by policy",
+                    matched_policy=identifier,
+                )
+            if allowed_by is None:
+                allowed_by = identifier
+
+        if allowed_by is not None:
+            return ABACDecision(
+                allowed=True,
+                reason="Explicitly allowed by policy",
+                matched_policy=allowed_by,
+            )
+
+        return ABACDecision(
+            allowed=False,
+            reason="No policy grants this request (default deny)",
+        )
 
     def _matches_policy(
         self,
@@ -830,29 +1197,61 @@ class ABACService:
         attributes: Dict[str, Any],
         constraints: Dict[str, Any],
     ) -> bool:
-        """Check if attributes match constraints"""
+        """Check if attributes match constraints.
+
+        A constraint that cannot be evaluated — missing attribute, unknown
+        operator, or an ordering comparison against an incompatible type —
+        does not match.  Returning False here means the policy does not apply;
+        combined with default-deny in ``evaluate_detailed``, an unevaluable
+        constraint can never widen access.
+        """
         for key, constraint in constraints.items():
             if key not in attributes:
                 return False
+            attr_value = attributes[key]
+
             if isinstance(constraint, dict):
                 # Operator-based constraint
                 op = constraint.get("op", "eq")
                 value = constraint.get("value")
-                attr_value = attributes[key]
-                
-                if op == "eq" and attr_value != value:
+
+                if op not in _VALID_OPERATORS:
+                    # Defence in depth: add_policy rejects these, but a policy
+                    # appended directly to self.policies bypasses that check.
+                    logger.warning(
+                        "Ignoring ABAC constraint on %r with unsupported operator %r",
+                        key,
+                        op,
+                    )
                     return False
-                elif op == "neq" and attr_value == value:
-                    return False
-                elif op == "gt" and not (attr_value > value):
-                    return False
-                elif op == "lt" and not (attr_value < value):
-                    return False
-                elif op == "in" and attr_value not in value:
+
+                try:
+                    if op == "eq" and attr_value != value:
+                        return False
+                    elif op == "neq" and attr_value == value:
+                        return False
+                    elif op == "gt" and not (attr_value > value):
+                        return False
+                    elif op == "lt" and not (attr_value < value):
+                        return False
+                    elif op == "in" and attr_value not in value:
+                        return False
+                except TypeError:
+                    # e.g. "admin" > 5, or `in` against a non-container. This
+                    # used to escape evaluate() as an unhandled TypeError,
+                    # which callers would see as a 500 rather than a denial.
+                    logger.warning(
+                        "ABAC constraint on %r compared incompatible types "
+                        "(%s %s %s); treating as no match",
+                        key,
+                        type(attr_value).__name__,
+                        op,
+                        type(value).__name__,
+                    )
                     return False
             else:
                 # Direct match
-                if attributes[key] != constraint:
+                if attr_value != constraint:
                     return False
         return True
 
