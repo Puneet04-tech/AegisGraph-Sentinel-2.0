@@ -5875,6 +5875,7 @@ async def authenticate(
     "/api/v1/identity/sso/login",
     tags=["Identity Federation"],
     summary="SSO Login",
+    dependencies=[Depends(StrictRateLimit(ip_limit=10, api_key_limit=20))],
 )
 async def sso_login(
     user_id: str = Body(...),
@@ -5884,14 +5885,22 @@ async def sso_login(
     """Initiate Single Sign-On for an existing user."""
     service = get_identity_federation_service()
     response = service.sso_login(user_id=user_id, provider_id=provider_id, target_url=target_url)
-    
+
+    # Return a uniform error for every failure mode so anonymous callers
+    # cannot distinguish "user not found" from "provider not found" or
+    # "user not linked", which would otherwise act as a user-enumeration
+    # oracle. Full details are logged server-side only.
     if not response.success:
-        raise HTTPException(status_code=400, detail=response.error_description or response.error)
-    
+        _api_logger.warning(
+            "SSO login failed (user_id=%.30s, provider_id=%s): %s",
+            user_id, provider_id, response.error_description or response.error,
+        )
+        raise HTTPException(status_code=400, detail="Unable to initiate SSO login")
+
+    # Do not leak the federated user id to anonymous callers.
     return {
         "success": True,
         "redirect_url": response.redirect_url,
-        "user_id": response.user.id if response.user else None,
     }
 
 
