@@ -266,6 +266,14 @@ class OAuthProvider:
                 error_description="Authorization code expired",
             )
         
+        # Guard against missing client_secret
+        if client_secret is None:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="client_secret is required",
+            )
+
         # Validate client
         client = self._clients.get(client_id)
         if not client or client_secret is None or client["client_secret_hash"] != self._hash_secret(client_secret):
@@ -394,7 +402,7 @@ class OAuthProvider:
             if info.get("refresh_token") == refresh_token:
                 token_info = info
                 break
-        
+
         if not token_info:
             return AuthenticationResponse(
                 success=False,
@@ -424,7 +432,7 @@ class OAuthProvider:
                 error="invalid_grant",
                 error_description="Refresh token expired",
             )
-        
+
         # Generate new tokens (rotation)
         new_access_token = self._generate_access_token()
         new_refresh_token = self._generate_refresh_token()
