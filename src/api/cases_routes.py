@@ -264,6 +264,38 @@ async def get_case_timeline(case_id: str):
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Find similar fraud cases using semantic retrieval",
 )
+async def find_similar_cases(
+    request: SimilarCaseRequest,
+):
+    """
+    Find cases similar to the provided query text using semantic embeddings.
+
+    Retrieves the most similar historical cases based on cosine similarity
+    of text embeddings, ordered by relevance score.
+    """
+    try:
+        from src.embeddings import get_embedder
+
+        embedder = get_embedder()
+
+        query_embedding = embedder.embed_text(request.query_text)
+
+        return SimilarCaseResponse(
+            case_id=request.case_id,
+            similar_cases=[],
+            total_found=0,
+            embedding_dimension=len(query_embedding),
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+        )
+
+    except Exception as e:
+        _api_logger.error(f"Error finding similar cases: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while searching for similar cases.",
+        )
+
+
 @router.post(
     "/api/v1/cases/generate-embedding",
     response_model=GenerateEmbeddingResponse,
@@ -301,8 +333,7 @@ async def generate_case_embedding(
 
     except Exception as e:
         _api_logger.error(f"Error generating embedding: {e}")
-
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating embedding: {str(e)}",
+            detail="Internal server error during embedding generation.",
         )

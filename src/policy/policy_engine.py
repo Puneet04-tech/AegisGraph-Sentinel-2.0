@@ -14,6 +14,10 @@ class PolicyEngine:
     def __init__(self, registry: PolicyRegistry) -> None:
         self.registry = registry
 
+    def contains(self, policy_name: str) -> bool:
+        """Return True if a policy with the given name is registered."""
+        return self.registry.get_policy(policy_name) is not None
+
     def evaluate(self, policy_name: str, context: Dict[str, Any]) -> PolicyResult:
         policy = self.registry.get_policy(policy_name)
         if policy is None:
