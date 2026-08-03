@@ -77,9 +77,17 @@ class OAuthProvider:
         self._clients[client_id] = client
         return {"client_id": client_id, "client_secret": client_secret}
     
-    def _hash_secret(self, secret: str) -> str:
-        """Hash client secret for storage."""
+    def _hash_secret(self, secret: Optional[str]) -> str:
+        """Hash client secret for storage.
+
+        Defensively handles missing or non-string input by returning an empty
+        string so callers never trigger an ``AttributeError`` when a client
+        secret is omitted. An empty hash can never match a registered client's
+        secret hash, so omitted secrets are treated as invalid credentials.
+        """
         import hashlib
+        if not isinstance(secret, str) or not secret:
+            return ""
         return hashlib.sha256(secret.encode()).hexdigest()
     
     def authorize(
@@ -218,7 +226,7 @@ class OAuthProvider:
         
         # Refresh Token Flow
         if grant_type == "refresh_token":
-            return self._refresh_token_grant(refresh_token, scope)
+            return self._refresh_token_grant(refresh_token, scope, client_id, client_secret)
         
         # Authorization Code Flow
         if grant_type == "authorization_code":
@@ -266,9 +274,21 @@ class OAuthProvider:
                 error_description="Authorization code expired",
             )
         
+        # Guard against missing client_secret
+        if client_secret is None:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="client_secret is required",
+            )
+
         # Validate client
         client = self._clients.get(client_id)
-        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
@@ -341,14 +361,11 @@ class OAuthProvider:
     ) -> AuthenticationResponse:
         """Process client credentials grant."""
         client = self._clients.get(client_id)
-        if not client:
-            return AuthenticationResponse(
-                success=False,
-                error="invalid_client",
-                error_description="Invalid client credentials",
-            )
-        
-        if client["client_secret_hash"] != self._hash_secret(client_secret):
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
@@ -384,22 +401,39 @@ class OAuthProvider:
         self,
         refresh_token: str,
         scope: Optional[str],
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
     ) -> AuthenticationResponse:
-        """Process refresh token grant."""
+        """Process refresh token grant with client credential validation and token rotation."""
         # Find token by refresh token
         token_info = None
         for access_token, info in self._tokens.items():
             if info.get("refresh_token") == refresh_token:
                 token_info = info
                 break
-        
+
         if not token_info:
             return AuthenticationResponse(
                 success=False,
                 error="invalid_grant",
                 error_description="Invalid refresh token",
             )
-        
+
+        # Validate client credentials
+        stored_client = self._clients.get(token_info.get("client_id"))
+        if client_id != token_info.get("client_id"):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Client ID mismatch",
+            )
+        if stored_client and stored_client.get("client_secret_hash") != self._hash_secret(client_secret):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
         # Check expiration
         if datetime.now(timezone.utc) > token_info.get("refresh_expires_at", datetime.now(timezone.utc)):
             return AuthenticationResponse(
@@ -407,27 +441,28 @@ class OAuthProvider:
                 error="invalid_grant",
                 error_description="Refresh token expired",
             )
-        
-        # Generate new access token
+
+        # Generate new tokens (rotation)
         new_access_token = self._generate_access_token()
+        new_refresh_token = self._generate_refresh_token()
         expires_in = 3600
-        
+
         # Revoke old token
         self._revoke_token(token_info["access_token"])
-        
+
         self._store_token(
             access_token=new_access_token,
             token_type="Bearer",
             expires_in=expires_in,
             scope=scope or token_info["scope"],
             client_id=token_info["client_id"],
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
         )
-        
+
         return AuthenticationResponse(
             success=True,
             access_token=new_access_token,
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
             authentication_method="oauth2",
             metadata={
                 "token_type": "Bearer",
