@@ -12,9 +12,26 @@ from .simulation_engine import SimulationEngine
 class AdversaryEmulationService:
     """High-level service for adversary emulation workflows.
 
-    Provides operations to create adversary profiles, generate attack campaigns
-    from those profiles, and execute simulations. Internally coordinates the
-    store, generator, and simulation engine components.
+    The AdversaryEmulationService orchestrates the full red-team adversary
+    emulation lifecycle. It provides three main operations:
+
+    1. **Profile Management**: Create and retrieve adversary profiles that
+       define threat actors, their tactics, techniques, and procedures (TTPs).
+    2. **Campaign Generation**: Generate targeted attack campaigns from a
+       given adversary profile and a specific target entity.
+    3. **Simulation Execution**: Execute a campaign through the simulation
+       engine and record structured results.
+
+    Internally, the service coordinates three sub-components:
+    - :class:`AdversaryStore` for persisting profiles, campaigns, and results
+    - :class:`CampaignGenerator` for building attack sequences from profiles
+    - :class:`SimulationEngine` for running step-by-step campaign execution
+
+    Usage:
+        service = AdversaryEmulationService()
+        profile = service.create_profile(adversary_profile)
+        campaign = service.generate_campaign(profile.id, target="acme-corp")
+        result = service.run_simulation(campaign.id)
     """
 
     def __init__(self) -> None:
