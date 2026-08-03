@@ -332,8 +332,10 @@ async def generate_case_embedding(
         )
 
     except Exception as e:
+        # Log full exception server-side only; never echo internal details to
+        # the caller (paths, model names, SDK internals).
         _api_logger.error(f"Error generating embedding: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Internal server error during embedding generation.",
+            detail="Internal error generating embedding",
         )
