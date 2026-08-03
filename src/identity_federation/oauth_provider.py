@@ -80,9 +80,17 @@ class OAuthProvider:
         self._clients[client_id] = client
         return {"client_id": client_id, "client_secret": client_secret}
     
-    def _hash_secret(self, secret: str) -> str:
-        """Hash client secret for storage."""
+    def _hash_secret(self, secret: Optional[str]) -> str:
+        """Hash client secret for storage.
+
+        Defensively handles missing or non-string input by returning an empty
+        string so callers never trigger an ``AttributeError`` when a client
+        secret is omitted. An empty hash can never match a registered client's
+        secret hash, so omitted secrets are treated as invalid credentials.
+        """
         import hashlib
+        if not isinstance(secret, str) or not secret:
+            return ""
         return hashlib.sha256(secret.encode()).hexdigest()
     
     def authorize(
@@ -271,9 +279,21 @@ class OAuthProvider:
                 error_description="Authorization code expired",
             )
         
+        # Guard against missing client_secret
+        if client_secret is None:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="client_secret is required",
+            )
+
         # Validate client
         client = self._clients.get(client_id)
-        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
@@ -346,14 +366,11 @@ class OAuthProvider:
     ) -> AuthenticationResponse:
         """Process client credentials grant."""
         client = self._clients.get(client_id)
-        if not client:
-            return AuthenticationResponse(
-                success=False,
-                error="invalid_client",
-                error_description="Invalid client credentials",
-            )
-        
-        if client["client_secret_hash"] != self._hash_secret(client_secret):
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
@@ -391,6 +408,8 @@ class OAuthProvider:
         client_id: Optional[str],
         client_secret: Optional[str],
         scope: Optional[str],
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
     ) -> AuthenticationResponse:
         """Process refresh token grant.
 
