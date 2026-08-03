@@ -322,6 +322,9 @@ async def ingest_bulk_json(payload: BulkIngestRequest):
     )
 
 
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 @router.post(
     "/ingest/file",
     response_model=BulkIngestResponse,
@@ -340,6 +343,16 @@ async def ingest_bulk_file(
     """Parse CSV/JSON file uploads and submit them to the queue."""
     filename_lower = file.filename.lower() if file.filename else ""
     content_type_lower = file.content_type.lower() if file.content_type else ""
+
+    # Enforce file size limit
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size {file_size} bytes exceeds maximum allowed size of {MAX_FILE_SIZE} bytes.",
+        )
 
     nodes = []
     edges = []
