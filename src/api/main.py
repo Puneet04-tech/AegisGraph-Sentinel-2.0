@@ -97,7 +97,8 @@ except ImportError as e:
 
     import logging as _stdlib_logging
     _stdlib_logging.getLogger(__name__).warning(
-        "SlowAPI not available (%s); rate limiting disabled", e
+        "SlowAPI not available (%s); route-level SlowAPI limits are disabled, "
++        "distributed rate limiting still applies", e
     )
 
 
@@ -1812,7 +1813,9 @@ app.state.limiter = limiter
 if SLOWAPI_AVAILABLE:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
-    app.add_middleware(DefaultRateLimitMiddleware)
+# Independent of slowapi: backs the distributed Redis limiter and must run
+# even when slowapi isn't installed.
+app.add_middleware(DefaultRateLimitMiddleware)
 
 register_exception_handlers(app)
 register_observability_middleware(app)
