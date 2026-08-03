@@ -42,6 +42,9 @@ class OAuthProvider:
         
         # Token storage
         self._tokens: dict[str, dict] = {}
+        
+        # Refresh tokens that have been rotated and must not be replayed
+        self._used_refresh_tokens: set[str] = set()
     
     def register_client(
         self,
@@ -226,7 +229,9 @@ class OAuthProvider:
         
         # Refresh Token Flow
         if grant_type == "refresh_token":
-            return self._refresh_token_grant(refresh_token, scope, client_id, client_secret)
+            return self._refresh_token_grant(
+                refresh_token, client_id, client_secret, scope
+            )
         
         # Authorization Code Flow
         if grant_type == "authorization_code":
@@ -400,11 +405,50 @@ class OAuthProvider:
     def _refresh_token_grant(
         self,
         refresh_token: str,
+        client_id: Optional[str],
+        client_secret: Optional[str],
         scope: Optional[str],
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
     ) -> AuthenticationResponse:
-        """Process refresh token grant with client credential validation and token rotation."""
+        """Process refresh token grant.
+
+        Per RFC 6749 section 6, the client must be authenticated on the token
+        endpoint, the refresh token is bound to the client it was issued to,
+        and rotating refresh tokens are required for reuse detection.
+        """
+        # Validate the presenting client's credentials, mirroring the
+        # authorization-code grant path.
+        if not client_id or not client_secret:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
+        client = self._clients.get(client_id)
+        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
+        if not client["enabled"]:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Client is disabled",
+            )
+
+        # Reject replays of an already-rotated refresh token.
+        if refresh_token in self._used_refresh_tokens:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Refresh token has already been used",
+            )
+
         # Find token by refresh token
         token_info = None
         for access_token, info in self._tokens.items():
@@ -419,19 +463,12 @@ class OAuthProvider:
                 error_description="Invalid refresh token",
             )
 
-        # Validate client credentials
-        stored_client = self._clients.get(token_info.get("client_id"))
-        if client_id != token_info.get("client_id"):
+        # The refresh token is bound to the client it was issued to.
+        if token_info.get("client_id") != client_id:
             return AuthenticationResponse(
                 success=False,
-                error="invalid_client",
-                error_description="Client ID mismatch",
-            )
-        if stored_client and stored_client.get("client_secret_hash") != self._hash_secret(client_secret):
-            return AuthenticationResponse(
-                success=False,
-                error="invalid_client",
-                error_description="Invalid client credentials",
+                error="invalid_grant",
+                error_description="Refresh token was issued to another client",
             )
 
         # Check expiration
@@ -442,12 +479,14 @@ class OAuthProvider:
                 error_description="Refresh token expired",
             )
 
-        # Generate new tokens (rotation)
+        # Rotate: issue a new refresh token so a stolen token cannot be replayed.
         new_access_token = self._generate_access_token()
         new_refresh_token = self._generate_refresh_token()
         expires_in = 3600
 
-        # Revoke old token
+        # Mark the old refresh token as used for reuse detection, then revoke
+        # the old access token.
+        self._used_refresh_tokens.add(refresh_token)
         self._revoke_token(token_info["access_token"])
 
         self._store_token(
@@ -455,7 +494,7 @@ class OAuthProvider:
             token_type="Bearer",
             expires_in=expires_in,
             scope=scope or token_info["scope"],
-            client_id=token_info["client_id"],
+            client_id=client_id,
             refresh_token=new_refresh_token,
         )
 
