@@ -330,6 +330,7 @@ from .schemas import (
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
 from .security import require_api_key, Role, require_role, require_any_role, require_admin
+from .actor import resolve_analyst_id
 from .validators import StrictRateLimit
 
 
@@ -6210,7 +6211,10 @@ async def list_soar_workflows():
     summary="Execute a manual response action",
     dependencies=[Depends(require_role(Role.ANALYST))],
 )
-async def execute_soar_response(request: ResponseActionRequest):
+async def execute_soar_response(
+    request: ResponseActionRequest,
+    executed_by: str = Depends(resolve_analyst_id),
+):
     """Execute a response action (e.g. account lock, session revoke)."""
     from src.soar.models import ResponseActionType
     service = get_soar_service_instance()
@@ -6218,7 +6222,7 @@ async def execute_soar_response(request: ResponseActionRequest):
         action = service.execute_action(
             action_type=ResponseActionType(request.action_type),
             target_id=request.target_id,
-            executed_by="ANALYST",
+            executed_by=executed_by,
             additional_params=request.additional_params,
         )
         return action
@@ -6233,7 +6237,10 @@ async def execute_soar_response(request: ResponseActionRequest):
     summary="Trigger a containment action",
     dependencies=[Depends(require_role(Role.ADMIN))],
 )
-async def trigger_soar_containment(request: ContainmentRequest):
+async def trigger_soar_containment(
+    request: ContainmentRequest,
+    initiated_by: str = Depends(resolve_analyst_id),
+):
     """Trigger a containment action (e.g. NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)."""
     from src.soar.models import ContainmentType
     service = get_soar_service_instance()
@@ -6241,7 +6248,7 @@ async def trigger_soar_containment(request: ContainmentRequest):
         action = service.trigger_containment(
             containment_type=ContainmentType(request.type),
             target_entity=request.target_entity,
-            initiated_by="ADMIN",
+            initiated_by=initiated_by,
             duration_seconds=request.duration_seconds,
         )
         return action
