@@ -97,7 +97,8 @@ except ImportError as e:
 
     import logging as _stdlib_logging
     _stdlib_logging.getLogger(__name__).warning(
-        "SlowAPI not available (%s); rate limiting disabled", e
+        "SlowAPI not available (%s); route-level SlowAPI limits are disabled, "
++        "distributed rate limiting still applies", e
     )
 
 
@@ -329,6 +330,7 @@ from .schemas import (
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
 from .security import require_api_key, Role, require_role, require_any_role, require_admin
+from .actor import resolve_analyst_id
 from .validators import StrictRateLimit
 
 
@@ -1812,7 +1814,9 @@ app.state.limiter = limiter
 if SLOWAPI_AVAILABLE:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
-    app.add_middleware(DefaultRateLimitMiddleware)
+# Independent of slowapi: backs the distributed Redis limiter and must run
+# even when slowapi isn't installed.
+app.add_middleware(DefaultRateLimitMiddleware)
 
 register_exception_handlers(app)
 register_observability_middleware(app)
@@ -5760,12 +5764,31 @@ async def register_provider(
     """Register a new identity provider."""
     from src.identity_federation import IdentityProviderType, SSOProvider as IdpSSOProvider
     service = get_identity_federation_service()
-    
+
+    # Convert the raw enum strings outside validation. Invalid values raise
+    # ValueError, which must surface as a structured 400 instead of a 500.
+    try:
+        provider_type_enum = IdentityProviderType(provider_type)
+        sso_provider_enum = IdpSSOProvider(sso_provider) if sso_provider else None
+    except ValueError:
+        errors = []
+        if provider_type not in {t.value for t in IdentityProviderType}:
+            errors.append(
+                f"Invalid provider_type: '{provider_type}'. "
+                f"Must be one of: {', '.join(t.value for t in IdentityProviderType)}"
+            )
+        if sso_provider and sso_provider not in {t.value for t in IdpSSOProvider}:
+            errors.append(
+                f"Invalid sso_provider: '{sso_provider}'. "
+                f"Must be one of: {', '.join(t.value for t in IdpSSOProvider)}"
+            )
+        raise HTTPException(status_code=400, detail={"message": "Validation failed", "errors": errors})
+
     provider, is_valid, errors = service.register_provider(
         name=name,
-        provider_type=IdentityProviderType(provider_type),
+        provider_type=provider_type_enum,
         issuer=issuer,
-        sso_provider=IdpSSOProvider(sso_provider) if sso_provider else None,
+        sso_provider=sso_provider_enum,
         client_id=client_id,
         client_secret=client_secret,
         metadata_url=metadata_url,
@@ -5871,6 +5894,7 @@ async def authenticate(
     "/api/v1/identity/sso/login",
     tags=["Identity Federation"],
     summary="SSO Login",
+    dependencies=[Depends(StrictRateLimit(ip_limit=10, api_key_limit=20))],
 )
 async def sso_login(
     user_id: str = Body(...),
@@ -5880,14 +5904,22 @@ async def sso_login(
     """Initiate Single Sign-On for an existing user."""
     service = get_identity_federation_service()
     response = service.sso_login(user_id=user_id, provider_id=provider_id, target_url=target_url)
-    
+
+    # Return a uniform error for every failure mode so anonymous callers
+    # cannot distinguish "user not found" from "provider not found" or
+    # "user not linked", which would otherwise act as a user-enumeration
+    # oracle. Full details are logged server-side only.
     if not response.success:
-        raise HTTPException(status_code=400, detail=response.error_description or response.error)
-    
+        _api_logger.warning(
+            "SSO login failed (user_id=%.30s, provider_id=%s): %s",
+            user_id, provider_id, response.error_description or response.error,
+        )
+        raise HTTPException(status_code=400, detail="Unable to initiate SSO login")
+
+    # Do not leak the federated user id to anonymous callers.
     return {
         "success": True,
         "redirect_url": response.redirect_url,
-        "user_id": response.user.id if response.user else None,
     }
 
 
@@ -6000,10 +6032,15 @@ async def oauth_token(
     "/api/v1/identity/user/{user_id}",
     tags=["Identity Federation"],
     summary="Get Federated User",
-    dependencies=[Depends(require_role(Role.VIEWER))],
+    dependencies=[Depends(require_role(Role.ADMIN, Role.AUDITOR))],
 )
 async def get_user(user_id: str):
-    """Get federated user by ID."""
+    """Get federated user by ID.
+
+    Restricted to elevated roles (ADMIN/AUDITOR): the federated user
+    directory exposes PII (email, provider binding, groups, roles and
+    last-login), which must not be readable by every VIEWER-scoped key.
+    """
     service = get_identity_federation_service()
     user = service.get_user(user_id)
     if not user:
@@ -6202,7 +6239,10 @@ async def list_soar_workflows():
     summary="Execute a manual response action",
     dependencies=[Depends(require_role(Role.ANALYST))],
 )
-async def execute_soar_response(request: ResponseActionRequest):
+async def execute_soar_response(
+    request: ResponseActionRequest,
+    executed_by: str = Depends(resolve_analyst_id),
+):
     """Execute a response action (e.g. account lock, session revoke)."""
     from src.soar.models import ResponseActionType
     service = get_soar_service_instance()
@@ -6210,7 +6250,7 @@ async def execute_soar_response(request: ResponseActionRequest):
         action = service.execute_action(
             action_type=ResponseActionType(request.action_type),
             target_id=request.target_id,
-            executed_by="ANALYST",
+            executed_by=executed_by,
             additional_params=request.additional_params,
         )
         return action
@@ -6225,7 +6265,10 @@ async def execute_soar_response(request: ResponseActionRequest):
     summary="Trigger a containment action",
     dependencies=[Depends(require_role(Role.ADMIN))],
 )
-async def trigger_soar_containment(request: ContainmentRequest):
+async def trigger_soar_containment(
+    request: ContainmentRequest,
+    initiated_by: str = Depends(resolve_analyst_id),
+):
     """Trigger a containment action (e.g. NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)."""
     from src.soar.models import ContainmentType
     service = get_soar_service_instance()
@@ -6233,7 +6276,7 @@ async def trigger_soar_containment(request: ContainmentRequest):
         action = service.trigger_containment(
             containment_type=ContainmentType(request.type),
             target_entity=request.target_entity,
-            initiated_by="ADMIN",
+            initiated_by=initiated_by,
             duration_seconds=request.duration_seconds,
         )
         return action

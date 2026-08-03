@@ -9,8 +9,21 @@ from .models import AttackCampaign, SimulationResult
 class SimulationEngine:
     """Engine for executing adversary attack campaigns.
 
-    Marks each simulation step as executed and computes aggregate metrics
-    including success rate and detection counts.
+    The SimulationEngine is responsible for running red-team attack campaigns
+    against a target environment. It processes each step in an AttackCampaign
+    sequentially, marks them as executed, and aggregates execution metrics
+    including the overall success rate and the number of detected steps.
+
+    Usage:
+        engine = SimulationEngine()
+        result = engine.execute(campaign)
+
+    Attributes:
+        None (stateless; all state is contained in the campaign and result).
+
+    Note:
+        In a production environment, the engine would connect to the target
+        infrastructure to validate actual attack success and detection state.
     """
 
     def execute(self, campaign: AttackCampaign) -> SimulationResult:
