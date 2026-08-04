@@ -4484,16 +4484,28 @@ async def create_orchestration(
 ):
     """Create a multi-agent orchestration workflow."""
     import time
-    from src.multi_agent_soc import get_orchestrator
+    from src.multi_agent_soc import get_orchestrator, WorkflowValidationError
     
     start_time = time.time()
     
     orchestrator = get_orchestrator()
     
-    plan = orchestrator.create_workflow(
-        workflow_name=request.workflow_name,
-        tasks=request.tasks,
-    )
+    try:
+        plan = orchestrator.create_workflow(
+            workflow_name=request.workflow_name,
+            tasks=request.tasks,
+        )
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "task_index": exc.task_index,
+                "field": exc.field,
+                "invalid_value": exc.invalid_value,
+                "valid_values": exc.valid_values,
+            },
+        ) from exc
     
     processing_time = (time.time() - start_time) * 1000
     
