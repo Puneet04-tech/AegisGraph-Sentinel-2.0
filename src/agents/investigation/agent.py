@@ -293,14 +293,29 @@ class InvestigationAgent(BaseAgent):
     ) -> InvestigationReport:
         """Generate comprehensive investigation report"""
         case_id = input_data.get("case_id")
-        context = input_data.get("context")  # InvestigationContext serialized
+        context = input_data.get("context")
         
-        # Use LLM to generate coherent narrative
+        if isinstance(context, InvestigationContext):
+            evidence = context.evidence_collected
+            risk_indicators = context.risk_indicators
+            findings = context.findings
+            related_entities = context.entities_involved
+        elif isinstance(context, dict):
+            evidence = context.get("evidence_collected", [])
+            risk_indicators = context.get("risk_indicators", [])
+            findings = context.get("findings", [])
+            related_entities = context.get("entities_involved", [])
+        else:
+            evidence = []
+            risk_indicators = []
+            findings = []
+            related_entities = []
+            
         analysis_data = {
             "case_id": case_id,
-            "evidence": context.get("evidence_collected", []),
-            "risk_indicators": context.get("risk_indicators", []),
-            "findings": context.get("findings", []),
+            "evidence": evidence,
+            "risk_indicators": risk_indicators,
+            "findings": findings,
         }
         
         prompt = f"""
@@ -332,7 +347,7 @@ class InvestigationAgent(BaseAgent):
             recommendations=self._generate_recommendations(analysis_data),
             evidence_chain=analysis_data["evidence"],
             timeline=self._build_timeline(analysis_data),
-            related_entities=context.get("entities_involved", []),
+            related_entities=related_entities,
             next_steps=self._generate_next_steps(analysis_data),
             created_at=datetime.now(timezone.utc),
         )

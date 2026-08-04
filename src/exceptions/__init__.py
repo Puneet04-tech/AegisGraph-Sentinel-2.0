@@ -10,6 +10,7 @@ from .base_exceptions import (
     SecurityException,
     ServiceUnavailableException,
     ValidationException,
+    InvestigationError,
 )
 from .error_codes import ErrorCode
 from .error_responses import build_error_from_aegis_exception, build_error_payload, utc_timestamp
@@ -21,6 +22,7 @@ __all__ = [
     "AuthorizationError",
     "BillingError",
     "ErrorCode",
+    "InvestigationError",
     "JSONSerializationError",
     "ProcessingException",
     "SecurityException",

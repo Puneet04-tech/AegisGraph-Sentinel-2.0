@@ -244,6 +244,44 @@ class TestLLMClient:
 
         assert "Investigation analysis complete. Model: gpt-4" == result
 
+    def test_generate_with_case_id(self):
+        client = LLMClient({})
+        prompt = "Generate a comprehensive fraud investigation report for case CASE-1001.\nEvidence collected: [\"card_clone\"]\nRisk indicators: [\"VELOCITY\"]"
+        result = asyncio.run(client.generate(prompt))
+        assert "Case: CASE-1001" in result
+        assert "card_clone" in result
+
+    def test_investigation_agent_distinct_reports(self):
+        from src.agents.investigation.agent import InvestigationAgent, InvestigationContext
+        agent = InvestigationAgent({"agent_id": "test_agent"})
+        ctx1 = InvestigationContext(
+            case_id="CASE-A",
+            primary_account="acc_1",
+            transaction_ids=["tx_1"],
+            entities_involved=["acc_1"],
+            evidence_collected=[{"type": "location_anomaly", "ip": "1.2.3.4"}],
+            risk_indicators=["GEO_IP_MISMATCH"],
+            findings=["Login from unusual country"],
+        )
+        ctx2 = InvestigationContext(
+            case_id="CASE-B",
+            primary_account="acc_2",
+            transaction_ids=["tx_2"],
+            entities_involved=["acc_2"],
+            evidence_collected=[{"type": "rapid_drain", "amount": 50000}],
+            risk_indicators=["LARGE_TRANSFER"],
+            findings=["Account drained within 1 min"],
+        )
+
+        rep1 = asyncio.run(agent.generate_investigation_report({"case_id": "CASE-A", "context": ctx1}))
+        rep2 = asyncio.run(agent.generate_investigation_report({"case_id": "CASE-B", "context": ctx2}))
+
+        assert rep1.summary != rep2.summary
+        assert "CASE-A" in rep1.summary
+        assert "CASE-B" in rep2.summary
+        assert "location_anomaly" in rep1.summary
+        assert "rapid_drain" in rep2.summary
+
     def test_generate_streaming_calls_callback(self):
         client = LLMClient({})
         chunks = []

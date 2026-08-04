@@ -229,6 +229,11 @@ class LLMClient:
 
         # Build a structured narrative summary from the prompt content
         summary_parts = []
+        import re
+        case_match = re.search(r'(?:for case|case)\s+([^\s\.\n,]+)', prompt, re.IGNORECASE)
+        if case_match and case_match.group(1).lower() not in ("a", "the"):
+            summary_parts.append(f"Case: {case_match.group(1)}")
+
         if "Evidence collected:" in prompt:
             evidence_section = prompt.split("Evidence collected:")[1].split("\n")[0].strip()
             if evidence_section and evidence_section != "[]":
