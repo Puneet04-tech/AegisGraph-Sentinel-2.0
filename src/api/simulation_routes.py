@@ -64,7 +64,7 @@ class CompleteSimulationRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -168,7 +168,7 @@ async def get_analytics(
 
 
 @router.get("/evaluations")
-async def list_evaluations(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_evaluations(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List all threat evaluations."""
     verify_api_key(x_api_key)
     simulator = get_threat_simulator()
@@ -180,7 +180,7 @@ async def list_evaluations(x_api_key: str = Header(None, alias="X-API-Key")):
 
 
 @router.get("/actors")
-async def list_actors(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_actors(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List threat actors."""
     verify_api_key(x_api_key)
     simulator = get_threat_simulator()
@@ -194,7 +194,7 @@ async def list_actors(x_api_key: str = Header(None, alias="X-API-Key")):
 
 
 @router.get("/scenarios")
-async def list_scenarios(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_scenarios(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List attack scenarios."""
     verify_api_key(x_api_key)
     simulator = get_threat_simulator()
