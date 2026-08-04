@@ -250,6 +250,7 @@ class BatchTransactionResponse(BaseModel):
                 "total_blocked": 0,
                 "total_review": 0,
                 "total_allowed": 1,
+                "total_failed": 0,
                 "processing_time_ms": 45.2
             }
         }
@@ -259,6 +260,7 @@ class BatchTransactionResponse(BaseModel):
     total_blocked: int
     total_review: int
     total_allowed: int
+    total_failed: int
     processing_time_ms: float
 
 
