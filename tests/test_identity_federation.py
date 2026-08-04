@@ -4,9 +4,11 @@ Identity Federation Tests
 Unit tests for the Enterprise Identity Federation Platform.
 """
 
+import base64
 import pytest
 import threading
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 from src.identity_federation import (
     IdentityFederationService,
@@ -27,6 +29,66 @@ from src.identity_federation import (
     AuditLogger,
 )
 from src.identity_federation.models import AuthenticationRequest, AuthenticationResponse
+
+
+def _self_signed_cert_and_key() -> tuple[str, str]:
+    """Generate a throwaway RSA keypair + self-signed cert for signing test assertions."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "idp.example.com")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
+
+
+def _build_saml_response(
+    name_id: str, issuer: str, sign_with_key: str = None, sign_with_cert: str = None
+) -> str:
+    """Build a base64-encoded SAML Response, optionally with a signed assertion."""
+    import lxml.etree as lxml_etree
+    from signxml import XMLSigner
+
+    samlp_ns = "urn:oasis:names:tc:SAML:2.0:protocol"
+    saml_ns = "urn:oasis:names:tc:SAML:2.0:assertion"
+    response = lxml_etree.Element(
+        f"{{{samlp_ns}}}Response",
+        nsmap={"samlp": samlp_ns, "saml": saml_ns},
+        ID="_resp1",
+        Version="2.0",
+    )
+    status = lxml_etree.SubElement(response, f"{{{samlp_ns}}}Status")
+    lxml_etree.SubElement(
+        status, f"{{{samlp_ns}}}StatusCode", Value="urn:oasis:names:tc:SAML:2.0:status:Success"
+    )
+    assertion = lxml_etree.SubElement(response, f"{{{saml_ns}}}Assertion", ID="_assertion1", Version="2.0")
+    lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Issuer").text = issuer
+    subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
+    lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
+
+    if sign_with_key:
+        signed_assertion = XMLSigner().sign(assertion, key=sign_with_key, cert=sign_with_cert)
+        response.replace(assertion, signed_assertion)
+
+    xml_bytes = lxml_etree.tostring(response, xml_declaration=True, encoding="UTF-8")
+    return base64.b64encode(xml_bytes).decode()
 
 
 class TestIdentityFederationStore:
@@ -274,6 +336,51 @@ class TestSAMLProvider:
         assert response.redirect_url is not None
         assert "SAMLRequest=" in response.redirect_url
         assert response.authentication_method == "saml"
+    
+    def test_process_response_rejects_unsigned_assertion(self):
+        """An assertion with no XML signature must never be trusted."""
+        store = IdentityFederationStore()
+        cert_pem, _ = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        forged = _build_saml_response("admin@bank.example.com", "https://okta.example.com/saml")
+        
+        response = saml.process_response(forged)
+        
+        assert response.success is False
+        assert response.user is None
+    
+    def test_process_response_accepts_validly_signed_assertion(self):
+        """A correctly signed assertion from the registered IdP is trusted."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        signed = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+        
+        response = saml.process_response(signed)
+        
+        assert response.success is True
+        assert response.user.email == "real.user@example.com"
 
 
 class TestOIDCProvider:
@@ -307,19 +414,85 @@ class TestOIDCProvider:
         assert "client_id=client-id" in response.redirect_url
         assert response.authentication_method == "oidc"
     
-    def test_validate_token(self):
-        """Test token validation."""
+    def test_validate_token_fails_closed_on_unverifiable_input(self):
+        """Tokens must never be trusted without a real signature check."""
         store = IdentityFederationStore()
         oidc = OIDCProvider(store, "https://aegisgraph.example.com")
         
-        # Test simulated token validation
+        # Unregistered provider
         is_valid, claims = oidc.validate_token(
-            provider_id="any-provider",
-            token="simulated_access_token_test",
+            provider_id="unregistered-provider",
+            token="any-token-value",
+        )
+        assert is_valid is False
+        assert claims is None
+        
+        # Missing JWKS URI
+        store.register_provider(IdentityProvider(
+            id="misconfigured",
+            name="Misconfigured IdP",
+            provider_type=IdentityProviderType.OIDC,
+            issuer="https://idp.example.com",
+            client_id="client-id",
+        ))
+        is_valid, claims = oidc.validate_token(
+            provider_id="misconfigured",
+            token="any-token-value",
+        )
+        assert is_valid is False
+        assert claims is None
+    
+    def test_validate_token_verifies_signature(self):
+        """A token is only trusted if it's actually signed by the IdP's own key."""
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        
+        idp_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        idp_key_pem = idp_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        )
+        attacker_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        attacker_key_pem = attacker_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
         )
         
-        assert is_valid is True
-        assert claims is not None
+        store = IdentityFederationStore()
+        store.register_provider(IdentityProvider(
+            id="azure-prod",
+            name="Azure AD",
+            provider_type=IdentityProviderType.OIDC,
+            issuer="https://login.microsoftonline.com/tenant/v2.0",
+            client_id="real-client-id",
+            oidc_jwks_uri="https://login.microsoftonline.com/tenant/discovery/v2.0/keys",
+        ))
+        oidc = OIDCProvider(store, "https://aegisgraph.example.com")
+        
+        now = int(datetime.now(timezone.utc).timestamp())
+        claims_in = {
+            "sub": "user-42",
+            "iss": "https://login.microsoftonline.com/tenant/v2.0",
+            "aud": "real-client-id",
+            "exp": now + 300,
+            "iat": now,
+        }
+        legit_token = jwt.encode(claims_in, idp_key_pem, algorithm="RS256", headers={"kid": "k1"})
+        forged_token = jwt.encode(
+            {**claims_in, "sub": "admin"}, attacker_key_pem, algorithm="RS256", headers={"kid": "k1"}
+        )
+        
+        # Mock the JWKS fetch only
+        fake_signing_key = MagicMock(key=idp_key.public_key())
+        with patch.object(OIDCProvider, "_get_jwks_client") as mock_get_client:
+            mock_get_client.return_value.get_signing_key_from_jwt.return_value = fake_signing_key
+            
+            is_valid, claims = oidc.validate_token("azure-prod", legit_token)
+            assert is_valid is True
+            assert claims["sub"] == "user-42"
+            
+            is_valid, claims = oidc.validate_token("azure-prod", forged_token)
+            assert is_valid is False
+            assert claims is None
 
 
 class TestOAuthProvider:
