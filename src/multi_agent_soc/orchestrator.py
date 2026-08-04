@@ -6,7 +6,7 @@ Orchestrates multi-agent workflows, manages task dependencies, and coordinates a
 
 import random
 from typing import Dict, List, Optional, Any, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -130,7 +130,7 @@ class AgentOrchestrator:
         # Step 5: Generate report
         reporting_agent = self._agents[AgentType.REPORTING]()
         report = reporting_agent.generate_summary_report(
-            period_start=datetime.now(timezone.utc) - timezone.utc.utcoffset(None),
+            period_start=datetime.now(timezone.utc) - timedelta(hours=24),
             period_end=datetime.now(timezone.utc),
             report_type="investigation",
         )

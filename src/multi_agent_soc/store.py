@@ -193,6 +193,17 @@ class SOCStore:
             if inv.entity_id == entity_id
         ]
     
+    def get_investigations_between(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> List[InvestigationResult]:
+        """Get investigations created within a time window (inclusive)."""
+        return [
+            inv for inv in self._investigations.values()
+            if period_start <= inv.created_at <= period_end
+        ]
+    
     def store_threat_report(self, report: ThreatIntelligenceReport) -> ThreatIntelligenceReport:
         """Store threat intelligence report."""
         with self._lock:
@@ -211,6 +222,17 @@ class SOCStore:
         return [
             r for r in self._threat_reports.values()
             if r.created_at.timestamp() > cutoff
+        ]
+    
+    def get_threats_between(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> List[ThreatIntelligenceReport]:
+        """Get threat reports created within a time window (inclusive)."""
+        return [
+            r for r in self._threat_reports.values()
+            if period_start <= r.created_at <= period_end
         ]
     
     def store_forensic_analysis(self, analysis: ForensicAnalysis) -> ForensicAnalysis:
