@@ -82,7 +82,7 @@ class TransactionCheckRequest(BaseModel):
     location: Optional[str] = Field(default=None, description="Transaction location")
     @field_validator('timestamp')
     @classmethod
-    def validate_timestamp(cls, v):
+    def validate_timestamp(cls, v: Union[str, float]) -> Union[str, float]:
         """Validate and normalize timestamp to ISO 8601 UTC format.
 
         Accepted inputs include Unix epoch seconds and timezone-aware ISO 8601
