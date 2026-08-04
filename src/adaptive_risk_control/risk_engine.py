@@ -69,6 +69,7 @@ class AdaptiveRiskEngine:
         device_score = self._calculate_device_score(transaction_data)
         location_score = self._calculate_location_score(transaction_data)
         behavior_score = self._calculate_behavior_score(transaction_data, profile)
+        history_score = self._calculate_history_score(transaction_data)
 
         # Calculate overall risk score
         risk_score = self._calculate_overall_risk(
@@ -77,6 +78,7 @@ class AdaptiveRiskEngine:
             device=device_score,
             location=location_score,
             behavior=behavior_score,
+            history=history_score,
         )
 
         # Determine risk level
@@ -88,7 +90,7 @@ class AdaptiveRiskEngine:
         # Identify risk factors
         risk_factors = self._identify_risk_factors(
             velocity_score, amount_score, device_score,
-            location_score, behavior_score
+            location_score, behavior_score, history_score
         )
 
         # Identify indicators
@@ -112,6 +114,7 @@ class AdaptiveRiskEngine:
             device_score=device_score,
             location_score=location_score,
             amount_score=amount_score,
+            history_score=history_score,
             assessed_at=datetime.now(timezone.utc),
             processing_time_ms=processing_time,
         )
@@ -180,6 +183,19 @@ class AdaptiveRiskEngine:
         deviation = abs(profile.risk_score - data.get("expected_risk", 0.5))
         return min(1.0, deviation * 2)
 
+    def _calculate_history_score(self, data: Dict[str, Any]) -> float:
+        """Calculate history-based risk score."""
+        explicit = data.get("history_score")
+        if explicit is not None:
+            return min(1.0, max(0.0, explicit))
+        if data.get("fraud_history"):
+            return 1.0
+        if data.get("failed_attempts", 0) >= 3:
+            return 0.8
+        if data.get("risk_history"):
+            return 0.6
+        return 0.1
+
     def _calculate_overall_risk(
         self,
         velocity: float,
@@ -187,14 +203,20 @@ class AdaptiveRiskEngine:
         device: float,
         location: float,
         behavior: float,
+        history: float,
     ) -> float:
-        """Calculate overall risk score."""
+        """Calculate overall risk score.
+
+        Applies every declared factor (weights sum to 1.0) so the maximum
+        achievable score is 1.0 and the DENY threshold is reachable.
+        """
         return (
             velocity * self._risk_factors["velocity"] +
             amount * self._risk_factors["amount"] +
             device * self._risk_factors["device"] +
             location * self._risk_factors["location"] +
-            behavior * self._risk_factors["behavior"]
+            behavior * self._risk_factors["behavior"] +
+            history * self._risk_factors["history"]
         )
 
     def _determine_risk_level(self, risk_score: float) -> RiskLevel:
@@ -232,6 +254,7 @@ class AdaptiveRiskEngine:
         device: float,
         location: float,
         behavior: float,
+        history: float,
     ) -> List[str]:
         """Identify contributing risk factors."""
         factors = []
@@ -246,6 +269,8 @@ class AdaptiveRiskEngine:
             factors.append("Suspicious location")
         if behavior > 0.5:
             factors.append("Behavioral anomaly")
+        if history > 0.5:
+            factors.append("History of risk/fraud")
 
         return factors
 
