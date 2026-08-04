@@ -1042,7 +1042,7 @@ class AuthService:
         self.user_store.set_mfa(user_id, False)
         self._pending_mfa_secrets.pop(user_id, None)
 
-    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
+    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]) -> None:
         """Add SSO provider configuration"""
         if provider == AuthProvider.OKTA:
             self.sso_providers[provider] = OktaSSOProvider(config)
@@ -1217,16 +1217,16 @@ class RBACService:
             return True
         return permission in perms
 
-    def require_permission(self, role: str, permission: str):
+    def require_permission(self, role: str, permission: str) -> None:
         """Raise exception if permission denied"""
         if not self.has_permission(role, permission):
             raise AuthorizationError(f"Permission denied: {permission}")
 
-    def create_custom_role(self, name: str, permissions: List[str]):
+    def create_custom_role(self, name: str, permissions: List[str]) -> None:
         """Create custom role"""
         self.custom_roles[name] = permissions
 
-    def delete_custom_role(self, name: str):
+    def delete_custom_role(self, name: str) -> None:
         """Delete custom role"""
         if name in self.custom_roles:
             del self.custom_roles[name]
@@ -1269,7 +1269,7 @@ class ABACService:
     def __init__(self):
         self.policies: List[Dict[str, Any]] = []
 
-    def add_policy(self, policy: Dict[str, Any]):
+    def add_policy(self, policy: Dict[str, Any]) -> None:
         """Add access control policy.
 
         Validates at registration so a malformed policy fails loudly here
