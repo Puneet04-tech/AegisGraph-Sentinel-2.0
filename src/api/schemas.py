@@ -107,7 +107,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('target_account')
     @classmethod
-    def validate_target_account(cls, v):
+    def validate_target_account(cls, v: str) -> str:
         """Validate target account format."""
         try:
             TransactionValidator.validate_account_id(v, "target_account")
