@@ -129,7 +129,7 @@ class BaseAgent(ABC):
         input_schema: Dict[str, Any],
         output_schema: Dict[str, Any],
         execution_time_estimate: float = 5.0,
-    ):
+    ) -> None:
         """Register agent capability"""
         self.capabilities.append(AgentCapability(
             name=name,
