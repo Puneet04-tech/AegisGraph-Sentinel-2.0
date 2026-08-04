@@ -1385,5 +1385,67 @@ class TestDefaultRateLimiting:
         _clear_rate_limit_storage()
 
 
+class TestSocOrchestrateEndpoint:
+    """Test SOC workflow creation validation via the API."""
+
+    def test_invalid_agent_type_returns_400(self):
+        """Unrecognized agent_type must return a structured 400, not a 500."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1"},
+                    {"agent_type": "SKYNET", "title": "Task 2"},
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        details = error["details"]
+        assert error["code"] == "PROCESSING_ERROR"
+        assert details["field"] == "agent_type"
+        assert details["task_index"] == 1
+        assert details["invalid_value"] == "SKYNET"
+        assert "INVESTIGATION" in details["valid_values"]
+
+    def test_invalid_priority_returns_400(self):
+        """Unrecognized priority must return a structured 400, not a 500."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "urgent"},
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        details = error["details"]
+        assert error["code"] == "PROCESSING_ERROR"
+        assert details["field"] == "priority"
+        assert details["invalid_value"] == "urgent"
+        assert "HIGH" in details["valid_values"]
+
+    def test_valid_workflow_returns_200(self):
+        """Valid workflow definitions must still create a plan."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "HIGH"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        plan = response.json()["plan"]
+        assert plan["task_count"] == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
