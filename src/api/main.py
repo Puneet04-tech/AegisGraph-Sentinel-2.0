@@ -1873,7 +1873,7 @@ async def root():
 
 
 @app.get("/api/v1/auth/whoami", tags=["Authentication"])
-async def whoami(role: Role = Depends(require_role(Role.VIEWER))):
+async def whoami(role: Role = Depends(require_role(Role.VIEWER))) -> Dict[str, Any]:
     """Return the role attached to the presented API key."""
     return {"role": role.value}
 
@@ -1894,7 +1894,7 @@ async def health_check_v1(verbose: bool = False):
     tags=["Health"],
     summary="Lightweight liveness probe",
 )
-async def liveness():
+async def liveness() -> Dict[str, Any]:
     """
     Lightweight health check endpoint for Kubernetes liveness probes.
     Returns immediately to ensure responsiveness.
@@ -1907,7 +1907,7 @@ async def liveness():
     tags=["Health"],
     summary="Readiness probe",
 )
-async def readiness(response: Response):
+async def readiness(response: Response) -> Dict[str, Any]:
     """Report whether the process finished starting up and can serve traffic.
 
     Returns 503 until the lifecycle manager completes, so an orchestrator does
@@ -1939,7 +1939,7 @@ async def health_check(verbose: bool = False):
 
 
 @app.get("/stats", response_model=StatsResponse, tags=["Monitoring"], dependencies=[Depends(require_role(Role.AUDITOR))])
-async def get_stats():
+async def get_stats() -> StatsResponse:
     """
     Get service statistics
     
