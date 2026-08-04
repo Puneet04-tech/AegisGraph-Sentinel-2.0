@@ -30,9 +30,10 @@ from src.saas.auth.credential_stores import (
     SessionStore,
 )
 from src.saas.auth.password_policy import enforce_password_policy
-from src.saas.auth.revocation import TokenRevocationStore
+from src.saas.auth.revocation import InMemoryTokenRevocationStore, TokenRevocationStore
 from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
+    InMemoryAttemptLimiter,
     LockoutState,
     SCOPE_ACCOUNT,
     SCOPE_ADDRESS,
@@ -375,6 +376,12 @@ class AuthService:
         self.api_key_store: APIKeyStore = api_key_store or InMemoryAPIKeyStore()
         self.notification_sender: NotificationSender = (
             notification_sender or LoggingNotificationSender()
+        )
+        self.revocation_store: TokenRevocationStore = (
+            revocation_store or InMemoryTokenRevocationStore()
+        )
+        self.attempt_limiter: AuthAttemptLimiter = (
+            attempt_limiter or InMemoryAttemptLimiter()
         )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
