@@ -45,6 +45,7 @@ from src.multi_agent_soc import (
     get_reporting_agent,
     AgentOrchestrator,
     get_orchestrator,
+    WorkflowValidationError,
 )
 
 
@@ -626,6 +627,54 @@ class TestAgentOrchestrator:
         
         assert plan.plan_id is not None
         assert len(plan.tasks) == 2
+    
+    def test_create_workflow_rejects_invalid_agent_type(self, orchestrator):
+        """Invalid agent_type must raise a clean validation error."""
+        tasks = [
+            {"agent_type": "INVESTIGATION", "title": "Task 1"},
+            {"agent_type": "SKYNET", "title": "Task 2"},
+        ]
+        
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert excinfo.value.task_index == 1
+        assert excinfo.value.field == "agent_type"
+        assert excinfo.value.invalid_value == "SKYNET"
+        assert "INVESTIGATION" in excinfo.value.valid_values
+    
+    def test_create_workflow_rejects_invalid_priority(self, orchestrator):
+        """Invalid priority must raise a clean validation error."""
+        tasks = [
+            {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "urgent"},
+        ]
+        
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert excinfo.value.task_index == 0
+        assert excinfo.value.field == "priority"
+        assert excinfo.value.invalid_value == "urgent"
+        assert "HIGH" in excinfo.value.valid_values
+    
+    def test_create_workflow_rejects_non_dict_task(self, orchestrator):
+        """Non-dict task definitions must raise a clean validation error."""
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", ["not-a-dict"])
+        
+        assert excinfo.value.task_index == 0
+        assert excinfo.value.field == "task"
+    
+    def test_create_workflow_accepts_lowercase_enums(self, orchestrator):
+        """Lowercase enum values must be normalized and accepted."""
+        tasks = [
+            {"agent_type": "investigation", "title": "Task 1", "priority": "high"},
+        ]
+        
+        plan = orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert plan.tasks[0].agent_type == AgentType.INVESTIGATION
+        assert plan.tasks[0].priority == TaskPriority.HIGH
     
     def test_execute_plan(self, orchestrator):
         """Test executing orchestration plan."""
