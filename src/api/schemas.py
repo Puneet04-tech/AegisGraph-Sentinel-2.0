@@ -117,7 +117,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('currency')
     @classmethod
-    def validate_currency(cls, v):
+    def validate_currency(cls, v: str) -> str:
         """Validate currency code."""
         try:
             TransactionValidator.validate_currency_code(v)
