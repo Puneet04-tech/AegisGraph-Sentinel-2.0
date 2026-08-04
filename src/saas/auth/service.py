@@ -368,10 +368,21 @@ class AuthService:
         # Attempt limiter enforces the login/MFA lockout budget; revocation
         # store backs refresh-token reuse detection and logout. Both default to
         # process-local in-memory backends and can be injected for multi-worker
-        # deployments.
+        # deployments. A fallback logs so an operator notices the non-shared
+        # default rather than discovering it under load.
+        if attempt_limiter is None:
+            logger.warning(
+                "No attempt limiter injected; using process-local in-memory "
+                "limiter. Multi-worker deployments should inject a shared backend."
+            )
         self.attempt_limiter: AuthAttemptLimiter = (
             attempt_limiter or InMemoryAttemptLimiter()
         )
+        if revocation_store is None:
+            logger.warning(
+                "No revocation store injected; using process-local in-memory "
+                "store. Multi-worker deployments should inject a shared backend."
+            )
         self.revocation_store: TokenRevocationStore = (
             revocation_store or InMemoryTokenRevocationStore()
         )
