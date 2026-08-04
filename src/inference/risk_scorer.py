@@ -750,6 +750,14 @@ def compute_risk_score(
                 if fail_fast:
                     raise
     
+    # The lateral-movement increment (MITRE ATT&CK TA0008) is applied inside
+    # the block above, which runs *after* the graph risk was capped and
+    # snapshotted into `breakdown['graph']`. Re-clamp and refresh the snapshot
+    # here so the breakdown, overall score and decision all reflect the
+    # post-increment value.
+    graph_risk = min(graph_risk, 1.0)
+    breakdown['graph'] = graph_risk
+    
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     

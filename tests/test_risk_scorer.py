@@ -197,3 +197,35 @@ def test_lateral_movement_baseline_update_is_atomic_under_concurrency(monkeypatc
     assert len(warning_events) == 1
     assert len(state.centrality_baseline["source"]) == 3
     assert all("risk_score" in result for result in results)
+
+
+def test_lateral_movement_increment_reaches_breakdown_and_score(monkeypatch):
+    """A detected lateral-movement spike must raise the graph component (by
+    DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT) and the final risk score."""
+    from src.config import defaults as config_defaults
+
+    def run(baseline):
+        state = _make_state(graph=_FakeGraph(), centrality_baseline=baseline)
+        monkeypatch.setattr("src.api.main.state", state)
+        monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.9})
+        monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+        monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+        return risk_mod.compute_risk_score(
+            {"source_account": "source", "target_account": "target", "amount": 10}
+        )
+
+    no_spike = run({})
+    spiking = run({"source": [0.01, 0.01, 0.01]})
+
+    increment = config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
+    graph_weight = config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"]
+
+    assert no_spike["lateral_movement_detected"] is False
+    assert spiking["lateral_movement_detected"] is True
+    assert spiking["breakdown"]["graph"] == pytest.approx(
+        min(no_spike["breakdown"]["graph"] + increment, 1.0)
+    )
+    assert spiking["risk_score"] == pytest.approx(
+        min(no_spike["risk_score"] + increment * graph_weight, 1.0)
+    )
+    assert spiking["risk_score"] > no_spike["risk_score"]
