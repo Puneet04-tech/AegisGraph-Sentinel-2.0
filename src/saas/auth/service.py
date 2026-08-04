@@ -31,7 +31,13 @@ from src.saas.auth.credential_stores import (
 )
 from src.saas.auth.password_policy import enforce_password_policy
 from src.saas.auth.revocation import TokenRevocationStore
-from src.saas.auth.attempt_limiter import LockoutState
+from src.saas.auth.attempt_limiter import (
+    AuthAttemptLimiter,
+    LockoutState,
+    SCOPE_ACCOUNT,
+    SCOPE_ADDRESS,
+    SCOPE_TOTP,
+)
 
 logger = logging.getLogger(__name__)
 
