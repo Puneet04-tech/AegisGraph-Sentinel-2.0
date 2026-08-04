@@ -15,6 +15,12 @@ from fastapi.security import APIKeyHeader, HTTPBearer, OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr, Field
 
 from src.exceptions import AuthenticationError, AuthorizationError
+from src.exceptions.error_responses import build_rate_limit_error_payload
+from src.saas.auth.attempt_limiter import (
+    SCOPE_ACCOUNT,
+    AuthAttemptLimiter,
+    build_attempt_limiter,
+)
 from src.saas.auth.password_policy import PasswordPolicyError
 from src.saas.auth.service import (
     ABACService,
@@ -581,9 +587,24 @@ async def request_password_reset(request: PasswordResetRequest):
     """Request a password reset email.
 
     The response is identical whether or not the address exists, so this
-    endpoint cannot be used to enumerate accounts.
+    endpoint cannot be used to enumerate accounts. Request bursts are
+    throttled per address using the shared attempt budget so the reset
+    channel cannot be abused to hammer the mailer.
     """
     service = _get_auth_service()
+    identity = request.email.lower()
+    state = service.attempt_limiter.check(identity, SCOPE_ACCOUNT)
+    if state.locked:
+        retry_after = max(1, state.retry_after_seconds)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=build_rate_limit_error_payload(
+                retry_after_seconds=retry_after,
+                limit_type="password_reset",
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+    service.attempt_limiter.record_failure(identity, SCOPE_ACCOUNT)
     record = service.user_store.get_by_email(request.email)
     if record is not None:
         token = service.reset_token_store.issue(record.user_id)
