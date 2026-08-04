@@ -13,6 +13,7 @@ from .models import (
     AgentTask,
     AgentType,
     TaskPriority,
+    InvestigationStatus,
     SOCReport,
 )
 from .store import SOCStore, get_soc_store
@@ -170,33 +171,60 @@ class ReportingAgent:
         }
     
     def generate_threat_trend_report(self, days: int = 30) -> Dict[str, Any]:
-        """Generate threat trend analysis.
-        
+        """Generate threat trend analysis from stored threat reports.
+
         Args:
             days: Number of days to analyze
-            
+
         Returns:
             Trend analysis data
         """
+        now = datetime.now(timezone.utc)
+        current_start = now - timedelta(days=days)
+        previous_start = current_start - timedelta(days=days)
+
+        current_threats = self._store.get_threats_between(current_start, now)
+        previous_threats = self._store.get_threats_between(previous_start, current_start)
+
+        current_volume = len(current_threats)
+        previous_volume = len(previous_threats)
+        change_percent = (
+            (current_volume - previous_volume) / previous_volume
+            if previous_volume else 0.0
+        )
+
+        threat_counts: Dict[str, int] = {}
+        for threat in current_threats:
+            threat_counts[threat.threat_type] = threat_counts.get(threat.threat_type, 0) + 1
+
+        top_threats = [
+            {"type": threat_type, "count": count}
+            for threat_type, count in sorted(
+                threat_counts.items(), key=lambda item: item[1], reverse=True
+            )[:5]
+        ]
+
+        if change_percent > 0.05:
+            predicted_trend = "increasing"
+        elif change_percent < -0.05:
+            predicted_trend = "decreasing"
+        else:
+            predicted_trend = "stable"
+
+        confidences = [threat.confidence for threat in current_threats]
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
         return {
             "period_days": days,
             "threat_volume": {
-                "current": random.randint(50, 200),
-                "previous": random.randint(40, 180),
-                "change_percent": random.uniform(-0.3, 0.5),
+                "current": current_volume,
+                "previous": previous_volume,
+                "change_percent": change_percent,
             },
-            "top_threats": [
-                {"type": "credential_stuffing", "count": random.randint(10, 50)},
-                {"type": "payment_fraud", "count": random.randint(5, 30)},
-                {"type": "account_takeover", "count": random.randint(5, 25)},
-            ],
-            "geographic_distribution": [
-                {"region": "North America", "percentage": random.uniform(30, 50)},
-                {"region": "Europe", "percentage": random.uniform(20, 35)},
-                {"region": "Asia", "percentage": random.uniform(15, 30)},
-            ],
-            "predicted_trend": random.choice(["increasing", "stable", "decreasing"]),
-            "confidence": random.uniform(0.6, 0.9),
+            "top_threats": top_threats,
+            "geographic_distribution": [],
+            "predicted_trend": predicted_trend,
+            "confidence": avg_confidence,
         }
     
     def create_reporting_task(
@@ -238,20 +266,53 @@ class ReportingAgent:
         period_start: datetime,
         period_end: datetime,
     ) -> Dict[str, float]:
-        """Calculate SOC metrics."""
-        hours = (period_end - period_start).total_seconds() / 3600
-        
+        """Calculate SOC metrics from stored activity within the period.
+
+        All values are derived from the SOC store; no fabricated data.
+        Metrics that require tracking not present in the store (e.g. false
+        positive and detection rates) are reported as zero when unavailable.
+        """
+        threats = self._store.get_threats_between(period_start, period_end)
+        investigations = self._store.get_investigations_between(period_start, period_end)
+        fraud_rings = [
+            ring for ring in self._store.get_all_fraud_rings()
+            if period_start <= ring.created_at <= period_end
+        ]
+
+        completed_tasks = [
+            task for task in self._store.get_tasks_by_agent(AgentType.INVESTIGATION)
+            if task.started_at is not None
+            and task.completed_at is not None
+            and period_start <= task.completed_at <= period_end
+        ]
+
+        resolution_minutes = [
+            (task.completed_at - task.started_at).total_seconds() / 60
+            for task in completed_tasks
+        ]
+        analyst_hours = sum(
+            (task.completed_at - task.started_at).total_seconds() / 3600
+            for task in completed_tasks
+        )
+
         return {
-            "total_alerts": random.randint(100, 1000),
-            "alerts_processed": random.randint(80, 900),
-            "high_risk_alerts": random.randint(10, 100),
-            "investigations_started": random.randint(5, 50),
-            "investigations_completed": random.randint(3, 40),
-            "fraud_rings_detected": random.randint(0, 10),
-            "average_resolution_time_minutes": random.randint(30, 180),
-            "analyst_hours": random.randint(50, 500),
-            "false_positive_rate": random.uniform(0.1, 0.4),
-            "detection_rate": random.uniform(0.7, 0.95),
+            "total_alerts": float(len(threats)),
+            "alerts_processed": float(len(threats)),
+            "high_risk_alerts": float(
+                sum(1 for t in threats if t.severity.upper() in ("HIGH", "CRITICAL"))
+            ),
+            "investigations_started": float(len(investigations)),
+            "investigations_completed": float(
+                sum(1 for inv in investigations if inv.status == InvestigationStatus.CLOSED)
+            ),
+            "fraud_rings_detected": float(len(fraud_rings)),
+            "average_resolution_time_minutes": (
+                sum(resolution_minutes) / len(resolution_minutes)
+                if resolution_minutes else 0.0
+            ),
+            "analyst_hours": analyst_hours,
+            "false_positive_rate": 0.0,
+            "detection_rate": 0.0,
         }
     
     def _get_threats_summary(
@@ -259,23 +320,22 @@ class ReportingAgent:
         period_start: datetime,
         period_end: datetime,
     ) -> List[Dict[str, Any]]:
-        """Get threats summary for period."""
+        """Get threats summary aggregated from stored threat reports."""
+        threats = self._store.get_threats_between(period_start, period_end)
+
+        grouped: Dict[str, List[str]] = {}
+        for threat in threats:
+            grouped.setdefault(threat.threat_type, []).append(threat.severity)
+
+        severity_rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
         return [
             {
-                "threat_type": "credential_stuffing",
-                "count": random.randint(5, 30),
-                "severity": "HIGH",
-            },
-            {
-                "threat_type": "payment_fraud",
-                "count": random.randint(3, 20),
-                "severity": "MEDIUM",
-            },
-            {
-                "threat_type": "account_takeover",
-                "count": random.randint(2, 15),
-                "severity": "HIGH",
-            },
+                "threat_type": threat_type,
+                "count": len(severities),
+                "severity": max(severities, key=lambda s: severity_rank.get(s, 0)),
+            }
+            for threat_type, severities in sorted(grouped.items())
         ]
     
     def _get_investigations_summary(
@@ -283,17 +343,29 @@ class ReportingAgent:
         period_start: datetime,
         period_end: datetime,
     ) -> Dict[str, Any]:
-        """Get investigations summary."""
+        """Get investigations summary aggregated from stored investigations."""
+        investigations = self._store.get_investigations_between(period_start, period_end)
+
+        by_status: Dict[str, int] = {}
+        for inv in investigations:
+            key = inv.status.value.lower()
+            by_status[key] = by_status.get(key, 0) + 1
+
+        risk_scores = [inv.risk_score for inv in investigations]
+
         return {
-            "total_investigations": random.randint(10, 100),
+            "total_investigations": len(investigations),
             "by_status": {
-                "new": random.randint(0, 20),
-                "in_progress": random.randint(5, 30),
-                "escalated": random.randint(1, 10),
-                "closed": random.randint(5, 50),
+                "new": by_status.get("new", 0),
+                "in_progress": by_status.get("in_progress", 0),
+                "requires_review": by_status.get("requires_review", 0),
+                "escalated": by_status.get("escalated", 0),
+                "closed": by_status.get("closed", 0),
             },
-            "average_risk_score": random.uniform(0.4, 0.8),
-            "high_risk_count": random.randint(5, 25),
+            "average_risk_score": (
+                sum(risk_scores) / len(risk_scores) if risk_scores else 0.0
+            ),
+            "high_risk_count": sum(1 for score in risk_scores if score >= 0.7),
         }
     
     def _generate_recommendations(
