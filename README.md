@@ -81,13 +81,24 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 
 ## 🏗️ Architecture
 
+
+```mermaid
+flowchart TD
+    A[Transaction Event] --> B[Feature Extractor]
+
+    A --> C[Behavioral Analyzer]
+    B --> D[Graph Constructor]
+    D --> E[HTGNN Engine]
+
+    E --> F[Risk Scorer]
+    C --> F
+    F --> G[Decision Engine]
+
+    style E fill:#4a154b,color:#fff,stroke:#333,stroke-width:2px
+    style G fill:#0052cc,color:#fff,stroke:#333,stroke-width:2px
+
 ```
-Transaction Event
-       ↓
-Feature Extractor → Graph Constructor → HTGNN Engine → Risk Scorer → Decision Engine
-       ↓                                                     ↑
-Behavioral Analyzer ──────────────────────────────────────┘
-```
+
 
 ## 🚀 Quick Start
 
@@ -193,7 +204,7 @@ All protected endpoints in AegisGraph Sentinel require an API Key. You can easil
 3. Click **Authorize** and then **Close**. 
 4. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
 
-*(Insert Screenshot here)*
+> 💡 **Tip:** Once authorized via Swagger UI, all requests executed through the interactive interface will automatically attach your credentials to the `X-API-Key` header.
 
 ### Training the Model
 
