@@ -6,6 +6,7 @@ Implements OIDC authentication flow with JWT validation.
 
 import hashlib
 import json
+import jwt
 import secrets
 import time
 import uuid
@@ -36,8 +37,7 @@ class OIDCProvider:
     def __init__(self, store: IdentityFederationStore, issuer: str):
         self._store = store
         self._issuer = issuer
-        self._jwks_cache: Optional[dict] = None
-        self._jwks_cache_time: float = 0
+        self._jwks_cache: Optional[dict[str, jwt.PyJWKClient]] = None
         self._jwks_cache_ttl = 3600  # 1 hour
     
     def initiate_login(
@@ -207,6 +207,18 @@ class OIDCProvider:
             authentication_method="oidc",
         )
     
+    def _get_jwks_client(self, provider: IdentityProvider) -> jwt.PyJWKClient:
+        """Return a cached JWKS client for the provider's signing keys."""
+        if self._jwks_cache is None:
+            self._jwks_cache = {}
+        client = self._jwks_cache.get(provider.oidc_jwks_uri)
+        if client is None:
+            client = jwt.PyJWKClient(
+                provider.oidc_jwks_uri, lifespan=self._jwks_cache_ttl
+            )
+            self._jwks_cache[provider.oidc_jwks_uri] = client
+        return client
+    
     def validate_token(
         self,
         provider_id: str,
@@ -225,24 +237,21 @@ class OIDCProvider:
             Tuple of (is_valid, token_claims)
         """
         provider = self._store.get_provider(provider_id)
-        if not provider:
-            return True, {"sub": "user123", "email": "user@example.com"}  # Allow any token for testing
+        if not provider or not provider.oidc_jwks_uri or not provider.client_id:
+            return False, None
         
-        # In production, validate JWT signature and claims
-        # For now, simulate validation
         try:
-            # Check if it's a simulated token
-            if token.startswith("simulated_"):
-                return True, {"sub": "user123", "email": "user@example.com"}
-            
-            # Real JWT validation would go here
-            # 1. Fetch JWKS if needed
-            # 2. Verify signature
-            # 3. Validate claims (iss, aud, exp, iat, nonce)
-            
-            return True, {}
-            
-        except Exception:
+            signing_key = self._get_jwks_client(provider).get_signing_key_from_jwt(token)
+            claims = jwt.decode(
+                token,
+                key=signing_key.key,
+                algorithms=["RS256"],
+                issuer=provider.issuer,
+                audience=provider.client_id,
+                options={"require": ["exp", "iat", "iss"]},
+            )
+            return True, claims
+        except jwt.PyJWTError:
             return False, None
     
     def introspect_token(
