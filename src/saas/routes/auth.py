@@ -16,7 +16,12 @@ from pydantic import BaseModel, EmailStr, Field
 
 from src.exceptions import AuthenticationError, AuthorizationError
 from src.exceptions.error_responses import build_rate_limit_error_payload
-from src.saas.auth.attempt_limiter import AuthAttemptLimiter, build_attempt_limiter
+from src.saas.auth.attempt_limiter import (
+    AuthAttemptLimiter,
+    build_attempt_limiter,
+    SCOPE_ACCOUNT,
+    SCOPE_TOTP,
+)
 from src.saas.auth.password_policy import PasswordPolicyError
 from src.saas.auth.revocation import TokenRevocationStore, build_revocation_store
 from src.saas.auth.service import (

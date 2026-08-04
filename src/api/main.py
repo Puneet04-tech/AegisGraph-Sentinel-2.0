@@ -906,6 +906,11 @@ def _has_runtime_graph() -> bool:
 
 
 def compute_risk_score(*args, **kwargs):
+    """Compute fraud risk score for a transaction using the ML model.
+
+    Delegates to the loaded HTGNN model if available, falls back to a
+    heuristic-based scorer when the model cannot be loaded.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     runtime_graph_ready = _has_runtime_graph()
     if not MODEL_AVAILABLE or not runtime_graph_ready:
@@ -925,6 +930,11 @@ def compute_risk_score(*args, **kwargs):
 
 
 def generate_explanation(*args, **kwargs):
+    """Generate an explanation for a fraud risk decision.
+
+    Returns human-readable reasoning behind the risk score using the
+    explainer module, or a fallback explanation when unavailable.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     if _generate_explanation_impl is None:
         _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()

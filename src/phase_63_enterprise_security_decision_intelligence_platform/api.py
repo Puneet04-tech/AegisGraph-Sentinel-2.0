@@ -20,7 +20,7 @@ def create_record(
     payload: DecisionIntelligencePlatformDecisionContextCreateSchema,
     tenant_id: str = Depends(resolve_tenant),
     svc: DecisionIntelligencePlatformService = Depends(get_svc)
-):
+) -> Dict[str, Any]:
     if payload.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     item = svc.create_decisioncontext(
@@ -34,7 +34,7 @@ def create_record(
 def list_records(
     tenant_id: str = Depends(resolve_tenant),
     svc: DecisionIntelligencePlatformService = Depends(get_svc)
-):
+) -> Dict[str, Any]:
     records = svc.list_decisioncontexts(tenant_id)
     return {"tenant_id": tenant_id, "count": len(records), "records": [
         {"record_id": r.record_id} for r in records
@@ -46,7 +46,7 @@ def get_record(
     record_id: str,
     tenant_id: str = Depends(resolve_tenant),
     svc: DecisionIntelligencePlatformService = Depends(get_svc)
-):
+) -> Dict[str, Any]:
     record = svc.get_decisioncontext(tenant_id, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -57,6 +57,6 @@ def get_record(
 def get_analytics(
     tenant_id: str = Depends(resolve_tenant),
     store: DecisionIntelligencePlatformStore = Depends(get_store)
-):
+) -> Dict[str, Any]:
     analytics = DecisionIntelligencePlatformAnalytics(store)
     return analytics.compute_kpis(tenant_id)
