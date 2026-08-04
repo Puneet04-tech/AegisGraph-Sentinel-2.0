@@ -15,6 +15,20 @@ class CampaignDetector:
     def __init__(self, store: Optional[ThreatHuntingStore] = None) -> None:
         self.store = store or get_store()
 
+    def _extract_entity(self, ind: ThreatIndicator) -> Optional[str]:
+        """Return the affected entity identifier carried by an indicator.
+
+        Entity context is stored per-indicator in ``attributes`` (e.g. the
+        ``entity_id`` used as detector input, or the account/device context).
+        The raw ``value`` is only the shared grouping attribute (shared IP,
+        fingerprint, etc.), so it must never be conflated with the entity ID.
+        """
+        for key in ("entity_id", "user_id", "account_id"):
+            entity = ind.attributes.get(key)
+            if entity:
+                return str(entity)
+        return None
+
     def detect_campaigns(self) -> List[ThreatCampaign]:
         """Cluster indicators based on shared attributes to identify campaigns."""
         indicators = self.store.list_indicators()
@@ -33,8 +47,11 @@ class CampaignDetector:
         for val, ind_list in groups.items():
             # If 3 or more indicators share the same target value, we classify it as a campaign
             if len(ind_list) >= 3:
-                entities = list(set(ind.value for ind in ind_list if ind.indicator_type.value == "BEHAVIOR" or ind.indicator_type.value == "FINGERPRINT"))
-                # Fallback to general indicator values if entities list is empty
+                entities = list(set(
+                    self._extract_entity(ind) or ind.value
+                    for ind in ind_list
+                ))
+                # Fallback to the shared indicator value if no entity context exists
                 if not entities:
                     entities = [val]
 
