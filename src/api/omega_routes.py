@@ -24,14 +24,14 @@ def get_omega_platform():
 
 # Endpoints
 @router.get("/status")
-async def get_omega_status():
+async def get_omega_status() -> Dict[str, Any]:
     """Get Omega platform status."""
     omega = get_omega_platform()
     return omega.get_status()
 
 
 @router.get("/dashboard")
-async def get_omega_dashboard():
+async def get_omega_dashboard() -> Dict[str, Any]:
     """Get unified Omega dashboard."""
     omega = get_omega_platform()
     dashboard = omega.get_unified_dashboard()
@@ -51,14 +51,14 @@ async def get_omega_dashboard():
 
 
 @router.get("/capabilities")
-async def get_omega_capabilities():
+async def get_omega_capabilities() -> Dict[str, Any]:
     """Get Omega platform capabilities by layer."""
     omega = get_omega_platform()
     return omega.get_capabilities()
 
 
 @router.get("/layers")
-async def list_intelligence_layers():
+async def list_intelligence_layers() -> Dict[str, Any]:
     """List all intelligence layers."""
     from src.omega_platform import IntelligenceLayer
     return {
@@ -117,7 +117,7 @@ async def cross_layer_analysis(
 
 
 @router.post("/initialize")
-async def initialize_platform():
+async def initialize_platform() -> Dict[str, Any]:
     """Initialize the Omega platform."""
     from src.omega_platform import initialize_omega
     result = initialize_omega()
@@ -125,7 +125,7 @@ async def initialize_platform():
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     omega = get_omega_platform()
     status = omega.get_status()
