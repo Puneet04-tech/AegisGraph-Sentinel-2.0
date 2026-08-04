@@ -82,7 +82,7 @@ class AdversarialSimulator:
             result = self.simulate_attack(attack_type, target_model, features)
             results.append(result)
         
-        success_rate = sum(1 for r in results if r.success) / len(results)
+        success_rate = sum(1 for r in results if r.success) / len(results) if results else 0.0
         
         campaign = CampaignResult(
             campaign_name=campaign_name,

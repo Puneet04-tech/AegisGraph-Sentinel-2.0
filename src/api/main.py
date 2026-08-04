@@ -2565,20 +2565,48 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         }
         stats = {decision.value: 0 for decision in FraudDecision}
         processed = 0
+        failed = 0
         first_result = True
 
         yield '{"results":['
 
         for txn_chunk in _chunked(txns, max_concurrent_tasks):
-            tasks = [asyncio.create_task(_process_transaction(txn_request)) for txn_request in txn_chunk]
-            for completed in asyncio.as_completed(tasks):
+            # Tasks are created up front so every transaction in the chunk runs
+            # concurrently under the semaphore; we only consume them in
+            # submission order afterwards so the stream stays deterministic.
+            chunk_tasks = [
+                (txn_request, asyncio.create_task(_process_transaction(txn_request)))
+                for txn_request in txn_chunk
+            ]
+            for txn_request, task in chunk_tasks:
                 try:
-                    result = await completed
+                    result = await task
                 except Exception as result_error:
                     _api_logger.error(
                         f"Error processing batch transaction: {result_error}",
                         event_type="batch_processing_error",
+                        metadata={"transaction_id": getattr(txn_request, "transaction_id", None)},
                     )
+                    failed += 1
+                    if not first_result:
+                        yield ","
+                    else:
+                        first_result = False
+                    try:
+                        yield json.dumps(
+                            {
+                                "transaction_id": getattr(
+                                    txn_request, "transaction_id", None
+                                ),
+                                "error": str(result_error),
+                            },
+                            separators=(",", ":"),
+                        )
+                    except (TypeError, ValueError) as e:
+                        raise JSONSerializationError(
+                            f"Failed to serialize streaming result: {e}",
+                            details={"step": "stream_result_serialization"},
+                        )
                     continue
 
                 processed += 1
@@ -2604,6 +2632,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         yield (
             '],"total_processed":'
             f"{processed},"
+            f"\"total_failed\":{failed},"
             f"\"total_blocked\":{stats['BLOCK']},"
             f"\"total_review\":{stats['REVIEW']},"
             f"\"total_allowed\":{stats['ALLOW']},"
@@ -4484,16 +4513,28 @@ async def create_orchestration(
 ):
     """Create a multi-agent orchestration workflow."""
     import time
-    from src.multi_agent_soc import get_orchestrator
+    from src.multi_agent_soc import get_orchestrator, WorkflowValidationError
     
     start_time = time.time()
     
     orchestrator = get_orchestrator()
     
-    plan = orchestrator.create_workflow(
-        workflow_name=request.workflow_name,
-        tasks=request.tasks,
-    )
+    try:
+        plan = orchestrator.create_workflow(
+            workflow_name=request.workflow_name,
+            tasks=request.tasks,
+        )
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "task_index": exc.task_index,
+                "field": exc.field,
+                "invalid_value": exc.invalid_value,
+                "valid_values": exc.valid_values,
+            },
+        ) from exc
     
     processing_time = (time.time() - start_time) * 1000
     

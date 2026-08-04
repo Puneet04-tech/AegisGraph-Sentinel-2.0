@@ -18,6 +18,7 @@ from src.exceptions import AuthenticationError, AuthorizationError
 from src.exceptions.error_responses import build_rate_limit_error_payload
 from src.saas.auth.attempt_limiter import AuthAttemptLimiter, build_attempt_limiter
 from src.saas.auth.password_policy import PasswordPolicyError
+from src.saas.auth.revocation import TokenRevocationStore, build_revocation_store
 from src.saas.auth.service import (
     ABACService,
     AuthProvider,
@@ -187,6 +188,26 @@ def _build_attempt_limiter() -> AuthAttemptLimiter:
     return build_attempt_limiter(backend, redis_url)
 
 
+def _build_revocation_store() -> TokenRevocationStore:
+    """Build the revocation store named by ``AEGIS_REVOCATION_BACKEND``.
+
+    Defaults to in-memory for local development. Multi-worker deployments must
+    set this to ``redis``, otherwise a logout handled by one worker is
+    invisible to the others and the revoked token stays live on every process
+    that did not see it.
+    """
+    from src.config.settings import get_settings
+
+    backend = os.getenv("AEGIS_REVOCATION_BACKEND", "memory")
+    redis_url = None
+    if backend.strip().lower() == "redis":
+        try:
+            redis_url = get_settings().innovations.redis_url
+        except Exception as exc:
+            logger.warning("Could not read Redis URL from settings: %s", exc)
+    return build_revocation_store(backend, redis_url)
+
+
 def _build_auth_service() -> AuthService:
     try:
         jwt_secret = _load_jwt_secret()
@@ -200,6 +221,7 @@ def _build_auth_service() -> AuthService:
             "refresh_token_expiry": 86400 * 7,
         },
         attempt_limiter=_build_attempt_limiter(),
+        revocation_store=_build_revocation_store(),
     )
     _register_configured_sso_providers(service)
     return service
@@ -583,9 +605,24 @@ async def request_password_reset(request: PasswordResetRequest):
     """Request a password reset email.
 
     The response is identical whether or not the address exists, so this
-    endpoint cannot be used to enumerate accounts.
+    endpoint cannot be used to enumerate accounts. Request bursts are
+    throttled per address using the shared attempt budget so the reset
+    channel cannot be abused to hammer the mailer.
     """
     service = _get_auth_service()
+    identity = request.email.lower()
+    state = service.attempt_limiter.check(identity, SCOPE_ACCOUNT)
+    if state.locked:
+        retry_after = max(1, state.retry_after_seconds)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=build_rate_limit_error_payload(
+                retry_after_seconds=retry_after,
+                limit_type="password_reset",
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+    service.attempt_limiter.record_failure(identity, SCOPE_ACCOUNT)
     record = service.user_store.get_by_email(request.email)
     if record is not None:
         token = service.reset_token_store.issue(record.user_id)
