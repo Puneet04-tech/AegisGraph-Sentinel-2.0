@@ -101,9 +101,7 @@ class BlockchainEvidenceStore:
     
     def get_latest_block(self) -> Optional[BlockchainBlock]:
         """Get latest block."""
-        if self._current_block_number > 0:
-            return self._blocks.get(self._current_block_number)
-        return None
+        return self._blocks.get(self._current_block_number)
     
     def get_blockchain_stats(self) -> Dict[str, Any]:
         """Get blockchain statistics."""
