@@ -31,11 +31,16 @@ class SimulationStep(BaseModel):
         tactic: The MITRE ATT&CK tactic this step implements.
         technique: The specific technique used in this step.
         status: Current execution status of the step.
+        success: Whether the step actually succeeded (None until evaluated).
+        detected: Whether the step was detected by target security controls
+            (None until evaluated).
     """
     step_id: str
     tactic: str
     technique: str
-    status: str
+    status: str = "PENDING"
+    success: Optional[bool] = None
+    detected: Optional[bool] = None
 
 
 class AttackCampaign(BaseModel):
@@ -63,10 +68,13 @@ class SimulationResult(BaseModel):
         success_rate: Fraction of steps that succeeded (0.0 to 1.0).
         detected_steps: Number of steps that were detected by defenses.
         total_steps: Total number of steps in the campaign.
+        validated: Whether the results reflect real execution telemetry; False
+            when no outcome evaluation was performed.
         timestamp: When the simulation completed.
     """
     campaign_id: str
     success_rate: float
     detected_steps: int
     total_steps: int
+    validated: bool = False
     timestamp: datetime
