@@ -161,6 +161,47 @@ class TestPolicyEnforcementEngine:
         result = engine.evaluate_access(context)
         assert result.decision in ["ALLOW", "DENY", "CHALLENGE"]
 
+    def _engine_with_deny_policy(self, priority):
+        store = ZeroTrustStore()
+        store.policies.clear()
+        engine = PolicyEnforcementEngine(store=store)
+        engine.create_policy(
+            name="Deny All",
+            description="Deny every request",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=priority,
+        )
+        return engine
+
+    def test_deny_policy_with_default_priority_blocks(self):
+        engine = self._engine_with_deny_policy(priority=50)
+        result = engine.evaluate_access(EvaluationContext(user_id="deny-user"))
+        assert result.decision == "DENY"
+        assert result.allowed is False
+
+    def test_deny_policy_with_high_priority_blocks(self):
+        engine = self._engine_with_deny_policy(priority=100)
+        result = engine.evaluate_access(EvaluationContext(user_id="deny-user"))
+        assert result.decision == "DENY"
+        assert result.allowed is False
+
+    def test_non_matching_deny_policy_does_not_block(self):
+        store = ZeroTrustStore()
+        store.policies.clear()
+        engine = PolicyEnforcementEngine(store=store)
+        engine.create_policy(
+            name="Deny Low Trust",
+            description="Deny only very low trust users",
+            conditions={"trust_score_below": 0.1},
+            actions={"decision": "DENY"},
+            priority=50,
+        )
+        trusted = TrustScore(score=0.9, level=TrustLevel.TRUSTED)
+        result = engine.evaluate_access(EvaluationContext(user_id="trusted-user"), trust_score=trusted)
+        assert result.decision == "ALLOW"
+        assert result.allowed is True
+
 
 class TestZeroTrustService:
     def test_service_creation(self):
