@@ -25,7 +25,7 @@ class BiometricsData(BaseModel):
 
     @field_validator('hold_times', 'flight_times')
     @classmethod
-    def validate_biometric_values(cls, v):
+    def validate_biometric_values(cls, v: List[float]) -> List[float]:
         """SECURITY: Validate biometric array constraints to prevent OOM.
 
         1M-element array would consume excessive memory. Limit to reasonable
