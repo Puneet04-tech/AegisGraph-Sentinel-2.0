@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from src.api.middleware.multi_tenancy import get_current_tenant
+from src.saas.auth.password_policy import validate_password
 from src.saas.auth.service import auth_service
 from src.saas.routes.auth import get_current_user
 from src.saas.services.billing import PriceTier
@@ -93,6 +94,16 @@ class UserCreate(BaseModel):
         if normalized not in _ALLOWED_ROLES:
             raise ValueError("invalid role")
         return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        # Applied here as well as on password change and reset confirm, so a
+        # weak password cannot enter through whichever entry point is used.
+        result = validate_password(value)
+        if not result.valid:
+            raise ValueError(result.message)
+        return value
 
 
 class UserUpdate(BaseModel):

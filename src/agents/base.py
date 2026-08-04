@@ -129,7 +129,7 @@ class BaseAgent(ABC):
         input_schema: Dict[str, Any],
         output_schema: Dict[str, Any],
         execution_time_estimate: float = 5.0,
-    ):
+    ) -> None:
         """Register agent capability"""
         self.capabilities.append(AgentCapability(
             name=name,
@@ -184,7 +184,7 @@ class BaseAgent(ABC):
         """Submit task to agent queue"""
         await self.message_queue.put(task)
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop agent"""
         self._running = False
 
@@ -226,9 +226,28 @@ class LLMClient:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
-        # Mock response for demonstration
-        return f"Generated analysis based on input data. Model: {self.model}"
+
+        # Build a structured narrative summary from the prompt content
+        summary_parts = []
+        if "Evidence collected:" in prompt:
+            evidence_section = prompt.split("Evidence collected:")[1].split("\n")[0].strip()
+            if evidence_section and evidence_section != "[]":
+                summary_parts.append(f"Analysis of evidence: {evidence_section[:200]}")
+        if "Risk indicators:" in prompt:
+            risk_section = prompt.split("Risk indicators:")[1].split("\n")[0].strip()
+            if risk_section and risk_section != "[]":
+                summary_parts.append(f"Risk indicators identified: {risk_section[:200]}")
+        if "Findings:" in prompt:
+            findings_section = prompt.split("Findings:")[1].split("\n")[0].strip()
+            if findings_section and findings_section != "[]":
+                summary_parts.append(f"Key findings: {findings_section[:200]}")
+
+        if summary_parts:
+            summary = " | ".join(summary_parts)
+        else:
+            summary = f"Investigation analysis complete. Model: {self.model}"
+
+        return summary
         
         # Production code would be:
         # response = openai.ChatCompletion.create(

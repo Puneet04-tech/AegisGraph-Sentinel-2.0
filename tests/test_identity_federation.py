@@ -9,6 +9,7 @@ import pytest
 import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 from src.identity_federation import (
     IdentityFederationService,
@@ -537,6 +538,66 @@ class TestOAuthProvider:
         assert response.success is True
         assert response.redirect_url is not None
         assert "code=" in response.redirect_url
+
+    def test_authorization_code_missing_secret_returns_invalid_client(self):
+        """Omitting client_secret must return invalid_client, not a 500."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        oauth.register_client(
+            client_id="test-client",
+            client_secret="test-secret",
+            redirect_uris=["https://app.example.com/callback"],
+        )
+
+        authorize = oauth.authorize(
+            client_id="test-client",
+            redirect_uri="https://app.example.com/callback",
+            response_type="code",
+            scope="openid profile",
+            state="test-state",
+        )
+        code = parse_qs(urlparse(authorize.redirect_url).query)["code"][0]
+
+        response = oauth.token(
+            grant_type="authorization_code",
+            code=code,
+            redirect_uri="https://app.example.com/callback",
+            client_id="test-client",
+            client_secret=None,
+        )
+
+        assert response.success is False
+        assert response.error == "invalid_client"
+
+    def test_client_credentials_missing_secret_returns_invalid_client(self):
+        """Omitting client_secret in client credentials flow must not raise."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        oauth.register_client(
+            client_id="test-client",
+            client_secret="test-secret",
+            redirect_uris=["https://app.example.com/callback"],
+        )
+
+        response = oauth.token(
+            grant_type="client_credentials",
+            client_id="test-client",
+            client_secret=None,
+        )
+
+        assert response.success is False
+        assert response.error == "invalid_client"
+
+    def test_hash_secret_handles_missing_input(self):
+        """_hash_secret must not raise on None or empty input."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        assert oauth._hash_secret(None) == ""
+        assert oauth._hash_secret("") == ""
+        assert oauth._hash_secret("test-secret") != ""
 
 
 class TestSessionManager:
