@@ -4,7 +4,7 @@ API routes for Regulatory Intelligence & Compliance Fabric.
 Provides endpoints for compliance monitoring, assessment, and reporting.
 """
 
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
