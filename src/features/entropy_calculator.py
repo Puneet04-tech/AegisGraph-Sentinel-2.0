@@ -329,3 +329,20 @@ def compute_entropy_risk_score(
         min(features.get("amount_entropy", 0.0) / 3.0, 1.0),
     ]
     return float(min(sum(normalized) / len(normalized), 1.0))
+
+# --- GENERATED: compute_correlation_entropy ---
+def compute_correlation_entropy(data):
+    """Compute Shannon entropy of a normalized probability distribution from data."""
+    if not data:
+        return 0.0
+    total = sum(data)
+    if total == 0:
+        return 0.0
+    probs = [v / total for v in data]
+    entropy = 0.0
+    for p in probs:
+        if p > 0:
+            import math
+            entropy -= p * math.log2(p)
+    return entropy
+# --- END GENERATED ---
