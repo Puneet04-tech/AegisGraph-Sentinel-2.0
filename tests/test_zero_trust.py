@@ -261,4 +261,43 @@ class TestZeroTrustSecurity:
         assert device1.device_id != device2.device_id
 
 
+class TestZeroTrustRevocation:
+    def test_block_decision_triggers_revocation_store(self):
+        from src.saas.auth.revocation import InMemoryTokenRevocationStore
+
+        revocation_store = InMemoryTokenRevocationStore()
+        service = ZeroTrustService(revocation_store=revocation_store, auto_revoke_on_block=True)
+        service.create_policy(
+            name="Block Test User",
+            description="Block specific test user",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=100,
+        )
+
+        res = service.evaluate(user_id="blocked-usr", session_id="sess-999")
+        assert res["final_decision"] == "BLOCK"
+        assert revocation_store.is_session_revoked("sess-999") is True
+
+    def test_block_decision_triggers_revocation_callback(self):
+        revoked_sessions = []
+
+        def callback(session_id: str):
+            revoked_sessions.append(session_id)
+
+        service = ZeroTrustService(revocation_callback=callback, auto_revoke_on_block=True)
+        service.create_policy(
+            name="Block Test User Callback",
+            description="Block specific test user",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=100,
+        )
+
+        res = service.evaluate(user_id="blocked-usr", session_id="sess-888")
+        assert res["final_decision"] == "BLOCK"
+        assert revoked_sessions == ["sess-888"]
+
+
+
 # Run with: pytest tests/test_zero_trust.py -v
