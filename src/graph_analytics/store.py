@@ -66,30 +66,69 @@ class GraphStore:
         self._edges: Dict[str, GraphEdge] = {}
         self._adjacency: Dict[str, Set[str]] = defaultdict(set)
         self._reverse_adjacency: Dict[str, Set[str]] = defaultdict(set)
-        self._node_index: Dict[str, List[str]] = defaultdict(list)
-        self._edge_index: Dict[str, List[str]] = defaultdict(list)
-        # Maps an order-independent node pair to the ids of every edge joining
-        # it. get_edges_between previously answered this by scanning the whole
-        # edge map, which made the traversals that call it per-neighbour O(V*E).
-        self._edge_pair_index: Dict[Tuple[str, str], Dict[str, None]] = defaultdict(dict)
+        # Insertion-ordered sets keyed by type value. Dicts are used rather than
+        # lists so an element can be dropped from its bucket in O(1) without
+        # losing the insertion ordering get_nodes_by_type relies on.
+        self._node_index: Dict[str, Dict[str, None]] = defaultdict(dict)
+        self._edge_index: Dict[str, Dict[str, None]] = defaultdict(dict)
+        # Reverse lookups so a re-add that changes an element's type moves it out
+        # of its previous bucket instead of leaving a stale duplicate behind.
+        self._node_type_of: Dict[str, str] = {}
+        self._edge_type_of: Dict[str, str] = {}
+        # How many edges currently join each directed (source, target) pair, so
+        # removing one parallel edge does not tear down shared adjacency.
+        self._pair_edge_count: Dict[Tuple[str, str], int] = {}
         self._lock = threading.RLock()
         self._cache = LRUCache(max_cache_size)
         self._stats = GraphStats()
-        # Bumped on every mutation so whole-graph centrality results can be
-        # memoised and invalidated without rescanning the graph to detect change.
-        self._graph_version = 0
-        self._centrality_cache: Optional[Dict[str, CentralityMetrics]] = None
-        self._centrality_cache_key: Optional[Tuple[int, Optional[int]]] = None
+        # Running total of len(self._adjacency[n]) across every node, kept in step
+        # with each mutation. Recomputing it on every write walked the whole
+        # adjacency map, which made ingesting N elements O(N^2).
+        self._total_degree = 0
+        self._stats_dirty = True
 
     def add_node(self, node: GraphNode) -> bool:
         """Add a node to the graph."""
         with self._lock:
             self._nodes[node.node_id] = node
             self._cache.put(f"node:{node.node_id}", node)
-            self._node_index[node.node_type.value].append(node.node_id)
-            self._graph_version += 1
-            self._update_stats()
+            self._index_node_type(node.node_id, node.node_type.value)
+            self._stats_dirty = True
             return True
+
+    def _index_node_type(self, node_id: str, node_type: str) -> None:
+        """Record a node under its type, moving it if the type changed."""
+        previous = self._node_type_of.get(node_id)
+        if previous == node_type:
+            return
+        if previous is not None:
+            self._discard_from_index(self._node_index, previous, node_id)
+        self._node_index[node_type][node_id] = None
+        self._node_type_of[node_id] = node_type
+
+    def _index_edge_type(self, edge_id: str, edge_type: str) -> None:
+        """Record an edge under its type, moving it if the type changed."""
+        previous = self._edge_type_of.get(edge_id)
+        if previous == edge_type:
+            return
+        if previous is not None:
+            self._discard_from_index(self._edge_index, previous, edge_id)
+        self._edge_index[edge_type][edge_id] = None
+        self._edge_type_of[edge_id] = edge_type
+
+    @staticmethod
+    def _discard_from_index(
+        index: Dict[str, Dict[str, None]],
+        type_value: str,
+        element_id: str,
+    ) -> None:
+        """Drop an element from a type bucket, removing the bucket once empty."""
+        bucket = index.get(type_value)
+        if bucket is None:
+            return
+        bucket.pop(element_id, None)
+        if not bucket:
+            del index[type_value]
 
     def get_node(self, node_id: str) -> Optional[GraphNode]:
         """Get a node by ID."""
@@ -116,22 +155,95 @@ class GraphStore:
         """Add an edge to the graph."""
         with self._lock:
             existing = self._edges.get(edge.edge_id)
-            if existing is not None:
-                # An edge id re-added against a different pair would otherwise
-                # stay indexed under the pair it no longer connects.
-                previous_key = self._pair_key(existing.source_id, existing.target_id)
-                if previous_key != self._pair_key(edge.source_id, edge.target_id):
-                    self._discard_from_pair_index(previous_key, edge.edge_id)
+            if existing is not None and (
+                existing.source_id != edge.source_id
+                or existing.target_id != edge.target_id
+            ):
+                # Re-adding an edge id against a different pair would otherwise
+                # strand the old adjacency entry, inflating degree forever.
+                self._detach_edge_endpoints(existing)
 
             self._edges[edge.edge_id] = edge
             self._cache.put(f"edge:{edge.edge_id}", edge)
-            self._adjacency[edge.source_id].add(edge.target_id)
+            pair = (edge.source_id, edge.target_id)
+            if existing is None or existing.source_id != edge.source_id or existing.target_id != edge.target_id:
+                # Only a genuinely new (id, pair) combination adds to the count.
+                self._pair_edge_count[pair] = self._pair_edge_count.get(pair, 0) + 1
+            # set.add is idempotent, so degree may only grow when the pair is new.
+            adjacency = self._adjacency[edge.source_id]
+            before = len(adjacency)
+            adjacency.add(edge.target_id)
+            self._total_degree += len(adjacency) - before
             self._reverse_adjacency[edge.target_id].add(edge.source_id)
-            self._edge_index[edge.edge_type.value].append(edge.edge_id)
-            self._edge_pair_index[self._pair_key(edge.source_id, edge.target_id)][
+            self._index_edge_type(edge.edge_id, edge.edge_type.value)
+            self._stats_dirty = True
+            return True
+
+    def _detach_edge_endpoints(self, edge: GraphEdge) -> None:
+        """Drop an edge's adjacency entries when no other edge shares its pair.
+
+        Parallel edges are common in this graph (several transfers between the
+        same two accounts), so adjacency may only be torn down once the last
+        edge joining the pair is gone. The per-pair counter answers that in O(1)
+        rather than rescanning every edge.
+        """
+        pair = (edge.source_id, edge.target_id)
+        remaining = self._pair_edge_count.get(pair, 0) - 1
+        if remaining > 0:
+            self._pair_edge_count[pair] = remaining
+            return
+        self._pair_edge_count.pop(pair, None)
+
+        adjacency = self._adjacency.get(edge.source_id)
+        if adjacency and edge.target_id in adjacency:
+            adjacency.discard(edge.target_id)
+            self._total_degree -= 1
+            if not adjacency:
+                del self._adjacency[edge.source_id]
+
+        reverse = self._reverse_adjacency.get(edge.target_id)
+        if reverse:
+            reverse.discard(edge.source_id)
+            if not reverse:
+                del self._reverse_adjacency[edge.target_id]
+
+    def remove_edge(self, edge_id: str) -> bool:
+        """Remove an edge, keeping adjacency, indexes and counters consistent."""
+        with self._lock:
+            edge = self._edges.pop(edge_id, None)
+            if edge is None:
+                return False
+
+            self._detach_edge_endpoints(edge)
+            edge_type = self._edge_type_of.pop(edge_id, None)
+            if edge_type is not None:
+                self._discard_from_index(self._edge_index, edge_type, edge_id)
+            self._cache.delete(f"edge:{edge_id}")
+            self._stats_dirty = True
+            return True
+
+    def remove_node(self, node_id: str) -> bool:
+        """Remove a node together with every edge incident to it."""
+        with self._lock:
+            if node_id not in self._nodes:
+                return False
+
+            incident = [
                 edge.edge_id
-            ] = None
-            self._update_stats()
+                for edge in self._edges.values()
+                if edge.source_id == node_id or edge.target_id == node_id
+            ]
+            for edge_id in incident:
+                self.remove_edge(edge_id)
+
+            del self._nodes[node_id]
+            node_type = self._node_type_of.pop(node_id, None)
+            if node_type is not None:
+                self._discard_from_index(self._node_index, node_type, node_id)
+            self._adjacency.pop(node_id, None)
+            self._reverse_adjacency.pop(node_id, None)
+            self._cache.delete(f"node:{node_id}")
+            self._stats_dirty = True
             return True
 
     def _discard_from_pair_index(self, pair_key: Tuple[str, str], edge_id: str) -> None:
@@ -508,7 +620,11 @@ class GraphStore:
             return [self._edges[eid] for eid in edge_ids if eid in self._edges]
 
     def _update_stats(self) -> None:
-        """Update graph statistics."""
+        """Recompute the cached statistics from the maintained counters.
+
+        Every input is either an O(1) length or the running ``_total_degree``
+        counter, so this no longer walks the adjacency map.
+        """
         self._stats.total_nodes = len(self._nodes)
         self._stats.total_edges = len(self._edges)
         self._stats.node_types = {
@@ -518,16 +634,32 @@ class GraphStore:
             etype: len(ids) for etype, ids in self._edge_index.items()
         }
 
-        total_degree = sum(len(neighbors) for neighbors in self._adjacency.values())
-        self._stats.average_degree = total_degree / len(self._nodes) if self._nodes else 0.0
+        self._stats.average_degree = (
+            self._total_degree / len(self._nodes) if self._nodes else 0.0
+        )
 
         max_edges = len(self._nodes) * (len(self._nodes) - 1)
         self._stats.graph_density = len(self._edges) / max_edges if max_edges > 0 else 0.0
+        self._stats_dirty = False
+
+    def recompute_total_degree(self) -> int:
+        """Recompute the degree counter from scratch and return it.
+
+        Exposed so callers and tests can assert the incrementally maintained
+        counter has not drifted from the underlying adjacency map.
+        """
+        with self._lock:
+            self._total_degree = sum(
+                len(neighbors) for neighbors in self._adjacency.values()
+            )
+            self._stats_dirty = True
+            return self._total_degree
 
     def get_stats(self) -> GraphStats:
         """Get current graph statistics."""
         with self._lock:
-            self._update_stats()
+            if self._stats_dirty:
+                self._update_stats()
             return self._stats
 
     def clear(self) -> None:
@@ -539,12 +671,13 @@ class GraphStore:
             self._reverse_adjacency.clear()
             self._node_index.clear()
             self._edge_index.clear()
-            self._edge_pair_index.clear()
+            self._node_type_of.clear()
+            self._edge_type_of.clear()
+            self._pair_edge_count.clear()
             self._cache.clear()
             self._stats = GraphStats()
-            self._graph_version += 1
-            self._centrality_cache = None
-            self._centrality_cache_key = None
+            self._total_degree = 0
+            self._stats_dirty = True
 
 
 _graph_store: Optional[GraphStore] = None
