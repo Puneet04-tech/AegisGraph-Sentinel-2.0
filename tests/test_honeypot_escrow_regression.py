@@ -232,3 +232,15 @@ class TestWithdrawalIntegration:
         assert stats["total_arrests"] == 28
         assert stats["total_recovered"] == 47000000.0 + 1000.0
         assert stats["active_honeypots"] == 0
+
+
+class TestHoneypotRouteDependencies:
+    """Verify Honeypot API routes load without missing dependency NameErrors."""
+
+    def test_honeypot_routes_import_cleanly(self):
+        from src.api.main import app
+
+        route_paths = [getattr(route, "path", None) for route in app.routes]
+        assert "/api/v1/honeypot/active" in route_paths
+        assert "/api/v1/honeypot/stats" in route_paths
+
