@@ -142,6 +142,15 @@ class GraphStore:
                 self._cache.put(f"node:{node_id}", node)
             return node
 
+    @staticmethod
+    def _pair_key(source_id: str, target_id: str) -> Tuple[str, str]:
+        """Build the order-independent key used by the edge pair index.
+
+        get_edges_between treats a pair as undirected, so both directions have
+        to resolve to the same bucket.
+        """
+        return (source_id, target_id) if source_id <= target_id else (target_id, source_id)
+
     def add_edge(self, edge: GraphEdge) -> bool:
         """Add an edge to the graph."""
         with self._lock:
@@ -237,6 +246,15 @@ class GraphStore:
             self._stats_dirty = True
             return True
 
+    def _discard_from_pair_index(self, pair_key: Tuple[str, str], edge_id: str) -> None:
+        """Drop an edge from a pair bucket, removing the bucket once empty."""
+        bucket = self._edge_pair_index.get(pair_key)
+        if bucket is None:
+            return
+        bucket.pop(edge_id, None)
+        if not bucket:
+            del self._edge_pair_index[pair_key]
+
     def get_edge(self, edge_id: str) -> Optional[GraphEdge]:
         """Get an edge by ID."""
         cached = self._cache.get(f"edge:{edge_id}")
@@ -265,13 +283,59 @@ class GraphStore:
             return neighbors
 
     def get_edges_between(self, source_id: str, target_id: str) -> List[GraphEdge]:
-        """Get all edges between two nodes."""
+        """Get all edges between two nodes, in either direction."""
         with self._lock:
-            edges = []
-            for edge in self._edges.values():
-                if (edge.source_id == source_id and edge.target_id == target_id) or \
-                   (edge.source_id == target_id and edge.target_id == source_id):
-                    edges.append(edge)
+            edge_ids = self._edge_pair_index.get(self._pair_key(source_id, target_id))
+            if not edge_ids:
+                return []
+            return [self._edges[eid] for eid in edge_ids if eid in self._edges]
+
+    def get_incident_edges(self, node_ids: Set[str], both_endpoints: bool = False) -> List[GraphEdge]:
+        """Return every edge touching the given node set.
+
+        Resolved through adjacency rather than by scanning the edge map, so the
+        cost tracks the size of the neighbourhood being inspected instead of the
+        size of the whole graph.
+
+        Args:
+            node_ids: Nodes whose incident edges are wanted.
+            both_endpoints: When True, only edges with *both* endpoints inside
+                the set are returned; otherwise a single endpoint is enough.
+        """
+        with self._lock:
+            if not node_ids:
+                return []
+
+            seen: Dict[str, None] = {}
+            edges: List[GraphEdge] = []
+
+            for node_id in node_ids:
+                candidates = set(self._adjacency.get(node_id, set()))
+                candidates.update(self._reverse_adjacency.get(node_id, set()))
+
+                for other_id in candidates:
+                    if both_endpoints and other_id not in node_ids:
+                        continue
+                    bucket = self._edge_pair_index.get(self._pair_key(node_id, other_id))
+                    if not bucket:
+                        continue
+                    for edge_id in bucket:
+                        if edge_id in seen:
+                            continue
+                        edge = self._edges.get(edge_id)
+                        if edge is None:
+                            continue
+                        if both_endpoints and not (
+                            edge.source_id in node_ids and edge.target_id in node_ids
+                        ):
+                            continue
+                        if not both_endpoints and not (
+                            edge.source_id in node_ids or edge.target_id in node_ids
+                        ):
+                            continue
+                        seen[edge_id] = None
+                        edges.append(edge)
+
             return edges
 
     def bfs_traverse(self, start_id: str, max_depth: int = 5, edge_types: Optional[List[EdgeType]] = None) -> List[GraphNode]:
@@ -399,24 +463,71 @@ class GraphStore:
         total_risk = sum(self._nodes[nid].risk_score for nid in node_ids if nid in self._nodes)
         return min(1.0, total_risk / len(node_ids))
 
-    def calculate_centrality(self, node_id: str) -> CentralityMetrics:
-        """Calculate centrality metrics for a node."""
+    def _combined_adjacency(self) -> Dict[str, Set[str]]:
+        """Snapshot the outgoing adjacency for the centrality algorithms.
+
+        Copied under the lock so a long-running whole-graph computation can run
+        without holding the store against concurrent writers.
+        """
+        return {node_id: set(targets) for node_id, targets in self._adjacency.items()}
+
+    def calculate_all_centralities(
+        self,
+        betweenness_sample_size: Optional[int] = None,
+    ) -> Dict[str, CentralityMetrics]:
+        """Compute every centrality measure for every node in one pass.
+
+        Each measure is a whole-graph computation, so ranking callers must use
+        this rather than calling calculate_centrality once per node.
+
+        Results are memoised against a graph-version counter and reused until
+        the next mutation.
+        """
         with self._lock:
-            total_nodes = len(self._nodes)
-            if total_nodes <= 1:
-                return CentralityMetrics(node_id=node_id)
+            cache_key = (self._graph_version, betweenness_sample_size)
+            if self._centrality_cache_key == cache_key and self._centrality_cache is not None:
+                return self._centrality_cache
 
-            degree = len(self._adjacency.get(node_id, set())) + len(self._reverse_adjacency.get(node_id, set()))
-            degree_centrality = degree / (total_nodes - 1) if total_nodes > 1 else 0.0
+            node_ids = list(self._nodes.keys())
+            adjacency = self._combined_adjacency()
 
-            return CentralityMetrics(
+        scored = all_centralities(adjacency, node_ids, betweenness_sample_size)
+        calculated_at = datetime.now(timezone.utc).isoformat()
+        metrics = {
+            node_id: CentralityMetrics(
                 node_id=node_id,
-                degree_centrality=degree_centrality,
-                betweenness_centrality=0.0,
-                closeness_centrality=0.0,
-                page_rank=1.0 / total_nodes,
-                eigen_centrality=0.0,
+                calculated_at=calculated_at,
+                **values,
             )
+            for node_id, values in scored.items()
+        }
+
+        with self._lock:
+            # Only publish if the graph has not moved on while we computed.
+            if self._graph_version == cache_key[0]:
+                self._centrality_cache = metrics
+                self._centrality_cache_key = cache_key
+            return metrics
+
+    def calculate_centrality(self, node_id: str) -> CentralityMetrics:
+        """Calculate centrality metrics for a node.
+
+        Betweenness, closeness, PageRank and eigenvector centrality are all
+        genuinely computed against the stored graph; they previously returned
+        hardcoded constants, which made PageRank identical for every node and
+        any ranking built on it meaningless.
+        """
+        with self._lock:
+            if len(self._nodes) <= 1:
+                return CentralityMetrics(node_id=node_id)
+            known = node_id in self._nodes
+
+        if not known:
+            return CentralityMetrics(node_id=node_id)
+
+        return self.calculate_all_centralities().get(
+            node_id, CentralityMetrics(node_id=node_id)
+        )
 
     def simulate_lateral_movement(self, start_id: str, max_steps: int = 3, min_weight_threshold: float = 0.5) -> List[str]:
         """Simulate lateral movement from a breached node based on edge weights/risks."""
@@ -492,6 +603,15 @@ class GraphStore:
         with self._lock:
             node_ids = self._node_index.get(node_type.value, [])
             return [self._nodes[nid] for nid in node_ids if nid in self._nodes]
+
+    def get_all_nodes(self) -> List[GraphNode]:
+        """Return a snapshot of every node.
+
+        Materialised under the lock so callers can iterate without racing a
+        concurrent write, and without reaching into the store's internals.
+        """
+        with self._lock:
+            return list(self._nodes.values())
 
     def get_edges_by_type(self, edge_type: EdgeType) -> List[GraphEdge]:
         """Get all edges of a specific type."""

@@ -876,3 +876,11 @@ def compute_risk_score(
         'analysis_errors': analysis_errors,
         'component_status': component_status,
     }
+
+# --- GENERATED: normalize_score ---
+def normalize_score(score, min_val=0.0, max_val=1.0):
+    """Clamp score to [min_val, max_val] range and return it."""
+    if max_val == min_val:
+        return min_val
+    return max(min(score, max_val), min_val)
+# --- END GENERATED ---

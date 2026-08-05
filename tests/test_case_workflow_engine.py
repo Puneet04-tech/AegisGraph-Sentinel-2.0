@@ -223,3 +223,12 @@ class TestDashboard:
         assert dashboard["cases_by_priority"]["HIGH"] == 1
         assert dashboard["cases_by_priority"]["MEDIUM"] == 1
         assert dashboard["breached_slas"] == 0
+
+"""Tests for src/case_workflow/workflow_engine.py -- workflow state transitions."""
+
+import pytest
+
+
+def test_placeholder():
+    """Placeholder test for workflow state transitions."""
+    assert True

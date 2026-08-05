@@ -14,6 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from src.api.middleware.multi_tenancy import get_current_tenant
+from src.saas.auth.credential_stores import (
+    InMemoryEmailVerificationTokenStore,
+    LoggingNotificationSender,
+)
 from src.saas.auth.password_policy import validate_password
 from src.saas.auth.service import auth_service
 from src.saas.routes.auth import get_current_user
@@ -47,6 +51,12 @@ _USER_FIELDS = (
 _USER_STORE: Dict[str, Dict[str, Any]] = {}
 _AUDIT_LOG: List[Dict[str, Any]] = []
 _STORE_LOCK = threading.RLock()
+
+# Verification tokens are issued on registration and consumed once. Raw tokens
+# are never stored -- only their hashes -- following the same pattern the
+# password-reset flow already uses.
+_verification_tokens = InMemoryEmailVerificationTokenStore()
+_notification_sender = LoggingNotificationSender()
 
 
 class UserCreate(BaseModel):
@@ -246,6 +256,10 @@ async def create_user(
         set_tenant_resource_count(tenant_id, "max_users", current_count + 1)
         _audit("user_created", current_user["user_id"], tenant_id, user_id)
 
+    # Issued outside the store lock: delivery must not hold up other writers.
+    token = _verification_tokens.issue(user_id, record["email"])
+    _notification_sender.send_email_verification(record["email"], token)
+
     return _public_user(record)
 
 
@@ -280,12 +294,25 @@ async def update_user(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already exists")
 
         updates = data.model_dump(exclude_unset=True)
+        email_changed = False
         if "email" in updates and updates["email"] is not None:
-            user["email"] = updates["email"].lower()
+            new_email = updates["email"].lower()
+            email_changed = new_email != user["email"]
+            user["email"] = new_email
+            if email_changed:
+                # The new address has not been proven, and any token issued for
+                # the old one must not verify it.
+                user["email_verified"] = False
         for field in ("full_name", "username", "phone", "avatar_url", "preferences"):
             if field in updates:
                 user[field] = updates[field]
         _audit("user_updated", current_user["user_id"], tenant_id, user_id)
+        new_email = user["email"]
+
+    if email_changed:
+        _verification_tokens.invalidate_for_user(user_id)
+        token = _verification_tokens.issue(user_id, new_email)
+        _notification_sender.send_email_verification(new_email, token)
 
     return _public_user(user)
 
@@ -348,10 +375,28 @@ async def verify_user_email(
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
         _require_owner_or_admin(current_user, user)
-        if not token or len(token) < 8:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid verification token")
+        already_verified = bool(user.get("email_verified"))
+        email = user["email"]
+
+    # Verifying an address that is already verified succeeds without burning a
+    # second token, so a double-clicked link is not an error.
+    if already_verified:
+        return {"success": True, "email_verified": True}
+
+    # Unknown, expired, already-consumed, wrong-user and wrong-address tokens
+    # all fail identically, so the response cannot be used to probe which
+    # tokens exist.
+    if not _verification_tokens.consume(token, user_id, email):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid or expired verification token",
+        )
+
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
         user["email_verified"] = True
         _audit("email_verified", current_user["user_id"], tenant_id, user_id)
+
     return {"success": True, "email_verified": True}
 
 
@@ -362,8 +407,31 @@ async def resend_verification_email(
 ):
     """Resend email verification."""
     tenant_id = _require_tenant_context(current_user)
-    user = _get_user_record(user_id, tenant_id)
-    _require_owner_or_admin(current_user, user)
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
+        _require_owner_or_admin(current_user, user)
+        already_verified = bool(user.get("email_verified"))
+        email = user["email"]
+
+    if already_verified:
+        return {"success": True, "message": "Email is already verified"}
+
+    # Throttled so the endpoint cannot be driven as a mail relay aimed at
+    # somebody else's inbox.
+    wait_seconds = _verification_tokens.seconds_until_resend_allowed(user_id)
+    if wait_seconds > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Verification email requested too recently",
+            headers={"Retry-After": str(wait_seconds)},
+        )
+
+    # issue() invalidates any outstanding token, so the previous link stops
+    # working the moment a new one is sent.
+    token = _verification_tokens.issue(user_id, email)
+    _notification_sender.send_email_verification(email, token)
+    _audit("verification_resent", current_user["user_id"], tenant_id, user_id)
+
     return {"success": True, "message": "Verification email sent"}
 
 

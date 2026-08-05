@@ -250,3 +250,16 @@ def validate_api_response(response: Dict, required_fields: list) -> bool:
 
     logger.debug("API response validation passed")
     return True
+
+# --- GENERATED: sanitize_header ---
+import re
+_CRLF_RE = re.compile(r"[\r\n]")
+
+def sanitize_header_value(value):
+    """Raise ValueError if value contains CRLF to prevent injection."""
+    if not isinstance(value, str):
+        value = str(value)
+    if _CRLF_RE.search(value):
+        raise ValueError("CRLF characters not allowed in header values")
+    return value
+# --- END GENERATED ---
