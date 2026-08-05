@@ -100,8 +100,28 @@ class InvestigationStore:
 
     # Case Management
     def store_case(self, case: InvestigationCase) -> None:
-        """Store an investigation case."""
+        """Store an investigation case.
+
+        If the case already exists and its status or priority changed, drop it
+        from the previous buckets before adding it to the new ones so stale
+        entries never resurface in get_cases_by_status / get_cases_by_priority /
+        get_open_cases.
+        """
         with self._lock:
+            existing = self._cases.get(case.case_id)
+            if existing is not None:
+                # The engine mutates the stored case in place before re-storing,
+                # so the existing record already carries the new status/priority
+                # and the old buckets cannot be read off it. Drop the case from
+                # every status/priority bucket except the ones being stored so a
+                # transitioned case never resurfaces in its previous buckets.
+                for status in list(self._case_by_status):
+                    if status != case.status.value:
+                        self._case_by_status[status].discard(case.case_id)
+                for priority in list(self._case_by_priority):
+                    if priority != case.priority.value:
+                        self._case_by_priority[priority].discard(case.case_id)
+
             self._cases[case.case_id] = case
 
             # Update indexes

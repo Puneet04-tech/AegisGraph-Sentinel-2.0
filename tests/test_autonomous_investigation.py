@@ -132,6 +132,73 @@ class TestInvestigationStore:
         retrieved = store.get_case("case-1")
         assert retrieved.status == InvestigationStatus.IN_PROGRESS
 
+    def test_store_case_discards_from_old_status_bucket(self):
+        """Re-storing a case with a new status leaves only the new bucket."""
+        store = get_investigation_store()
+
+        case = InvestigationCase(
+            case_id="case-1",
+            title="Test",
+            description="Test",
+            status=InvestigationStatus.CREATED,
+            priority=CasePriority.P2_MEDIUM,
+            severity=SeverityLevel.MODERATE,
+        )
+        store.store_case(case)
+
+        case.status = InvestigationStatus.IN_PROGRESS
+        store.store_case(case)
+
+        assert store.get_cases_by_status(InvestigationStatus.CREATED.value) == []
+        assert [c.case_id for c in store.get_cases_by_status(InvestigationStatus.IN_PROGRESS.value)] == ["case-1"]
+
+    def test_store_case_discards_from_old_priority_bucket(self):
+        """Re-storing a case with a new priority leaves only the new bucket."""
+        store = get_investigation_store()
+
+        case = InvestigationCase(
+            case_id="case-1",
+            title="Test",
+            description="Test",
+            status=InvestigationStatus.CREATED,
+            priority=CasePriority.P2_MEDIUM,
+            severity=SeverityLevel.MODERATE,
+        )
+        store.store_case(case)
+
+        case.priority = CasePriority.P0_CRITICAL
+        store.store_case(case)
+
+        assert store.get_cases_by_priority(CasePriority.P2_MEDIUM.value) == []
+        assert [c.case_id for c in store.get_cases_by_priority(CasePriority.P0_CRITICAL.value)] == ["case-1"]
+
+    def test_closed_case_no_longer_in_open_cases(self):
+        """A case transitioned through statuses is gone from open buckets once closed."""
+        store = get_investigation_store()
+
+        case = InvestigationCase(
+            case_id="case-1",
+            title="Test",
+            description="Test",
+            status=InvestigationStatus.CREATED,
+            priority=CasePriority.P2_MEDIUM,
+            severity=SeverityLevel.MODERATE,
+        )
+        for status in (
+            InvestigationStatus.CREATED,
+            InvestigationStatus.IN_PROGRESS,
+            InvestigationStatus.ANALYZING,
+            InvestigationStatus.CLOSED,
+        ):
+            case.status = status
+            store.store_case(case)
+
+        assert [c.case_id for c in store.get_open_cases()] == []
+        assert store.get_cases_by_status(InvestigationStatus.CREATED.value) == []
+        assert store.get_cases_by_status(InvestigationStatus.IN_PROGRESS.value) == []
+        assert store.get_cases_by_status(InvestigationStatus.ANALYZING.value) == []
+        assert [c.case_id for c in store.get_cases_by_status(InvestigationStatus.CLOSED.value)] == ["case-1"]
+
 
 class TestInvestigationEngine:
     """Test investigation engine."""
