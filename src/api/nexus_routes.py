@@ -33,7 +33,7 @@ class LayerStatusUpdateRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -43,7 +43,7 @@ async def health_check():
 
 
 @router.get("/info")
-async def get_platform_info(x_api_key: str = Header(None, alias="X-API-Key")):
+async def get_platform_info(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """Get platform information."""
     verify_api_key(x_api_key)
     platform = get_nexus_platform()
@@ -51,7 +51,7 @@ async def get_platform_info(x_api_key: str = Header(None, alias="X-API-Key")):
 
 
 @router.get("/dashboard")
-async def get_dashboard(x_api_key: str = Header(None, alias="X-API-Key")):
+async def get_dashboard(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """Get executive dashboard."""
     verify_api_key(x_api_key)
     platform = get_nexus_platform()
@@ -60,7 +60,7 @@ async def get_dashboard(x_api_key: str = Header(None, alias="X-API-Key")):
 
 
 @router.get("/layers")
-async def list_layers(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_layers(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List all intelligence layers."""
     verify_api_key(x_api_key)
     platform = get_nexus_platform()
@@ -187,7 +187,7 @@ async def cross_layer_analysis(
 
 
 @router.get("/status")
-async def get_platform_status(x_api_key: str = Header(None, alias="X-API-Key")):
+async def get_platform_status(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """Get overall platform status."""
     verify_api_key(x_api_key)
     platform = get_nexus_platform()
@@ -209,7 +209,7 @@ async def get_platform_status(x_api_key: str = Header(None, alias="X-API-Key")):
 
 
 @router.get("/integrations")
-async def get_integrations(x_api_key: str = Header(None, alias="X-API-Key")):
+async def get_integrations(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """Get all integrations."""
     verify_api_key(x_api_key)
     platform = get_nexus_platform()
