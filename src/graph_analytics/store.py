@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict, defaultdict, deque
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .models import (
     GraphNode,
@@ -68,6 +68,10 @@ class GraphStore:
         self._reverse_adjacency: Dict[str, Set[str]] = defaultdict(set)
         self._node_index: Dict[str, List[str]] = defaultdict(list)
         self._edge_index: Dict[str, List[str]] = defaultdict(list)
+        # Maps an order-independent node pair to the ids of every edge joining
+        # it. get_edges_between previously answered this by scanning the whole
+        # edge map, which made the traversals that call it per-neighbour O(V*E).
+        self._edge_pair_index: Dict[Tuple[str, str], Dict[str, None]] = defaultdict(dict)
         self._lock = threading.RLock()
         self._cache = LRUCache(max_cache_size)
         self._stats = GraphStats()
@@ -93,16 +97,45 @@ class GraphStore:
                 self._cache.put(f"node:{node_id}", node)
             return node
 
+    @staticmethod
+    def _pair_key(source_id: str, target_id: str) -> Tuple[str, str]:
+        """Build the order-independent key used by the edge pair index.
+
+        get_edges_between treats a pair as undirected, so both directions have
+        to resolve to the same bucket.
+        """
+        return (source_id, target_id) if source_id <= target_id else (target_id, source_id)
+
     def add_edge(self, edge: GraphEdge) -> bool:
         """Add an edge to the graph."""
         with self._lock:
+            existing = self._edges.get(edge.edge_id)
+            if existing is not None:
+                # An edge id re-added against a different pair would otherwise
+                # stay indexed under the pair it no longer connects.
+                previous_key = self._pair_key(existing.source_id, existing.target_id)
+                if previous_key != self._pair_key(edge.source_id, edge.target_id):
+                    self._discard_from_pair_index(previous_key, edge.edge_id)
+
             self._edges[edge.edge_id] = edge
             self._cache.put(f"edge:{edge.edge_id}", edge)
             self._adjacency[edge.source_id].add(edge.target_id)
             self._reverse_adjacency[edge.target_id].add(edge.source_id)
             self._edge_index[edge.edge_type.value].append(edge.edge_id)
+            self._edge_pair_index[self._pair_key(edge.source_id, edge.target_id)][
+                edge.edge_id
+            ] = None
             self._update_stats()
             return True
+
+    def _discard_from_pair_index(self, pair_key: Tuple[str, str], edge_id: str) -> None:
+        """Drop an edge from a pair bucket, removing the bucket once empty."""
+        bucket = self._edge_pair_index.get(pair_key)
+        if bucket is None:
+            return
+        bucket.pop(edge_id, None)
+        if not bucket:
+            del self._edge_pair_index[pair_key]
 
     def get_edge(self, edge_id: str) -> Optional[GraphEdge]:
         """Get an edge by ID."""
@@ -132,13 +165,59 @@ class GraphStore:
             return neighbors
 
     def get_edges_between(self, source_id: str, target_id: str) -> List[GraphEdge]:
-        """Get all edges between two nodes."""
+        """Get all edges between two nodes, in either direction."""
         with self._lock:
-            edges = []
-            for edge in self._edges.values():
-                if (edge.source_id == source_id and edge.target_id == target_id) or \
-                   (edge.source_id == target_id and edge.target_id == source_id):
-                    edges.append(edge)
+            edge_ids = self._edge_pair_index.get(self._pair_key(source_id, target_id))
+            if not edge_ids:
+                return []
+            return [self._edges[eid] for eid in edge_ids if eid in self._edges]
+
+    def get_incident_edges(self, node_ids: Set[str], both_endpoints: bool = False) -> List[GraphEdge]:
+        """Return every edge touching the given node set.
+
+        Resolved through adjacency rather than by scanning the edge map, so the
+        cost tracks the size of the neighbourhood being inspected instead of the
+        size of the whole graph.
+
+        Args:
+            node_ids: Nodes whose incident edges are wanted.
+            both_endpoints: When True, only edges with *both* endpoints inside
+                the set are returned; otherwise a single endpoint is enough.
+        """
+        with self._lock:
+            if not node_ids:
+                return []
+
+            seen: Dict[str, None] = {}
+            edges: List[GraphEdge] = []
+
+            for node_id in node_ids:
+                candidates = set(self._adjacency.get(node_id, set()))
+                candidates.update(self._reverse_adjacency.get(node_id, set()))
+
+                for other_id in candidates:
+                    if both_endpoints and other_id not in node_ids:
+                        continue
+                    bucket = self._edge_pair_index.get(self._pair_key(node_id, other_id))
+                    if not bucket:
+                        continue
+                    for edge_id in bucket:
+                        if edge_id in seen:
+                            continue
+                        edge = self._edges.get(edge_id)
+                        if edge is None:
+                            continue
+                        if both_endpoints and not (
+                            edge.source_id in node_ids and edge.target_id in node_ids
+                        ):
+                            continue
+                        if not both_endpoints and not (
+                            edge.source_id in node_ids or edge.target_id in node_ids
+                        ):
+                            continue
+                        seen[edge_id] = None
+                        edges.append(edge)
+
             return edges
 
     def bfs_traverse(self, start_id: str, max_depth: int = 5, edge_types: Optional[List[EdgeType]] = None) -> List[GraphNode]:
@@ -360,6 +439,15 @@ class GraphStore:
             node_ids = self._node_index.get(node_type.value, [])
             return [self._nodes[nid] for nid in node_ids if nid in self._nodes]
 
+    def get_all_nodes(self) -> List[GraphNode]:
+        """Return a snapshot of every node.
+
+        Materialised under the lock so callers can iterate without racing a
+        concurrent write, and without reaching into the store's internals.
+        """
+        with self._lock:
+            return list(self._nodes.values())
+
     def get_edges_by_type(self, edge_type: EdgeType) -> List[GraphEdge]:
         """Get all edges of a specific type."""
         with self._lock:
@@ -398,6 +486,7 @@ class GraphStore:
             self._reverse_adjacency.clear()
             self._node_index.clear()
             self._edge_index.clear()
+            self._edge_pair_index.clear()
             self._cache.clear()
             self._stats = GraphStats()
 
