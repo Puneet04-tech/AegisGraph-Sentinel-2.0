@@ -180,6 +180,79 @@ class TestAdaptiveRiskEngine:
         assert engine._determine_risk_level(0.35) == RiskLevel.LOW
         assert engine._determine_risk_level(0.15) == RiskLevel.MINIMAL
 
+    def test_risk_factor_weights_sum_to_one(self):
+        """Test declared risk factor weights sum to 1.0."""
+        engine = get_risk_engine()
+        assert abs(sum(engine._risk_factors.values()) - 1.0) < 1e-9
+
+    def test_max_risk_reaches_deny(self):
+        """Test maximally risky inputs reach the DENY decision."""
+        engine = get_risk_engine()
+
+        risk_score = engine._calculate_overall_risk(
+            velocity=1.0,
+            amount=1.0,
+            device=1.0,
+            location=1.0,
+            behavior=1.0,
+            history=1.0,
+        )
+
+        assert risk_score == 1.0
+        assert engine._determine_decision(risk_score) == DecisionType.DENY
+
+    def test_history_factor_contributes_to_score(self):
+        """Test the history factor is actually applied."""
+        engine = get_risk_engine()
+
+        with_history = engine._calculate_overall_risk(1.0, 0.0, 0.1, 0.1, 0.1, 1.0)
+        without_history = engine._calculate_overall_risk(1.0, 0.0, 0.1, 0.1, 0.1, 0.0)
+
+        assert with_history > without_history
+        assert with_history - without_history == pytest.approx(0.10)
+
+    def test_deny_reachable_via_evaluate_risk(self):
+        """Test a maximally-risky evaluation returns a DENY decision."""
+        import asyncio
+
+        engine = get_risk_engine()
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def run_test():
+            assessment = await engine.evaluate_risk(
+                entity_id="entity-deny",
+                transaction_data={
+                    "transaction_id": "txn-deny",
+                    "velocity": 20,
+                    "max_velocity": 10,
+                    "amount": 50000,
+                    "max_amount": 10000,
+                    "device_risk_score": 1.0,
+                    "impossible_travel": True,
+                    "history_score": 1.0,
+                    "behavior_pattern": "normal",
+                },
+                profile=RiskProfile(
+                    profile_id="profile-deny",
+                    entity_id="entity-deny",
+                    entity_type="user",
+                    risk_score=1.0,
+                    risk_level=RiskLevel.CRITICAL,
+                    trust_score=0.0,
+                    behavioral_baseline={"pattern": "anomalous"},
+                ),
+            )
+            return assessment
+
+        assessment = loop.run_until_complete(run_test())
+        loop.close()
+
+        assert assessment.decision == DecisionType.DENY
+        assert assessment.history_score == 1.0
+        assert "History of risk/fraud" in assessment.risk_factors
+
 
 class TestFraudPreventionEngine:
     """Test fraud prevention engine."""
