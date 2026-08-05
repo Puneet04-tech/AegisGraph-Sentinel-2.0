@@ -457,6 +457,44 @@ class TestKnowledgeGraph:
         stats = graph.get_graph_stats()
         assert stats["current_entities"] >= 1
 
+    def test_shortest_path_respects_max_depth(self, graph):
+        """Test shortest path honors the max_depth bound."""
+        entities = [Entity(entity_type=EntityType.ACCOUNT, value=f"ACC{i:03d}") for i in range(4)]
+        for e in entities:
+            graph.add_node(e)
+        for src, dst in zip(entities[:-1], entities[1:]):
+            graph.add_edge(EntityRelationship(
+                source_id=src.id,
+                target_id=dst.id,
+                relationship_type=RelationshipType.TRANSFER_TO,
+            ))
+
+        full_path = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=10)
+        assert full_path == [entities[0].id, entities[1].id, entities[2].id, entities[3].id]
+
+        bounded = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=2)
+        assert bounded == []
+
+    def test_shortest_path_respects_relationship_direction(self, graph):
+        """Test shortest path only follows stored relationship direction."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="ACC001")
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="ACC002")
+        graph.add_node(e1)
+        graph.add_node(e2)
+
+        # Edge is stored only as e2 -> e1, so e1 -> e2 must have no path.
+        graph.add_edge(EntityRelationship(
+            source_id=e2.id,
+            target_id=e1.id,
+            relationship_type=RelationshipType.TRANSFER_TO,
+        ))
+
+        forward = graph.find_shortest_path(e2.id, e1.id, max_depth=5)
+        assert forward == [e2.id, e1.id]
+
+        reverse = graph.find_shortest_path(e1.id, e2.id, max_depth=5)
+        assert reverse == []
+
 
 # ============================================================================
 # CLUSTER ENGINE TESTS
