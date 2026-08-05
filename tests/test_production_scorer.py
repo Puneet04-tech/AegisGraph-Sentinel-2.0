@@ -56,8 +56,8 @@ class _RecordingExecutor:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
+    def shutdown(self, wait=True):
+        pass
 
     def submit(self, fn, *args, **kwargs):
         self.submitted += 1
@@ -78,6 +78,9 @@ def _make_score(transaction_id: str) -> FraudScore:
         explanation="ok",
         breakdown={"graph_risk": 0.1},
         influential_neighbors=[],
+        top_relationships=[],
+        high_risk_nodes=[],
+        attention_summary="",
         model_version="2.0.0",
         inference_time_ms=1.0,
         graph_size=1,
@@ -150,3 +153,20 @@ def test_fraud_score_supports_attention_reports():
     assert "top_relationships" in payload
     assert "high_risk_nodes" in payload
     assert "attention_summary" in payload
+
+
+def test_cache_keys_include_temporal_and_hop_parameters():
+    from datetime import datetime, timezone
+    from src.inference.production_scorer import _ThreadSafeCache
+
+    cache = _ThreadSafeCache()
+    t1 = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 8, 1, 10, 5, tzinfo=timezone.utc)
+
+    key1 = ("ACC_1", t1, 2)
+    key2 = ("ACC_1", t2, 2)
+
+    cache.set(key1, {"subgraph": 1})
+
+    assert cache.get(key1) == {"subgraph": 1}
+    assert cache.get(key2) is None
