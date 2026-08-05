@@ -139,6 +139,66 @@ class TestCTIEngine:
         
         assert score.score_id is not None
 
+    def test_threat_score_picks_most_severe_level(self):
+        """Most severe matched IOC wins even when a less severe one is present."""
+        self.engine.add_ioc(
+            indicator_type="domain",
+            value="mule.io",
+            threat_level="unknown",
+        )
+        self.engine.add_ioc(
+            indicator_type="domain",
+            value="mule.io",
+            threat_level="critical",
+        )
+
+        score = self.engine.calculate_threat_score("domain", "mule.io")
+
+        assert score.component_scores["threat_level"] == 1.0
+
+    def test_threat_score_medium_over_critical_uses_max(self):
+        """A mix of CRITICAL and MEDIUM IOCs scores the CRITICAL level."""
+        self.engine.add_ioc(
+            indicator_type="domain",
+            value="gateway.io",
+            threat_level="medium",
+        )
+        self.engine.add_ioc(
+            indicator_type="domain",
+            value="gateway.io",
+            threat_level="critical",
+        )
+
+        score = self.engine.calculate_threat_score("domain", "gateway.io")
+
+        assert score.component_scores["threat_level"] == 1.0
+
+    def test_ioc_match_component_is_clamped(self):
+        """More than ten matched IOCs never push the component above 1.0."""
+        for _ in range(12):
+            self.engine.add_ioc(
+                indicator_type="domain",
+                value="flood.io",
+                threat_level="low",
+            )
+
+        score = self.engine.calculate_threat_score("domain", "flood.io")
+
+        assert score.component_scores["ioc_match"] == 1.0
+
+    def test_overall_score_stays_within_bounds(self):
+        """Overall score never exceeds 1.0 with many matched IOCs."""
+        for _ in range(20):
+            self.engine.add_ioc(
+                indicator_type="domain",
+                value="saturated.io",
+                threat_level="critical",
+            )
+
+        score = self.engine.calculate_threat_score("domain", "saturated.io")
+
+        assert 0.0 <= score.overall_score <= 1.0
+
     def test_get_dashboard(self):
         """Test getting dashboard."""
         result = self.engine.get_dashboard()
