@@ -4,7 +4,7 @@ API routes for AegisGraph Sentinel Omega Platform.
 Provides endpoints for unified platform access and cross-layer intelligence.
 """
 
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
