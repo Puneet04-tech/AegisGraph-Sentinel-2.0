@@ -538,3 +538,16 @@ class StrictRateLimit:
                     headers={"Retry-After": str(retry)}
                 )
 
+
+# --- GENERATED: validate_iso_timestamp ---
+def validate_iso_timestamp(ts):
+    """Return True if ts is a valid ISO 8601 datetime string."""
+    if not isinstance(ts, str):
+        return False
+    try:
+        from datetime import datetime
+        datetime.fromisoformat(ts)
+        return True
+    except (ValueError, TypeError):
+        return False
+# --- END GENERATED ---
