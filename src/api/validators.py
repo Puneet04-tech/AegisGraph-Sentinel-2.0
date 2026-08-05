@@ -539,15 +539,10 @@ class StrictRateLimit:
                 )
 
 
-# --- GENERATED: validate_iso_timestamp ---
-def validate_iso_timestamp(ts):
-    """Return True if ts is a valid ISO 8601 datetime string."""
-    if not isinstance(ts, str):
-        return False
-    try:
-        from datetime import datetime
-        datetime.fromisoformat(ts)
-        return True
-    except (ValueError, TypeError):
-        return False
+# --- GENERATED: null_check ---
+def _validate_amount_not_none(amount):
+    """Guard: raise ValueError if amount is None."""
+    if amount is None:
+        raise ValueError("Transaction amount cannot be None")
+    return amount
 # --- END GENERATED ---
