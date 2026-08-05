@@ -205,13 +205,38 @@ class GraphService:
         return [self._store.get_node(nid) for nid in common_ids if self._store.get_node(nid)]
 
     def find_critical_entities(self, min_centrality: float = 0.1) -> List[CentralityMetrics]:
-        """Find critical entities based on centrality."""
-        critical = []
-        for node_id in self._store._nodes:
-            metrics = self._store.calculate_centrality(node_id)
-            if metrics.degree_centrality >= min_centrality or metrics.page_rank >= min_centrality:
-                critical.append(metrics)
-        return sorted(critical, key=lambda x: x.page_rank, reverse=True)
+        """Find critical entities based on centrality.
+
+        Ranked on a composite of the four whole-graph measures rather than on
+        PageRank alone. PageRank used to be a constant, so sorting by it
+        returned entities in arbitrary dict order; betweenness in particular
+        now contributes, since bridging accounts are the ones worth escalating.
+        """
+        try:
+            scored = self._store.calculate_all_centralities()
+        except Exception as e:
+            logger.error("Failed to calculate centralities: %s", e, exc_info=True)
+            return []
+
+        critical = [
+            metrics
+            for metrics in scored.values()
+            if metrics.degree_centrality >= min_centrality
+            or metrics.page_rank >= min_centrality
+            or metrics.betweenness_centrality >= min_centrality
+        ]
+
+        def rank(metrics: CentralityMetrics) -> tuple:
+            composite = (
+                metrics.betweenness_centrality
+                + metrics.page_rank
+                + metrics.degree_centrality
+                + metrics.closeness_centrality
+            )
+            # node_id breaks ties so the ordering is stable across calls.
+            return (-composite, metrics.node_id)
+
+        return sorted(critical, key=rank)
 
     def get_connection_strength(self, entity_id1: str, entity_id2: str) -> float:
         """Calculate connection strength between two entities."""
@@ -386,3 +411,11 @@ def reset_graph_service() -> None:
     global _graph_service
     with _service_lock:
         _graph_service = None
+
+# --- GENERATED: safe_path_centrality ---
+def _safe_shortest_path_centrality(path):
+    """Return 1/len(path) safely, or 0.0 if path is empty."""
+    if not path:
+        return 0.0
+    return 1.0 / len(path)
+# --- END GENERATED ---

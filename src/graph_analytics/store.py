@@ -75,6 +75,11 @@ class GraphStore:
         self._lock = threading.RLock()
         self._cache = LRUCache(max_cache_size)
         self._stats = GraphStats()
+        # Bumped on every mutation so whole-graph centrality results can be
+        # memoised and invalidated without rescanning the graph to detect change.
+        self._graph_version = 0
+        self._centrality_cache: Optional[Dict[str, CentralityMetrics]] = None
+        self._centrality_cache_key: Optional[Tuple[int, Optional[int]]] = None
 
     def add_node(self, node: GraphNode) -> bool:
         """Add a node to the graph."""
@@ -82,6 +87,7 @@ class GraphStore:
             self._nodes[node.node_id] = node
             self._cache.put(f"node:{node.node_id}", node)
             self._node_index[node.node_type.value].append(node.node_id)
+            self._graph_version += 1
             self._update_stats()
             return True
 
@@ -345,24 +351,71 @@ class GraphStore:
         total_risk = sum(self._nodes[nid].risk_score for nid in node_ids if nid in self._nodes)
         return min(1.0, total_risk / len(node_ids))
 
-    def calculate_centrality(self, node_id: str) -> CentralityMetrics:
-        """Calculate centrality metrics for a node."""
+    def _combined_adjacency(self) -> Dict[str, Set[str]]:
+        """Snapshot the outgoing adjacency for the centrality algorithms.
+
+        Copied under the lock so a long-running whole-graph computation can run
+        without holding the store against concurrent writers.
+        """
+        return {node_id: set(targets) for node_id, targets in self._adjacency.items()}
+
+    def calculate_all_centralities(
+        self,
+        betweenness_sample_size: Optional[int] = None,
+    ) -> Dict[str, CentralityMetrics]:
+        """Compute every centrality measure for every node in one pass.
+
+        Each measure is a whole-graph computation, so ranking callers must use
+        this rather than calling calculate_centrality once per node.
+
+        Results are memoised against a graph-version counter and reused until
+        the next mutation.
+        """
         with self._lock:
-            total_nodes = len(self._nodes)
-            if total_nodes <= 1:
-                return CentralityMetrics(node_id=node_id)
+            cache_key = (self._graph_version, betweenness_sample_size)
+            if self._centrality_cache_key == cache_key and self._centrality_cache is not None:
+                return self._centrality_cache
 
-            degree = len(self._adjacency.get(node_id, set())) + len(self._reverse_adjacency.get(node_id, set()))
-            degree_centrality = degree / (total_nodes - 1) if total_nodes > 1 else 0.0
+            node_ids = list(self._nodes.keys())
+            adjacency = self._combined_adjacency()
 
-            return CentralityMetrics(
+        scored = all_centralities(adjacency, node_ids, betweenness_sample_size)
+        calculated_at = datetime.now(timezone.utc).isoformat()
+        metrics = {
+            node_id: CentralityMetrics(
                 node_id=node_id,
-                degree_centrality=degree_centrality,
-                betweenness_centrality=0.0,
-                closeness_centrality=0.0,
-                page_rank=1.0 / total_nodes,
-                eigen_centrality=0.0,
+                calculated_at=calculated_at,
+                **values,
             )
+            for node_id, values in scored.items()
+        }
+
+        with self._lock:
+            # Only publish if the graph has not moved on while we computed.
+            if self._graph_version == cache_key[0]:
+                self._centrality_cache = metrics
+                self._centrality_cache_key = cache_key
+            return metrics
+
+    def calculate_centrality(self, node_id: str) -> CentralityMetrics:
+        """Calculate centrality metrics for a node.
+
+        Betweenness, closeness, PageRank and eigenvector centrality are all
+        genuinely computed against the stored graph; they previously returned
+        hardcoded constants, which made PageRank identical for every node and
+        any ranking built on it meaningless.
+        """
+        with self._lock:
+            if len(self._nodes) <= 1:
+                return CentralityMetrics(node_id=node_id)
+            known = node_id in self._nodes
+
+        if not known:
+            return CentralityMetrics(node_id=node_id)
+
+        return self.calculate_all_centralities().get(
+            node_id, CentralityMetrics(node_id=node_id)
+        )
 
     def simulate_lateral_movement(self, start_id: str, max_steps: int = 3, min_weight_threshold: float = 0.5) -> List[str]:
         """Simulate lateral movement from a breached node based on edge weights/risks."""
@@ -489,6 +542,9 @@ class GraphStore:
             self._edge_pair_index.clear()
             self._cache.clear()
             self._stats = GraphStats()
+            self._graph_version += 1
+            self._centrality_cache = None
+            self._centrality_cache_key = None
 
 
 _graph_store: Optional[GraphStore] = None

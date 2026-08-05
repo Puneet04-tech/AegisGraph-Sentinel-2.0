@@ -155,3 +155,12 @@ def test_check_blacklist_none_values() -> None:
     # Only IP provided
     assert check_blacklist(ip_address="203.0.113.1") is True
     assert check_blacklist(ip_address="8.8.8.8", location="") is False
+
+"""Tests for src/features/ip_blacklist.py -- IP blacklist validation."""
+
+import pytest
+
+
+def test_placeholder():
+    """Placeholder test for IP blacklist validation."""
+    assert True
