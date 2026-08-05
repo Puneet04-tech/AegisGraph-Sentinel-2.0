@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict, defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .centrality import all_centralities
 
 from .models import (
     GraphNode,
@@ -78,6 +81,10 @@ class GraphStore:
         # How many edges currently join each directed (source, target) pair, so
         # removing one parallel edge does not tear down shared adjacency.
         self._pair_edge_count: Dict[Tuple[str, str], int] = {}
+        # Edge ids keyed by the order-independent pair they join, so
+        # get_edges_between and get_incident_edges resolve a query without
+        # scanning the whole edge map.
+        self._edge_pair_index: Dict[Tuple[str, str], Set[str]] = {}
         self._lock = threading.RLock()
         self._cache = LRUCache(max_cache_size)
         self._stats = GraphStats()
@@ -86,6 +93,11 @@ class GraphStore:
         # adjacency map, which made ingesting N elements O(N^2).
         self._total_degree = 0
         self._stats_dirty = True
+        # Bumped on every mutation so whole-graph centrality results can be
+        # memoised and invalidated without rescanning the graph to detect change.
+        self._graph_version = 0
+        self._centrality_cache: Optional[Dict[str, CentralityMetrics]] = None
+        self._centrality_cache_key: Optional[Tuple[int, Optional[int]]] = None
 
     def add_node(self, node: GraphNode) -> bool:
         """Add a node to the graph."""
@@ -93,6 +105,7 @@ class GraphStore:
             self._nodes[node.node_id] = node
             self._cache.put(f"node:{node.node_id}", node)
             self._index_node_type(node.node_id, node.node_type.value)
+            self._graph_version += 1
             self._stats_dirty = True
             return True
 
@@ -169,6 +182,9 @@ class GraphStore:
             if existing is None or existing.source_id != edge.source_id or existing.target_id != edge.target_id:
                 # Only a genuinely new (id, pair) combination adds to the count.
                 self._pair_edge_count[pair] = self._pair_edge_count.get(pair, 0) + 1
+            self._edge_pair_index.setdefault(
+                self._pair_key(edge.source_id, edge.target_id), set()
+            ).add(edge.edge_id)
             # set.add is idempotent, so degree may only grow when the pair is new.
             adjacency = self._adjacency[edge.source_id]
             before = len(adjacency)
@@ -176,6 +192,7 @@ class GraphStore:
             self._total_degree += len(adjacency) - before
             self._reverse_adjacency[edge.target_id].add(edge.source_id)
             self._index_edge_type(edge.edge_id, edge.edge_type.value)
+            self._graph_version += 1
             self._stats_dirty = True
             return True
 
@@ -188,6 +205,7 @@ class GraphStore:
         rather than rescanning every edge.
         """
         pair = (edge.source_id, edge.target_id)
+        self._discard_from_pair_index(self._pair_key(edge.source_id, edge.target_id), edge.edge_id)
         remaining = self._pair_edge_count.get(pair, 0) - 1
         if remaining > 0:
             self._pair_edge_count[pair] = remaining
@@ -219,6 +237,7 @@ class GraphStore:
             if edge_type is not None:
                 self._discard_from_index(self._edge_index, edge_type, edge_id)
             self._cache.delete(f"edge:{edge_id}")
+            self._graph_version += 1
             self._stats_dirty = True
             return True
 
@@ -243,6 +262,7 @@ class GraphStore:
             self._adjacency.pop(node_id, None)
             self._reverse_adjacency.pop(node_id, None)
             self._cache.delete(f"node:{node_id}")
+            self._graph_version += 1
             self._stats_dirty = True
             return True
 
@@ -251,7 +271,7 @@ class GraphStore:
         bucket = self._edge_pair_index.get(pair_key)
         if bucket is None:
             return
-        bucket.pop(edge_id, None)
+        bucket.discard(edge_id)
         if not bucket:
             del self._edge_pair_index[pair_key]
 
@@ -674,10 +694,14 @@ class GraphStore:
             self._node_type_of.clear()
             self._edge_type_of.clear()
             self._pair_edge_count.clear()
+            self._edge_pair_index.clear()
             self._cache.clear()
             self._stats = GraphStats()
             self._total_degree = 0
             self._stats_dirty = True
+            self._graph_version += 1
+            self._centrality_cache = None
+            self._centrality_cache_key = None
 
 
 _graph_store: Optional[GraphStore] = None
