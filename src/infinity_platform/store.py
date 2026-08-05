@@ -20,6 +20,7 @@ from .models import (
     RiskLevel,
     UnifiedIntelligence,
 )
+from src.audit.bounded_log import BoundedAuditLog, next_event_id
 
 
 class InfinityStore:
@@ -30,7 +31,9 @@ class InfinityStore:
         self._components: Dict[str, Component] = {}
         self._intelligence: Dict[str, UnifiedIntelligence] = {}
         self._correlations: Dict[str, CrossDomainCorrelation] = {}
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
         self._lock = threading.RLock()
 
     def add_component(self, component: Component) -> None:
@@ -109,7 +112,7 @@ class InfinityStore:
     ) -> None:
         """Log an audit event."""
         event = AuditEvent(
-            event_id=f"audit-{len(self._audit_log) + 1}",
+            event_id=next_event_id(),
             timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             action=action,
@@ -123,7 +126,7 @@ class InfinityStore:
 
     def get_audit_log(self, limit: int = 100) -> List[AuditEvent]:
         """Get audit log."""
-        return self._audit_log[-limit:]
+        return self._audit_log.tail(limit)
 
     def get_dashboard(self) -> InfinityDashboard:
         """Get dashboard."""

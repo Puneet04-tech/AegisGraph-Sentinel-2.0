@@ -21,6 +21,7 @@ from .models import (
     DecisionRecommendation,
     AuditRecord,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class LRUCache(OrderedDict):
@@ -83,7 +84,9 @@ class InvestigationStore:
         self._assessments: LRUCache = LRUCache(maxsize=max_assessments)
         self._recommendations: Dict[str, List] = {}
         self._narratives: Dict[str, FraudNarrative] = {}
-        self._audit_records: List = []
+        # deque eviction is O(1); the manual `= self._audit_records[-N:]` trim this
+        # replaces copied the whole retained list on every append past the cap.
+        self._audit_records = BoundedAuditLog(capacity=10000)
         self._correlations: Dict[str, List] = {}
         self._patterns: Dict[str, FraudPattern] = {}
 
@@ -319,8 +322,6 @@ class InvestigationStore:
         """Store audit record."""
         with self._lock:
             self._audit_records.append(record)
-            if len(self._audit_records) > 10000:
-                self._audit_records = self._audit_records[-10000:]
 
     def get_audit_records(
         self,
