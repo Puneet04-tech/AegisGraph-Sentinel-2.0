@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from src.api.middleware.multi_tenancy import get_current_tenant
@@ -44,8 +45,16 @@ _USER_FIELDS = (
     "created_at",
 )
 
+_SORTABLE_FIELDS = frozenset(
+    {"created_at", "email", "full_name", "role", "last_login"}
+)
+
+# Retention cap: the audit trail is now readable through the activity endpoint,
+# so it must not grow for the life of the process.
+_AUDIT_LOG_CAPACITY = 10_000
+
 _USER_STORE: Dict[str, Dict[str, Any]] = {}
-_AUDIT_LOG: List[Dict[str, Any]] = []
+_AUDIT_LOG: Deque[Dict[str, Any]] = deque(maxlen=_AUDIT_LOG_CAPACITY)
 _STORE_LOCK = threading.RLock()
 
 
@@ -144,6 +153,15 @@ class UserUpdate(BaseModel):
         return value
 
 
+class UserListResponse(BaseModel):
+    """Paginated page of users within the caller's tenant."""
+    items: List["UserResponse"]
+    total: int = Field(description="Total matching users before pagination")
+    page: int
+    page_size: int
+    has_more: bool
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -182,6 +200,50 @@ def _audit(action: str, actor_id: str, tenant_id: str, target_user_id: str) -> N
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     )
+
+
+def _matches_filters(
+    user: Dict[str, Any],
+    needle: Optional[str],
+    role: Optional[str],
+    is_active: Optional[bool],
+    email_verified: Optional[bool],
+    mfa_enabled: Optional[bool],
+) -> bool:
+    """Apply the listing filters to one record."""
+    if role is not None and str(user.get("role", "")).strip().lower() != role:
+        return False
+    for field, wanted in (
+        ("is_active", is_active),
+        ("email_verified", email_verified),
+        ("mfa_enabled", mfa_enabled),
+    ):
+        if wanted is not None and bool(user.get(field)) is not wanted:
+            return False
+
+    if needle is None:
+        return True
+
+    # Optional fields may be None, so each is coerced before matching.
+    haystack = " ".join(
+        str(user.get(field) or "").lower()
+        for field in ("email", "username", "full_name")
+    )
+    return needle in haystack
+
+
+def _sort_key(user: Dict[str, Any], field: str) -> Any:
+    """Build a comparable sort key, keeping None values orderable.
+
+    Records missing an optional field sort last rather than raising on a
+    None-to-value comparison.
+    """
+    value = user.get(field)
+    if value is None:
+        return (1, "")
+    if isinstance(value, datetime):
+        return (0, value.timestamp())
+    return (0, str(value).lower())
 
 
 def _public_user(user: Dict[str, Any]) -> UserResponse:
@@ -247,6 +309,84 @@ async def create_user(
         _audit("user_created", current_user["user_id"], tenant_id, user_id)
 
     return _public_user(record)
+
+
+# Registered before /{user_id} so the literal path is matched first rather than
+# being captured as a user id.
+@router.get("/", response_model=UserListResponse)
+async def list_users(
+    page: int = Query(default=1, ge=1, description="1-based page number"),
+    page_size: int = Query(default=25, ge=1, le=100, description="Users per page"),
+    search: Optional[str] = Query(
+        default=None,
+        max_length=200,
+        description="Case-insensitive substring match on email, username or full name",
+    ),
+    role: Optional[str] = Query(default=None, max_length=32),
+    is_active: Optional[bool] = Query(default=None),
+    email_verified: Optional[bool] = Query(default=None),
+    mfa_enabled: Optional[bool] = Query(default=None),
+    sort_by: str = Query(default="created_at", description="Field to sort on"),
+    sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    """List users in the caller's organisation.
+
+    Administrators see the whole tenant; anyone else sees only their own
+    record, so the endpoint stays useful to both without leaking a directory.
+    """
+    tenant_id = _require_tenant_context(current_user)
+
+    if sort_by not in _SORTABLE_FIELDS:
+        # An allow-list rather than interpolating caller input into the sort.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sort_by must be one of: {', '.join(sorted(_SORTABLE_FIELDS))}",
+        )
+
+    normalized_role = role.strip().lower() if role else None
+    needle = search.strip().lower() if search and search.strip() else None
+
+    with _STORE_LOCK:
+        candidates = [
+            user for user in _USER_STORE.values() if user["tenant_id"] == tenant_id
+        ]
+
+        if not _is_admin(current_user):
+            candidates = [
+                user for user in candidates
+                if user["id"] == current_user.get("user_id")
+            ]
+
+        matches = [
+            user for user in candidates
+            if _matches_filters(
+                user,
+                needle=needle,
+                role=normalized_role,
+                is_active=is_active,
+                email_verified=email_verified,
+                mfa_enabled=mfa_enabled,
+            )
+        ]
+
+        # Tiebreak on id so a record with an equal sort value cannot drift
+        # between pages and be shown twice or skipped.
+        matches.sort(key=lambda user: (_sort_key(user, sort_by), user["id"]))
+        if sort_order == "desc":
+            matches.reverse()
+
+        total = len(matches)
+        start = (page - 1) * page_size
+        page_items = matches[start:start + page_size]
+
+        return UserListResponse(
+            items=[_public_user(user) for user in page_items],
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=start + len(page_items) < total,
+        )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -370,22 +510,37 @@ async def resend_verification_email(
 @router.get("/{user_id}/activity")
 async def get_user_activity(
     user_id: str,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
     current_user: dict = Depends(get_current_user),
 ):
-    """Get user activity log."""
+    """Get user activity log.
+
+    Served from the audit entries this module already records. It previously
+    returned a single hardcoded record with an invented IP and device string,
+    presenting fabricated login metadata as though it were real, and ignored
+    its ``limit`` entirely.
+    """
     tenant_id = _require_tenant_context(current_user)
-    user = _get_user_record(user_id, tenant_id)
-    _require_owner_or_admin(current_user, user)
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
+        _require_owner_or_admin(current_user, user)
+
+        # Newest first, scoped to both the target user and the caller's tenant.
+        matching = [
+            entry for entry in reversed(_AUDIT_LOG)
+            if entry["target_user_id"] == user_id and entry["tenant_id"] == tenant_id
+        ]
+
     return {
         "activities": [
             {
-                "id": "act_1",
-                "action": "login",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "ip_address": "192.168.1.1",
-                "device": "Chrome on Windows",
+                "id": f"act_{index}",
+                "action": entry["action"],
+                "actor_id": entry["actor_id"],
+                "timestamp": entry["timestamp"],
             }
+            for index, entry in enumerate(matching[:limit], start=1)
         ],
-        "total": 1,
+        # The count is of everything recorded, not just the page returned.
+        "total": len(matching),
     }
