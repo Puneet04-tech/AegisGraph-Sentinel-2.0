@@ -26,6 +26,7 @@ from .models import (
     FederationStatus,
     ThreatLevel,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class LRUCache(OrderedDict):
@@ -95,7 +96,9 @@ class GlobalIntelligenceStore:
         self._campaigns: Dict[str, FraudCampaign] = {}
         self._investigations: Dict[str, InvestigationCase] = {}
         self._partners: Dict[str, FederationPartner] = {}
-        self._audit_records: List[AuditRecord] = []
+        # deque eviction is O(1); the manual `= self._audit_records[-N:]` trim this
+        # replaces copied the whole retained list on every append past the cap.
+        self._audit_records = BoundedAuditLog(capacity=10000)
         self._graph_nodes: Dict[str, KnowledgeGraphNode] = {}
         self._graph_edges: Dict[str, KnowledgeGraphEdge] = {}
 
@@ -429,8 +432,6 @@ class GlobalIntelligenceStore:
         with self._lock:
             self._audit_records.append(record)
             # Keep only last 10000 records
-            if len(self._audit_records) > 10000:
-                self._audit_records = self._audit_records[-10000:]
 
     def get_audit_records(
         self,

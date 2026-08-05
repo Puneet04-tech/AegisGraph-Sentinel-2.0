@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
 from .models import AssetLocation, GeoPoint, Geofence, GeofenceEvent
+from src.audit.bounded_log import BoundedAuditLog
 
 
 def _point_in_polygon(point: GeoPoint, polygon: List[GeoPoint]) -> bool:
@@ -30,7 +31,9 @@ class GeofencingEngine:
     def __init__(self, alert_callback: Optional[Callable[[GeofenceEvent], None]] = None) -> None:
         self._fences: Dict[str, Geofence] = {}
         self._asset_inside: Dict[str, Dict[str, bool]] = {}  # asset_id -> fence_id -> inside
-        self._events: List[GeofenceEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._events = BoundedAuditLog()
         self._alert_callback = alert_callback
 
     # ------------------------------------------------------------------
@@ -122,7 +125,7 @@ class GeofencingEngine:
         fence_id: Optional[str] = None,
         event_type: Optional[str] = None,
     ) -> List[GeofenceEvent]:
-        events = self._events
+        events = self._events.all()
         if asset_id:
             events = [e for e in events if e.asset_id == asset_id]
         if fence_id:

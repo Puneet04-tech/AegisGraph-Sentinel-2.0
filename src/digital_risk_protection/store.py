@@ -24,6 +24,7 @@ from .models import (
     SocialMediaAbuse,
     ThreatStatus,
 )
+from src.audit.bounded_log import BoundedAuditLog, next_event_id
 
 
 class DRPStore:
@@ -40,7 +41,9 @@ class DRPStore:
         self._attack_surfaces: Dict[str, ExternalAttackSurface] = {}
         self._risk_scores: Dict[str, RiskScore] = {}
         self._alerts: Dict[str, Alert] = {}
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
         self._lock = threading.RLock()
 
     def register_domain(self, domain: Domain) -> None:
@@ -191,7 +194,7 @@ class DRPStore:
     ) -> None:
         """Log an audit event."""
         event = AuditEvent(
-            event_id=f"audit-{len(self._audit_log) + 1}",
+            event_id=next_event_id(),
             timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             action=action,
@@ -205,7 +208,7 @@ class DRPStore:
 
     def get_audit_log(self, limit: int = 100) -> List[AuditEvent]:
         """Get audit log."""
-        return self._audit_log[-limit:]
+        return self._audit_log.tail(limit)
 
     def get_dashboard_metrics(self) -> Dict[str, Any]:
         """Get dashboard metrics."""
