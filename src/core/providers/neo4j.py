@@ -303,7 +303,7 @@ class Neo4jGraphProvider:
         query = (
             "MERGE (s:Account {id: $src})\n"
             "MERGE (d:Account {id: $dst})\n"
-            "CREATE (s)-[r:TRANSFER {amount: $amount, timestamp: $timestamp}]->(d)"
+            "CREATE (s)-[r:TRANSFER {amount: $amount, timestamp: $timestamp, weight: $amount}]->(d)"
         )
         try:
             with self._driver.session() as session:
@@ -466,7 +466,7 @@ class Neo4jGraphProvider:
             "WHERE source.id IN keys(depth_map)\n"
             "WITH target, target_depth, depth_map[source.id] AS source_depth, r\n"
             "WHERE source_depth IS NOT NULL AND source_depth < $max_depth\n"
-            "WITH target.id AS node_id, target_depth AS depth, sum(coalesce(r.weight, 1.0) / ((source_depth + 1) * (source_depth + 1))) AS score\n"
+            "WITH target.id AS node_id, target_depth AS depth, sum(coalesce(r.weight, r.amount, 1.0) / ((source_depth + 1) * (source_depth + 1))) AS score\n"
             "RETURN node_id, depth, score"
         )
 
