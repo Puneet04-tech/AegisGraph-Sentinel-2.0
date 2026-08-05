@@ -70,6 +70,47 @@ def test_compute_risk_score_reuses_betweenness_centrality(monkeypatch):
     assert calls["count"] == 1
 
 
+def test_mule_penalty_applied_without_graph_loaded(monkeypatch):
+    """Known mule accounts must be penalized even when the graph is not loaded."""
+    state = SimpleNamespace(
+        graph_loaded=False,
+        transaction_graph=None,
+        mule_accounts={"mule_src", "mule_dst"},
+        account_profiles={},
+        centrality_baseline={},
+        centrality_window_size=3,
+    )
+    monkeypatch.setattr("src.api.main.state", state)
+    risk_mod._CENTRALITY_CACHE.clear()
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "mule_src", "target_account": "mule_dst", "amount": 10.0}
+    )
+
+    # Source (0.6) + target (0.4) + both (0.3) = 1.3 -> capped at 1.0.
+    assert result["breakdown"]["graph"] == pytest.approx(1.0)
+
+
+def test_mule_penalty_absent_for_clean_accounts_without_graph(monkeypatch):
+    """Non-mule accounts get no mule penalty when the graph is not loaded."""
+    state = SimpleNamespace(
+        graph_loaded=False,
+        transaction_graph=None,
+        mule_accounts={"mule_src"},
+        account_profiles={},
+        centrality_baseline={},
+        centrality_window_size=3,
+    )
+    monkeypatch.setattr("src.api.main.state", state)
+    risk_mod._CENTRALITY_CACHE.clear()
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "clean_src", "target_account": "clean_dst", "amount": 10.0}
+    )
+
+    assert result["breakdown"]["graph"] == pytest.approx(0.0)
+
+
 class _FailingBaseline(dict):
     def __contains__(self, key):
         raise RuntimeError("lateral boom")
