@@ -7,19 +7,27 @@ logger = logging.getLogger(__name__)
 
 # NOTE:
 # Tests monkeypatch `src.training.data_loader.torch.load`, so this module
-# must expose a `torch` attribute with a `load` attribute.
+# must keep exposing a `torch` attribute with a `load` attribute.
 #
-# Importing real torch in some CI environments can crash (e.g. triton
-# TORCH_LIBRARY re-registration). To keep tests stable, we expose a stub
-# that tests can monkeypatch. Production code lazily imports real torch.
-class _TorchStub:
-    def load(self, *args, **kwargs):
-        raise RuntimeError(
-            "Real torch is unavailable in this environment. "
-            "Production code should lazily import torch before calling torch.load."
-        )
+# Bind the real torch module when available so `torch.load(f,
+# weights_only=True)` deserializes graph artifacts with genuine PyTorch.
+# The stub fallback is only used when PyTorch is not installed at all, in
+# which case loading a graph artifact fails with a clear error.
+try:
+    import torch  # noqa: F401
+except ImportError:  # pragma: no cover - only when PyTorch is not installed
+    torch = None
 
-torch = _TorchStub()
+if torch is None:
+
+    class _TorchUnavailable:
+        def load(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyTorch is not installed in this environment. "
+                "Install torch to load graph artifacts."
+            )
+
+    torch = _TorchUnavailable()
 
 class AegisGraphLoader:
     """
@@ -50,10 +58,9 @@ class AegisGraphLoader:
 
     def _load_and_prep_graph(self) -> Any:
         """Loads the HeteroData object and injects temporal attributes if missing."""
-        # IMPORTANT:
-        # Unit tests monkeypatch `src.training.data_loader.torch.load`.
-        # Importing real torch in CI can crash; therefore we use the
-        # module-level `torch` attribute here.
+        # NOTE: unit tests monkeypatch `src.training.data_loader.torch.load`,
+        # so we go through the module-level `torch` attribute (real PyTorch in
+        # production, an explicit stub only when PyTorch is not installed).
         from torch_geometric.data import HeteroData  # noqa: F401
 
         expected_hash = os.getenv("AEGIS_GRAPH_SHA256")
@@ -80,8 +87,9 @@ class AegisGraphLoader:
             data = torch.load(f, weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
-        # In CI/unit tests we may only have a stubbed torch (no arange/sort),
-        # so stop here to avoid any torch-dependent tensor ops.
+        # If a test doubles `torch.load` with a data object while no real torch
+        # tensor ops are available (no arange/sort), stop here to avoid
+        # touching any torch-dependent code path.
         if not (hasattr(torch, "arange") and hasattr(torch, "sort")):
             return data
 
