@@ -110,6 +110,28 @@ class WorkflowEngine:
 
                 execution.task_results[task_name] = result
 
+                if result.get("status") == TASK_FAILED:
+                    # A task reported failure without raising — roll back and
+                    # fail the workflow instead of letting it end COMPLETED.
+                    self._rollback_containments(containment_stack, execution)
+
+                    execution.state = WorkflowState.FAILED
+                    execution.end_time = datetime.now(timezone.utc).isoformat()
+                    self.store.update_workflow_execution(execution)
+
+                    self.audit_logger.log_action(
+                        action="WORKFLOW_FAILED",
+                        user_id="SYSTEM",
+                        ip_address="127.0.0.1",
+                        status="FAILED",
+                        details={
+                            "execution_id": execution.execution_id,
+                            "failed_task": task_name,
+                            "error": result.get("error") or result.get("message") or f"Task failed: {task_name}",
+                        }
+                    )
+                    return
+
             execution.state = WorkflowState.COMPLETED
             execution.end_time = datetime.now(timezone.utc).isoformat()
             self.store.update_workflow_execution(execution)
