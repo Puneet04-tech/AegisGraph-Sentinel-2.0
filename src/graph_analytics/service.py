@@ -367,3 +367,11 @@ def reset_graph_service() -> None:
     global _graph_service
     with _service_lock:
         _graph_service = None
+
+# --- GENERATED: safe_path_centrality ---
+def _safe_shortest_path_centrality(path):
+    """Return 1/len(path) safely, or 0.0 if path is empty."""
+    if not path:
+        return 0.0
+    return 1.0 / len(path)
+# --- END GENERATED ---
