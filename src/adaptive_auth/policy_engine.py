@@ -100,9 +100,11 @@ class PolicyEvaluator:
             return PolicyDecision(
                 policy_id=policy.policy_id,
                 policy_name=policy.name,
-                action=PolicyAction.ALLOW,
-                allowed=True,
-                requires_step_up=False,
+                action=policy.action_on_violation,
+                allowed=False,
+                requires_step_up=policy.step_up_required,
+                step_up_challenge_types=[ct.value for ct in policy.step_up_challenge_types],
+                denied_reason="Policy conditions not met",
                 matched_conditions=matched,
             )
         
