@@ -3383,6 +3383,13 @@ async def get_investigation_insights(
             detail=f"Error generating investigation insights: {str(e)}",
         )
     
+@app.post(
+    "/api/v1/cases/similar",
+    response_model=SimilarCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Find fraud cases similar to a query",
+)
 async def find_similar_cases(request: SimilarCaseRequest):
     """
     Find fraud cases similar to a query using semantic embeddings (RAG).
