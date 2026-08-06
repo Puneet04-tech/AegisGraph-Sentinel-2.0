@@ -121,6 +121,18 @@ class TestDeduplication:
 
         assert engine.find_duplicates(alert) == []
 
+    def test_find_duplicates_does_not_append_same_alert_twice(self, engine):
+        alert = engine.ingest_alert("Suspicious transfer", "d", "LOW", "s1")
+        other = engine.ingest_alert(
+            "Suspicious transfer", "d", "LOW", "s2", indicators=["ioc-1"]
+        )
+        alert.indicators = ["ioc-1"]
+
+        # Matches on both title similarity and indicator overlap.
+        found = engine.find_duplicates(alert)
+
+        assert [a.alert_id for a in found].count(other.alert_id) == 1
+
 
 # ---------------------------------------------------------------------------
 # Correlation groups
