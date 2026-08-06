@@ -119,6 +119,25 @@ class TestTrustEngine:
         assert isinstance(result, TrustScore)
         assert 0.0 <= result.score <= 1.0
 
+    def test_vpn_ip_flagged(self):
+        engine = TrustEngine()
+        context = EvaluationContext(user_id="vpn-user", ip_address="100.64.0.1")
+        result = engine.evaluate_trust(context, cached=False)
+        assert result.factors.vpn_detected is True
+
+    def test_tor_ip_flagged_and_recommended(self):
+        engine = TrustEngine()
+        context = EvaluationContext(user_id="tor-user", ip_address="185.220.101.5")
+        result = engine.evaluate_trust(context, cached=False)
+        assert result.factors.tor_detected is True
+        assert any("TOR" in r for r in result.recommendations)
+
+    def test_threat_intelligence_penalizes_blacklisted_ip(self):
+        engine = TrustEngine()
+        clean = engine.evaluate_trust(EvaluationContext(user_id="clean-user", ip_address="8.8.8.8"), cached=False)
+        flagged = engine.evaluate_trust(EvaluationContext(user_id="flagged-user", ip_address="203.0.113.100"), cached=False)
+        assert flagged.factors_breakdown["threat_intelligence"] < clean.factors_breakdown["threat_intelligence"]
+
 
 class TestDeviceTrustManager:
     def test_manager_creation(self):
