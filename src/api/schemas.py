@@ -16,6 +16,23 @@ from src.api.validators import (
 )
 
 
+class BaseSchema(BaseModel):
+    """Shared base for API request and response schemas.
+
+    ``src.data_lineage.schemas`` already imports this name from here, but it
+    was never defined, so that module and everything importing it raised
+    ImportError. Declared once here so the shared configuration lives in a
+    single place rather than being repeated per schema.
+    """
+
+    model_config = ConfigDict(
+        # Reject unknown keys rather than silently dropping them, so a caller
+        # sending a misspelled field is told instead of being ignored.
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+
 class BiometricsData(BaseModel):
     """Keystroke biometrics data"""
     hold_times: List[float] = Field(default_factory=list, description="Key hold times in milliseconds")
