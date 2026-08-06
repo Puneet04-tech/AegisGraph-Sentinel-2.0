@@ -5,7 +5,6 @@ Device Trust Manager for Zero Trust Security
 from __future__ import annotations
 
 import hashlib
-import uuid
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 
@@ -49,7 +48,7 @@ class DeviceTrustManager:
                                 serial_number=device_info.get("serial_number"))
 
     def _generate_device_id(self, fingerprint: DeviceFingerprint) -> str:
-        components = [fingerprint.hash, fingerprint.user_id, str(uuid.uuid4())[:8]]
+        components = [fingerprint.hash, fingerprint.user_id]
         return hashlib.sha256("|".join(components).encode()).hexdigest()[:32]
 
     def get_device(self, device_id: str) -> Optional[DeviceTrust]:

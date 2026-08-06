@@ -254,11 +254,17 @@ class TestZeroTrustSecurity:
             score = result["trust_score"]["score"]
             assert 0.0 <= score <= 1.0
 
-    def test_device_fingerprint_uniqueness(self):
+    def test_device_id_deterministic_for_same_fingerprint(self):
         manager = DeviceTrustManager()
         device1 = manager.register_device("fp-user", {"device_type": "desktop"})
         device2 = manager.register_device("fp-user", {"device_type": "desktop"})
-        assert device1.device_id != device2.device_id
+        assert device1.device_id == device2.device_id
 
+    def test_block_persists_after_reregistration(self):
+        manager = DeviceTrustManager()
+        device = manager.register_device("fp-user", {"device_type": "desktop"})
+        manager.block_device(device.device_id, reason="stolen")
+        reregistered = manager.register_device("fp-user", {"device_type": "desktop"})
+        assert reregistered.status == DeviceStatus.BLOCKED
 
 # Run with: pytest tests/test_zero_trust.py -v
