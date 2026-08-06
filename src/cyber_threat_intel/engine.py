@@ -232,12 +232,22 @@ class CTIEngine:
         iocs = self.store.search_iocs(entity_value)
         
         component_scores = {
-            "ioc_match": len(iocs) / 10.0 if iocs else 0.0,
+            "ioc_match": min(1.0, len(iocs) / 10.0) if iocs else 0.0,
             "threat_level": 0.0,
         }
         
         if iocs:
-            max_level = max(iocs, key=lambda x: list(ThreatLevel).index(x.threat_level))
+            # Explicit severity ranking rather than enum declaration order, so
+            # the most severe matched level wins regardless of how the enum is
+            # declared.
+            severity_rank = {
+                ThreatLevel.CRITICAL: 4,
+                ThreatLevel.HIGH: 3,
+                ThreatLevel.MEDIUM: 2,
+                ThreatLevel.LOW: 1,
+                ThreatLevel.UNKNOWN: 0,
+            }
+            max_level = max(iocs, key=lambda x: severity_rank[x.threat_level])
             component_scores["threat_level"] = {
                 ThreatLevel.CRITICAL: 1.0,
                 ThreatLevel.HIGH: 0.75,
