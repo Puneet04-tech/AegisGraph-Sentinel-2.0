@@ -2871,7 +2871,7 @@ async def list_active_honeypots(
     """
     Get list of all active honeypot traps.
 
-    SECURITY: Requires Firebase authentication + admin role.
+    SECURITY: Requires admin role.
 
     Shows honeypots that are currently monitoring for withdrawal attempts
     and tracking fraud networks
