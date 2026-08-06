@@ -6,6 +6,8 @@
 ![Python](https://img.shields.io/badge/python-3.9+-green)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red)
 ![Innovations](https://img.shields.io/badge/innovations-6-gold)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## 📄 Table of Contents
 
@@ -33,6 +35,8 @@
 - [Contributor Environment Setup Guide](#-contributor-environment-setup-guide)
 - [License](#-license)
 - [Contact](#-contact)
+
+> 💡 **We welcome contributions!** Feel free to open issues or pull requests for bug fixes, feature enhancements, or documentation improvements.
 
 ## 🎯 Overview
 
@@ -73,11 +77,18 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 - **Blockchain**: Hyperledger Fabric for evidence integrity
 - **Audio Analysis**: Librosa, SciPy for acoustic feature extraction
 
+
 ## 📋 System Motto
 
 > **"Detecting the Flow, Protecting the Soul"**
 > 
-> We analyze not just *what* happens, but *how* and *why* it happens.
+> *We analyze not just what happens, but how and why it happens in real-time.*
+
+## 🌟 Why AegisGraph Sentinel 2.0?
+
+* **Lightning Fast:** Optimized to detect transaction fraud in under $200ms$ during authorization.
+* **Explainable AI:** Fully transparent risk scoring for complete regulatory compliance.
+* **Robust Defense:** Combines graph topology, temporal pattern tracking, and behavioral biometrics.
 
 ## 🏗️ Architecture
 
@@ -115,6 +126,8 @@ pip install -r requirements.txt
 # Optional: review default settings
 # config/config.yaml is included with the repository
 ```
+
+>  **Python Requirement:** Ensure you are running **Python 3.9 or higher** before installing dependencies.
 
 ### Environment Configuration
 
@@ -222,6 +235,8 @@ python -m src.training.train
 ```
 
 ## 📁 Project Structure
+
+> The project architecture is modularly organized to separate graph networks, features, training pipelines, and API routes.
 
 ```
 AegisGraph Sentinel 2.0/
@@ -378,6 +393,11 @@ print(f"Verified: {response.json()['verified']}")
 | GNN (Homogeneous) | 91.2% | 87.4% | 89.3% | 0.932 | 198ms |
 | **HTGNN (Ours)** | **96.8%** | **94.2%** | **95.5%** | **0.978** | **89ms** |
 | **HTGNN + Biometrics** | **97.9%** | **95.8%** | **96.8%** | **0.987** | **112ms** |
+
+### ⚡ Performance Highlights
+* **Inference Latency:** $<100\text{ms}$ average response time
+* **Detection Precision:** $96.8\%$ across primary validation datasets
+* **API Framework:** Fully asynchronous, built with FastAPI
 
 ## 🔐 Security & Privacy
 
@@ -576,7 +596,6 @@ Released under the [MIT License](LICENSE).
 For inquiries regarding deployment or collaboration, please contact the development team.
 
 ---
-
 
 **Domain**: Financial Crime Prevention & AI/ML  
 **Last Updated**: May 17, 2026
