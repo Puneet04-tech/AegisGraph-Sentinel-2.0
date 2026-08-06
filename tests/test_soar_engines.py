@@ -1,5 +1,6 @@
 import itertools
 import json
+import logging
 import uuid as uuid_module
 from datetime import datetime, timezone
 
@@ -381,6 +382,34 @@ def test_audit_log_action(store, audit_logger):
 
 def test_json_details_roundtrip(store, audit_logger):
     assert json.loads(json_details({"a": 1, "b": [2, 3]})) == {"a": 1, "b": [2, 3]}
+
+
+def test_audit_log_action_redacts_sensitive_details(store, audit_logger, caplog):
+    """The SOAR audit log line must not leak secrets from the action details."""
+    with caplog.at_level(logging.INFO, logger="aegis.soar.audit"):
+        record = audit_logger.log_action(
+            "TEST_ACTION",
+            "user_1",
+            "10.0.0.1",
+            "SUCCESS",
+            {
+                "api_key": "sk-super-secret-123",
+                "nested": {"password": "p@ssword-value"},
+                "user": "alice",
+            },
+        )
+
+    # The stored record keeps the raw details...
+    assert record.details == {
+        "api_key": "sk-super-secret-123",
+        "nested": {"password": "p@ssword-value"},
+        "user": "alice",
+    }
+    # ...but the log line redacts them.
+    assert "sk-super-secret-123" not in caplog.text
+    assert "p@ssword-value" not in caplog.text
+    assert "[REDACTED]" in caplog.text
+    assert "alice" in caplog.text
 
 
 def test_full_orchestration_flow(store, audit_logger, engines):
