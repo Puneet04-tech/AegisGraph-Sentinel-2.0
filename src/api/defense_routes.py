@@ -8,7 +8,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ..security import require_api_key, Role, require_role
+from .security import require_api_key, Role, require_role
 
 
 router = APIRouter(prefix="/api/v1/defense", tags=["Defense Grid"])

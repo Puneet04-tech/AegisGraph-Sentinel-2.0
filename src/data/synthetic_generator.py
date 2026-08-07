@@ -1,4 +1,4 @@
-﻿"""Synthetic heterogeneous temporal graph data generator.
+"""Synthetic heterogeneous temporal graph data generator.
 
 Produces a PyTorch Geometric HeteroData object matching the schema
 expected by src.training.data_loader.AegisGraphLoader:
