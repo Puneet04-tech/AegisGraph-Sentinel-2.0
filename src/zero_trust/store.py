@@ -4,6 +4,8 @@ In-memory store for Zero Trust data with O(1) lookup optimization
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import threading
 from collections import OrderedDict
@@ -109,8 +111,24 @@ class ZeroTrustStore:
         for policy in default_policies:
             self.policies[policy.policy_id] = policy
 
-    def get_trust_score(self, user_id: str, device_id: Optional[str] = None) -> Optional[TrustScore]:
-        key = self._trust_key(user_id, device_id)
+    def get_trust_score(
+        self,
+        user_id: str,
+        device_id: Optional[str] = None,
+        *,
+        ip_address: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        session_attributes: Optional[Dict[str, Any]] = None,
+    ) -> Optional[TrustScore]:
+        key = self._trust_key(
+            user_id,
+            device_id,
+            ip_address=ip_address,
+            location=location,
+            session_id=session_id,
+            session_attributes=session_attributes,
+        )
         entry = self.trust_scores.get(key)
         if entry and isinstance(entry, CacheEntry):
             if not entry.is_expired():
@@ -121,13 +139,57 @@ class ZeroTrustStore:
         self.stats["cache_misses"] += 1
         return None
 
-    def set_trust_score(self, user_id: str, device_id: Optional[str], score: TrustScore, ttl: float = None):
-        key = self._trust_key(user_id, device_id)
+    def set_trust_score(
+        self,
+        user_id: str,
+        device_id: Optional[str],
+        score: TrustScore,
+        ttl: float = None,
+        *,
+        ip_address: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        session_attributes: Optional[Dict[str, Any]] = None,
+    ):
+        key = self._trust_key(
+            user_id,
+            device_id,
+            ip_address=ip_address,
+            location=location,
+            session_id=session_id,
+            session_attributes=session_attributes,
+        )
         entry_ttl = ttl if ttl is not None else self.default_ttl
         self.trust_scores[key] = CacheEntry(value=score, ttl=entry_ttl)
 
-    def _trust_key(self, user_id: str, device_id: Optional[str]) -> str:
-        return f"trust:{user_id}:{device_id}" if device_id else f"trust:{user_id}"
+    def _trust_key(
+        self,
+        user_id: str,
+        device_id: Optional[str] = None,
+        *,
+        ip_address: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        session_attributes: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Build a cache key that includes risk-relevant request context.
+
+        Trust scores depend on IP reputation, location risk, and session flags.
+        Caching only on user/device would reuse a low-risk score after those
+        signals change.
+        """
+        context_payload = {
+            "user_id": user_id,
+            "device_id": device_id or "",
+            "ip_address": ip_address or "",
+            "location": location or {},
+            "session_id": session_id or "",
+            "session_attributes": session_attributes or {},
+        }
+        digest = hashlib.sha256(
+            json.dumps(context_payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:32]
+        return f"trust:{digest}"
 
     def register_device(self, device: DeviceTrust) -> DeviceTrust:
         with self.lock:
