@@ -777,6 +777,7 @@ class AuthService:
         provider: Optional[AuthProvider] = None,
         device: str = "Unknown device",
         ip_address: str = "unknown",
+        session_id: Optional[str] = None,
     ) -> AuthResult:
         """Create successful authentication result.
 
@@ -784,7 +785,8 @@ class AuthService:
         so ``GET /sessions`` reports real sign-ins rather than placeholders and
         ``DELETE /sessions/{id}`` has something to revoke.
         """
-        session_id = secrets.token_hex(16)
+        if not session_id:
+            session_id = secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
         try:
