@@ -134,17 +134,29 @@ class ObservabilityStore:
         self,
         component: str = None,
         metric_name: str = None,
-        limit: int = 1000,
+        limit: Optional[int] = 1000,
+        since: Optional[datetime] = None,
     ) -> List[PerformanceMetric]:
-        """Get metrics with filters."""
+        """Get metrics with filters.
+
+        ``since`` bounds the query to records with ``timestamp > since``
+        *before* any truncation, so windowed aggregations stay volume
+        independent instead of operating on a truncated newest-1000 set.
+        Pass ``limit=None`` to disable truncation entirely.
+        """
         metrics = list(self._metrics)
-        
+
         if component:
             metrics = [m for m in metrics if m.component == component]
         if metric_name:
             metrics = [m for m in metrics if m.metric_name == metric_name]
-        
-        return sorted(metrics, key=lambda m: m.timestamp, reverse=True)[:limit]
+        if since:
+            metrics = [m for m in metrics if m.timestamp > since]
+
+        metrics.sort(key=lambda m: m.timestamp, reverse=True)
+        if limit is not None:
+            metrics = metrics[:limit]
+        return metrics
     
     # Alert Rule Methods
     def store_alert_rule(self, rule: AlertRule) -> AlertRule:
