@@ -6,6 +6,8 @@
 ![Python](https://img.shields.io/badge/python-3.9+-green)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red)
 ![Innovations](https://img.shields.io/badge/innovations-6-gold)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## 📄 Table of Contents
 
@@ -33,6 +35,8 @@
 - [Contributor Environment Setup Guide](#-contributor-environment-setup-guide)
 - [License](#-license)
 - [Contact](#-contact)
+
+> 💡 **We welcome contributions!** Feel free to open issues or pull requests for bug fixes, feature enhancements, or documentation improvements.
 
 ## 🎯 Overview
 
@@ -62,7 +66,7 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 | 5 | **Voice Stress Analysis** | Phone coercion detection | 92% detection rate |
 | 6 | **Blockchain Evidence** | Immutable forensics | <100ms sealing, court-admissible |
 
-**📖 Detailed Innovation Guide**: See [INNOVATIONS.md](docs/INNOVATIONS.md) for comprehensive documentation
+**📖 Detailed Innovation Guide**: See [`INNOVATIONS.md`](./docs/INNOVATIONS.md) for comprehensive documentation.
 
 ## 🧠 Core Technologies
 
@@ -73,21 +77,39 @@ AegisGraph Sentinel 2.0 is a paradigm-shifting fraud detection system that uses 
 - **Blockchain**: Hyperledger Fabric for evidence integrity
 - **Audio Analysis**: Librosa, SciPy for acoustic feature extraction
 
+
 ## 📋 System Motto
 
 > **"Detecting the Flow, Protecting the Soul"**
 > 
-> We analyze not just *what* happens, but *how* and *why* it happens.
+> *We analyze not just what happens, but how and why it happens in real-time.*
+
+## 🌟 Why AegisGraph Sentinel 2.0?
+
+* **Lightning Fast:** Optimized to detect transaction fraud in under $200ms$ during authorization.
+* **Explainable AI:** Fully transparent risk scoring for complete regulatory compliance.
+* **Robust Defense:** Combines graph topology, temporal pattern tracking, and behavioral biometrics.
 
 ## 🏗️ Architecture
 
+
+```mermaid
+flowchart TD
+    A[Transaction Event] --> B[Feature Extractor]
+
+    A --> C[Behavioral Analyzer]
+    B --> D[Graph Constructor]
+    D --> E[HTGNN Engine]
+
+    E --> F[Risk Scorer]
+    C --> F
+    F --> G[Decision Engine]
+
+    style E fill:#4a154b,color:#fff,stroke:#333,stroke-width:2px
+    style G fill:#0052cc,color:#fff,stroke:#333,stroke-width:2px
+
 ```
-Transaction Event
-       ↓
-Feature Extractor → Graph Constructor → HTGNN Engine → Risk Scorer → Decision Engine
-       ↓                                                     ↑
-Behavioral Analyzer ──────────────────────────────────────┘
-```
+
 
 ## 🚀 Quick Start
 
@@ -104,6 +126,8 @@ pip install -r requirements.txt
 # Optional: review default settings
 # config/config.yaml is included with the repository
 ```
+
+>  **Python Requirement:** Ensure you are running **Python 3.9 or higher** before installing dependencies.
 
 ### Environment Configuration
 
@@ -193,7 +217,7 @@ All protected endpoints in AegisGraph Sentinel require an API Key. You can easil
 3. Click **Authorize** and then **Close**. 
 4. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
 
-*(Insert Screenshot here)*
+> 💡 **Tip:** Once authorized via Swagger UI, all requests executed through the interactive interface will automatically attach your credentials to the `X-API-Key` header.
 
 ### Training the Model
 
@@ -211,6 +235,8 @@ python -m src.training.train
 ```
 
 ## 📁 Project Structure
+
+> The project architecture is modularly organized to separate graph networks, features, training pipelines, and API routes.
 
 ```
 AegisGraph Sentinel 2.0/
@@ -257,6 +283,19 @@ Deception-based fund containment that prevents fraudster adaptation while buying
 Explainable AI engine that generates human-readable explanations for regulatory compliance.
 
 ## 💻 API Usage
+
+### Quick Endpoint Summary
+
+| Category | Endpoint | Method | Description | Auth Header |
+|---|---|---|---|---|
+| **Core** | `/api/v1/fraud/check` | `POST` | Real-time HTGNN risk scoring | `X-API-Key` |
+| **Innovations** | `/api/v1/voice/analyze` | `POST` | Voice stress analysis | `X-API-Key` |
+| **Innovations** | `/api/v1/accounts/score-opening` | `POST` | Predictive mule account scoring | `X-API-Key` |
+| **Honeypot** | `/api/v1/honeypot/active` | `GET` | List active virtual honeypots | `X-API-Key` |
+| **Honeypot** | `/api/v1/honeypot/stats` | `GET` | Retrieve arrest & recovery stats | `X-API-Key` |
+| **Blockchain** | `/api/v1/blockchain/seal` | `POST` | Seal evidence to Hyperledger | `X-API-Key` |
+| **Blockchain** | `/api/v1/blockchain/verify/{id}`| `GET` | Verify sealed evidence integrity | `X-API-Key` |
+
 
 ```python
 import requests
@@ -355,6 +394,11 @@ print(f"Verified: {response.json()['verified']}")
 | **HTGNN (Ours)** | **96.8%** | **94.2%** | **95.5%** | **0.978** | **89ms** |
 | **HTGNN + Biometrics** | **97.9%** | **95.8%** | **96.8%** | **0.987** | **112ms** |
 
+### ⚡ Performance Highlights
+* **Inference Latency:** $<100\text{ms}$ average response time
+* **Detection Precision:** $96.8\%$ across primary validation datasets
+* **API Framework:** Fully asynchronous, built with FastAPI
+
 ## 🔐 Security & Privacy
 
 - AES-256 encryption at rest, TLS 1.3 in transit
@@ -396,7 +440,7 @@ Detailed project documentation is available in the `docs/` directory.
 | [`CONTRIBUTOR_HANDBOOK.md`](docs/CONTRIBUTOR_HANDBOOK.md) | Contributor workflow, repository structure, and contribution guidelines |
 | [`TRAINING_WORKFLOW.md`](docs/TRAINING_WORKFLOW.md) | End-to-end machine learning and HTGNN training pipeline |
 | [`TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing procedures, coverage reporting, and debugging guidance |
-| `graph-investigation-playbooks.md` | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
+| [`graph-investigation-playbooks.md`](docs/graph-investigation-playbooks.md) | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
 
 These documents are intended to help new contributors, GSSOC participants, and future maintainers quickly understand and contribute to the project.
 ## 🧪 Testing
@@ -552,7 +596,6 @@ Released under the [MIT License](LICENSE).
 For inquiries regarding deployment or collaboration, please contact the development team.
 
 ---
-
 
 **Domain**: Financial Crime Prevention & AI/ML  
 **Last Updated**: May 17, 2026

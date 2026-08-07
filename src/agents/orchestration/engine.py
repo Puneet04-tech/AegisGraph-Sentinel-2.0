@@ -80,7 +80,7 @@ class AgentRegistry:
         self.agents: Dict[AgentType, BaseAgent] = {}
         self.agent_factories: Dict[AgentType, Callable] = {}
 
-    def register(self, agent_type: AgentType, agent: BaseAgent):
+    def register(self, agent_type: AgentType, agent: BaseAgent) -> None:
         """Register an agent instance"""
         self.agents[agent_type] = agent
 

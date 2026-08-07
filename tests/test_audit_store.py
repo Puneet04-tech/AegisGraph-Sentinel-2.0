@@ -67,3 +67,28 @@ def test_chain_remains_verifiable():
     for i in range(5):
         store.append(make_event(f"e{i}", "login"))
     assert verify_chain(store.get_events()) is True
+
+
+def test_chain_verifiable_after_buffer_eviction():
+    store = AuditStore(max_size=5)
+    for i in range(10):
+        store.append(make_event(f"e{i}", "login"))
+    assert store.get_initial_hash_anchor() is not None
+    assert store.verify() is True
+    assert verify_chain(store.get_events(), initial_hash_anchor=store.get_initial_hash_anchor()) is True
+
+
+def test_archive_callback_on_eviction():
+    archived = []
+
+    def on_archive(record):
+        archived.append(record)
+
+    store = AuditStore(max_size=2, archive_callback=on_archive)
+    store.append(make_event("e1", "login"))
+    store.append(make_event("e2", "login"))
+    store.append(make_event("e3", "login"))
+
+    assert len(archived) == 1
+    assert archived[0]["event"].event_id == "e1"
+

@@ -556,25 +556,26 @@ def compute_risk_score(
     centrality = None
     graph_view = None
     
-    # Check mule accounts even without graph loaded (for demo mode)
-    if graph_loaded:
-        # Check if accounts are in known fraud chains (mule accounts)
-        if source_account in mule_accounts:
-            graph_risk += 0.6
-            _inference_logger.warning(
-                f"Source account {source_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": source_account, "role": "source"},
-            )
-        if target_account in mule_accounts:
-            graph_risk += 0.4
-            _inference_logger.warning(
-                f"Target account {target_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": target_account, "role": "target"},
-            )
-        if source_account in mule_accounts and target_account in mule_accounts:
-            graph_risk += 0.3
+    # Check mule accounts even without graph loaded (for demo mode).
+    # The penalty must not be gated on graph_loaded: mule_accounts is a
+    # separate source of truth from the graph, so a known mule account is
+    # penalized even when the graph is unavailable.
+    if source_account in mule_accounts:
+        graph_risk += 0.6
+        _inference_logger.warning(
+            f"Source account {source_account} is a known mule account",
+            event_type="mule_account_detected",
+            metadata={"account": source_account, "role": "source"},
+        )
+    if target_account in mule_accounts:
+        graph_risk += 0.4
+        _inference_logger.warning(
+            f"Target account {target_account} is a known mule account",
+            event_type="mule_account_detected",
+            metadata={"account": target_account, "role": "target"},
+        )
+    if source_account in mule_accounts and target_account in mule_accounts:
+        graph_risk += 0.3
 
     if graph_loaded and transaction_graph:
         # Mule-account penalties are applied in the block above.
@@ -750,6 +751,14 @@ def compute_risk_score(
                 if fail_fast:
                     raise
     
+    # The lateral-movement increment (MITRE ATT&CK TA0008) is applied inside
+    # the block above, which runs *after* the graph risk was capped and
+    # snapshotted into `breakdown['graph']`. Re-clamp and refresh the snapshot
+    # here so the breakdown, overall score and decision all reflect the
+    # post-increment value.
+    graph_risk = min(graph_risk, 1.0)
+    breakdown['graph'] = graph_risk
+    
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     
@@ -868,3 +877,11 @@ def compute_risk_score(
         'analysis_errors': analysis_errors,
         'component_status': component_status,
     }
+
+# --- GENERATED: normalize_score ---
+def normalize_score(score, min_val=0.0, max_val=1.0):
+    """Clamp score to [min_val, max_val] range and return it."""
+    if max_val == min_val:
+        return min_val
+    return max(min(score, max_val), min_val)
+# --- END GENERATED ---

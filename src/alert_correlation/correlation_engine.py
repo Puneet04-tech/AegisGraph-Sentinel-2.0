@@ -91,13 +91,10 @@ class AlertCorrelationEngine:
             if other.alert_id == alert.alert_id or other.deduplicated:
                 continue
             
-            # Check title similarity
+            # Check title similarity and indicator overlap.
+            # Guard against appending the same alert twice when both checks match.
             similarity = self._calculate_similarity(alert.title, other.title)
-            if similarity >= threshold:
-                duplicates.append(other)
-            
-            # Check indicator overlap
-            if set(alert.indicators) & set(other.indicators):
+            if similarity >= threshold or set(alert.indicators) & set(other.indicators):
                 duplicates.append(other)
         
         return duplicates
