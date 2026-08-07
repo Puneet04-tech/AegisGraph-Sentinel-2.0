@@ -217,6 +217,8 @@ class ProductionRiskScorer:
                 transaction['source_account'],
                 subgraph,
                 top_k=5,
+                attention_weights=attention_weights,
+                attention_edge_index=attention_edge_index,
             )
             top_relationships = self._extract_top_relationships(
                 subgraph,
@@ -383,44 +385,148 @@ class ProductionRiskScorer:
         node_id: str,
         subgraph: Dict,
         top_k: int = 5,
+        attention_weights=None,
+        attention_edge_index=None,
     ) -> List[Dict]:
         """
         Identify most influential neighbors via attention analysis.
-        
-        Extracts attention weights from the last HTGNN layer if available.
+
+        Ranks by the model's own attention weights when the HTGNN exposes
+        them, and by a structural fallback otherwise. The relationship label
+        is the real edge type rather than a constant.
+
+        This previously attached ``'influence_score': 0.5`` to every neighbour
+        and returned them in edge-index order, so any sort by influence was a
+        no-op and the set an analyst saw was determined by internal tensor
+        ordering rather than by anything about the graph.
         """
-        influential = []
-        
-        # This would require extracting attention weights from the model
-        # For now, return placeholder based on subgraph structure
-        idx_to_node_id = subgraph['idx_to_node_id']
-        node_id_to_idx = subgraph['node_id_to_idx']
-        
+        node_id_to_idx = subgraph.get('node_id_to_idx') or {}
+        idx_to_node_id = subgraph.get('idx_to_node_id') or {}
+
         if node_id not in node_id_to_idx:
-            return influential
-        
+            return []
+
         source_idx = node_id_to_idx[node_id]
-        edge_index = subgraph['edge_index']
-        
-        # Find edges connected to source
+        edge_index = subgraph.get('edge_index')
+        if edge_index is None or edge_index.numel() == 0:
+            return []
+
+        attention_by_pair = self._attention_by_pair(
+            attention_weights, attention_edge_index
+        )
+
         connected_edges = (edge_index[0] == source_idx) | (edge_index[1] == source_idx)
         connected_indices = torch.nonzero(connected_edges).squeeze(-1)
-        
-        for edge_idx in connected_indices[:top_k]:
-            src_idx = edge_index[0, edge_idx].item()
-            tgt_idx = edge_index[1, edge_idx].item()
-            
-            # The neighbor is the node we didn't start from
+
+        # Best score per neighbour: a pair joined by several edges is one
+        # neighbour, ranked by its strongest connection.
+        best: Dict[int, Dict] = {}
+
+        for edge_idx in connected_indices.tolist():
+            src_idx = int(edge_index[0, edge_idx].item())
+            tgt_idx = int(edge_index[1, edge_idx].item())
+
+            # A self-loop has no neighbour to report.
+            if src_idx == tgt_idx:
+                continue
+
             neighbor_idx = tgt_idx if src_idx == source_idx else src_idx
-            neighbor_id = idx_to_node_id.get(neighbor_idx, 'UNKNOWN')
-            
-            influential.append({
-                'node_id': neighbor_id,
-                'influence_score': 0.5,  # Placeholder
-                'relationship': 'CONNECTED',
-            })
-        
-        return influential[:top_k]
+            score = attention_by_pair.get((src_idx, tgt_idx))
+            if score is None:
+                score = attention_by_pair.get((tgt_idx, src_idx))
+            if score is None:
+                score = self._structural_influence(subgraph, edge_idx, neighbor_idx)
+
+            existing = best.get(neighbor_idx)
+            if existing is None or score > existing['influence_score']:
+                best[neighbor_idx] = {
+                    'node_id': idx_to_node_id.get(neighbor_idx, 'UNKNOWN'),
+                    'influence_score': round(float(score), 4),
+                    'relationship': self._edge_type_label(subgraph, edge_idx),
+                }
+
+        # Descending by influence, with node_id breaking ties so repeated
+        # scoring of an unchanged subgraph returns a stable ordering.
+        ranked = sorted(
+            best.values(),
+            key=lambda item: (-item['influence_score'], item['node_id']),
+        )
+        return ranked[:top_k]
+
+    @staticmethod
+    def _attention_by_pair(attention_weights, attention_edge_index) -> Dict:
+        """Map each attended (src, dst) pair to its normalised attention score."""
+        if attention_weights is None or attention_edge_index is None:
+            return {}
+        if attention_edge_index.numel() == 0 or attention_weights.numel() == 0:
+            return {}
+
+        scores = (
+            attention_weights.mean(dim=-1)
+            if attention_weights.dim() > 1
+            else attention_weights
+        )
+
+        # Normalised so influence is comparable across transactions, whose
+        # raw attention magnitudes depend on subgraph size.
+        peak = float(scores.max().item()) if scores.numel() else 0.0
+        if peak <= 0:
+            return {}
+
+        pair_scores: Dict = {}
+        edge_count = min(scores.numel(), attention_edge_index.shape[1])
+        for position in range(edge_count):
+            src = int(attention_edge_index[0, position].item())
+            dst = int(attention_edge_index[1, position].item())
+            value = float(scores[position].item()) / peak
+            key = (src, dst)
+            # Several attention heads or layers may touch one pair; keep the
+            # strongest.
+            if value > pair_scores.get(key, 0.0):
+                pair_scores[key] = value
+        return pair_scores
+
+    @staticmethod
+    def _structural_influence(subgraph: Dict, edge_idx: int, neighbor_idx: int) -> float:
+        """Fallback influence when the model exposes no attention weights.
+
+        Combines the edge's own weight with the neighbour's risk, both of
+        which are defensible proxies for how much a connection matters.
+        """
+        score = 0.5
+        edge_attr = subgraph.get('edge_attr')
+        if edge_attr is not None and edge_attr.numel() > 0 and edge_idx < edge_attr.shape[0]:
+            row = edge_attr[edge_idx]
+            magnitude = float(row.abs().mean().item()) if row.numel() else 0.0
+            # Squashed into (0, 1) so an unbounded feature cannot dominate.
+            score = magnitude / (1.0 + magnitude)
+
+        node_risk = subgraph.get('node_risk')
+        if node_risk is not None and neighbor_idx < len(node_risk):
+            try:
+                risk = float(node_risk[neighbor_idx])
+            except (TypeError, ValueError):
+                risk = 0.0
+            score = max(score, min(1.0, max(0.0, risk)))
+
+        return min(1.0, max(0.0, score))
+
+    @staticmethod
+    def _edge_type_label(subgraph: Dict, edge_idx: int) -> str:
+        """Real edge type for an edge, replacing the constant 'CONNECTED'."""
+        edge_type = subgraph.get('edge_type')
+        if edge_type is None or edge_idx >= edge_type.shape[0]:
+            return 'CONNECTED'
+
+        try:
+            type_id = int(edge_type[edge_idx].item())
+        except (TypeError, ValueError, RuntimeError):
+            return 'CONNECTED'
+
+        names = subgraph.get('edge_type_names')
+        if names and 0 <= type_id < len(names):
+            return str(names[type_id])
+        return f'EDGE_TYPE_{type_id}'
 
     def _extract_top_relationships(
         self,
