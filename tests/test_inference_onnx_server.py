@@ -1,3 +1,5 @@
+import pytest
+pytest.importorskip("onnxruntime")
 import os
 import sys
 import pytest

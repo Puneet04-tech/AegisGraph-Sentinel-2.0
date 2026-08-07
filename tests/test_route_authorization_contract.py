@@ -172,6 +172,7 @@ PROTECTED_ROUTES = [
     ("POST", "/api/v1/cases/generate-embedding"),
     ("POST", "/api/v1/cases/similar-cases"),
     ("POST", "/api/v1/cases/similar"),
+    ("POST", "/api/v1/cases/similar"),
     ("POST", "/api/v1/cases/{case_id}/claim"),
     ("POST", "/api/v1/cases/{case_id}/comments"),
     ("POST", "/api/v1/cases/{case_id}/evidence"),
