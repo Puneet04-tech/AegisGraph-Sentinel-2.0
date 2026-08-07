@@ -942,10 +942,11 @@ class TestSOARService:
             ContainmentType.API_BLOCK, "bad_ip_1", "sec_operator", duration_seconds=1800
         )
         assert action.containment_id.startswith("CNT-")
-        assert action.status == ActionStatus.COMPLETED
+        assert action.status == ActionStatus.ACTIVE
         assert action.duration_seconds == 1800
         released = service.release_containment(action.containment_id, "sec_operator")
         assert released is not None
+        assert released.status == ActionStatus.RELEASED
         assert released.released_at is not None
         assert service.release_containment("CNT-NOPE", "x") is None
 
@@ -1001,6 +1002,20 @@ class TestSOARService:
         assert len(service.list_containment_actions()) == 1
         assert len(service.list_correlations()) == 1
         assert len(service.list_audit_records()) >= 4
+
+    def test_dashboard_active_containments_excludes_released(self):
+        service = SOARService()
+        active = service.trigger_containment(
+            ContainmentType.API_BLOCK, "bad_ip_active", "sec_operator"
+        )
+        released = service.trigger_containment(
+            ContainmentType.NETWORK_ISOLATE, "host_released", "sec_operator"
+        )
+        service.release_containment(released.containment_id, "sec_operator")
+        stats = service.get_dashboard_stats()
+        assert stats["active_containments"] == 1
+        assert active.status == ActionStatus.ACTIVE
+        assert service.store.get_containment_action(released.containment_id).status == ActionStatus.RELEASED
 
     def test_dashboard_stats(self):
         service = SOARService()
