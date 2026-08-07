@@ -22,8 +22,8 @@ from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
-from .timestamps import hour_in_zone
-from datetime import datetime, timezone, tzinfo
+from .device_risk import DeviceRiskCalculator, get_device_calculator
+from datetime import datetime, timezone
 import json
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ class ProductionRiskScorer:
         device: str = 'cpu',
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
-        temporal_reference_zone: Optional[tzinfo] = None,
+        device_calculator: Optional[DeviceRiskCalculator] = None,
     ):
         """
         Args:
@@ -126,8 +126,7 @@ class ProductionRiskScorer:
             device: 'cuda' or 'cpu'
             model_version: Version string for logging
             enable_heuristic_fallback: Fall back if model fails
-            temporal_reference_zone: Timezone the fraud-window hours are
-                evaluated in; defaults to UTC so results are host-independent
+            device_calculator: Device scorer; defaults to the shared one
         """
         self.model = model
         self.model.eval()
@@ -138,9 +137,9 @@ class ProductionRiskScorer:
         
         self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
 
-        # Explicit rather than implicit: the hour a scoring rule sees must not
-        # depend on the host's TZ environment variable.
-        self.temporal_reference_zone = temporal_reference_zone or timezone.utc
+        # Injectable so tests can supply an isolated registry; defaults to the
+        # process-wide one so device history accumulates across calls.
+        self.device_calculator = device_calculator or get_device_calculator()
 
         logger.info(
             f"Initialized ProductionRiskScorer "
@@ -701,12 +700,33 @@ class ProductionRiskScorer:
     def _compute_device_risk(self, transaction: Dict) -> float:
         """
         Compute risk based on device information.
+
+        Scores the three checks the previous placeholder only described in a
+        comment: device registration age, links to confirmed fraud, and
+        geo-velocity between consecutive sightings. Scoring precedes recording
+        so a sighting is never compared against itself.
+
+        This previously returned the constant 0.2, so a first-ever device in a
+        different country scored the same as the account's daily phone.
         """
-        # Placeholder: in production would check:
-        # - Device registration age
-        # - Device linked to other fraud cases
-        # - Geo-velocity (impossible location jumps)
-        return 0.2
+        device_id = (
+            transaction.get('source_device_id')
+            or transaction.get('device_id')
+        )
+        if not device_id:
+            return self.device_calculator.unknown_device_risk
+
+        return self.device_calculator.score_and_record(
+            device_id=str(device_id),
+            account_id=(
+                transaction.get('source_account')
+                or transaction.get('from_account')
+                or transaction.get('account_id')
+            ),
+            timestamp=transaction.get('timestamp'),
+            latitude=transaction.get('latitude'),
+            longitude=transaction.get('longitude'),
+        )
     
     def _generate_explanation(
         self,
