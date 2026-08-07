@@ -40,7 +40,9 @@ class TestOAuthScopeAllowlist:
             scope="openid profile",
         )
         assert response.success is True
-        assert response.metadata["scope"] == "openid profile"
+        assert response.access_token is not None
+        stored = oauth._tokens[response.access_token]
+        assert stored["scope"] == "openid profile"
 
     def test_authorization_code_rejects_escalated_scope_at_authorize(self):
         oauth = _provider_with_client()
