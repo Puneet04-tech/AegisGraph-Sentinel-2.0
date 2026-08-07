@@ -22,8 +22,8 @@ from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
-from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
-from datetime import datetime, timezone
+from .timestamps import hour_in_zone
+from datetime import datetime, timezone, tzinfo
 import json
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,10 @@ class ProductionRiskScorer:
     - 0.6 ≤ score < 0.9: REVIEW (needs analyst)
     - score < 0.6: ALLOW (normal transaction)
 
+    UNPARSEABLE_TEMPORAL_RISK: Risk returned when a timestamp cannot be
+    interpreted at all -- the same neutral value the previous implementation
+    used, kept as a named constant so it is not a bare literal in two branches.
+
     Lifecycle:
     Use as a context manager or call `.close()` explicitly when done.
     Failing to do so will emit a ResourceWarning and may leave threads
@@ -103,6 +107,9 @@ class ProductionRiskScorer:
             result = scorer.score_transaction(request)
     """
     
+    #: Returned when a timestamp cannot be interpreted at all.
+    UNPARSEABLE_TEMPORAL_RISK = 0.2
+
     def __init__(
         self,
         model: nn.Module,
@@ -110,7 +117,7 @@ class ProductionRiskScorer:
         device: str = 'cpu',
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
-        velocity_calculator: Optional[VelocityRiskCalculator] = None,
+        temporal_reference_zone: Optional[tzinfo] = None,
     ):
         """
         Args:
@@ -119,7 +126,8 @@ class ProductionRiskScorer:
             device: 'cuda' or 'cpu'
             model_version: Version string for logging
             enable_heuristic_fallback: Fall back if model fails
-            velocity_calculator: Velocity scorer; defaults to the shared one
+            temporal_reference_zone: Timezone the fraud-window hours are
+                evaluated in; defaults to UTC so results are host-independent
         """
         self.model = model
         self.model.eval()
@@ -130,9 +138,9 @@ class ProductionRiskScorer:
         
         self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
 
-        # Injectable so tests and callers can supply an isolated calculator;
-        # defaults to the process-wide one so history accumulates across calls.
-        self.velocity_calculator = velocity_calculator or get_velocity_calculator()
+        # Explicit rather than implicit: the hour a scoring rule sees must not
+        # depend on the host's TZ environment variable.
+        self.temporal_reference_zone = temporal_reference_zone or timezone.utc
 
         logger.info(
             f"Initialized ProductionRiskScorer "
@@ -666,22 +674,20 @@ class ProductionRiskScorer:
     def _compute_temporal_risk(self, transaction: Dict) -> float:
         """
         Compute temporal risk (unusual time of day, new account, etc.).
-        """
-        timestamp = transaction.get('timestamp')
-        if isinstance(timestamp, str):
-            try:
-                txn_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            except ValueError:
-                return 0.2
-        elif isinstance(timestamp, (int, float)):
-            txn_time = datetime.fromtimestamp(timestamp)
-        elif hasattr(timestamp, 'isoformat'):
-            txn_time = datetime.fromisoformat(timestamp.isoformat())
-        else:
-            return 0.2
 
-        hour = txn_time.hour
-        
+        The hour is evaluated in an explicit reference timezone (UTC by
+        default), not the host's. Numeric timestamps previously went through
+        `datetime.fromtimestamp(value)` with no tz argument, which returns
+        naive local time -- so the same transaction scored 0.6 or 0.2 depending
+        purely on which region a worker ran in, and moving a deployment
+        silently re-classified its entire traffic profile.
+        """
+        hour = hour_in_zone(
+            transaction.get('timestamp'), self.temporal_reference_zone
+        )
+        if hour is None:
+            return self.UNPARSEABLE_TEMPORAL_RISK
+
         # High risk: 2am-4am (common fraud window)
         if 2 <= hour <= 4:
             return 0.6
@@ -691,7 +697,7 @@ class ProductionRiskScorer:
         # Low risk: business hours
         else:
             return 0.2
-    
+
     def _compute_device_risk(self, transaction: Dict) -> float:
         """
         Compute risk based on device information.
