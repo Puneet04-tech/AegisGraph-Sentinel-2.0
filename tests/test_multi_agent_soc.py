@@ -852,7 +852,12 @@ class TestSOCIntegration:
         report = reporting_agent.generate_summary_report(now, now)
         
         # Verify workflow
-        assert inv_result.risk_score > 0
+        # entity_1 has no recorded graph neighbourhood in this fixture, so a
+        # zero risk score is the correct result. This previously asserted
+        # `> 0`, which only held because the score was accumulated from
+        # random.uniform() increments regardless of evidence.
+        assert 0.0 <= inv_result.risk_score <= 1.0
+        assert inv_result.investigation_id is not None
         assert forensics.analysis_id is not None
         assert ring.ring_id is not None
         assert report.report_id is not None

@@ -5,7 +5,6 @@ Autonomous fraud investigation agent that analyzes entities, triages alerts,
 and manages investigation workflows.
 """
 
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -19,6 +18,8 @@ from .models import (
     InvestigationResult,
     InvestigationStatus,
 )
+from src.graph_analytics.service import GraphService, get_graph_service
+
 from .store import SOCStore, get_soc_store
 
 logger = logging.getLogger(__name__)
@@ -35,13 +36,28 @@ class InvestigationAgent:
         - Finding synthesis
     """
     
-    def __init__(self, store: Optional[SOCStore] = None):
+    #: Neighbourhood size above which an entity's connectivity is itself a
+    #: signal, rather than ordinary account activity.
+    FANOUT_THRESHOLD = 6
+
+    #: Mean neighbour risk above which the surrounding network is considered
+    #: to be carrying risk into this entity.
+    NEIGHBOUR_RISK_THRESHOLD = 0.5
+
+    def __init__(
+        self,
+        store: Optional[SOCStore] = None,
+        graph: Optional[GraphService] = None,
+    ):
         """Initialize the investigation agent.
         
         Args:
             store: Optional SOC store
+            graph: Optional graph analytics service supplying the entity's
+                neighbourhood; defaults to the shared instance
         """
         self._store = store or get_soc_store()
+        self._graph = graph or get_graph_service()
         self._agent_type = AgentType.INVESTIGATION
         self._agent_id = f"investigation_agent"
     
@@ -59,50 +75,74 @@ class InvestigationAgent:
         
         context = context or {}
         
-        # Simulate entity analysis
+        # Findings are derived from the entity's actual graph neighbourhood.
+        # Each check previously fired on a random.random() comparison, so an
+        # entity with a clean history had roughly an even chance of being
+        # reported for an "unusual transaction pattern" at 75% confidence.
         risk_factors = []
         findings = []
         evidence = []
-        
-        # Check for suspicious patterns
-        if random.random() > 0.5:
+
+        neighbours = self._neighbours(entity_id)
+        neighbour_risks = [
+            float(getattr(node, "risk_score", 0.0) or 0.0) for node in neighbours
+        ]
+        mean_neighbour_risk = (
+            sum(neighbour_risks) / len(neighbour_risks) if neighbour_risks else 0.0
+        )
+
+        if len(neighbours) >= self.FANOUT_THRESHOLD:
             risk_factors.append("unusual_transaction_pattern")
             findings.append({
                 "type": "pattern_detection",
-                "description": "Unusual transaction pattern detected",
+                "description": (
+                    f"Entity is connected to {len(neighbours)} counterparties, "
+                    f"above the threshold of {self.FANOUT_THRESHOLD}"
+                ),
                 "severity": "HIGH",
-                "confidence": 0.75,
+                # Confidence scales with how far past the threshold it sits,
+                # rather than being a literal attached to a coin flip.
+                "confidence": round(
+                    min(0.95, 0.5 + 0.05 * (len(neighbours) - self.FANOUT_THRESHOLD)), 2
+                ),
             })
-        
-        if random.random() > 0.6:
-            risk_factors.append("device_anomaly")
+
+        if mean_neighbour_risk >= self.NEIGHBOUR_RISK_THRESHOLD:
+            risk_factors.append("high_risk_network")
             findings.append({
-                "type": "device_mismatch",
-                "description": "Device fingerprint mismatch",
+                "type": "network_risk",
+                "description": (
+                    f"Mean risk across {len(neighbours)} connected entities is "
+                    f"{mean_neighbour_risk:.2f}"
+                ),
+                "severity": "HIGH",
+                "confidence": round(min(0.95, mean_neighbour_risk), 2),
+            })
+
+        high_risk_neighbours = [risk for risk in neighbour_risks if risk >= 0.8]
+        if high_risk_neighbours:
+            risk_factors.append("linked_to_known_risk")
+            findings.append({
+                "type": "known_risk_link",
+                "description": (
+                    f"{len(high_risk_neighbours)} connected entities carry a risk "
+                    "score of 0.8 or above"
+                ),
                 "severity": "MEDIUM",
-                "confidence": 0.65,
+                "confidence": round(min(0.95, 0.6 + 0.1 * len(high_risk_neighbours)), 2),
             })
-        
-        if random.random() > 0.4:
-            risk_factors.append("velocity_breach")
-            findings.append({
-                "type": "velocity_exceeded",
-                "description": "Transaction velocity exceeded threshold",
-                "severity": "HIGH",
-                "confidence": 0.85,
-            })
-        
-        # Generate evidence
+
         evidence.append({
-            "type": "transaction_history",
-            "count": random.randint(10, 100),
-            "suspicious_count": len(risk_factors),
-            "confidence": 0.8,
+            "type": "graph_neighbourhood",
+            "count": len(neighbours),
+            "suspicious_count": len(high_risk_neighbours),
+            "mean_neighbour_risk": round(mean_neighbour_risk, 4),
         })
-        
-        # Calculate risk score
-        risk_score = min(1.0, sum(random.uniform(0.1, 0.3) for _ in risk_factors) / len(risk_factors)) if risk_factors else 0.1
-        
+
+        # Derived from the findings that actually fired, so a clean entity
+        # scores low rather than accumulating random increments.
+        risk_score = round(min(1.0, max(0.0, mean_neighbour_risk * 0.6 + 0.15 * len(risk_factors))), 4)
+
         # Determine status
         if risk_score >= 0.8:
             status = InvestigationStatus.ESCALATED
@@ -120,7 +160,8 @@ class InvestigationAgent:
             recommendations=self._generate_recommendations(risk_score, risk_factors),
             linked_entities=self._find_linked_entities(entity_id, context),
             timeline=self._build_timeline(entity_id),
-            confidence=0.8,
+            # Reflects how much evidence was available, not a fixed literal.
+            confidence=round(min(0.95, 0.4 + 0.15 * len(findings)), 2) if findings else 0.4,
             processed_by=[self._agent_id],
         )
         
@@ -144,8 +185,10 @@ class InvestigationAgent:
         
         tasks = []
         for alert_id in alert_ids:
-            # Generate risk estimate
-            estimated_risk = random.uniform(0.3, 0.9)
+            # Estimated from the alert's own recorded neighbourhood rather
+            # than random.uniform(0.3, 0.9), which assigned an investigation
+            # priority by dice roll.
+            estimated_risk = self._estimate_alert_risk(alert_id)
             
             task = AgentTask(
                 agent_type=self._agent_type,
@@ -239,20 +282,56 @@ class InvestigationAgent:
         
         return recommendations
     
+    def _estimate_alert_risk(self, alert_id: str) -> float:
+        """Risk estimate for an alert, from the entity it concerns."""
+        neighbours = self._neighbours(alert_id)
+        if not neighbours:
+            return 0.0
+        risks = [float(getattr(n, "risk_score", 0.0) or 0.0) for n in neighbours]
+        return round(min(1.0, max(risks)), 4)
+
+    def _neighbours(self, entity_id: str) -> List[Any]:
+        """Real graph neighbours of an entity, empty if it is unknown."""
+        try:
+            return list(self._graph.find_common_neighbors(entity_id, entity_id) or [])
+        except Exception as exc:
+            logger.warning("Neighbourhood lookup failed for %s: %s", entity_id, exc)
+            return []
+
     def _find_linked_entities(self, entity_id: str, context: Dict[str, Any]) -> List[str]:
-        """Find entities linked to the given entity."""
-        # Simulate linked entities
-        return [f"linked_{entity_id}_{i}" for i in range(random.randint(0, 5))]
-    
+        """Find entities linked to the given entity.
+
+        Read from the graph rather than fabricated as
+        `[f"linked_{entity_id}_{i}" for i in range(random.randint(0, 5))]`,
+        which invented counterparty ids that did not exist.
+        """
+        return [
+            str(getattr(node, "node_id", node)) for node in self._neighbours(entity_id)
+        ]
+
     def _build_timeline(self, entity_id: str) -> List[Dict[str, Any]]:
-        """Build activity timeline for entity."""
+        """Build activity timeline for entity.
+
+        Built from recorded investigations rather than the 3-10 invented
+        events with random types and risk indicators this previously returned.
+        Returns an empty timeline when nothing has been recorded.
+        """
+        try:
+            history = self._store.get_investigations_for_entity(entity_id)
+        except AttributeError:
+            history = []
+        except Exception as exc:
+            logger.warning("Timeline lookup failed for %s: %s", entity_id, exc)
+            history = []
+
         timeline = []
-        for i in range(random.randint(3, 10)):
+        for record in history or []:
             timeline.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event": f"activity_{i}",
-                "type": random.choice(["transaction", "login", "profile_change"]),
-                "risk_indicator": random.choice([True, False]),
+                "timestamp": getattr(record, "created_at", None)
+                or datetime.now(timezone.utc).isoformat(),
+                "event": f"investigation_{getattr(record, 'status', 'UNKNOWN')}",
+                "type": "investigation",
+                "risk_indicator": float(getattr(record, "risk_score", 0.0) or 0.0) >= 0.5,
             })
         return timeline
 
