@@ -35,6 +35,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     InMemoryAttemptLimiter,
     LockoutState,
+    _UNLOCKED as _UNLOCKED_STATE,
     SCOPE_ACCOUNT,
     SCOPE_ADDRESS,
     SCOPE_TOTP,
