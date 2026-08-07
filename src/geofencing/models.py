@@ -56,6 +56,7 @@ class GeofenceEvent:
     event_type: str = ""  # "entry" | "exit"
     position: Optional[GeoPoint] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    alert_raised: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -67,4 +68,5 @@ class GeofenceEvent:
             "lat": self.position.lat if self.position else None,
             "lon": self.position.lon if self.position else None,
             "timestamp": self.timestamp.isoformat(),
+            "alert_raised": self.alert_raised,
         }
