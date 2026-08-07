@@ -184,7 +184,7 @@ class TestAuthenticateUser:
                 return {"access_token": "token"}
 
             def get_user_info(self, access_token):
-                return {"email": "member@example.com"}
+                return {"email": "member@example.com", "email_verified": True}
 
         store = SsoStore()
         store.add(UserRecord("u_sso_org", "member-org", "member@example.com"))
