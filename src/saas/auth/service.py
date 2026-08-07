@@ -35,6 +35,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     InMemoryAttemptLimiter,
     LockoutState,
+    _UNLOCKED as _UNLOCKED_STATE,
     SCOPE_ACCOUNT,
     SCOPE_ADDRESS,
     SCOPE_TOTP,
@@ -338,6 +339,8 @@ class AuthService:
         session_store: Optional[SessionStore] = None,
         api_key_store: Optional[APIKeyStore] = None,
         notification_sender: Optional[NotificationSender] = None,
+        attempt_limiter: Optional[AuthAttemptLimiter] = None,
+        revocation_store: Optional[TokenRevocationStore] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -370,6 +373,12 @@ class AuthService:
         self.api_key_store: APIKeyStore = api_key_store or InMemoryAPIKeyStore()
         self.notification_sender: NotificationSender = (
             notification_sender or LoggingNotificationSender()
+        )
+        self.revocation_store: TokenRevocationStore = (
+            revocation_store or InMemoryTokenRevocationStore()
+        )
+        self.attempt_limiter: AuthAttemptLimiter = (
+            attempt_limiter or InMemoryAttemptLimiter()
         )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)

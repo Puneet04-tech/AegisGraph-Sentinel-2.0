@@ -42,7 +42,7 @@ def get_redis_client(redis_url: Optional[str] = None) -> Optional[redis.Redis]:
 
     Provides thread-safe access to Redis connections.
     """
-    global _redis_pools, _redis_pool
+    global _redis_pool
     settings = get_settings()
     database = settings.database
     if redis_url is None:
@@ -81,7 +81,6 @@ def get_redis_client(redis_url: Optional[str] = None) -> Optional[redis.Redis]:
 
 def get_async_redis_client(redis_url: Optional[str] = None) -> Optional[async_redis.Redis]:
     """Get or create an async Redis client using connection pools keyed by redis_url."""
-    global _async_redis_pools
     settings = get_settings()
     database = settings.database
     if redis_url is None:
@@ -118,7 +117,7 @@ def get_async_redis_client(redis_url: Optional[str] = None) -> Optional[async_re
 
 def close_redis_pools() -> None:
     """Close and clear all synchronous and asynchronous Redis connection pools."""
-    global _redis_pools, _async_redis_pools, _redis_pool
+    global _redis_pool
     with _redis_lock:
         for pool in _redis_pools.values():
             try:
@@ -140,7 +139,6 @@ def close_redis_pools() -> None:
 
 async def close_async_redis_pools() -> None:
     """Close all asynchronous Redis connection pools."""
-    global _async_redis_pools
     with _redis_lock:
         pools = list(_async_redis_pools.values())
         _async_redis_pools.clear()
