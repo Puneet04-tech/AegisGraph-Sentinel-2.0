@@ -17,6 +17,7 @@ try:
 except ImportError:
     st_autorefresh = None
 import base64
+import hashlib
 import html
 import json
 from config.sanitizer import sanitize_query_input
@@ -362,14 +363,22 @@ def _safe_api_post(
         return None
 
 
+
+def _auth_cache_fingerprint(api_key: str | None) -> str:
+    """Return a stable, non-reversible auth token for Streamlit cache keys."""
+    if not api_key:
+        return "anonymous"
+    return hashlib.sha256(str(api_key).encode("utf-8")).hexdigest()[:32]
+
+
 @_cache_data(ttl=20)
-def _fetch_health_snapshot(api_url: str) -> dict:
+def _fetch_health_snapshot(api_url: str, auth_fingerprint: str) -> dict:
     """Return the API /health payload, or an empty dict if unreachable."""
     return _safe_api_get(f"{api_url}/health", timeout=2)
 
 
 @_cache_data(ttl=5)
-def _fetch_stats_snapshot(api_url: str) -> dict:
+def _fetch_stats_snapshot(api_url: str, auth_fingerprint: str) -> dict:
     """Return the API /stats payload, or an empty dict if unreachable."""
     return _safe_api_get(f"{api_url}/stats", timeout=5)
 
@@ -855,7 +864,7 @@ with st.sidebar:
 
     # API Status Check
     try:
-        health = _fetch_health_snapshot(API_URL)
+        health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
         if health:
             st.success(_accessible_status("✅", "API Online"))
             st.metric("Uptime", f"{int(health.get('uptime_seconds', 0))}s")
@@ -896,8 +905,8 @@ if page == "🧭 Command Center":
     if "live_event_txn" not in st.session_state:
         st.session_state.live_event_txn = None
 
-    health = _fetch_health_snapshot(API_URL)
-    stats = _fetch_stats_snapshot(API_URL)
+    health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
+    stats = _fetch_stats_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
 
     # Generate a live event if active
     if live_mode:
@@ -1692,8 +1701,8 @@ elif page == "📊 Risk Analytics":
     # Local imports consolidated globally
 
     # Check API Status
-    stats = _fetch_stats_snapshot(API_URL)
-    health = _fetch_health_snapshot(API_URL)
+    stats = _fetch_stats_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
+    health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
 
     # Extract metrics
     total_requests = stats.get("total_requests", 0)
