@@ -21,6 +21,8 @@ from collections import deque, OrderedDict
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
+
+from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
 from datetime import datetime, timezone
 import json
 
@@ -108,6 +110,7 @@ class ProductionRiskScorer:
         device: str = 'cpu',
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
+        velocity_calculator: Optional[VelocityRiskCalculator] = None,
     ):
         """
         Args:
@@ -116,6 +119,7 @@ class ProductionRiskScorer:
             device: 'cuda' or 'cpu'
             model_version: Version string for logging
             enable_heuristic_fallback: Fall back if model fails
+            velocity_calculator: Velocity scorer; defaults to the shared one
         """
         self.model = model
         self.model.eval()
@@ -125,6 +129,10 @@ class ProductionRiskScorer:
         self.enable_heuristic_fallback = enable_heuristic_fallback
         
         self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
+
+        # Injectable so tests and callers can supply an isolated calculator;
+        # defaults to the process-wide one so history accumulates across calls.
+        self.velocity_calculator = velocity_calculator or get_velocity_calculator()
 
         logger.info(
             f"Initialized ProductionRiskScorer "
@@ -629,12 +637,31 @@ class ProductionRiskScorer:
     def _compute_velocity_risk(self, transaction: Dict) -> float:
         """
         Compute velocity-based risk (multiple transactions in short time).
-        
-        Placeholder: would query transaction history in production.
+
+        Scored against the source account's recent activity, then the
+        transaction is recorded so subsequent scoring sees it. Scoring happens
+        before recording so a transaction never contributes to its own
+        velocity.
+
+        This previously returned the constant 0.3, which meant a burst of
+        transfers and a single monthly payment contributed identically.
         """
-        # In production: check transactions from source account in last hour
-        # For now, return a reasonable default
-        return 0.3
+        account_id = (
+            transaction.get('source_account')
+            or transaction.get('from_account')
+            or transaction.get('account_id')
+        )
+        if not account_id:
+            # Nothing to attribute the activity to; fall back to the
+            # calculator's documented cold-start value rather than guessing.
+            return self.velocity_calculator.cold_start_risk
+
+        return self.velocity_calculator.score_and_record(
+            account_id=str(account_id),
+            amount=transaction.get('amount', 0.0),
+            timestamp=transaction.get('timestamp'),
+            transaction_id=transaction.get('transaction_id'),
+        )
     
     def _compute_temporal_risk(self, transaction: Dict) -> float:
         """
