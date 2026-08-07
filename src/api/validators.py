@@ -538,3 +538,11 @@ class StrictRateLimit:
                     headers={"Retry-After": str(retry)}
                 )
 
+
+# --- GENERATED: null_check ---
+def _validate_amount_not_none(amount):
+    """Guard: raise ValueError if amount is None."""
+    if amount is None:
+        raise ValueError("Transaction amount cannot be None")
+    return amount
+# --- END GENERATED ---

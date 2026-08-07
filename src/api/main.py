@@ -906,6 +906,11 @@ def _has_runtime_graph() -> bool:
 
 
 def compute_risk_score(*args, **kwargs):
+    """Compute fraud risk score for a transaction using the ML model.
+
+    Delegates to the loaded HTGNN model if available, falls back to a
+    heuristic-based scorer when the model cannot be loaded.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     runtime_graph_ready = _has_runtime_graph()
     if not MODEL_AVAILABLE or not runtime_graph_ready:
@@ -925,6 +930,11 @@ def compute_risk_score(*args, **kwargs):
 
 
 def generate_explanation(*args, **kwargs):
+    """Generate an explanation for a fraud risk decision.
+
+    Returns human-readable reasoning behind the risk score using the
+    explainer module, or a fallback explanation when unavailable.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     if _generate_explanation_impl is None:
         _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()
@@ -1863,7 +1873,7 @@ async def root():
 
 
 @app.get("/api/v1/auth/whoami", tags=["Authentication"])
-async def whoami(role: Role = Depends(require_role(Role.VIEWER))):
+async def whoami(role: Role = Depends(require_role(Role.VIEWER))) -> Dict[str, Any]:
     """Return the role attached to the presented API key."""
     return {"role": role.value}
 
@@ -1884,7 +1894,7 @@ async def health_check_v1(verbose: bool = False):
     tags=["Health"],
     summary="Lightweight liveness probe",
 )
-async def liveness():
+async def liveness() -> Dict[str, Any]:
     """
     Lightweight health check endpoint for Kubernetes liveness probes.
     Returns immediately to ensure responsiveness.
@@ -1897,7 +1907,7 @@ async def liveness():
     tags=["Health"],
     summary="Readiness probe",
 )
-async def readiness(response: Response):
+async def readiness(response: Response) -> Dict[str, Any]:
     """Report whether the process finished starting up and can serve traffic.
 
     Returns 503 until the lifecycle manager completes, so an orchestrator does
@@ -1929,7 +1939,7 @@ async def health_check(verbose: bool = False):
 
 
 @app.get("/stats", response_model=StatsResponse, tags=["Monitoring"], dependencies=[Depends(require_role(Role.AUDITOR))])
-async def get_stats():
+async def get_stats() -> StatsResponse:
     """
     Get service statistics
     
@@ -2565,20 +2575,48 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         }
         stats = {decision.value: 0 for decision in FraudDecision}
         processed = 0
+        failed = 0
         first_result = True
 
         yield '{"results":['
 
         for txn_chunk in _chunked(txns, max_concurrent_tasks):
-            tasks = [asyncio.create_task(_process_transaction(txn_request)) for txn_request in txn_chunk]
-            for completed in asyncio.as_completed(tasks):
+            # Tasks are created up front so every transaction in the chunk runs
+            # concurrently under the semaphore; we only consume them in
+            # submission order afterwards so the stream stays deterministic.
+            chunk_tasks = [
+                (txn_request, asyncio.create_task(_process_transaction(txn_request)))
+                for txn_request in txn_chunk
+            ]
+            for txn_request, task in chunk_tasks:
                 try:
-                    result = await completed
+                    result = await task
                 except Exception as result_error:
                     _api_logger.error(
                         f"Error processing batch transaction: {result_error}",
                         event_type="batch_processing_error",
+                        metadata={"transaction_id": getattr(txn_request, "transaction_id", None)},
                     )
+                    failed += 1
+                    if not first_result:
+                        yield ","
+                    else:
+                        first_result = False
+                    try:
+                        yield json.dumps(
+                            {
+                                "transaction_id": getattr(
+                                    txn_request, "transaction_id", None
+                                ),
+                                "error": str(result_error),
+                            },
+                            separators=(",", ":"),
+                        )
+                    except (TypeError, ValueError) as e:
+                        raise JSONSerializationError(
+                            f"Failed to serialize streaming result: {e}",
+                            details={"step": "stream_result_serialization"},
+                        )
                     continue
 
                 processed += 1
@@ -2604,6 +2642,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         yield (
             '],"total_processed":'
             f"{processed},"
+            f"\"total_failed\":{failed},"
             f"\"total_blocked\":{stats['BLOCK']},"
             f"\"total_review\":{stats['REVIEW']},"
             f"\"total_allowed\":{stats['ALLOW']},"
@@ -2832,7 +2871,7 @@ async def list_active_honeypots(
     """
     Get list of all active honeypot traps.
 
-    SECURITY: Requires Firebase authentication + admin role.
+    SECURITY: Requires admin role.
 
     Shows honeypots that are currently monitoring for withdrawal attempts
     and tracking fraud networks
@@ -3344,6 +3383,13 @@ async def get_investigation_insights(
             detail=f"Error generating investigation insights: {str(e)}",
         )
     
+@app.post(
+    "/api/v1/cases/similar",
+    response_model=SimilarCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Find fraud cases similar to a query",
+)
 async def find_similar_cases(request: SimilarCaseRequest):
     """
     Find fraud cases similar to a query using semantic embeddings (RAG).
@@ -4484,16 +4530,28 @@ async def create_orchestration(
 ):
     """Create a multi-agent orchestration workflow."""
     import time
-    from src.multi_agent_soc import get_orchestrator
+    from src.multi_agent_soc import get_orchestrator, WorkflowValidationError
     
     start_time = time.time()
     
     orchestrator = get_orchestrator()
     
-    plan = orchestrator.create_workflow(
-        workflow_name=request.workflow_name,
-        tasks=request.tasks,
-    )
+    try:
+        plan = orchestrator.create_workflow(
+            workflow_name=request.workflow_name,
+            tasks=request.tasks,
+        )
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "task_index": exc.task_index,
+                "field": exc.field,
+                "invalid_value": exc.invalid_value,
+                "valid_values": exc.valid_values,
+            },
+        ) from exc
     
     processing_time = (time.time() - start_time) * 1000
     

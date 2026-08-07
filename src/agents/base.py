@@ -129,7 +129,7 @@ class BaseAgent(ABC):
         input_schema: Dict[str, Any],
         output_schema: Dict[str, Any],
         execution_time_estimate: float = 5.0,
-    ):
+    ) -> None:
         """Register agent capability"""
         self.capabilities.append(AgentCapability(
             name=name,
@@ -184,7 +184,7 @@ class BaseAgent(ABC):
         """Submit task to agent queue"""
         await self.message_queue.put(task)
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop agent"""
         self._running = False
 
@@ -229,6 +229,11 @@ class LLMClient:
 
         # Build a structured narrative summary from the prompt content
         summary_parts = []
+        import re
+        case_match = re.search(r'(?:for case|case)\s+([^\s\.\n,]+)', prompt, re.IGNORECASE)
+        if case_match and case_match.group(1).lower() not in ("a", "the"):
+            summary_parts.append(f"Case: {case_match.group(1)}")
+
         if "Evidence collected:" in prompt:
             evidence_section = prompt.split("Evidence collected:")[1].split("\n")[0].strip()
             if evidence_section and evidence_section != "[]":

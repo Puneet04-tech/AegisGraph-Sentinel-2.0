@@ -95,7 +95,7 @@ class KnowledgeGraph:
         self._use_networkx = use_networkx and NETWORKX_AVAILABLE
 
         if self._use_networkx:
-            self._nx_graph = nx.Graph()
+            self._nx_graph = nx.DiGraph()
         else:
             self._nx_graph = None
 
@@ -474,8 +474,12 @@ class KnowledgeGraph:
 
         try:
             self._sync_to_networkx()
-            path = nx.shortest_path(self._nx_graph, source_id, target_id)
-            return path
+            # Bounded, directed search: only paths of at most `max_depth`
+            # edges (following relationship direction) are considered.
+            paths = nx.single_source_shortest_path(
+                self._nx_graph, source_id, cutoff=max_depth
+            )
+            return paths.get(target_id, [])
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return []
 
@@ -496,7 +500,7 @@ class KnowledgeGraph:
         while queue:
             current_id, path = queue.popleft()
 
-            if len(path) > max_depth:
+            if len(path) - 1 > max_depth:
                 continue
 
             if current_id == target_id:
@@ -624,7 +628,9 @@ class KnowledgeGraph:
             self._sync_to_networkx()
             stats["graph_density"] = nx.density(self._nx_graph) if len(self._nx_graph) > 0 else 0
             stats["graph_connected_components"] = (
-                nx.number_connected_components(self._nx_graph) if len(self._nx_graph) > 0 else 0
+                nx.number_connected_components(self._nx_graph.to_undirected())
+                if len(self._nx_graph) > 0
+                else 0
             )
 
             if len(self._nx_graph) > 0:

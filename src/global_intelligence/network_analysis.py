@@ -18,6 +18,8 @@ from .models import (
     FederatedEntity,
     EntityType,
 )
+from src.graph_analytics.centrality import all_centralities, graph_diameter
+
 from .store import GlobalIntelligenceStore, get_global_intelligence_store
 from .knowledge_graph import KnowledgeGraphEngine, get_knowledge_graph_engine
 
@@ -72,6 +74,10 @@ class NetworkAnalysisEngine:
         self._store = store or get_global_intelligence_store()
         self._graph = graph_engine or get_knowledge_graph_engine()
         self._config = config or NetworkAnalysisConfig()
+        # Whole-graph centrality results, memoised until the graph changes size
+        # or shape, so ranking many nodes does not repeat the global work.
+        self._centrality_cache: Optional[Dict[str, Dict[str, float]]] = None
+        self._centrality_cache_key: Optional[Tuple[int, int, Optional[int]]] = None
 
     def discover_networks(
         self,
@@ -410,9 +416,26 @@ class NetworkAnalysisEngine:
         return total_clustering / count if count > 0 else 0.0
 
     def _estimate_diameter(self, network: FraudNetwork) -> int:
-        """Estimate network diameter."""
-        # Simplified: return max depth of network
-        return min(5, len(network.nodes) // 5 + 1)
+        """Compute the network diameter.
+
+        This previously returned ``min(5, len(nodes) // 5 + 1)`` -- a function
+        of node count alone, capped at 5, that never inspected a single edge.
+        Now it is the longest shortest path within the network's own subgraph.
+        """
+        node_ids = list(network.nodes)
+        if len(node_ids) <= 1:
+            return 0
+
+        member_ids = set(node_ids)
+        adjacency: Dict[str, Set[str]] = {node_id: set() for node_id in node_ids}
+        for node_id in node_ids:
+            # Restricted to members, so an edge leaving the network cannot
+            # inflate the diameter of the network itself.
+            adjacency[node_id].update(
+                n for n in self._get_neighbors(node_id) if n in member_ids
+            )
+
+        return graph_diameter(adjacency, node_ids)
 
     def _calculate_top_centrality(
         self,
@@ -499,40 +522,80 @@ class NetworkAnalysisEngine:
             "avg_risk": total_risk / count if count > 0 else 0.0,
         }
 
+    def _build_adjacency(self) -> Tuple[Dict[str, Set[str]], List[str]]:
+        """Snapshot the whole graph as an adjacency mapping.
+
+        The centrality algorithms are whole-graph computations, so they need
+        the full structure rather than one node's neighbourhood.
+        """
+        node_ids = list(self._store._graph_nodes.keys())
+        adjacency: Dict[str, Set[str]] = {node_id: set() for node_id in node_ids}
+        for node_id in node_ids:
+            adjacency[node_id].update(self._get_neighbors(node_id))
+        return adjacency, node_ids
+
+    def _all_centralities(
+        self,
+        betweenness_sample_size: Optional[int] = None,
+    ) -> Dict[str, Dict[str, float]]:
+        """Compute every measure once, memoised against the graph size.
+
+        Scoring many nodes previously recomputed the same global quantities per
+        node; the cache is invalidated whenever the node count changes.
+        """
+        adjacency, node_ids = self._build_adjacency()
+        cache_key = (len(node_ids), sum(len(v) for v in adjacency.values()), betweenness_sample_size)
+        if self._centrality_cache_key == cache_key and self._centrality_cache is not None:
+            return self._centrality_cache
+
+        scored = all_centralities(adjacency, node_ids, betweenness_sample_size)
+        self._centrality_cache = scored
+        self._centrality_cache_key = cache_key
+        return scored
+
     def _calculate_betweenness(
         self,
         node_id: str,
         sample_size: int = 100,
     ) -> float:
-        """Calculate betweenness centrality (simplified)."""
-        # Simplified: ratio of edges involving this node
-        all_nodes = list(self._store._graph_nodes.keys())
-        n = len(all_nodes)
-        if n < 2:
-            return 0.0
+        """Calculate betweenness centrality using Brandes' algorithm.
 
-        edges = self._store.get_node_edges(node_id)
-        return len(edges) / (n - 1) if n > 1 else 0.0
+        This previously returned an incident-edge ratio -- degree centrality
+        under a different name -- and ignored ``sample_size`` entirely.
+        Betweenness is the measure that surfaces bridging accounts, which a
+        degree-based approximation cannot see.
+        """
+        _, node_ids = self._build_adjacency()
+        # Sampling only pays off once the graph is larger than the sample.
+        effective = sample_size if sample_size and sample_size < len(node_ids) else None
+        return self._all_centralities(effective).get(node_id, {}).get(
+            "betweenness_centrality", 0.0
+        )
 
     def _calculate_closeness(self, node_id: str) -> float:
-        """Calculate closeness centrality (simplified)."""
-        neighbors = self._get_neighbors(node_id)
-        if not neighbors:
-            return 0.0
-        return len(neighbors) / len(self._get_neighbors(node_id))
+        """Calculate closeness centrality from shortest-path distances.
+
+        This previously computed ``len(neighbors) / len(neighbors)``, which is
+        1.0 for any node with a neighbour and 0.0 otherwise -- a constant that
+        conveyed no information at all.
+        """
+        return self._all_centralities().get(node_id, {}).get("closeness_centrality", 0.0)
 
     def _calculate_eigenvector(self, node_id: str) -> float:
-        """Calculate eigenvector centrality (simplified)."""
-        neighbors = self._get_neighbors(node_id)
-        return len(neighbors) / 10  # Simplified
+        """Calculate eigenvector centrality by power iteration.
+
+        This previously returned ``len(neighbors) / 10``, which exceeds 1.0 for
+        any node with more than ten neighbours.
+        """
+        return self._all_centralities().get(node_id, {}).get("eigen_centrality", 0.0)
 
     def _calculate_pagerank(self, node_id: str) -> float:
-        """Calculate PageRank (simplified)."""
-        neighbors = self._get_neighbors(node_id)
-        n = len(list(self._store._graph_nodes.keys()))
-        if n < 2:
-            return 0.0
-        return len(neighbors) / n
+        """Calculate PageRank by damped power iteration.
+
+        This previously returned a raw degree ratio with no iteration, damping
+        or dangling-mass handling.
+        """
+        return self._all_centralities().get(node_id, {}).get("page_rank", 0.0)
 
 
 # Global engine instance

@@ -367,6 +367,31 @@ class TestEntityResolver:
         similar = resolver.find_similar_entities("ACC001")
         assert len(similar) >= 2  # ACC002 and ACC003 share device
 
+    def test_find_similar_entities_avg_confidence_reflects_shared_connections(self, resolver):
+        """Similar entities are ranked by the mean confidence of shared connections.
+
+        Previously avg_confidence was computed against entity_id even though the
+        similar entity is only reachable through the shared intermediate, so it
+        stayed 0.0 for every result and the ranking was meaningless.
+        """
+        # ACC002 shares a single device with ACC001 (device links have 0.90 confidence).
+        resolver.link_device("ACC001", "DEV001")
+        resolver.link_device("ACC002", "DEV001")
+        # ACC003 shares a device (0.90) AND an IP address (0.80) with ACC001,
+        # so its mean shared-connection confidence is (0.90 + 0.80) / 2 = 0.85.
+        resolver.link_device("ACC001", "DEV002")
+        resolver.link_device("ACC003", "DEV002")
+        resolver.link_ip_address("ACC001", "10.0.0.1")
+        resolver.link_ip_address("ACC003", "10.0.0.1")
+
+        similar = resolver.find_similar_entities("ACC001")
+        ids = [e.id for e in similar]
+
+        assert "ACC002" in ids
+        assert "ACC003" in ids
+        # ACC002 (0.90) must rank above ACC003 (mean 0.85).
+        assert ids.index("ACC002") < ids.index("ACC003")
+
 
 # ============================================================================
 # KNOWLEDGE GRAPH TESTS
@@ -456,6 +481,44 @@ class TestKnowledgeGraph:
         
         stats = graph.get_graph_stats()
         assert stats["current_entities"] >= 1
+
+    def test_shortest_path_respects_max_depth(self, graph):
+        """Test shortest path honors the max_depth bound."""
+        entities = [Entity(entity_type=EntityType.ACCOUNT, value=f"ACC{i:03d}") for i in range(4)]
+        for e in entities:
+            graph.add_node(e)
+        for src, dst in zip(entities[:-1], entities[1:]):
+            graph.add_edge(EntityRelationship(
+                source_id=src.id,
+                target_id=dst.id,
+                relationship_type=RelationshipType.TRANSFER_TO,
+            ))
+
+        full_path = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=10)
+        assert full_path == [entities[0].id, entities[1].id, entities[2].id, entities[3].id]
+
+        bounded = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=2)
+        assert bounded == []
+
+    def test_shortest_path_respects_relationship_direction(self, graph):
+        """Test shortest path only follows stored relationship direction."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="ACC001")
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="ACC002")
+        graph.add_node(e1)
+        graph.add_node(e2)
+
+        # Edge is stored only as e2 -> e1, so e1 -> e2 must have no path.
+        graph.add_edge(EntityRelationship(
+            source_id=e2.id,
+            target_id=e1.id,
+            relationship_type=RelationshipType.TRANSFER_TO,
+        ))
+
+        forward = graph.find_shortest_path(e2.id, e1.id, max_depth=5)
+        assert forward == [e2.id, e1.id]
+
+        reverse = graph.find_shortest_path(e1.id, e2.id, max_depth=5)
+        assert reverse == []
 
 
 # ============================================================================

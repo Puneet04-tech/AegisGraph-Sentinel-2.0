@@ -54,13 +54,28 @@ class PlatformDashboard:
         # Open incidents
         open_incidents = self._store.get_open_incidents()
         
+        # Calculate telemetry metrics from stored data
+        metrics = self._store.get_metrics(limit=10000)
+        request_metrics = [m for m in metrics if m.metric_name in ("requests", "total_requests", "request_count", "throughput")]
+        latency_metrics = [m for m in metrics if m.metric_name in ("latency_ms", "avg_response_time_ms", "response_time_ms", "latency")]
+
+        total_requests = int(sum(m.value for m in request_metrics)) if request_metrics else 0
+        if latency_metrics:
+            avg_response_time_ms = float(sum(m.value for m in latency_metrics) / len(latency_metrics))
+        else:
+            comp_latencies = [
+                h.response_time_ms for h in self._health_monitor.get_all_components()
+                if h.response_time_ms is not None
+            ]
+            avg_response_time_ms = float(sum(comp_latencies) / len(comp_latencies)) if comp_latencies else 0.0
+
         # Create snapshot
         snapshot = DashboardSnapshot(
             overall_health_score=overall_health,
             active_alerts=len(active_alerts),
             critical_alerts=len(critical_alerts),
-            total_requests=1000,  # Placeholder
-            avg_response_time_ms=50.0,  # Placeholder
+            total_requests=total_requests,
+            avg_response_time_ms=avg_response_time_ms,
             components_summary=health_summary,
         )
         self._store.store_snapshot(snapshot)
@@ -69,6 +84,8 @@ class PlatformDashboard:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "overall_health_score": overall_health,
             "health": health_summary,
+            "total_requests": total_requests,
+            "avg_response_time_ms": avg_response_time_ms,
             "alerts": {
                 "active": len(active_alerts),
                 "critical": len(critical_alerts),

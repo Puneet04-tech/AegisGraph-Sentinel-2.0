@@ -56,6 +56,7 @@ from .distribution import (
     get_distribution_engine,
     reset_distribution_engine,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class SecurityDataFabricService:
@@ -71,7 +72,9 @@ class SecurityDataFabricService:
         self.governance = get_governance_engine()
         self.query = get_query_engine()
         self.distribution = get_distribution_engine()
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
 
     async def register(
         self,
@@ -199,7 +202,7 @@ class SecurityDataFabricService:
                 "resource_id": e.resource_id,
                 "success": e.success,
             }
-            for e in self._audit_log[-limit:]
+            for e in self._audit_log.tail(limit)
         ]
 
     async def _audit(

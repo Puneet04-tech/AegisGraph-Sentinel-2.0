@@ -464,6 +464,28 @@ class TestDashboard:
         assert "report_date" in report
         assert "total_audit_entries" in report
 
+    def test_dynamic_telemetry_in_snapshot(self, store, dashboard, performance_tracker):
+        """Test that dashboard snapshots record dynamic request and latency telemetry."""
+        # Initial snapshot with no metrics recorded
+        d1 = dashboard.get_dashboard_data()
+        s1 = store.get_latest_snapshot()
+        assert s1.total_requests == 0
+        assert s1.avg_response_time_ms == 0.0
+
+        # Record metrics
+        performance_tracker.record_throughput("api", 250)
+        performance_tracker.record_request_latency("api", "/v1/test", 120.0)
+        performance_tracker.record_request_latency("api", "/v1/test", 180.0)
+
+        d2 = dashboard.get_dashboard_data()
+        s2 = store.get_latest_snapshot()
+
+        assert s2.total_requests == 250
+        assert s2.avg_response_time_ms == 150.0
+        assert d2["total_requests"] == 250
+        assert d2["avg_response_time_ms"] == 150.0
+
+
 
 # =============================================================================
 # Integration Tests

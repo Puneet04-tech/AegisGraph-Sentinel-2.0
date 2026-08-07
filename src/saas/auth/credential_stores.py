@@ -402,6 +402,13 @@ class NotificationSender(ABC):
     def send_password_reset(self, email: str, token: str) -> None:
         """Deliver a password-reset token to *email*."""
 
+    def send_email_verification(self, email: str, token: str) -> None:
+        """Deliver an email-verification token to *email*.
+
+        Concrete on the base class so existing senders keep working unchanged.
+        """
+        raise NotImplementedError
+
 
 class LoggingNotificationSender(NotificationSender):
     """Default sender that logs instead of delivering.
@@ -415,3 +422,137 @@ class LoggingNotificationSender(NotificationSender):
         logger.info(
             "Password reset dispatched for %s (token withheld from logs)", email
         )
+
+    def send_email_verification(self, email: str, token: str) -> None:
+        logger.info(
+            "Email verification dispatched for %s (token withheld from logs)", email
+        )
+
+
+# ---------------------------------------------------------------------------
+# Email verification tokens
+# ---------------------------------------------------------------------------
+
+# Verification links are emailed like reset links, but a user may not open their
+# inbox immediately after signing up, so the window is a day rather than an hour.
+DEFAULT_VERIFICATION_TTL_SECONDS = 86400
+
+# A user may ask for a new verification email, but not repeatedly enough to turn
+# the endpoint into a mail relay aimed at someone else's inbox.
+DEFAULT_VERIFICATION_RESEND_COOLDOWN_SECONDS = 60
+
+
+@dataclass
+class VerificationTokenRecord:
+    """A pending email-verification token."""
+
+    user_id: str
+    email: str
+    token_hash: str
+    expires_at: datetime
+    created_at: datetime = field(default_factory=_now)
+
+
+class EmailVerificationTokenStore(ABC):
+    """Abstract store for single-use email-verification tokens."""
+
+    @abstractmethod
+    def issue(self, user_id: str, email: str) -> str:
+        """Generate, store, and return a verification token for *user_id*."""
+
+    @abstractmethod
+    def consume(self, token: str, user_id: str, email: str) -> bool:
+        """Validate and single-use-consume *token*.
+
+        Returns True only when the token is known, unexpired, unused, and was
+        issued to this exact user and address.
+        """
+
+    @abstractmethod
+    def invalidate_for_user(self, user_id: str) -> None:
+        """Drop every outstanding verification token for *user_id*."""
+
+    @abstractmethod
+    def seconds_until_resend_allowed(self, user_id: str) -> int:
+        """Seconds the caller must wait before another token may be issued."""
+
+
+class InMemoryEmailVerificationTokenStore(EmailVerificationTokenStore):
+    """Thread-safe in-process verification-token store.
+
+    Mirrors :class:`InMemoryPasswordResetTokenStore`: raw tokens are never
+    stored, only their SHA-256 hashes, and comparison goes through
+    ``secrets.compare_digest``.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: int = DEFAULT_VERIFICATION_TTL_SECONDS,
+        resend_cooldown_seconds: int = DEFAULT_VERIFICATION_RESEND_COOLDOWN_SECONDS,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._resend_cooldown_seconds = resend_cooldown_seconds
+        self._lock = threading.RLock()
+        # token_hash -> record. Keyed by hash so the raw token is never stored.
+        self._tokens: Dict[str, VerificationTokenRecord] = {}
+        self._last_issued_at: Dict[str, datetime] = {}
+
+    def _purge_expired(self) -> None:
+        """Caller must hold self._lock."""
+        now = _now()
+        for key in [k for k, r in self._tokens.items() if r.expires_at <= now]:
+            del self._tokens[key]
+
+    def issue(self, user_id: str, email: str) -> str:
+        token = secrets.token_urlsafe(32)
+        normalized = email.strip().lower()
+        with self._lock:
+            self._purge_expired()
+            # Issuing a new token invalidates earlier ones, so a link from a
+            # previous request stops working once the user asks again.
+            self.invalidate_for_user(user_id)
+            token_hash = _hash(token)
+            self._tokens[token_hash] = VerificationTokenRecord(
+                user_id=user_id,
+                email=normalized,
+                token_hash=token_hash,
+                expires_at=_now() + timedelta(seconds=self._ttl_seconds),
+            )
+            self._last_issued_at[user_id] = _now()
+        return token
+
+    def consume(self, token: str, user_id: str, email: str) -> bool:
+        if not token:
+            return False
+        token_hash = _hash(token)
+        normalized = email.strip().lower()
+        with self._lock:
+            self._purge_expired()
+            record = self._tokens.get(token_hash)
+            if record is None:
+                return False
+            if record.expires_at <= _now():
+                del self._tokens[token_hash]
+                return False
+            if not secrets.compare_digest(record.token_hash, token_hash):
+                return False  # pragma: no cover - dict lookup already matched
+            # A token issued for one account must not verify another, and a
+            # token issued before an address change must not verify the new one.
+            if record.user_id != user_id or record.email != normalized:
+                return False
+            del self._tokens[token_hash]
+            return True
+
+    def invalidate_for_user(self, user_id: str) -> None:
+        with self._lock:
+            for key in [k for k, r in self._tokens.items() if r.user_id == user_id]:
+                del self._tokens[key]
+
+    def seconds_until_resend_allowed(self, user_id: str) -> int:
+        with self._lock:
+            last = self._last_issued_at.get(user_id)
+            if last is None:
+                return 0
+            elapsed = (_now() - last).total_seconds()
+            remaining = self._resend_cooldown_seconds - elapsed
+            return max(0, int(remaining + 0.999))
