@@ -93,6 +93,38 @@ class OAuthProvider:
             return ""
         return hashlib.sha256(secret.encode()).hexdigest()
     
+
+    def _validate_requested_scopes(
+        self,
+        client: dict,
+        scope: Optional[str],
+    ) -> tuple[Optional[str], Optional[AuthenticationResponse]]:
+        """Intersect requested scopes with the client's registered allow-list.
+
+        Rejects the request when any requested scope is not registered for the
+        client (prefer fail-closed over silently dropping unknown scopes).
+        """
+        allowed = set(client.get("scopes") or [])
+        if scope is None or not str(scope).strip():
+            # Default to the full registered allow-list when none requested
+            return " ".join(client.get("scopes") or []), None
+
+        requested = [s for s in str(scope).split() if s]
+        if not requested:
+            return " ".join(client.get("scopes") or []), None
+
+        unknown = [s for s in requested if s not in allowed]
+        if unknown:
+            return None, AuthenticationResponse(
+                success=False,
+                error="invalid_scope",
+                error_description=(
+                    "Requested scope is not allowed for this client: "
+                    + " ".join(unknown)
+                ),
+            )
+        return " ".join(requested), None
+
     def authorize(
         self,
         client_id: str,
@@ -141,6 +173,11 @@ class OAuthProvider:
                 error="invalid_request",
                 error_description="Invalid redirect_uri",
             )
+
+        validated_scope, scope_error = self._validate_requested_scopes(client, scope)
+        if scope_error:
+            return scope_error
+        scope = validated_scope
         
         # Generate authorization code
         if response_type == "code":
@@ -330,6 +367,12 @@ class OAuthProvider:
         
         # Mark code as used
         auth_code["used"] = True
+
+        validated_scope, scope_error = self._validate_requested_scopes(
+            client, auth_code.get("scope")
+        )
+        if scope_error:
+            return scope_error
         
         # Generate tokens
         access_token = self._generate_access_token()
@@ -340,7 +383,7 @@ class OAuthProvider:
             access_token=access_token,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=auth_code["scope"],
+            scope=validated_scope,
             client_id=client_id,
             refresh_token=refresh_token_value,
         )
@@ -354,7 +397,7 @@ class OAuthProvider:
             metadata={
                 "token_type": "Bearer",
                 "expires_in": expires_in,
-                "scope": auth_code["scope"],
+                "scope": validated_scope,
             },
         )
     
@@ -377,8 +420,10 @@ class OAuthProvider:
                 error_description="Invalid client credentials",
             )
         
-        # Generate token with client scopes
-        token_scope = scope or " ".join(client["scopes"])
+        token_scope, scope_error = self._validate_requested_scopes(client, scope)
+        if scope_error:
+            return scope_error
+
         access_token = self._generate_access_token()
         expires_in = 3600
         
