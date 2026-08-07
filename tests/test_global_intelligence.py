@@ -25,12 +25,14 @@ from src.global_intelligence import (
     # Engines
     get_federation_engine,
     get_knowledge_graph_engine,
+    KnowledgeGraphEngine,
     get_entity_correlation_engine,
     get_threat_exchange,
     get_campaign_discovery_engine,
     get_network_analysis_engine,
     get_federated_search_engine,
     get_risk_propagation_engine,
+    RiskPropagationEngine,
     get_audit_service,
     # Service
     get_global_intelligence_service,
@@ -499,6 +501,62 @@ class TestRiskPropagation:
         propagations = propagation.propagate_risk("high-risk-entity")
 
         assert isinstance(propagations, list)
+
+    def test_get_at_risk_entities_counts_propagations_to_others(self):
+        """propagation_count must reflect paths to other entities, not self."""
+        store = get_global_intelligence_store()
+        graph = KnowledgeGraphEngine(store=store)
+        propagation = RiskPropagationEngine(store=store, graph_engine=graph)
+
+        entities = {}
+        for i in range(4):
+            entity_id = f"risk-entity-{i}"
+            entity = FederatedEntity(
+                entity_id=entity_id,
+                entity_type=EntityType.ACCOUNT,
+                federation_id="fed-1",
+                partner_id="partner-1",
+                external_id=f"ext-{i}",
+                risk_score=0.8,
+                threat_level=ThreatLevel.HIGH,
+            )
+            store.store_entity(entity)
+            graph.add_entity(entity_id, EntityType.ACCOUNT, {"risk_score": 0.8})
+            entities[entity_id] = entity
+
+        # risk-entity-0 links to all three others; the rest link only to it.
+        graph.add_relationship("risk-entity-0", "risk-entity-1", "linked_to")
+        graph.add_relationship("risk-entity-0", "risk-entity-2", "linked_to")
+        graph.add_relationship("risk-entity-0", "risk-entity-3", "linked_to")
+
+        results = propagation.get_at_risk_entities(threshold=0.5)
+
+        # Only the well-connected entity should report a nonzero count.
+        by_id = {r["entity_id"]: r for r in results}
+        assert "risk-entity-0" in by_id
+        assert by_id["risk-entity-0"]["propagation_count"] > 0
+
+    def test_get_at_risk_entities_zero_when_no_connections(self):
+        """An isolated entity must report zero propagation, not the trivial 1."""
+        store = get_global_intelligence_store()
+        propagation = RiskPropagationEngine(store=store)
+
+        entity = FederatedEntity(
+            entity_id="isolated-risk-entity",
+            entity_type=EntityType.ACCOUNT,
+            federation_id="fed-1",
+            partner_id="partner-1",
+            external_id="ext-isolated",
+            risk_score=0.9,
+            threat_level=ThreatLevel.CRITICAL,
+        )
+        store.store_entity(entity)
+
+        results = propagation.get_at_risk_entities(threshold=0.5)
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "isolated-risk-entity"
+        assert results[0]["propagation_count"] == 0
 
 
 class TestFederatedSearch:
