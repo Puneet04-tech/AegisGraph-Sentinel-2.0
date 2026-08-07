@@ -158,7 +158,10 @@ class TestDetector:
 
         assert baseline.employee_id == "emp-1"
         assert store.get_employee_profile("emp-1").baseline_established is True
-        assert 1 <= baseline.avg_frequency <= 10
+        # An empty history yields a zero frequency. This previously asserted
+        # 1..10 only because avg_frequency was random.uniform(1, 10) and never
+        # looked at historical_data at all.
+        assert baseline.avg_frequency == 0.0
 
     def test_record_activity_persists_fields(self, store):
         detector = InsiderThreatDetector(store=store)
@@ -179,7 +182,7 @@ class TestDetector:
         detector = InsiderThreatDetector(store=store)
         detector.create_profile("emp-1", "finance", "analyst")
         monkeypatch.setattr(
-            detector, "_detect_anomalies", lambda emp, typ: (["UNUSUAL_TIME"], 0.5)
+            detector, "_detect_anomalies", lambda emp, typ, **_: (["UNUSUAL_TIME"], 0.5)
         )
 
         activity = detector.record_activity("emp-1", ActivityType.LOGIN, "r", "HQ", "D")
@@ -195,7 +198,7 @@ class TestDetector:
         detector.create_profile("emp-1", "finance", "analyst")
         monkeypatch.setattr(
             detector, "_detect_anomalies",
-            lambda emp, typ: (["PRIVILEGE_ESCALATION"], 0.5),
+            lambda emp, typ, **_: (["PRIVILEGE_ESCALATION"], 0.5),
         )
 
         detector.record_activity("emp-1", ActivityType.PRIVILEGE_ESCALATION, "r", "HQ", "D")
@@ -208,7 +211,7 @@ class TestDetector:
         detector.create_profile("emp-1", "finance", "analyst")
         monkeypatch.setattr(
             detector, "_detect_anomalies",
-            lambda emp, typ: (["HIGH_VOLUME_DATA_ACCESS"], 0.5),
+            lambda emp, typ, **_: (["HIGH_VOLUME_DATA_ACCESS"], 0.5),
         )
 
         detector.record_activity("emp-1", ActivityType.FILE_DOWNLOAD, "r", "HQ", "D")
@@ -220,7 +223,7 @@ class TestDetector:
         detector = InsiderThreatDetector(store=store)
         detector.create_profile("emp-1", "finance", "analyst")
         monkeypatch.setattr(
-            detector, "_detect_anomalies", lambda emp, typ: ([], 0.1)
+            detector, "_detect_anomalies", lambda emp, typ, **_: ([], 0.1)
         )
 
         detector.record_activity("emp-1", ActivityType.EMAIL, "r", "HQ", "D")
