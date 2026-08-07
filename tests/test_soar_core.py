@@ -784,6 +784,46 @@ class TestPlaybookEngine:
         store.add_incident(incident)
         assert service.playbook_engine.trigger_playbooks_for_incident(incident) == []
 
+    def test_trigger_playbooks_requires_severity_and_source(self):
+        """Playbook with both severity and source rules requires AND match."""
+        service = SOARService()
+        store = service.store
+        service.playbook_engine.register_playbook(
+            "Both",
+            "d",
+            "1.0.0",
+            [],
+            {"severity": "CRITICAL", "source": "SIEM"},
+        )
+        # Severity matches, source does not -> must not trigger
+        partial = make_incident(
+            incident_id="INC-AND-1",
+            severity=ThreatSeverity.CRITICAL,
+            source="WAF",
+        )
+        store.add_incident(partial)
+        assert service.playbook_engine.trigger_playbooks_for_incident(partial) == []
+
+        # Source matches, severity does not -> must not trigger
+        other = make_incident(
+            incident_id="INC-AND-2",
+            severity=ThreatSeverity.HIGH,
+            source="SIEM",
+        )
+        store.add_incident(other)
+        assert service.playbook_engine.trigger_playbooks_for_incident(other) == []
+
+        # Both match -> trigger
+        full = make_incident(
+            incident_id="INC-AND-3",
+            severity=ThreatSeverity.CRITICAL,
+            source="SIEM",
+        )
+        store.add_incident(full)
+        executions = service.playbook_engine.trigger_playbooks_for_incident(full)
+        assert len(executions) == 1
+        assert store.get_playbook(executions[0].playbook_id).name == "Both"
+
     def test_sync_fallback_without_workflow_engine(self):
         store = SOARStore()
         audit = SOARAuditLogger(store)
