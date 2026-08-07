@@ -137,3 +137,38 @@ def test_tenant_db_wraps_session(monkeypatch):
 
     assert result["params"]["tenant_id"] == "tenant-1"
     assert result["params"]["foo"] == "bar"
+
+
+def test_tenant_db_overwrites_caller_tenant_id(caplog):
+    class DummySession:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, query, **params):
+            self.calls.append((query, params))
+            return {"query": query, "params": params}
+
+    dummy_session = DummySession()
+    wrapper = TenantScopedNeo4jSession(dummy_session, tenant_id="tenant-A")
+    with caplog.at_level("WARNING"):
+        result = wrapper.run(
+            "MATCH (n {tenant_id: $tenant_id}) RETURN n",
+            tenant_id="tenant-B",
+            foo="bar",
+        )
+
+    assert result["params"]["tenant_id"] == "tenant-A"
+    assert result["params"]["foo"] == "bar"
+    assert dummy_session.calls[0][1]["tenant_id"] == "tenant-A"
+    assert any("Ignoring caller tenant_id override" in rec.message for rec in caplog.records)
+
+
+def test_tenant_db_forces_tenant_id_when_absent():
+    class DummySession:
+        def run(self, query, **params):
+            return params
+
+    wrapper = TenantScopedNeo4jSession(DummySession(), tenant_id="tenant-1")
+    params = wrapper.run("RETURN 1", foo=1)
+    assert params["tenant_id"] == "tenant-1"
+    assert params["foo"] == 1
