@@ -392,11 +392,12 @@ class AuthService:
             notification_sender or LoggingNotificationSender()
         )
         if attempt_limiter is None:
-            logger.warning(
-                "No attempt_limiter provided — using process-local InMemoryAttemptLimiter"
-            )
             attempt_limiter = InMemoryAttemptLimiter()
         if revocation_store is None:
+            logger.warning(
+                "No revocation_store provided — using process-local "
+                "InMemoryTokenRevocationStore (not safe across workers)"
+            )
             revocation_store = InMemoryTokenRevocationStore()
         self.revocation_store: TokenRevocationStore = revocation_store
         self.attempt_limiter: AuthAttemptLimiter = attempt_limiter
