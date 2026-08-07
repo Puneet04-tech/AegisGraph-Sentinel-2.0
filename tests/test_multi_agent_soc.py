@@ -13,7 +13,7 @@ Comprehensive tests for:
 
 import pytest
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
 from src.multi_agent_soc import (
@@ -45,6 +45,7 @@ from src.multi_agent_soc import (
     get_reporting_agent,
     AgentOrchestrator,
     get_orchestrator,
+    WorkflowValidationError,
 )
 
 
@@ -596,6 +597,124 @@ class TestReportingAgent:
         reports = reporting_agent.get_recent_reports(hours=1)
         
         assert len(reports) >= 1
+    
+    def test_summary_metrics_derived_from_store(self, store, reporting_agent):
+        """Metrics must reflect stored SOC activity within the window."""
+        now = datetime.now(timezone.utc)
+        period_start = now - timedelta(days=1)
+        period_end = now
+        
+        store.store_threat_report(ThreatIntelligenceReport(
+            threat_type="payment_fraud",
+            confidence=0.8,
+            severity="HIGH",
+            description="test",
+            created_at=now - timedelta(hours=2),
+        ))
+        store.store_threat_report(ThreatIntelligenceReport(
+            threat_type="account_takeover",
+            confidence=0.6,
+            severity="LOW",
+            description="test",
+            created_at=now - timedelta(hours=1),
+        ))
+        store.store_investigation(InvestigationResult(
+            entity_id="entity_1",
+            status=InvestigationStatus.CLOSED,
+            risk_score=0.8,
+            confidence=0.9,
+            created_at=now - timedelta(hours=3),
+        ))
+        store.store_investigation(InvestigationResult(
+            entity_id="entity_2",
+            status=InvestigationStatus.IN_PROGRESS,
+            risk_score=0.4,
+            confidence=0.7,
+            created_at=now - timedelta(hours=2),
+        ))
+        
+        report = reporting_agent.generate_summary_report(period_start, period_end)
+        
+        assert report.metrics["total_alerts"] == 2.0
+        assert report.metrics["high_risk_alerts"] == 1.0
+        assert report.metrics["investigations_started"] == 2.0
+        assert report.metrics["investigations_completed"] == 1.0
+        assert report.metrics["fraud_rings_detected"] == 0.0
+        
+        threat_types = {t["threat_type"] for t in report.threats_identified}
+        assert threat_types == {"payment_fraud", "account_takeover"}
+        assert report.investigations_summary["total_investigations"] == 2
+    
+    def test_summary_report_is_deterministic(self, store, reporting_agent):
+        """Two reports over the same data must be identical."""
+        now = datetime.now(timezone.utc)
+        period_start = now - timedelta(hours=1)
+        
+        store.store_threat_report(ThreatIntelligenceReport(
+            threat_type="payment_fraud",
+            confidence=0.8,
+            severity="HIGH",
+            description="test",
+            created_at=now - timedelta(minutes=30),
+        ))
+        store.store_investigation(InvestigationResult(
+            entity_id="entity_1",
+            status=InvestigationStatus.CLOSED,
+            risk_score=0.75,
+            confidence=0.9,
+            created_at=now - timedelta(minutes=30),
+        ))
+        
+        first = reporting_agent.generate_summary_report(period_start, now)
+        second = reporting_agent.generate_summary_report(period_start, now)
+        
+        assert first.metrics == second.metrics
+        assert first.threats_identified == second.threats_identified
+        assert first.investigations_summary == second.investigations_summary
+    
+    def test_threat_trend_reflects_stored_threats(self, store, reporting_agent):
+        """Trend report must be derived from stored threat reports."""
+        now = datetime.now(timezone.utc)
+        store.store_threat_report(ThreatIntelligenceReport(
+            threat_type="payment_fraud",
+            confidence=0.8,
+            severity="HIGH",
+            description="test",
+            created_at=now - timedelta(days=1),
+        ))
+        store.store_threat_report(ThreatIntelligenceReport(
+            threat_type="payment_fraud",
+            confidence=0.7,
+            severity="MEDIUM",
+            description="test",
+            created_at=now - timedelta(hours=1),
+        ))
+        
+        trends = reporting_agent.generate_threat_trend_report(days=30)
+        
+        assert trends["period_days"] == 30
+        assert trends["threat_volume"]["current"] == 2
+        assert {"type": "payment_fraud", "count": 2} in trends["top_threats"]
+    
+    def test_orchestrator_report_window_is_non_empty(self, orchestrator):
+        """Investigation reports must use a real, non-empty time window."""
+        with patch.object(
+            ReportingAgent,
+            "generate_summary_report",
+            return_value=SOCReport(
+                report_type="investigation",
+                period_start=datetime.now(timezone.utc) - timedelta(hours=24),
+                period_end=datetime.now(timezone.utc),
+            ),
+        ) as mock_generate:
+            orchestrator.orchestrate_investigation(
+                entity_id="entity_1",
+                priority=TaskPriority.HIGH,
+            )
+        
+        kwargs = mock_generate.call_args.kwargs
+        assert kwargs["period_start"] < kwargs["period_end"]
+        assert (kwargs["period_end"] - kwargs["period_start"]).total_seconds() > 0
 
 
 # =============================================================================
@@ -626,6 +745,54 @@ class TestAgentOrchestrator:
         
         assert plan.plan_id is not None
         assert len(plan.tasks) == 2
+    
+    def test_create_workflow_rejects_invalid_agent_type(self, orchestrator):
+        """Invalid agent_type must raise a clean validation error."""
+        tasks = [
+            {"agent_type": "INVESTIGATION", "title": "Task 1"},
+            {"agent_type": "SKYNET", "title": "Task 2"},
+        ]
+        
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert excinfo.value.task_index == 1
+        assert excinfo.value.field == "agent_type"
+        assert excinfo.value.invalid_value == "SKYNET"
+        assert "INVESTIGATION" in excinfo.value.valid_values
+    
+    def test_create_workflow_rejects_invalid_priority(self, orchestrator):
+        """Invalid priority must raise a clean validation error."""
+        tasks = [
+            {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "urgent"},
+        ]
+        
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert excinfo.value.task_index == 0
+        assert excinfo.value.field == "priority"
+        assert excinfo.value.invalid_value == "urgent"
+        assert "HIGH" in excinfo.value.valid_values
+    
+    def test_create_workflow_rejects_non_dict_task(self, orchestrator):
+        """Non-dict task definitions must raise a clean validation error."""
+        with pytest.raises(WorkflowValidationError) as excinfo:
+            orchestrator.create_workflow("Test Workflow", ["not-a-dict"])
+        
+        assert excinfo.value.task_index == 0
+        assert excinfo.value.field == "task"
+    
+    def test_create_workflow_accepts_lowercase_enums(self, orchestrator):
+        """Lowercase enum values must be normalized and accepted."""
+        tasks = [
+            {"agent_type": "investigation", "title": "Task 1", "priority": "high"},
+        ]
+        
+        plan = orchestrator.create_workflow("Test Workflow", tasks)
+        
+        assert plan.tasks[0].agent_type == AgentType.INVESTIGATION
+        assert plan.tasks[0].priority == TaskPriority.HIGH
     
     def test_execute_plan(self, orchestrator):
         """Test executing orchestration plan."""

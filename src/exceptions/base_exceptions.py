@@ -79,3 +79,9 @@ class JSONSerializationError(ProcessingException):
     default_code = ErrorCode.PROCESSING_ERROR
     default_status_code = 500
 
+
+class InvestigationError(AegisException):
+    default_code = ErrorCode.PROCESSING_ERROR
+    default_status_code = 500
+
+

@@ -21,6 +21,7 @@ from .models import (
     DecisionRecommendation,
     AuditRecord,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class LRUCache(OrderedDict):
@@ -83,7 +84,9 @@ class InvestigationStore:
         self._assessments: LRUCache = LRUCache(maxsize=max_assessments)
         self._recommendations: Dict[str, List] = {}
         self._narratives: Dict[str, FraudNarrative] = {}
-        self._audit_records: List = []
+        # deque eviction is O(1); the manual `= self._audit_records[-N:]` trim this
+        # replaces copied the whole retained list on every append past the cap.
+        self._audit_records = BoundedAuditLog(capacity=10000)
         self._correlations: Dict[str, List] = {}
         self._patterns: Dict[str, FraudPattern] = {}
 
@@ -97,8 +100,28 @@ class InvestigationStore:
 
     # Case Management
     def store_case(self, case: InvestigationCase) -> None:
-        """Store an investigation case."""
+        """Store an investigation case.
+
+        If the case already exists and its status or priority changed, drop it
+        from the previous buckets before adding it to the new ones so stale
+        entries never resurface in get_cases_by_status / get_cases_by_priority /
+        get_open_cases.
+        """
         with self._lock:
+            existing = self._cases.get(case.case_id)
+            if existing is not None:
+                # The engine mutates the stored case in place before re-storing,
+                # so the existing record already carries the new status/priority
+                # and the old buckets cannot be read off it. Drop the case from
+                # every status/priority bucket except the ones being stored so a
+                # transitioned case never resurfaces in its previous buckets.
+                for status in list(self._case_by_status):
+                    if status != case.status.value:
+                        self._case_by_status[status].discard(case.case_id)
+                for priority in list(self._case_by_priority):
+                    if priority != case.priority.value:
+                        self._case_by_priority[priority].discard(case.case_id)
+
             self._cases[case.case_id] = case
 
             # Update indexes
@@ -319,8 +342,6 @@ class InvestigationStore:
         """Store audit record."""
         with self._lock:
             self._audit_records.append(record)
-            if len(self._audit_records) > 10000:
-                self._audit_records = self._audit_records[-10000:]
 
     def get_audit_records(
         self,

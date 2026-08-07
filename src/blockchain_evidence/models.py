@@ -67,7 +67,7 @@ class ChainOfCustody(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     location: str
     purpose: str
-    hash: str  # Hash of custody record
+    hash: str = ""  # Hash of custody record
     previous_custody_hash: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

@@ -59,7 +59,7 @@ class MessageRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -69,7 +69,7 @@ async def health_check():
 
 
 @router.get("/stats", dependencies=[Depends(require_role(Role.ANALYST))])
-async def get_stats():
+async def get_stats() -> Dict[str, Any]:
     """Get agent swarm statistics."""
     orchestrator = get_orchestrator()
     return {"stats": orchestrator.get_orchestrator_stats()}
@@ -260,14 +260,14 @@ async def send_message(
 
 
 @router.get("/swarm/intelligence", dependencies=[Depends(require_role(Role.ANALYST))])
-async def get_swarm_intelligence_report():
+async def get_swarm_intelligence_report() -> Dict[str, Any]:
     """Get swarm intelligence report."""
     swarm = get_swarm_intelligence()
     return swarm.get_intelligence_report()
 
 
 @router.get("/swarm/behaviors", dependencies=[Depends(require_role(Role.ANALYST))])
-async def get_emergent_behaviors():
+async def get_emergent_behaviors() -> Dict[str, Any]:
     """Get emergent behaviors detected."""
     swarm = get_swarm_intelligence()
     return {

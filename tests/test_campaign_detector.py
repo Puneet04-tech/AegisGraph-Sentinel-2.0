@@ -101,6 +101,31 @@ def test_mixed_indicator_types_group_by_value(detector, store):
     assert set(c.associated_indicators) == set(i.indicator_id for i in store.list_indicators())
 
 
+def test_entities_are_derived_from_indicator_attributes(detector, store):
+    for entity in ("entity-1", "entity-2", "entity-3"):
+        store.register_indicator(ThreatIndicator(
+            indicator_type=IndicatorType.IP,
+            value="203.0.113.7",
+            description=f"indicator for {entity}",
+            attributes={"entity_id": entity},
+        ))
+    c = detector.detect_campaigns()[0]
+    assert c.name == "Coordinated Activity on 203.0.113.7"
+    assert sorted(c.associated_entities) == ["entity-1", "entity-2", "entity-3"]
+
+
+def test_entities_fall_back_to_account_id_attribute(detector, store):
+    for acct in ("acct-A", "acct-B", "acct-C"):
+        store.register_indicator(ThreatIndicator(
+            indicator_type=IndicatorType.FINGERPRINT,
+            value="shared-fp",
+            description=f"indicator for {acct}",
+            attributes={"account_id": acct},
+        ))
+    c = detector.detect_campaigns()[0]
+    assert sorted(c.associated_entities) == ["acct-A", "acct-B", "acct-C"]
+
+
 # ---------------------------------------------------------------------------
 # Description / store side effects
 # ---------------------------------------------------------------------------

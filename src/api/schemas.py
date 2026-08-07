@@ -25,7 +25,7 @@ class BiometricsData(BaseModel):
 
     @field_validator('hold_times', 'flight_times')
     @classmethod
-    def validate_biometric_values(cls, v):
+    def validate_biometric_values(cls, v: List[float]) -> List[float]:
         """SECURITY: Validate biometric array constraints to prevent OOM.
 
         1M-element array would consume excessive memory. Limit to reasonable
@@ -82,7 +82,7 @@ class TransactionCheckRequest(BaseModel):
     location: Optional[str] = Field(default=None, description="Transaction location")
     @field_validator('timestamp')
     @classmethod
-    def validate_timestamp(cls, v):
+    def validate_timestamp(cls, v: Union[str, float]) -> Union[str, float]:
         """Validate and normalize timestamp to ISO 8601 UTC format.
 
         Accepted inputs include Unix epoch seconds and timezone-aware ISO 8601
@@ -97,7 +97,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('source_account')
     @classmethod
-    def validate_source_account(cls, v):
+    def validate_source_account(cls, v: str) -> str:
         """Validate source account format."""
         try:
             TransactionValidator.validate_account_id(v, "source_account")
@@ -107,7 +107,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('target_account')
     @classmethod
-    def validate_target_account(cls, v):
+    def validate_target_account(cls, v: str) -> str:
         """Validate target account format."""
         try:
             TransactionValidator.validate_account_id(v, "target_account")
@@ -117,7 +117,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('currency')
     @classmethod
-    def validate_currency(cls, v):
+    def validate_currency(cls, v: str) -> str:
         """Validate currency code."""
         try:
             TransactionValidator.validate_currency_code(v)
@@ -127,7 +127,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('mode')
     @classmethod
-    def validate_mode(cls, v):
+    def validate_mode(cls, v: str) -> str:
         """Validate transaction mode."""
         try:
             TransactionValidator.validate_mode(v)
@@ -136,7 +136,7 @@ class TransactionCheckRequest(BaseModel):
         return v
     
     @model_validator(mode='after')
-    def validate_cross_fields(self):
+    def validate_cross_fields(self) -> "TransactionCheckRequest":
         """Validate cross-field constraints."""
         try:
             TransactionValidator.validate_cross_fields(
@@ -250,6 +250,7 @@ class BatchTransactionResponse(BaseModel):
                 "total_blocked": 0,
                 "total_review": 0,
                 "total_allowed": 1,
+                "total_failed": 0,
                 "processing_time_ms": 45.2
             }
         }
@@ -259,6 +260,7 @@ class BatchTransactionResponse(BaseModel):
     total_blocked: int
     total_review: int
     total_allowed: int
+    total_failed: int
     processing_time_ms: float
 
 

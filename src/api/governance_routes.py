@@ -69,7 +69,7 @@ class AuditActionRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -82,7 +82,7 @@ async def health_check():
 async def list_models(
     status: Optional[str] = None,
     risk_level: Optional[str] = None,
-):
+) -> Dict[str, Any]:
     """List all models in the registry."""
     registry = get_model_registry()
     
@@ -100,7 +100,7 @@ async def list_models(
 @router.post("/models", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def register_model(
     request: ModelRegisterRequest,
-):
+) -> Dict[str, Any]:
     """Register a new model."""
     registry = get_model_registry()
     
@@ -126,7 +126,7 @@ async def register_model(
 @router.get("/models/{model_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_model(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Get a model by ID."""
     registry = get_model_registry()
     
@@ -141,7 +141,7 @@ async def get_model(
 async def update_model(
     model_id: str,
     request: ModelUpdateRequest,
-):
+) -> Dict[str, Any]:
     """Update a model."""
     registry = get_model_registry()
     
@@ -162,7 +162,7 @@ async def update_model(
 @router.delete("/models/{model_id}", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def deprecate_model(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Deprecate a model."""
     registry = get_model_registry()
     
@@ -177,7 +177,7 @@ async def deprecate_model(
 @router.get("/models/{model_id}/versions", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_model_versions(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Get all versions of a model."""
     registry = get_model_registry()
     
@@ -197,7 +197,7 @@ async def get_model_versions(
 async def detect_drift(
     model_id: str,
     request: DriftDetectRequest,
-):
+) -> Dict[str, Any]:
     """Detect drift for a model."""
     governance = get_governance_engine()
     
@@ -213,7 +213,7 @@ async def detect_drift(
 @router.get("/models/{model_id}/drift", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_drift_history(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Get drift history for a model."""
     governance = get_governance_engine()
     
@@ -230,7 +230,7 @@ async def get_drift_history(
 async def detect_bias(
     model_id: str,
     request: BiasDetectRequest,
-):
+) -> Dict[str, Any]:
     """Detect bias in a model."""
     governance = get_governance_engine()
     
@@ -249,7 +249,7 @@ async def detect_bias(
 @router.get("/models/{model_id}/bias", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_bias_reports(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Get bias reports for a model."""
     governance = get_governance_engine()
     
@@ -266,7 +266,7 @@ async def get_bias_reports(
 async def explain_prediction(
     model_id: str,
     request: ExplainRequest,
-):
+) -> Dict[str, Any]:
     """Generate explanation for a prediction."""
     governance = get_governance_engine()
     
@@ -282,7 +282,7 @@ async def explain_prediction(
 @router.post("/audit", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def log_audit_action(
     request: AuditActionRequest,
-):
+) -> Dict[str, Any]:
     """Log an audit action."""
     governance = get_governance_engine()
     
@@ -303,7 +303,7 @@ async def log_audit_action(
 async def get_audit_log(
     model_id: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
-):
+) -> Dict[str, Any]:
     """Get audit log."""
     governance = get_governance_engine()
     
@@ -318,7 +318,7 @@ async def get_audit_log(
 @router.get("/models/{model_id}/compliance", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
 async def get_compliance_status(
     model_id: str,
-):
+) -> Dict[str, Any]:
     """Get compliance status for a model."""
     governance = get_governance_engine()
     

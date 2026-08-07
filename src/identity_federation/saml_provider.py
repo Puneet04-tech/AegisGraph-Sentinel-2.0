@@ -10,6 +10,7 @@ import secrets
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from signxml import XMLVerifier
 from typing import Optional
 from urllib.parse import urlencode, parse_qs, urlparse
 
@@ -173,8 +174,8 @@ class SAMLProvider:
             AuthenticationResponse with user information
         """
         try:
-            # Decode response
-            response_xml = base64.b64decode(saml_response).decode()
+            # Decode response (kept as bytes for signature verification)
+            response_xml = base64.b64decode(saml_response)
             
             # Parse XML
             root = ET.fromstring(response_xml)
@@ -197,7 +198,26 @@ class SAMLProvider:
                     error_description="No SAML assertion found",
                 )
             
-            # Validate assertion
+            # Get provider ID from issuer
+            issuer = self._get_issuer(assertion)
+            provider = self._get_provider_by_issuer(issuer)
+            if not provider:
+                return AuthenticationResponse(
+                    success=False,
+                    error="provider_not_found",
+                    error_description="Identity provider not found for issuer",
+                )
+            
+            # Verify signature
+            is_valid, error, assertion = self._verify_signature(response_xml, assertion, provider)
+            if not is_valid:
+                return AuthenticationResponse(
+                    success=False,
+                    error="assertion_invalid",
+                    error_description=error,
+                )
+            
+            # Validate assertion conditions
             is_valid, error = self._validate_assertion(assertion)
             if not is_valid:
                 return AuthenticationResponse(
@@ -208,16 +228,6 @@ class SAMLProvider:
             
             # Extract user information
             user_info = self._extract_user_info(assertion)
-            
-            # Get provider ID from issuer
-            issuer = self._get_issuer(assertion)
-            provider = self._get_provider_by_issuer(issuer)
-            if not provider:
-                return AuthenticationResponse(
-                    success=False,
-                    error="provider_not_found",
-                    error_description="Identity provider not found for issuer",
-                )
             
             # Create or update federated user
             user = self._get_or_create_user(provider, user_info)
@@ -247,22 +257,45 @@ class SAMLProvider:
             return status_code.get("Value", "urn:oasis:names:tc:SAML:2.0:status:Unknown")
         return "urn:oasis:names:tc:SAML:2.0:status:Unknown"
     
+    def _verify_signature(
+        self, response_xml: bytes, assertion: ET.Element, provider: IdentityProvider
+    ) -> tuple[bool, Optional[str], ET.Element]:
+        """Verify the assertion's XML-DSig signature against the IdP's certificate."""
+        if not provider.validate_signature:
+            return True, None, assertion
+        if not provider.saml_certificate:
+            return (
+                False,
+                "Signature validation is required but no certificate is configured",
+                assertion,
+            )
+        try:
+            result = XMLVerifier().verify(
+                response_xml, x509_cert=provider.saml_certificate
+            )
+        except Exception:
+            return False, "Assertion signature verification failed", assertion
+        return True, None, result.signed_xml
+    
     def _validate_assertion(self, assertion: ET.Element) -> tuple[bool, Optional[str]]:
-        """Validate SAML assertion."""
-        # Check conditions
+        """Validate SAML assertion conditions (validity window)."""
         conditions = assertion.find("saml:Conditions", self.NAMESPACES)
         if conditions is not None:
             # Check not_before
             not_before = conditions.get("NotBefore")
             if not_before:
-                not_before_time = datetime.strptime(not_before, "%Y-%m-%dT%H:%M:%SZ")
+                not_before_time = datetime.strptime(
+                    not_before, "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
                 if datetime.now(timezone.utc) < not_before_time:
                     return False, "Assertion not yet valid"
             
             # Check not_on_or_after
             not_on_or_after = conditions.get("NotOnOrAfter")
             if not_on_or_after:
-                not_after_time = datetime.strptime(not_on_or_after, "%Y-%m-%dT%H:%M:%SZ")
+                not_after_time = datetime.strptime(
+                    not_on_or_after, "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
                 if datetime.now(timezone.utc) >= not_after_time:
                     return False, "Assertion expired"
         
@@ -286,6 +319,11 @@ class SAMLProvider:
                 user_info[name] = value_elem.text
         
         return user_info
+
+    def _get_issuer(self, assertion: ET.Element) -> str:
+        """Extract the Issuer from a SAML assertion."""
+        issuer = assertion.find("saml:Issuer", self.NAMESPACES)
+        return issuer.text if issuer is not None and issuer.text else ""
     
     def _get_provider_by_issuer(self, issuer: str) -> Optional[IdentityProvider]:
         """Get provider by issuer URL."""

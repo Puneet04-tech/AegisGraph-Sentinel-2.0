@@ -20,6 +20,8 @@ from .models import (
     NetworkType,
     ThreatLevel,
 )
+from src.graph_analytics.centrality import average_clustering_coefficient
+
 from .store import GlobalIntelligenceStore, get_global_intelligence_store
 
 
@@ -447,7 +449,7 @@ class KnowledgeGraphEngine:
             total_edges=e,
             avg_degree=avg_degree,
             max_degree=max_degree,
-            avg_clustering=0.0,  # Simplified
+            avg_clustering=self._average_clustering(nodes, edges),
             density=density,
             connected_components=len(components),
             entities_by_type=dict(entities_by_type),
@@ -455,6 +457,27 @@ class KnowledgeGraphEngine:
         )
 
 
+
+    def _average_clustering(self, nodes, edges) -> float:
+        """Mean local clustering coefficient across the graph.
+
+        This statistic was previously reported as a hardcoded 0.0, so every
+        consumer saw a graph with no triangles regardless of its real shape.
+        Dense mutual connection between an entity's neighbours is a strong
+        signal of a coordinated ring rather than incidental co-occurrence.
+        """
+        node_ids = list(nodes.keys())
+        if len(node_ids) < 3:
+            return 0.0
+
+        known = set(node_ids)
+        adjacency: Dict[str, Set[str]] = {node_id: set() for node_id in node_ids}
+        for edge in edges.values():
+            if edge.source_id in known and edge.target_id in known:
+                adjacency[edge.source_id].add(edge.target_id)
+                adjacency[edge.target_id].add(edge.source_id)
+
+        return average_clustering_coefficient(adjacency, node_ids)
 # Global engine instance
 _engine: Optional[KnowledgeGraphEngine] = None
 

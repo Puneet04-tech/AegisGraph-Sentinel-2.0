@@ -294,7 +294,9 @@ class AdaptiveAuthService:
             outcome="initiated",
         )
         
-        # Prepare response (hide actual code in production)
+        # Prepare response (never echo the code — it is delivered out-of-band
+        # via SMS/email/push and only lives in the challenge record for
+        # verification)
         response = {
             "challenge_id": challenge.challenge_id,
             "challenge_type": challenge_type,
@@ -303,10 +305,6 @@ class AdaptiveAuthService:
             "max_attempts": challenge.max_attempts,
             "message": self._get_challenge_message(challenge_type),
         }
-        
-        # Include OTP for demo purposes (would be sent via SMS/email in production)
-        if challenge.metadata.get("otp_to_send"):
-            response["otp_code"] = challenge.metadata["otp_to_send"]
         
         return response
     

@@ -185,10 +185,9 @@ class GraphService:
         nodes = self._store.bfs_traverse(entity_id, max_depth=depth)
         node_ids = {n.node_id for n in nodes}
 
-        edges = []
-        for eid, edge in self._store._edges.items():
-            if edge.source_id in node_ids and edge.target_id in node_ids:
-                edges.append(edge)
+        # Resolved through the store's adjacency index rather than by scanning
+        # every edge in the graph, so cost tracks the neighbourhood size.
+        edges = self._store.get_incident_edges(node_ids, both_endpoints=True)
 
         return {
             "center": entity_id,
@@ -206,13 +205,38 @@ class GraphService:
         return [self._store.get_node(nid) for nid in common_ids if self._store.get_node(nid)]
 
     def find_critical_entities(self, min_centrality: float = 0.1) -> List[CentralityMetrics]:
-        """Find critical entities based on centrality."""
-        critical = []
-        for node_id in self._store._nodes:
-            metrics = self._store.calculate_centrality(node_id)
-            if metrics.degree_centrality >= min_centrality or metrics.page_rank >= min_centrality:
-                critical.append(metrics)
-        return sorted(critical, key=lambda x: x.page_rank, reverse=True)
+        """Find critical entities based on centrality.
+
+        Ranked on a composite of the four whole-graph measures rather than on
+        PageRank alone. PageRank used to be a constant, so sorting by it
+        returned entities in arbitrary dict order; betweenness in particular
+        now contributes, since bridging accounts are the ones worth escalating.
+        """
+        try:
+            scored = self._store.calculate_all_centralities()
+        except Exception as e:
+            logger.error("Failed to calculate centralities: %s", e, exc_info=True)
+            return []
+
+        critical = [
+            metrics
+            for metrics in scored.values()
+            if metrics.degree_centrality >= min_centrality
+            or metrics.page_rank >= min_centrality
+            or metrics.betweenness_centrality >= min_centrality
+        ]
+
+        def rank(metrics: CentralityMetrics) -> tuple:
+            composite = (
+                metrics.betweenness_centrality
+                + metrics.page_rank
+                + metrics.degree_centrality
+                + metrics.closeness_centrality
+            )
+            # node_id breaks ties so the ordering is stable across calls.
+            return (-composite, metrics.node_id)
+
+        return sorted(critical, key=rank)
 
     def get_connection_strength(self, entity_id1: str, entity_id2: str) -> float:
         """Calculate connection strength between two entities."""
@@ -302,20 +326,41 @@ class GraphService:
         self,
         properties: Dict[str, Any],
         node_type: Optional[str] = None,
+        limit: Optional[int] = 1000,
     ) -> List[GraphNode]:
-        """Search entities by properties."""
+        """Search entities by properties.
+
+        When a node type is supplied the search runs over that type's index
+        instead of the whole node map. The result count is bounded so a broad
+        or empty predicate cannot materialise every node in the graph.
+
+        Args:
+            properties: Property values that must all match exactly.
+            node_type: Restrict the search to a single node type.
+            limit: Maximum results to return; None disables the bound.
+        """
+        if limit is not None and limit <= 0:
+            return []
+
+        if node_type:
+            try:
+                candidates = self._store.get_nodes_by_type(NodeType(node_type))
+            except ValueError:
+                # Unknown type value matches nothing rather than scanning.
+                return []
+        else:
+            candidates = self._store.get_all_nodes()
+
         results = []
-
-        for node in self._store._nodes.values():
-            if node_type and node.node_type.value != node_type:
-                continue
-
+        for node in candidates:
             match = all(
                 node.properties.get(k) == v
                 for k, v in properties.items()
             )
             if match:
                 results.append(node)
+                if limit is not None and len(results) >= limit:
+                    break
 
         return results
 
@@ -332,10 +377,9 @@ class GraphService:
         nodes = self._store.bfs_traverse(center_id, max_depth=depth)
         node_ids = {n.node_id for n in nodes}
 
-        edges = []
-        for edge in self._store._edges.values():
-            if edge.source_id in node_ids or edge.target_id in node_ids:
-                edges.append(edge)
+        # Single-endpoint match, matching the previous behaviour: an exported
+        # subgraph keeps the edges that leave the traversed neighbourhood.
+        edges = self._store.get_incident_edges(node_ids, both_endpoints=False)
 
         return {
             "center": center_id,
@@ -367,3 +411,11 @@ def reset_graph_service() -> None:
     global _graph_service
     with _service_lock:
         _graph_service = None
+
+# --- GENERATED: safe_path_centrality ---
+def _safe_shortest_path_centrality(path):
+    """Return 1/len(path) safely, or 0.0 if path is empty."""
+    if not path:
+        return 0.0
+    return 1.0 / len(path)
+# --- END GENERATED ---
