@@ -339,6 +339,8 @@ class AuthService:
         session_store: Optional[SessionStore] = None,
         api_key_store: Optional[APIKeyStore] = None,
         notification_sender: Optional[NotificationSender] = None,
+        attempt_limiter: Optional[AuthAttemptLimiter] = None,
+        revocation_store: Optional[TokenRevocationStore] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -372,6 +374,15 @@ class AuthService:
         self.notification_sender: NotificationSender = (
             notification_sender or LoggingNotificationSender()
         )
+        if attempt_limiter is None:
+            logger.warning(
+                "No attempt_limiter provided — using process-local InMemoryAttemptLimiter"
+            )
+            attempt_limiter = InMemoryAttemptLimiter()
+        if revocation_store is None:
+            revocation_store = InMemoryTokenRevocationStore()
+        self.revocation_store: TokenRevocationStore = revocation_store
+        self.attempt_limiter: AuthAttemptLimiter = attempt_limiter
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
 
@@ -769,6 +780,7 @@ class AuthService:
         provider: Optional[AuthProvider] = None,
         device: str = "Unknown device",
         ip_address: str = "unknown",
+        session_id: Optional[str] = None,
     ) -> AuthResult:
         """Create successful authentication result.
 
@@ -776,7 +788,8 @@ class AuthService:
         so ``GET /sessions`` reports real sign-ins rather than placeholders and
         ``DELETE /sessions/{id}`` has something to revoke.
         """
-        session_id = secrets.token_hex(16)
+        if not session_id:
+            session_id = secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
         try:
