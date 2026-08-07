@@ -325,11 +325,26 @@ class SAMLProvider:
         issuer = assertion.find("saml:Issuer", self.NAMESPACES)
         return issuer.text if issuer is not None and issuer.text else ""
     
-    def _get_provider_by_issuer(self, issuer: str) -> Optional[IdentityProvider]:
-        """Get provider by issuer URL."""
+    @staticmethod
+    def _normalize_issuer(issuer: Optional[str]) -> Optional[str]:
+        """Normalize issuer for exact comparison (strip trailing slash)."""
+        if issuer is None:
+            return None
+        normalized = issuer.strip()
+        if not normalized:
+            return None
+        return normalized.rstrip("/")
+
+    def _get_provider_by_issuer(self, issuer: Optional[str]) -> Optional[IdentityProvider]:
+        """Get provider by issuer URL using exact match only."""
+        normalized_issuer = self._normalize_issuer(issuer)
+        if not normalized_issuer:
+            return None
+
         providers = self._store.list_providers()
         for provider in providers:
-            if provider.issuer == issuer or issuer in provider.issuer:
+            provider_issuer = self._normalize_issuer(provider.issuer)
+            if provider_issuer and provider_issuer == normalized_issuer:
                 return provider
         return None
     
