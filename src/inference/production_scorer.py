@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 from .device_risk import DeviceRiskCalculator, get_device_calculator
+from .timestamps import hour_in_zone
 from datetime import datetime, timezone
 import json
 
