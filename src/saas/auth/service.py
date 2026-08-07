@@ -42,10 +42,6 @@ from src.saas.auth.attempt_limiter import (
 
 logger = logging.getLogger(__name__)
 
-# Sentinel used when an identity has no lockout history: unlocked, no retry
-# delay, full budget remaining. Mirrors the limiter's own unlocked result.
-_UNLOCKED_STATE = LockoutState(locked=False)
-
 
 @dataclass
 class UserRecord:
@@ -342,8 +338,6 @@ class AuthService:
         session_store: Optional[SessionStore] = None,
         api_key_store: Optional[APIKeyStore] = None,
         notification_sender: Optional[NotificationSender] = None,
-        attempt_limiter: Optional[AuthAttemptLimiter] = None,
-        revocation_store: Optional[TokenRevocationStore] = None,
     ):
         self.config = config
         # Require an explicit secret in production; generate a random one only
@@ -376,12 +370,6 @@ class AuthService:
         self.api_key_store: APIKeyStore = api_key_store or InMemoryAPIKeyStore()
         self.notification_sender: NotificationSender = (
             notification_sender or LoggingNotificationSender()
-        )
-        self.revocation_store: TokenRevocationStore = (
-            revocation_store or InMemoryTokenRevocationStore()
-        )
-        self.attempt_limiter: AuthAttemptLimiter = (
-            attempt_limiter or InMemoryAttemptLimiter()
         )
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
@@ -780,37 +768,30 @@ class AuthService:
         provider: Optional[AuthProvider] = None,
         device: str = "Unknown device",
         ip_address: str = "unknown",
-        session_id: Optional[str] = None,
     ) -> AuthResult:
         """Create successful authentication result.
 
-        The ``session_id`` minted here is recorded in the ``SessionStore``, so
-        ``GET /sessions`` reports real sign-ins rather than placeholders and
+        The ``session_id`` minted here is now recorded in the ``SessionStore``,
+        so ``GET /sessions`` reports real sign-ins rather than placeholders and
         ``DELETE /sessions/{id}`` has something to revoke.
-
-        The refresh path passes an existing ``session_id`` so the rotated
-        tokens stay bound to the original session — minting a fresh one here
-        would orphan the live session record and let a captured refresh token
-        keep refreshing past logout.
         """
+        session_id = secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
-        if session_id is None:
-            session_id = secrets.token_hex(16)
-            try:
-                self.session_store.create(
-                    session_id=session_id,
-                    user_id=record.user_id,
-                    device=device,
-                    ip_address=ip_address,
-                )
-                self.user_store.update_last_login(record.user_id)
-            except NotImplementedError:
-                # A third-party UserStore without login tracking must not prevent
-                # sign-in; the session itself is still recorded above.
-                logger.debug("User store does not support login tracking")
-            except Exception as exc:
-                logger.warning("Could not record session: %s", exc)
+        try:
+            self.session_store.create(
+                session_id=session_id,
+                user_id=record.user_id,
+                device=device,
+                ip_address=ip_address,
+            )
+            self.user_store.update_last_login(record.user_id)
+        except NotImplementedError:
+            # A third-party UserStore without login tracking must not prevent
+            # sign-in; the session itself is still recorded above.
+            logger.debug("User store does not support login tracking")
+        except Exception as exc:
+            logger.warning("Could not record session: %s", exc)
 
         access_payload = TokenPayload(
             sub=record.user_id,
@@ -1055,7 +1036,7 @@ class AuthService:
         self.user_store.set_mfa(user_id, False)
         self._pending_mfa_secrets.pop(user_id, None)
 
-    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]) -> None:
+    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
         if provider == AuthProvider.OKTA:
             self.sso_providers[provider] = OktaSSOProvider(config)
@@ -1230,16 +1211,16 @@ class RBACService:
             return True
         return permission in perms
 
-    def require_permission(self, role: str, permission: str) -> None:
+    def require_permission(self, role: str, permission: str):
         """Raise exception if permission denied"""
         if not self.has_permission(role, permission):
             raise AuthorizationError(f"Permission denied: {permission}")
 
-    def create_custom_role(self, name: str, permissions: List[str]) -> None:
+    def create_custom_role(self, name: str, permissions: List[str]):
         """Create custom role"""
         self.custom_roles[name] = permissions
 
-    def delete_custom_role(self, name: str) -> None:
+    def delete_custom_role(self, name: str):
         """Delete custom role"""
         if name in self.custom_roles:
             del self.custom_roles[name]
@@ -1282,7 +1263,7 @@ class ABACService:
     def __init__(self):
         self.policies: List[Dict[str, Any]] = []
 
-    def add_policy(self, policy: Dict[str, Any]) -> None:
+    def add_policy(self, policy: Dict[str, Any]):
         """Add access control policy.
 
         Validates at registration so a malformed policy fails loudly here
