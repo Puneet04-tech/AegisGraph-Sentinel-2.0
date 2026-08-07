@@ -15,6 +15,7 @@ class ModelStatus(str, Enum):
     """Model status."""
     REGISTERED = "REGISTERED"
     STAGING = "STAGING"
+    CANARY = "CANARY"
     PRODUCTION = "PRODUCTION"
     ARCHIVED = "ARCHIVED"
     FAILED = "FAILED"
@@ -35,6 +36,7 @@ class DeploymentStatus(str, Enum):
     DEPLOYING = "DEPLOYING"
     DEPLOYED = "DEPLOYED"
     ROLLING_BACK = "ROLLING_BACK"
+    ROLLED_BACK = "ROLLED_BACK"
     FAILED = "FAILED"
 
 
@@ -82,6 +84,8 @@ class ModelDeployment(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
     deployed_at: Optional[datetime] = None
     rolled_back_at: Optional[datetime] = None
+    previous_model_status: Optional[str] = None
+    previous_traffic_percentage: Optional[float] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

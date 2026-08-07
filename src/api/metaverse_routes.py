@@ -56,7 +56,7 @@ class TimelineEventRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",

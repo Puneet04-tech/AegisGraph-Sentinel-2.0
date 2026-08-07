@@ -1,3 +1,13 @@
-from .drift_monitor import AdversarialDriftMonitor, create_monitor
+from .drift_monitor import (
+    AdversarialDriftMonitor,
+    DriftReport,
+    create_monitor,
+    population_stability_index,
+)
 
-__all__ = ["AdversarialDriftMonitor", "create_monitor"]
+__all__ = [
+    "AdversarialDriftMonitor",
+    "DriftReport",
+    "create_monitor",
+    "population_stability_index",
+]

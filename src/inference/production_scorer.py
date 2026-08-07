@@ -61,11 +61,11 @@ class _ThreadSafeCache:
     """
 
     def __init__(self, maxsize: int = 256):
-        self._data: OrderedDict[str, Dict] = OrderedDict()
+        self._data: OrderedDict[Any, Dict] = OrderedDict()
         self._lock = Lock()
         self._maxsize = maxsize
 
-    def get(self, key: str) -> Optional[Dict]:
+    def get(self, key: Any) -> Optional[Dict]:
         """Retrieve a cached value and move it to the end (most recently used)."""
         with self._lock:
             if key not in self._data:
@@ -73,7 +73,7 @@ class _ThreadSafeCache:
             self._data.move_to_end(key)
             return self._data[key]
 
-    def set(self, key: str, value: Dict) -> None:
+    def set(self, key: Any, value: Dict) -> None:
         """Store a value in the cache, evicting the least recently used item if at capacity."""
         with self._lock:
             if key in self._data:
@@ -158,9 +158,10 @@ class ProductionRiskScorer:
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Extract subgraph around source account (cached per batch)
+            # Extract subgraph around source account (cached per batch with temporal and hop key)
             source = transaction['source_account']
-            subgraph = _subgraph_cache.get(source) if _subgraph_cache is not None else None
+            cache_key = (source, reference_time, k_hops)
+            subgraph = _subgraph_cache.get(cache_key) if _subgraph_cache is not None else None
             if subgraph is None:
                 subgraph = self.graph_constructor.get_subgraph_around_node(
                     node_id=source,
@@ -168,7 +169,14 @@ class ProductionRiskScorer:
                     reference_time=reference_time,
                 )
                 if _subgraph_cache is not None:
-                    _subgraph_cache.set(source, subgraph)
+                    _subgraph_cache.set(cache_key, subgraph)
+            
+            # Clone tensors to prevent thread data races when executing concurrent workers
+            if isinstance(subgraph, dict):
+                subgraph = {
+                    k: (v.clone() if isinstance(v, torch.Tensor) else v)
+                    for k, v in subgraph.items()
+                }
             
             # Run inference
             with torch.no_grad():

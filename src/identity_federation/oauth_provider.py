@@ -407,9 +407,7 @@ class OAuthProvider:
         refresh_token: str,
         client_id: Optional[str],
         client_secret: Optional[str],
-        scope: Optional[str],
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
+        scope: Optional[str] = None,
     ) -> AuthenticationResponse:
         """Process refresh token grant.
 

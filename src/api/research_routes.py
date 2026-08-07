@@ -41,7 +41,7 @@ class EvaluateModelRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -221,7 +221,7 @@ async def list_evaluations(
 
 
 @router.get("/datasets")
-async def list_datasets(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_datasets(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List research datasets."""
     verify_api_key(x_api_key)
     engine = get_research_engine()

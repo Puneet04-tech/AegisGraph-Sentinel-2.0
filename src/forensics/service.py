@@ -31,7 +31,7 @@ class ForensicsService:
 
     def record_custody(self, evidence_id: str, custodian: str, action: str) -> ChainOfCustody:
         c = ChainOfCustody(evidence_id=evidence_id, custodian=custodian, action=action)
-        return c
+        return self._store.store_custody(c)
 
     def get_metrics(self) -> ForensicsMetrics:
         m = self._store.get_metrics()

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from src.ml_model_management import (
     ModelType,
     ModelStatus,
+    DeploymentStatus,
     ExperimentStatus,
     ABTestStatus,
     MLModelStore,
@@ -205,6 +206,94 @@ class TestDeploymentManager:
         )
         
         assert deployment.traffic_percentage == 10.0
+
+    def test_canary_deploy_keeps_model_out_of_production(self, deployment_manager, model_registry, store):
+        """Test canary deployment does not promote the model to PRODUCTION."""
+        model = model_registry.register_model(
+            name="Canary No Promote",
+            version="1.0.0",
+            model_type=ModelType.FRAUD_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+        
+        deployment = deployment_manager.canary_deploy(
+            model_id=model.model_id,
+            canary_percentage=10.0,
+        )
+        
+        stored_model = store.get_model(model.model_id)
+        assert stored_model.status == ModelStatus.CANARY
+        assert stored_model.status != ModelStatus.PRODUCTION
+        assert deployment.traffic_percentage == 10.0
+
+    def test_promote_canary_to_production(self, deployment_manager, model_registry, store):
+        """Test promoting a canary deployment to full production."""
+        model = model_registry.register_model(
+            name="Canary Promote",
+            version="1.0.0",
+            model_type=ModelType.RISK_SCORING,
+            description="Test",
+            framework="xgboost",
+        )
+        
+        deployment = deployment_manager.canary_deploy(
+            model_id=model.model_id,
+            canary_percentage=10.0,
+        )
+        promoted = deployment_manager.promote(deployment.deployment_id)
+        
+        assert store.get_model(model.model_id).status == ModelStatus.PRODUCTION
+        assert promoted.traffic_percentage == 100.0
+
+    def test_promote_non_canary_is_rejected(self, deployment_manager, model_registry, store):
+        """Test that a deployment cannot be promoted unless the model is CANARY."""
+        model = model_registry.register_model(
+            name="Direct Promote",
+            version="1.0.0",
+            model_type=ModelType.ANOMALY_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+        
+        deployment = deployment_manager.create_deployment(
+            model_id=model.model_id,
+            environment="production",
+        )
+        deployment_manager.deploy(deployment.deployment_id)
+        
+        assert store.get_model(model.model_id).status == ModelStatus.PRODUCTION
+        with pytest.raises(ValueError):
+            deployment_manager.promote(deployment.deployment_id)
+
+    def test_rollback_restores_previous_state(self, deployment_manager, model_registry, store):
+        """Test rollback restores model status and traffic allocation."""
+        model = model_registry.register_model(
+            name="Rollback Test",
+            version="1.0.0",
+            model_type=ModelType.FRAUD_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+        
+        deployment = deployment_manager.create_deployment(
+            model_id=model.model_id,
+            environment="production",
+            traffic_percentage=100.0,
+        )
+        deployment_manager.deploy(deployment.deployment_id)
+        
+        stored_model = store.get_model(model.model_id)
+        assert stored_model.status == ModelStatus.PRODUCTION
+        
+        deployment_manager.update_traffic(deployment.deployment_id, 40.0)
+        
+        rolled_back = deployment_manager.rollback(deployment.deployment_id)
+        
+        assert store.get_model(model.model_id).status == ModelStatus.REGISTERED
+        assert rolled_back.status == DeploymentStatus.ROLLED_BACK
+        assert rolled_back.traffic_percentage == 100.0
+        assert rolled_back.rolled_back_at is not None
 
 
 # =============================================================================

@@ -1,9 +1,11 @@
 import uuid
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any
 from src.soar.models import AuditRecord
 from src.soar.store import SOARStore
+from src.security.secure_logging import safe_log_metadata
 
 logger = logging.getLogger("aegis.soar.audit")
 
@@ -22,7 +24,7 @@ class SOARAuditLogger:
             status=status
         )
         self.store.add_audit_record(record)
-        logger.info(f"[SOAR AUDIT] Action: {action} | User: {user_id} | Status: {status} | Details: {json_details(details)}")
+        logger.info(f"[SOAR AUDIT] Action: {action} | User: {user_id} | Status: {status} | Details: {json.dumps(safe_log_metadata(details))}")
         return record
 
 def json_details(details: Dict[str, Any]) -> str:
