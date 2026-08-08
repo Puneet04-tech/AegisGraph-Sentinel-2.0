@@ -44,7 +44,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
-from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details
+from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details, _parse_rate_limit
 
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
@@ -143,13 +143,14 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
                 if api_key:
                     checks.insert(0, ("api_key", api_key))
 
+                sustained_limit, parsed_window = _parse_rate_limit(str(runtime_settings.api.rate_limit))
                 for scope, identity in checks:
                     decision = check_rate_limit(
                         identity,
                         scope=scope,
-                        limit=runtime_settings.api.rate_limit_burst,
+                        limit=sustained_limit,
                         burst=runtime_settings.api.rate_limit_burst,
-                        window_seconds=runtime_settings.api.rate_limit_window_seconds,
+                        window_seconds=parsed_window,
                     )
                     if not decision.allowed:
                         return JSONResponse(
