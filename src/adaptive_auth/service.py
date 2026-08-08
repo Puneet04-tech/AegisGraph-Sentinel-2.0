@@ -270,6 +270,8 @@ class AdaptiveAuthService:
         session = self.store.get_session(session_id)
         if not session:
             raise ValueError("Session not found")
+        if user_id != session.user_id:
+            raise ValueError("Challenge user does not match session user")
         
         try:
             ctype = ChallengeType(challenge_type)
@@ -278,7 +280,7 @@ class AdaptiveAuthService:
         
         challenge = self.stepup_service.create_challenge(
             session_id=session_id,
-            user_id=user_id,
+            user_id=session.user_id,
             challenge_type=ctype,
             metadata=metadata,
         )
