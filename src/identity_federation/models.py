@@ -77,6 +77,7 @@ class IdentityProvider(BaseModel):
     oidc_discovery_url: Optional[str] = Field(None, description="OIDC discovery URL")
     oidc_authorization_endpoint: Optional[str] = Field(None, description="OIDC auth endpoint")
     oidc_token_endpoint: Optional[str] = Field(None, description="OIDC token endpoint")
+    oidc_revocation_endpoint: Optional[str] = Field(None, description="OIDC token revocation endpoint")
     oidc_userinfo_endpoint: Optional[str] = Field(None, description="OIDC userinfo endpoint")
     oidc_jwks_uri: Optional[str] = Field(None, description="OIDC JWKS URI")
     

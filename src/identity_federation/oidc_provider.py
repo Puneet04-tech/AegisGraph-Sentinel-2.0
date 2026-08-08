@@ -324,6 +324,12 @@ class OIDCProvider:
             return provider.oidc_token_endpoint
         return self._provider_discovery(provider).get("token_endpoint")
     
+    def _resolve_revocation_endpoint(self, provider: IdentityProvider) -> Optional[str]:
+        """Find the provider token revocation endpoint."""
+        if provider.oidc_revocation_endpoint:
+            return provider.oidc_revocation_endpoint
+        return self._provider_discovery(provider).get("revocation_endpoint")
+
     def exchange_code(
         self,
         provider_id: str,
@@ -757,5 +763,25 @@ class OIDCProvider:
         if not provider:
             return False
         
-        # In production, call provider's token revocation endpoint
-        return True
+        endpoint = self._resolve_revocation_endpoint(provider)
+        if not endpoint or requests is None:
+            return False
+
+        auth = (
+            (provider.client_id, provider.client_secret)
+            if provider.client_id and provider.client_secret
+            else None
+        )
+        try:
+            response = requests.post(
+                endpoint,
+                data={"token": token, "token_type_hint": token_type},
+                auth=auth,
+                timeout=self._request_timeout,
+                verify=True,
+                headers={"Accept": "application/json"},
+            )
+        except Exception as exc:
+            logger.warning("OIDC token revocation request failed: %s", exc)
+            return False
+        return 200 <= response.status_code < 300
