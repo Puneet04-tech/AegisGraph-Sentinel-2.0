@@ -76,6 +76,10 @@ class PasswordResetTokenStore(ABC):
         """
 
     @abstractmethod
+    def peek(self, token: str) -> Optional[str]:
+        """Return the owner of a valid token without consuming it."""
+
+    @abstractmethod
     def invalidate_for_user(self, user_id: str) -> None:
         """Drop every outstanding token for *user_id*."""
 
@@ -108,6 +112,18 @@ class InMemoryPasswordResetTokenStore(PasswordResetTokenStore):
                 expires_at=_now() + timedelta(seconds=self._ttl_seconds),
             )
         return token
+
+    def peek(self, token: str) -> Optional[str]:
+        """Return the owner of a valid token without invalidating it."""
+        if not token:
+            return None
+        token_hash = _hash(token)
+        with self._lock:
+            self._purge_expired()
+            record = self._tokens.get(token_hash)
+            if record is None or not secrets.compare_digest(record.token_hash, token_hash):
+                return None
+            return record.user_id
 
     def consume(self, token: str) -> Optional[str]:
         if not token:
