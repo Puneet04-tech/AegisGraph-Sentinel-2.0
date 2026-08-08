@@ -64,6 +64,10 @@ class InsiderThreatDetector:
             float(r.get("duration", r.get("duration_seconds", 0.0)) or 0.0)
             for r in records
         ]
+        volumes = [
+            float(r.get("data_volume", r.get("volume", 0.0)) or 0.0)
+            for r in records
+        ]
         hours = sorted({
             int(h) for h in (r.get("hour") for r in records) if h is not None
         })
@@ -79,6 +83,7 @@ class InsiderThreatDetector:
             activity_type=activity_type,
             avg_frequency=float(len(records)),
             avg_duration=(sum(durations) / len(durations)) if durations else 0.0,
+            avg_volume=(sum(volumes) / len(volumes)) if volumes else 0.0,
             # Fall back to the previous defaults only when the history says
             # nothing, so an empty baseline is not silently authoritative.
             typical_hours=hours or list(range(8, 18)),
@@ -183,6 +188,13 @@ class InsiderThreatDetector:
             baseline.avg_duration > 0
             and duration > baseline.avg_duration * self.DURATION_DEVIATION_FACTOR
         ):
+            anomalies.append("UNUSUAL_DURATION")
+            risk_score += 0.4
+
+        if (
+            baseline.avg_volume > 0
+            and data_volume > baseline.avg_volume * self.VOLUME_DEVIATION_FACTOR
+        ):
             anomalies.append("HIGH_VOLUME_DATA_ACCESS")
             risk_score += 0.4
 
@@ -242,7 +254,7 @@ class InsiderThreatDetector:
         severity = ThreatLevel.MEDIUM
         if "PRIVILEGE_ESCALATION" in anomalies:
             severity = ThreatLevel.CRITICAL
-        elif "HIGH_VOLUME_DATA_ACCESS" in anomalies:
+        elif "HIGH_VOLUME_DATA_ACCESS" in anomalies or "UNUSUAL_DURATION" in anomalies:
             severity = ThreatLevel.HIGH
         
         indicator = ThreatIndicator(
