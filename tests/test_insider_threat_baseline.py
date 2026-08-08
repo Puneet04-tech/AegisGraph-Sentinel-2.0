@@ -135,13 +135,41 @@ class TestAnomalyDetection:
             "emp-1", ActivityType.LOGIN,
             hour=10, location="HQ", device_id="LAPTOP-1", duration=100_000.0,
         )
-        assert "HIGH_VOLUME_DATA_ACCESS" in anomalies
+        assert "UNUSUAL_DURATION" in anomalies
 
     def test_a_duration_just_inside_the_factor_is_not_flagged(self, detector):
         self._with_baseline(detector)
         anomalies, _ = detector._detect_anomalies(
             "emp-1", ActivityType.LOGIN,
             hour=10, location="HQ", device_id="LAPTOP-1", duration=299.0,
+        )
+        assert "UNUSUAL_DURATION" not in anomalies
+        assert "HIGH_VOLUME_DATA_ACCESS" not in anomalies
+
+    def test_an_extreme_data_volume_is_detected(self, detector):
+        detector.establish_baseline(
+            "emp-1", ActivityType.LOGIN,
+            [{"hour": 10, "location": "HQ", "device_id": "LAPTOP-1",
+              "duration": 100.0, "data_volume": 200.0}],
+        )
+        anomalies, _ = detector._detect_anomalies(
+            "emp-1", ActivityType.LOGIN,
+            hour=10, location="HQ", device_id="LAPTOP-1",
+            duration=100.0, data_volume=5000,
+        )
+        assert "HIGH_VOLUME_DATA_ACCESS" in anomalies
+        assert "UNUSUAL_DURATION" not in anomalies
+
+    def test_volume_just_inside_the_factor_is_not_flagged(self, detector):
+        detector.establish_baseline(
+            "emp-1", ActivityType.LOGIN,
+            [{"hour": 10, "location": "HQ", "device_id": "LAPTOP-1",
+              "duration": 100.0, "data_volume": 200.0}],
+        )
+        anomalies, _ = detector._detect_anomalies(
+            "emp-1", ActivityType.LOGIN,
+            hour=10, location="HQ", device_id="LAPTOP-1",
+            duration=100.0, data_volume=900,
         )
         assert "HIGH_VOLUME_DATA_ACCESS" not in anomalies
 
