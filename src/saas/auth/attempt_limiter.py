@@ -55,12 +55,16 @@ _KEY_PREFIX = "aegis:auth:attempts:"
 SCOPE_ACCOUNT = "account"
 SCOPE_ADDRESS = "address"
 SCOPE_TOTP = "totp"
+SCOPE_PASSWORD_RESET = "password_reset"
 
 # Consecutive failures tolerated before the first lockout, per scope.
 _DEFAULT_THRESHOLDS: Dict[str, int] = {
     SCOPE_ACCOUNT: 5,
     SCOPE_ADDRESS: 20,
     SCOPE_TOTP: 5,
+    # Reset requests are cheap relative to bcrypt login, but still need a
+    # dedicated budget so spraying /password/reset cannot lock account login.
+    SCOPE_PASSWORD_RESET: 5,
 }
 
 # Lockout duration in seconds, indexed by how many lockouts this identity has

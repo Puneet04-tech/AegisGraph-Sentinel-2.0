@@ -20,6 +20,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     build_attempt_limiter,
     SCOPE_ACCOUNT,
+    SCOPE_PASSWORD_RESET,
     SCOPE_TOTP,
 )
 from src.saas.auth.password_policy import PasswordPolicyError
@@ -611,12 +612,12 @@ async def request_password_reset(request: PasswordResetRequest):
 
     The response is identical whether or not the address exists, so this
     endpoint cannot be used to enumerate accounts. Request bursts are
-    throttled per address using the shared attempt budget so the reset
-    channel cannot be abused to hammer the mailer.
+    throttled per address using a dedicated password-reset attempt budget
+    so reset spam cannot lock out account login (SCOPE_ACCOUNT).
     """
     service = _get_auth_service()
     identity = request.email.lower()
-    state = service.attempt_limiter.check(identity, SCOPE_ACCOUNT)
+    state = service.attempt_limiter.check(identity, SCOPE_PASSWORD_RESET)
     if state.locked:
         retry_after = max(1, state.retry_after_seconds)
         raise HTTPException(
@@ -627,7 +628,7 @@ async def request_password_reset(request: PasswordResetRequest):
             ),
             headers={"Retry-After": str(retry_after)},
         )
-    service.attempt_limiter.record_failure(identity, SCOPE_ACCOUNT)
+    service.attempt_limiter.record_failure(identity, SCOPE_PASSWORD_RESET)
     record = service.user_store.get_by_email(request.email)
     if record is not None:
         token = service.reset_token_store.issue(record.user_id)
