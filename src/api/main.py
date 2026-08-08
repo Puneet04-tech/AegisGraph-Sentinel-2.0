@@ -2526,8 +2526,13 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
         await websocket.close(code=1008, reason="Invalid client_id: use alphanumeric, hyphens, or underscores (max 64 chars)")
         return
 
+    api_key = websocket.headers.get("X-API-Key")
     try:
-        require_role(Role.ANALYST)(websocket.headers.get("X-API-Key"))
+        require_role(Role.ANALYST)(api_key)
+        for scope, identity in (("api_key", api_key), ("ip", websocket.client.host if websocket.client else "unknown")):
+            if not check_rate_limit(identity, scope=scope).allowed:
+                await websocket.close(code=1013, reason="Rate limit exceeded")
+                return
     except HTTPException:
         await websocket.close(code=1008)
         return
