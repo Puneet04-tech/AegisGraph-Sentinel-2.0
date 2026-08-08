@@ -136,8 +136,15 @@ class IdentityFederationStore:
         """Update a federated user."""
         with self._lock:
             user.updated_at = datetime.now(timezone.utc)
+            # Callers can mutate a user object before updating it, so remove
+            # every stale provider index entry that references this user.
+            for provider_users in self._users_by_provider.values():
+                for provider_user_id, indexed_user in list(provider_users.items()):
+                    if indexed_user.id == user.id:
+                        del provider_users[provider_user_id]
             self._users[user.id] = user
             self._users_by_email[user.email] = user
+            self._users_by_provider[user.provider_id][user.provider_user_id] = user
     
     def delete_user(self, user_id: str) -> bool:
         """Delete a federated user."""
