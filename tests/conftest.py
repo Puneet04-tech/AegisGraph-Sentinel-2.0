@@ -157,6 +157,14 @@ def _reset_rate_limit_state() -> None:
     from src.api.validators import reset_rate_limiter
     reset_rate_limiter()
 
+    try:
+        from src.security import rate_limit as rate_limit_mod
+
+        getattr(rate_limit_mod, "_reset_local_buckets", lambda: None)()
+        getattr(rate_limit_mod, "_reset_outage_log_state", lambda: None)()
+    except Exception:
+        pass
+
     # SlowAPI keeps its fixed-window counters separately from the validator
     # limiter.  Reset both public and implementation-level storage paths so
     # this remains compatible with supported SlowAPI/limits versions.
