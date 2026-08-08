@@ -102,17 +102,16 @@ def test_redis_cache_hits_and_misses():
             # Miss: direct calculation and write to redis
             score1 = detector._calculate_approx_centrality("B")
             assert score1 > 0
-            
-            # Verify it wrote to redis cache
-            redis_cache_key = "aegis:cache:centrality:B"
+
+            cache_version = int(fake_redis.get("aegis:cache:centrality:version") or 0)
+            redis_cache_key = f"aegis:cache:centrality:{cache_version}:B"
             assert fake_redis.get(redis_cache_key) is not None
             assert float(fake_redis.get(redis_cache_key)) == score1
-            
+
             # Hit: fetch from redis cache
-            # Let's change the value in redis to verify it gets hit from redis
             fake_redis.setex(redis_cache_key, 86400, 999.0)
-            detector._centrality_cache.clear() # clear local cache
-            
+            detector._centrality_cache.clear()
+
             score2 = detector._calculate_approx_centrality("B")
             assert score2 == 999.0
 
@@ -129,3 +128,33 @@ def test_redis_cache_fallback():
             detector.update_graph("B", "C")
             score = detector._calculate_approx_centrality("B")
             assert score > 0
+
+
+def test_update_graph_bumps_centrality_cache_version_and_avoids_stale_hits():
+    fake_redis = FakeRedis()
+
+    with patch("src.features.lateral_movement.get_redis_client", return_value=fake_redis):
+        mock_settings = MagicMock()
+        mock_settings.innovations.redis_url = "redis://localhost:6379/0"
+        with patch("src.features.lateral_movement.get_settings", return_value=mock_settings):
+            detector = LateralMovementDetector()
+            detector.update_graph("A", "B")
+            detector.update_graph("B", "C")
+
+            score1 = detector._calculate_approx_centrality("B")
+            version_before = int(fake_redis.get("aegis:cache:centrality:version") or 0)
+            stale_key = f"aegis:cache:centrality:{version_before}:B"
+            fake_redis.setex(stale_key, 86400, 999.0)
+            detector._centrality_cache.clear()
+
+            # Graph mutation must bump centrality cache version so stale keys are ignored.
+            detector.update_graph("C", "D")
+            version_after = int(fake_redis.get("aegis:cache:centrality:version") or 0)
+            assert version_after == version_before + 1
+
+            detector._centrality_cache.clear()
+            score2 = detector._calculate_approx_centrality("B")
+            fresh_key = f"aegis:cache:centrality:{version_after}:B"
+            assert fake_redis.get(fresh_key) is not None
+            assert score2 != 999.0
+            assert float(fake_redis.get(fresh_key)) == score2
