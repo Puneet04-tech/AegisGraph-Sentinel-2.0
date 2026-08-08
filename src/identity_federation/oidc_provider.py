@@ -727,11 +727,40 @@ class OIDCProvider:
                 error_description="Identity provider not found",
             )
         
-        # In production, exchange refresh token with provider
+        token_endpoint = self._resolve_token_endpoint(provider)
+        if not token_endpoint:
+            return AuthenticationResponse(
+                success=False,
+                error="token_endpoint_unavailable",
+                error_description="Provider has no configured or discoverable token endpoint",
+            )
+
+        auth = (
+            (provider.client_id, provider.client_secret)
+            if provider.client_id and provider.client_secret
+            else None
+        )
+        tokens = self._post(
+            token_endpoint,
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": provider.client_id,
+            },
+            auth=auth,
+        )
+        if not tokens or not tokens.get("access_token"):
+            return AuthenticationResponse(
+                success=False,
+                error="token_refresh_failed",
+                error_description="Provider did not return an access token for this refresh token",
+            )
+
         return AuthenticationResponse(
             success=True,
-            access_token=f"new_access_token_{secrets.token_hex(16)}",
-            refresh_token=f"new_refresh_token_{secrets.token_hex(16)}",
+            access_token=tokens["access_token"],
+            id_token=tokens.get("id_token"),
+            refresh_token=tokens.get("refresh_token"),
             provider_id=provider_id,
             authentication_method="oidc",
         )
