@@ -12,8 +12,9 @@ class ContainmentEngine:
     def __init__(self, store: SOARStore, audit_logger: SOARAuditLogger) -> None:
         self.store = store
         self.audit_logger = audit_logger
-        # Protection list of system entities that should never be contained
-        self.whitelist = {"admin", "system", "super_admin", "127.0.0.1", "localhost", "safe_user", "central_switch"}
+        # Only stable internal system IDs are protected. Human-controlled
+        # labels such as "admin" or "localhost" must remain containable.
+        self.whitelist = {"sys:admin", "sys:central_switch"}
 
     def trigger_containment(
         self,
