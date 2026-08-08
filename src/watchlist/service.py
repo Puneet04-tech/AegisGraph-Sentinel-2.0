@@ -60,12 +60,25 @@ class WatchlistService:
         match_result = MatchResult.NO_MATCH
         confidence = 0.0
         
-        # Simple matching logic
+        entity_name_folded = entity_name.casefold()
+        entity_id_folded = entity_id.casefold()
         for entry in self.watchlists.values():
-            if entity_name.lower() in entry.name.lower() or \
-               entry.name.lower() in entity_name.lower():
+            name_match = (
+                entity_name_folded in entry.name.casefold()
+                or entry.name.casefold() in entity_name_folded
+            )
+            alias_match = any(
+                entity_name_folded in alias.casefold()
+                or alias.casefold() in entity_name_folded
+                for alias in entry.aliases
+            )
+            identifier_match = any(
+                entity_id_folded == identifier.casefold()
+                for identifier in entry.identifiers.values()
+            )
+            if name_match or alias_match or identifier_match:
                 matched_entry_id = entry.entry_id
-                confidence = 0.9
+                confidence = 0.95 if identifier_match else 0.9
                 match_result = MatchResult.POTENTIAL_MATCH if confidence < 0.95 else MatchResult.CONFIRMED_MATCH
                 break
         
