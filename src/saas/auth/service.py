@@ -184,15 +184,43 @@ class InMemoryUserStore(UserStore):
     def find_or_create_sso_user(
         self, provider: str, user_info: Dict[str, Any]
     ) -> Tuple[str, str]:
-        email = user_info.get("email", "")
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
         record = self.get_by_email(email)
         if record:
+            # Account takeover guard: never auto-link an existing local account
+            # unless the IdP asserts the email is verified.
+            if not _sso_email_is_verified(user_info):
+                raise AuthenticationError(
+                    "SSO email is not verified; refusing to link existing account"
+                )
             return record.user_id, record.organization_id
+
         new_id = secrets.token_hex(8)
         new_org = secrets.token_hex(8)
         self.add(UserRecord(user_id=new_id, organization_id=new_org, email=email))
         return new_id, new_org
     
+
+def _sso_email_is_verified(user_info: Dict[str, Any]) -> bool:
+    """Return True when the IdP asserts the email address is verified.
+
+    Accepts common OIDC/Google claim names and boolean-ish string values.
+    Missing or falsey claims are treated as unverified (fail closed).
+    """
+    for key in ("email_verified", "verified_email"):
+        value = user_info.get(key)
+        if value is True:
+            return True
+        if isinstance(value, (int, float)) and value == 1:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+            return True
+    return False
+
+
 class MFAPendingStore(ABC):
     """Abstract store for pending-MFA session tokens.
 
@@ -740,14 +768,15 @@ class AuthService:
 
         sso_provider = self.sso_providers[provider]
 
-        # Exchange code for tokens
-        tokens = sso_provider.exchange_code(code, redirect_uri)
-
-        # Get user info from provider
-        user_info = sso_provider.get_user_info(tokens["access_token"])
-
-        # Find or create user
-        user_id, _ = self._find_or_create_sso_user(provider, user_info)
+        try:
+            tokens = sso_provider.exchange_code(code, redirect_uri)
+            user_info = sso_provider.get_user_info(tokens["access_token"])
+            user_id, _ = self._find_or_create_sso_user(provider, user_info)
+        except AuthenticationError as exc:
+            return AuthResult(success=False, error=str(exc))
+        except Exception as exc:
+            logger.warning("SSO authentication failed closed: %s", exc)
+            return AuthResult(success=False, error="SSO authentication failed")
 
         record = self.user_store.get_by_id(user_id)
         if record is None:
@@ -865,7 +894,22 @@ class AuthService:
         provider: AuthProvider,
         user_info: Dict[str, Any],
     ) -> Tuple[str, str]:
-        """Find or create a user record for an SSO login via the UserStore."""
+        """Find or create a user record for an SSO login via the UserStore.
+
+        Existing accounts are only auto-linked when the IdP marks the email as
+        verified. An unverified claim that matches a stored email is refused so
+        an attacker cannot take over the account by asserting the address.
+        """
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
+        existing = self.user_store.get_by_email(email)
+        if existing is not None and not _sso_email_is_verified(user_info):
+            raise AuthenticationError(
+                "SSO email is not verified; refusing to link existing account"
+            )
+
         return self.user_store.find_or_create_sso_user(provider.value, user_info)
 
     def refresh_tokens(self, refresh_token: str) -> AuthResult:
