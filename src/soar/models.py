@@ -32,7 +32,9 @@ class ResponseActionType(str, Enum):
 class ActionStatus(str, Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
+    ACTIVE = "ACTIVE"
     COMPLETED = "COMPLETED"
+    RELEASED = "RELEASED"
     FAILED = "FAILED"
 
 class ContainmentType(str, Enum):

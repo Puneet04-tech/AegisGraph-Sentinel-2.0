@@ -55,7 +55,7 @@ class ContainmentEngine:
         action = ContainmentAction(
             containment_id=containment_id,
             type=containment_type,
-            status=ActionStatus.COMPLETED,  # Active
+            status=ActionStatus.ACTIVE,
             target_entity=target_entity,
             initiated_by=initiated_by,
             timestamp=now_str,
@@ -79,7 +79,7 @@ class ContainmentEngine:
         if not action:
             return None
             
-        action.status = ActionStatus.COMPLETED
+        action.status = ActionStatus.RELEASED
         action.released_at = datetime.now(timezone.utc).isoformat()
         self.store.update_containment_action(action)
         

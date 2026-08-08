@@ -215,7 +215,7 @@ def test_trigger_containment_success(store, audit_logger):
         ContainmentType.ACCOUNT_SUSPEND, "user_compromised", "operator", duration_seconds=3600
     )
     assert action.containment_id.startswith("CNT-")
-    assert action.status == ActionStatus.COMPLETED
+    assert action.status == ActionStatus.ACTIVE
     assert action.type == ContainmentType.ACCOUNT_SUSPEND
     assert action.target_entity == "user_compromised"
     assert action.duration_seconds == 3600
@@ -241,7 +241,7 @@ def test_release_containment(store, audit_logger):
     action = engine.trigger_containment(ContainmentType.NETWORK_ISOLATE, "host_x", "operator")
     released = engine.release_containment(action.containment_id, "operator2")
     assert released is action
-    assert released.status == ActionStatus.COMPLETED
+    assert released.status == ActionStatus.RELEASED
     assert released.released_at is not None
     assert any(r.action == "RELEASE_CONTAINMENT" and r.user_id == "operator2" for r in store.list_audit_records())
 
@@ -283,7 +283,7 @@ def test_execute_action_variants(store, audit_logger, action_type, target, expec
     engine = ResponseEngine(store, audit_logger)
     action = engine.execute_action(action_type, target, "system")
     assert action.action_id.startswith("ACT-")
-    assert action.status == ActionStatus.COMPLETED
+    assert action.status == ActionStatus.ACTIVE
     assert action.target_id == target
     assert action.result == expected_result
     assert action.name == f"Automated {action_type.value} on {target}"
