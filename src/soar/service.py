@@ -180,7 +180,7 @@ class SOARService:
             "total_incidents": len(incidents),
             "status_distribution": status_counts,
             "severity_distribution": severity_counts,
-            "active_containments": len([c for c in containments if c.status == ActionStatus.COMPLETED]),
+            "active_containments": len([c for c in containments if c.status in (ActionStatus.ACTIVE, ActionStatus.IN_PROGRESS)]),
             "running_workflows": len([w for w in workflows if w.state == WorkflowState.RUNNING]),
             "total_audit_records": len(self.store.list_audit_records())
         }
