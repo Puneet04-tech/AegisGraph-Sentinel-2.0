@@ -88,13 +88,28 @@ class FederationManager:
             )
         
         elif provider_type in ["oidc", "azure_ad", "okta", "auth0", "google", "keycloak"]:
-            return self._oidc.initiate_login(
+            response = self._oidc.initiate_login(
                 provider_id=request.provider_id,
                 return_url=request.return_url,
                 prompt=request.oidc_prompt,
                 max_age=request.oidc_max_age,
                 acr_values=request.oidc_acr_values,
             )
+
+            # Record the pending OIDC authentication so the callback can
+            # verify the state parameter (CSRF protection) and the nonce the
+            # provider echoes back in the ID token (replay protection).
+            if response.success and response.metadata:
+                state = response.metadata.get("state")
+                if state:
+                    self._pending_auths[state] = {
+                        "state": state,
+                        "nonce": response.metadata.get("nonce"),
+                        "provider_id": request.provider_id,
+                        "return_url": request.return_url,
+                    }
+
+            return response
         
         elif provider_type == "oauth2":
             return AuthenticationResponse(
@@ -140,12 +155,14 @@ class FederationManager:
             # Get pending auth for state validation
             pending = self._pending_auths.pop(state, {})
             expected_state = pending.get("state", "")
+            expected_nonce = pending.get("nonce")
             
             return self._oidc.exchange_code(
                 provider_id=provider_id,
                 code=code,
                 expected_state=expected_state,
                 provided_state=state,
+                expected_nonce=expected_nonce,
             )
         
         elif protocol == "oauth":

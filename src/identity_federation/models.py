@@ -235,6 +235,9 @@ class AuthenticationResponse(BaseModel):
     authentication_method: Optional[str] = Field(None)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
+    # Protocol-specific metadata (e.g. OIDC state/nonce, SAML request_id)
+    metadata: dict = Field(default_factory=dict)
+
 
 class RoleMapping(BaseModel):
     """Role mapping from IdP groups to local roles."""

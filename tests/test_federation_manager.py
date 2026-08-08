@@ -252,6 +252,25 @@ class TestFederationManagerAuthenticate:
         assert query["nonce"][0]
         assert query["redirect_uri"][0].endswith("/oidc/callback")
 
+    def test_authenticate_oidc_populates_pending_auths(self, manager):
+        provider = _register_provider(
+            manager,
+            IdentityProviderType.OIDC,
+            "https://oidc.example.com",
+            client_id="cid",
+            client_secret="cs",
+            oidc_authorization_endpoint="https://oidc.example.com/authorize",
+        )
+        response = manager.authenticate(AuthenticationRequest(provider_id=provider.id))
+        query = parse_qs(urlparse(response.redirect_url).query)
+        state = query["state"][0]
+
+        pending = manager._pending_auths.get(state)
+        assert pending is not None
+        assert pending["state"] == state
+        assert pending["nonce"] == query["nonce"][0]
+        assert pending["provider_id"] == provider.id
+
     def test_authenticate_oidc_forwards_prompt_max_age_and_acr(self, manager):
         provider = _register_provider(
             manager,
@@ -367,6 +386,41 @@ class TestFederationManagerHandleCallback:
         assert response.error == "unknown_protocol"
         assert response.error_description == "Unknown protocol: ws-federation"
 
+    def test_handle_callback_oidc_uses_authenticate_state_and_nonce(self, manager, monkeypatch):
+        provider = _register_provider(
+            manager,
+            IdentityProviderType.OIDC,
+            "https://oidc.example.com",
+            client_id="cid",
+            client_secret="cs",
+            oidc_authorization_endpoint="https://oidc.example.com/authorize",
+        )
+        response = manager.authenticate(AuthenticationRequest(provider_id=provider.id))
+        query = parse_qs(urlparse(response.redirect_url).query)
+        state = query["state"][0]
+
+        captured = {}
+
+        def fake_exchange_code(**kwargs):
+            captured.update(kwargs)
+            return AuthenticationResponse(
+                success=True,
+                access_token="real-at",
+                id_token="real-it",
+                provider_id=provider.id,
+                authentication_method="oidc",
+            )
+
+        monkeypatch.setattr(manager._oidc, "exchange_code", fake_exchange_code)
+        callback = manager.handle_callback(
+            provider.id, "oidc", code="code1", state=state
+        )
+        assert callback.success is True
+        assert captured["expected_state"] == state
+        assert captured["provided_state"] == state
+        assert captured["expected_nonce"] == query["nonce"][0]
+        assert state not in manager._pending_auths
+
     def test_handle_callback_oidc_rejects_state_mismatch(self, manager):
         provider = _register_provider(
             manager,
@@ -381,21 +435,41 @@ class TestFederationManagerHandleCallback:
         assert response.error == "state_mismatch"
         assert response.error_description == "State parameter mismatch - possible CSRF attack"
 
-    def test_handle_callback_oidc_exchanges_code_with_pending_state(self, manager):
+    def test_handle_callback_oidc_exchanges_code_with_pending_state(self, manager, monkeypatch):
         provider = _register_provider(
             manager,
             IdentityProviderType.OIDC,
             "https://oidc.example.com",
             client_id="cid",
         )
-        manager._pending_auths["expected-state"] = {"state": "expected-state"}
+        captured = {}
+
+        def fake_exchange_code(**kwargs):
+            captured.update(kwargs)
+            return AuthenticationResponse(
+                success=True,
+                access_token="real-at",
+                id_token="real-it",
+                provider_id=provider.id,
+                authentication_method="oidc",
+            )
+
+        monkeypatch.setattr(manager._oidc, "exchange_code", fake_exchange_code)
+        manager._pending_auths["expected-state"] = {
+            "state": "expected-state",
+            "nonce": "n-123",
+        }
         response = manager.handle_callback(
             provider.id, "oidc", code="code1", state="expected-state"
         )
         assert response.success is True
-        assert response.access_token == "simulated_access_token_code1"
-        assert response.id_token == "simulated_id_token_code1"
+        assert response.access_token == "real-at"
+        assert response.id_token == "real-it"
         assert response.authentication_method == "oidc"
+        assert captured["code"] == "code1"
+        assert captured["expected_state"] == "expected-state"
+        assert captured["provided_state"] == "expected-state"
+        assert captured["expected_nonce"] == "n-123"
         assert "expected-state" not in manager._pending_auths
 
     def test_handle_callback_saml_routes_response_and_relay_state(self, manager, monkeypatch):
