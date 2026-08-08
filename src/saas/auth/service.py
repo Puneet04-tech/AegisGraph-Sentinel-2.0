@@ -43,6 +43,8 @@ from src.saas.auth.attempt_limiter import (
 
 logger = logging.getLogger(__name__)
 
+_UNLOCKED_STATE = LockoutState(locked=False)
+
 
 @dataclass
 class UserRecord:
@@ -182,15 +184,43 @@ class InMemoryUserStore(UserStore):
     def find_or_create_sso_user(
         self, provider: str, user_info: Dict[str, Any]
     ) -> Tuple[str, str]:
-        email = user_info.get("email", "")
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
         record = self.get_by_email(email)
         if record:
+            # Account takeover guard: never auto-link an existing local account
+            # unless the IdP asserts the email is verified.
+            if not _sso_email_is_verified(user_info):
+                raise AuthenticationError(
+                    "SSO email is not verified; refusing to link existing account"
+                )
             return record.user_id, record.organization_id
+
         new_id = secrets.token_hex(8)
         new_org = secrets.token_hex(8)
         self.add(UserRecord(user_id=new_id, organization_id=new_org, email=email))
         return new_id, new_org
     
+
+def _sso_email_is_verified(user_info: Dict[str, Any]) -> bool:
+    """Return True when the IdP asserts the email address is verified.
+
+    Accepts common OIDC/Google claim names and boolean-ish string values.
+    Missing or falsey claims are treated as unverified (fail closed).
+    """
+    for key in ("email_verified", "verified_email"):
+        value = user_info.get(key)
+        if value is True:
+            return True
+        if isinstance(value, (int, float)) and value == 1:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+            return True
+    return False
+
+
 class MFAPendingStore(ABC):
     """Abstract store for pending-MFA session tokens.
 
@@ -209,12 +239,16 @@ class MFAPendingStore(ABC):
         """Generate, store, and return a new pending-MFA token for *user_id*."""
 
     @abstractmethod
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        """Return True if a non-expired pending token matches, without consuming it."""
+
+    @abstractmethod
     def consume(self, user_id: str, mfa_token: str) -> bool:
-        """Validate and single-use-consume a pending-MFA token.
+        """Single-use-consume a pending-MFA token after successful TOTP verify.
 
         Return True iff a token exists for *user_id*, matches *mfa_token*,
-        and has not expired. The entry is removed on any attempt (single-use),
-        so a wrong or expired token cannot be retried.
+        and has not expired. The entry is removed only when the match succeeds
+        so a wrong TOTP cannot burn a valid pending session.
         """
         
 class InMemoryMFAPendingStore(MFAPendingStore):
@@ -235,14 +269,25 @@ class InMemoryMFAPendingStore(MFAPendingStore):
         self._pending[user_id] = (mfa_token, expires_at)
         return mfa_token
 
-    def consume(self, user_id: str, mfa_token: str) -> bool:
-        entry = self._pending.pop(user_id, None)
+    def _lookup_valid(self, user_id: str, mfa_token: str) -> bool:
+        entry = self._pending.get(user_id)
         if entry is None:
             return False
         stored_token, expires_at = entry
         if datetime.now(timezone.utc) > expires_at:
+            # Drop expired entries so they cannot linger.
+            self._pending.pop(user_id, None)
             return False
         return secrets.compare_digest(stored_token, mfa_token)
+
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        return self._lookup_valid(user_id, mfa_token)
+
+    def consume(self, user_id: str, mfa_token: str) -> bool:
+        if not self._lookup_valid(user_id, mfa_token):
+            return False
+        self._pending.pop(user_id, None)
+        return True
     
 class AuthProvider(str, Enum):
     """Supported authentication providers"""
@@ -771,7 +816,7 @@ class AuthService:
         if totp_state.locked:
             return self._lockout_result(totp_state)
 
-        if not self.mfa_pending_store.consume(user_id, mfa_token):
+        if not self.mfa_pending_store.validate(user_id, mfa_token):
             return AuthResult(
                 success=False,
                 error="Invalid or expired MFA session",
@@ -782,6 +827,14 @@ class AuthService:
             if state.locked:
                 return self._lockout_result(state)
             return AuthResult(success=False, error="Invalid MFA token")
+
+        # Consume only after TOTP succeeds so a wrong code cannot burn the
+        # pending first-factor session.
+        if not self.mfa_pending_store.consume(user_id, mfa_token):
+            return AuthResult(
+                success=False,
+                error="Invalid or expired MFA session",
+            )
 
         self.attempt_limiter.record_success(user_id, SCOPE_TOTP)
         return self._create_auth_result(record)
@@ -851,7 +904,22 @@ class AuthService:
         provider: AuthProvider,
         user_info: Dict[str, Any],
     ) -> Tuple[str, str]:
-        """Find or create a user record for an SSO login via the UserStore."""
+        """Find or create a user record for an SSO login via the UserStore.
+
+        Existing accounts are only auto-linked when the IdP marks the email as
+        verified. An unverified claim that matches a stored email is refused so
+        an attacker cannot take over the account by asserting the address.
+        """
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
+        existing = self.user_store.get_by_email(email)
+        if existing is not None and not _sso_email_is_verified(user_info):
+            raise AuthenticationError(
+                "SSO email is not verified; refusing to link existing account"
+            )
+
         return self.user_store.find_or_create_sso_user(provider.value, user_info)
 
     def refresh_tokens(self, refresh_token: str) -> AuthResult:
