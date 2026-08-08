@@ -43,6 +43,8 @@ from src.saas.auth.attempt_limiter import (
 
 logger = logging.getLogger(__name__)
 
+_UNLOCKED_STATE = LockoutState(locked=False)
+
 
 @dataclass
 class UserRecord:
@@ -209,12 +211,16 @@ class MFAPendingStore(ABC):
         """Generate, store, and return a new pending-MFA token for *user_id*."""
 
     @abstractmethod
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        """Return True if a non-expired pending token matches, without consuming it."""
+
+    @abstractmethod
     def consume(self, user_id: str, mfa_token: str) -> bool:
-        """Validate and single-use-consume a pending-MFA token.
+        """Single-use-consume a pending-MFA token after successful TOTP verify.
 
         Return True iff a token exists for *user_id*, matches *mfa_token*,
-        and has not expired. The entry is removed on any attempt (single-use),
-        so a wrong or expired token cannot be retried.
+        and has not expired. The entry is removed only when the match succeeds
+        so a wrong TOTP cannot burn a valid pending session.
         """
         
 class InMemoryMFAPendingStore(MFAPendingStore):
@@ -235,14 +241,25 @@ class InMemoryMFAPendingStore(MFAPendingStore):
         self._pending[user_id] = (mfa_token, expires_at)
         return mfa_token
 
-    def consume(self, user_id: str, mfa_token: str) -> bool:
-        entry = self._pending.pop(user_id, None)
+    def _lookup_valid(self, user_id: str, mfa_token: str) -> bool:
+        entry = self._pending.get(user_id)
         if entry is None:
             return False
         stored_token, expires_at = entry
         if datetime.now(timezone.utc) > expires_at:
+            # Drop expired entries so they cannot linger.
+            self._pending.pop(user_id, None)
             return False
         return secrets.compare_digest(stored_token, mfa_token)
+
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        return self._lookup_valid(user_id, mfa_token)
+
+    def consume(self, user_id: str, mfa_token: str) -> bool:
+        if not self._lookup_valid(user_id, mfa_token):
+            return False
+        self._pending.pop(user_id, None)
+        return True
     
 class AuthProvider(str, Enum):
     """Supported authentication providers"""
@@ -760,7 +777,7 @@ class AuthService:
         if totp_state.locked:
             return self._lockout_result(totp_state)
 
-        if not self.mfa_pending_store.consume(user_id, mfa_token):
+        if not self.mfa_pending_store.validate(user_id, mfa_token):
             return AuthResult(
                 success=False,
                 error="Invalid or expired MFA session",
@@ -771,6 +788,14 @@ class AuthService:
             if state.locked:
                 return self._lockout_result(state)
             return AuthResult(success=False, error="Invalid MFA token")
+
+        # Consume only after TOTP succeeds so a wrong code cannot burn the
+        # pending first-factor session.
+        if not self.mfa_pending_store.consume(user_id, mfa_token):
+            return AuthResult(
+                success=False,
+                error="Invalid or expired MFA session",
+            )
 
         self.attempt_limiter.record_success(user_id, SCOPE_TOTP)
         return self._create_auth_result(record)
