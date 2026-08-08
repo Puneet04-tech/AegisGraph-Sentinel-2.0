@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -21,11 +22,22 @@ logger = logging.getLogger(__name__)
 _OUTAGE_LOG_INTERVAL_SECONDS = 60.0
 _outage_state: Dict[str, float] = {"last_logged": 0.0, "suppressed": 0.0}
 
+# Process-local token buckets used when Redis is unreachable so throttling does
+# not silently disappear during an outage.
+_local_lock = threading.Lock()
+_local_buckets: Dict[str, Dict[str, float]] = {}
+
 
 def _reset_outage_log_state() -> None:
     """Clear the throttle. Intended for tests."""
     _outage_state["last_logged"] = 0.0
     _outage_state["suppressed"] = 0.0
+
+
+def _reset_local_buckets() -> None:
+    """Clear the in-memory fallback buckets. Intended for tests."""
+    with _local_lock:
+        _local_buckets.clear()
 
 
 def _note_backend_available() -> None:
@@ -35,8 +47,8 @@ def _note_backend_available() -> None:
     suppressed = int(_outage_state["suppressed"])
     _reset_outage_log_state()
     logger.warning(
-        "Rate limiter backend is available again (%d requests were allowed "
-        "without a limit check)",
+        "Rate limiter backend is available again (%d requests used the local "
+        "fallback while Redis was unavailable)",
         suppressed,
     )
 
@@ -49,7 +61,7 @@ def _log_backend_unavailable(exc: Exception) -> None:
     if last == 0.0:
         _outage_state["last_logged"] = now
         logger.warning(
-            "Rate limiter unavailable, allowing requests: %s", exc, exc_info=True
+            "Rate limiter unavailable, using local fallback: %s", exc, exc_info=True
         )
         return
 
@@ -58,7 +70,7 @@ def _log_backend_unavailable(exc: Exception) -> None:
         _outage_state["last_logged"] = now
         _outage_state["suppressed"] = 0.0
         logger.warning(
-            "Rate limiter still unavailable, allowing requests: %s "
+            "Rate limiter still unavailable, using local fallback: %s "
             "(%d further occurrences in the last %ds)",
             exc,
             suppressed,
@@ -144,6 +156,44 @@ def _bucket_key(scope: str, identity: str) -> str:
     return f"aegis:rate_limit:{scope}:{_normalize_identity(identity)}"
 
 
+def _check_local_rate_limit(
+    key: str,
+    *,
+    capacity: int,
+    refill_rate: float,
+) -> RateLimitDecision:
+    """Enforce a process-local token bucket when Redis is unavailable."""
+    now = time.time()
+    with _local_lock:
+        state = _local_buckets.get(key)
+        if state is None:
+            tokens = float(capacity)
+            ts = now
+        else:
+            tokens = float(state["tokens"])
+            ts = float(state["ts"])
+            elapsed = max(0.0, now - ts)
+            tokens = min(float(capacity), tokens + (elapsed * refill_rate))
+
+        if tokens >= 1.0:
+            tokens -= 1.0
+            _local_buckets[key] = {"tokens": tokens, "ts": now}
+            return RateLimitDecision(
+                allowed=True,
+                retry_after_seconds=0,
+                remaining_tokens=tokens,
+            )
+
+        deficit = 1.0 - tokens
+        retry_after = max(1, int(math.ceil(deficit / refill_rate)))
+        _local_buckets[key] = {"tokens": tokens, "ts": now}
+        return RateLimitDecision(
+            allowed=False,
+            retry_after_seconds=retry_after,
+            remaining_tokens=tokens,
+        )
+
+
 def check_rate_limit(
     api_key: str,
     *,
@@ -152,7 +202,7 @@ def check_rate_limit(
     burst: Optional[int] = None,
     window_seconds: Optional[int] = None,
 ) -> RateLimitDecision:
-    """Check a distributed token bucket and fail open if Redis is unavailable."""
+    """Check a distributed token bucket; fall back to a local bucket on Redis errors."""
     settings = get_settings()
     configured_limit, configured_window = _parse_rate_limit(settings.api.rate_limit)
     limit = int(limit or configured_limit)
@@ -166,6 +216,8 @@ def check_rate_limit(
 
     try:
         redis_client = get_redis_client(settings.innovations.redis_url)
+        if redis_client is None:
+            raise RuntimeError("redis client unavailable")
         result = redis_client.eval(
             _TOKEN_BUCKET_LUA,
             1,
@@ -186,10 +238,10 @@ def check_rate_limit(
         )
     except Exception as exc:
         _log_backend_unavailable(exc)
-        return RateLimitDecision(
-            allowed=True,
-            retry_after_seconds=0,
-            remaining_tokens=float(capacity),
+        return _check_local_rate_limit(
+            key,
+            capacity=capacity,
+            refill_rate=refill_rate,
         )
 
 
