@@ -48,6 +48,12 @@ class OrganizationDetailResponse(BaseModel):
     members: List[OrganizationMember] = []
 
 
+def _require_org_admin(org_id: str, current_user: dict) -> None:
+    _require_org_access(org_id, current_user)
+    if str(current_user.get("role", "")).strip().lower() not in {"owner", "admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization administrator access required")
+
+
 def _require_org_access(org_id: str, current_user: dict) -> None:
     """Raise HTTP 403 if the caller does not belong to the requested organization."""
     if current_user.get("organization_id") != org_id:
@@ -156,7 +162,10 @@ async def invite_member(
     current_user: dict = Depends(get_current_user),
 ):
     """Invite a new member to organization"""
-    _require_org_access(org_id, current_user)
+    _require_org_admin(org_id, current_user)
+    role = role.strip().lower()
+    if role not in {"member", "viewer", "analyst", "auditor"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invited role is not permitted")
 
     return {
         "invitation_id": str(uuid.uuid4()),
@@ -223,7 +232,7 @@ async def update_organization_settings(
     current_user: dict = Depends(get_current_user),
 ):
     """Update organization settings"""
-    _require_org_access(org_id, current_user)
+    _require_org_admin(org_id, current_user)
 
     return {
         "success": True,
