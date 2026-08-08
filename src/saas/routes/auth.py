@@ -567,9 +567,8 @@ async def sso_authorize(
             ),
         )
 
-    sso_provider.redirect_uri = redirect_uri
     state = _sso_state_store.issue(provider.value)
-    authorization_url = sso_provider.get_authorization_url()
+    authorization_url = sso_provider.get_authorization_url(redirect_uri=redirect_uri)
     separator = "&" if "?" in authorization_url else "?"
     authorization_url = f"{authorization_url}{separator}state={state}"
     return {"authorization_url": authorization_url, "state": state}

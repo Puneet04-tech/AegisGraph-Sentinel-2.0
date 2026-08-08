@@ -1162,8 +1162,8 @@ class SSOProvider:
                 f"{type(self).__name__} requires client_id and client_secret"
             )
 
-    def get_authorization_url(self) -> str:
-        """Get OAuth authorization URL"""
+    def get_authorization_url(self, redirect_uri: Optional[str] = None) -> str:
+        """Get OAuth authorization URL for an optional request redirect URI."""
         raise NotImplementedError
 
     def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
@@ -1296,11 +1296,12 @@ class OktaSSOProvider(SSOProvider):
         self.token_url = f"{domain}/oauth2/v1/token"
         self.userinfo_url = f"{domain}/oauth2/v1/userinfo"
 
-    def get_authorization_url(self) -> str:
+    def get_authorization_url(self, redirect_uri: Optional[str] = None) -> str:
+        redirect_uri = redirect_uri or self.redirect_uri
         return (
             f"{self._domain}/oauth2/v1/authorize"
             f"?client_id={self.client_id}"
-            f"&redirect_uri={self.redirect_uri}"
+            f"&redirect_uri={redirect_uri}"
             f"&response_type=code"
             f"&scope=openid%20email%20profile"
         )
@@ -1318,11 +1319,12 @@ class AzureADSSOProvider(SSOProvider):
         )
         self.userinfo_url = "https://graph.microsoft.com/oidc/userinfo"
 
-    def get_authorization_url(self) -> str:
+    def get_authorization_url(self, redirect_uri: Optional[str] = None) -> str:
+        redirect_uri = redirect_uri or self.redirect_uri
         return (
             f"https://login.microsoftonline.com/{self._tenant}/oauth2/v2.0/authorize"
             f"?client_id={self.client_id}"
-            f"&redirect_uri={self.redirect_uri}"
+            f"&redirect_uri={redirect_uri}"
             f"&response_type=code"
             f"&scope=openid%20email%20profile"
         )
@@ -1334,11 +1336,12 @@ class GoogleSSOProvider(SSOProvider):
     token_url = "https://oauth2.googleapis.com/token"
     userinfo_url = "https://openidconnect.googleapis.com/v1/userinfo"
 
-    def get_authorization_url(self) -> str:
+    def get_authorization_url(self, redirect_uri: Optional[str] = None) -> str:
+        redirect_uri = redirect_uri or self.redirect_uri
         return (
             "https://accounts.google.com/o/oauth2/v2/auth"
             f"?client_id={self.client_id}"
-            f"&redirect_uri={self.redirect_uri}"
+            f"&redirect_uri={redirect_uri}"
             f"&response_type=code"
             f"&scope=openid%20email%20profile"
         )
