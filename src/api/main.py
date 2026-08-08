@@ -2532,7 +2532,9 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
         await websocket.close(code=1008)
         return
 
-    accepted = await ws_manager.connect(websocket, client_id)
+    api_key_fingerprint = hashlib.sha256(websocket.headers.get("X-API-Key", "").encode("utf-8")).hexdigest()[:16]
+    connection_id = f"{api_key_fingerprint}:{client_id}"
+    accepted = await ws_manager.connect(websocket, connection_id)
     if not accepted:
         return
         
@@ -2540,10 +2542,10 @@ async def fraud_stream_websocket(websocket: WebSocket, client_id: str):
         while True:
             data = await websocket.receive_text()
             if data.strip().lower() == "ping":
-                await ws_manager.heartbeat(client_id)
+                await ws_manager.heartbeat(connection_id)
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        await ws_manager.disconnect(client_id, websocket)
+        await ws_manager.disconnect(connection_id, websocket)
 
 @app.post(
     "/api/v1/fraud/batch",
