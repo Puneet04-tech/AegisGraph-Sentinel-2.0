@@ -772,15 +772,31 @@ class FraudPatternDetector:
                 k: v / max_volume for k, v in incoming_volumes.items()
             }
             
+            # Compute the volume threshold from the configured percentile of
+            # incoming volumes. Accounts below it are not super-mules even when
+            # their PageRank is high.
+            volume_threshold = 0.0
+            if normalized_volumes:
+                volume_threshold = float(
+                    np.percentile(
+                        list(normalized_volumes.values()),
+                        volume_threshold_percentile * 100,
+                    )
+                )
+            
             # Find super-mules: high PageRank + high volume
             for account, pr_score in normalized_pr.items():
                 in_degree = graph.in_degree(account)
+                volume = normalized_volumes.get(account, 0.0)
                 
                 # Filter out single-transfer false positives
-                # A true super-mule must have multiple incoming transfers
-                if pr_score >= pagerank_threshold and in_degree > 1:
-                    volume = normalized_volumes.get(account, 0.0)
-                    
+                # A true super-mule must have multiple incoming transfers and
+                # sit at or above the configured volume percentile
+                if (
+                    pr_score >= pagerank_threshold
+                    and in_degree > 1
+                    and volume >= volume_threshold
+                ):
                     # Score: weighted combination of PageRank and volume
                     super_mule_score = (0.6 * pr_score) + (0.4 * volume)
                     
