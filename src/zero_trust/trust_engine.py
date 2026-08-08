@@ -33,7 +33,14 @@ class TrustEngine:
     def evaluate_trust(self, context: EvaluationContext, cached: bool = True) -> TrustScore:
         start_time = time.time()
         if cached:
-            cached_score = self.store.get_trust_score(context.user_id, context.device_id)
+            cached_score = self.store.get_trust_score(
+                context.user_id,
+                context.device_id,
+                ip_address=context.ip_address,
+                location=context.location,
+                session_id=context.session_id,
+                session_attributes=context.session_attributes,
+            )
             if cached_score:
                 self.evaluation_count += 1
                 self.total_evaluation_time += (time.time() - start_time) * 1000
@@ -50,7 +57,15 @@ class TrustEngine:
             factors_breakdown=breakdown, recommendations=recommendations,
         )
 
-        self.store.set_trust_score(context.user_id, context.device_id, trust_score)
+        self.store.set_trust_score(
+            context.user_id,
+            context.device_id,
+            trust_score,
+            ip_address=context.ip_address,
+            location=context.location,
+            session_id=context.session_id,
+            session_attributes=context.session_attributes,
+        )
         self.store.record_evaluation(context, trust_score.to_dict())
         self.evaluation_count += 1
         self.total_evaluation_time += (time.time() - start_time) * 1000
