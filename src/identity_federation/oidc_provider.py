@@ -465,7 +465,7 @@ class OIDCProvider:
                 algorithms=["RS256"],
                 issuer=provider.issuer,
                 audience=provider.client_id,
-                options={"require": ["exp", "iat", "iss"]},
+                options={"require": ["exp", "iat", "iss", "sub"]},
             )
             return True, claims
         except jwt.PyJWTError:
@@ -553,6 +553,13 @@ class OIDCProvider:
                 error_description="ID token validation failed",
             )
         
+        if not claims or not claims.get("sub"):
+            return AuthenticationResponse(
+                success=False,
+                error="subject_missing",
+                error_description="ID token must contain a non-empty subject claim",
+            )
+
         # Validate nonce if provided
         if expected_nonce and claims.get("nonce") != expected_nonce:
             return AuthenticationResponse(
