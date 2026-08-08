@@ -22,6 +22,8 @@ from src.global_intelligence import (
     InvestigationStatus,
     FederationPartner,
     FederationStatus,
+    KnowledgeGraphNode,
+    KnowledgeGraphEdge,
     # Engines
     get_federation_engine,
     get_knowledge_graph_engine,
@@ -30,6 +32,7 @@ from src.global_intelligence import (
     get_threat_exchange,
     get_campaign_discovery_engine,
     get_network_analysis_engine,
+    NetworkAnalysisEngine,
     get_federated_search_engine,
     get_risk_propagation_engine,
     RiskPropagationEngine,
@@ -471,6 +474,90 @@ class TestNetworkAnalysis:
 
         # May or may not find networks depending on connections
         assert isinstance(networks, list)
+
+    def _make_entity(self, store, entity_id, partner_id="partner-1"):
+        entity = FederatedEntity(
+            entity_id=entity_id,
+            entity_type=EntityType.ACCOUNT,
+            federation_id="fed-1",
+            partner_id=partner_id,
+            external_id=f"ext-{entity_id}",
+            risk_score=0.6,
+            threat_level=ThreatLevel.MEDIUM,
+        )
+        store.store_entity(entity)
+        store.store_graph_node(
+            KnowledgeGraphNode(
+                node_id=entity_id,
+                entity_type=EntityType.ACCOUNT,
+                properties={},
+            )
+        )
+        return entity
+
+    def _link(self, store, source_id, target_id, relationship_type="linked_to"):
+        store.store_graph_edge(
+            KnowledgeGraphEdge(
+                edge_id=f"{source_id}-{target_id}",
+                source_id=source_id,
+                target_id=target_id,
+                relationship_type=relationship_type,
+                properties={},
+            )
+        )
+
+    def test_create_network_excludes_edges_to_non_members(self):
+        """Edges, density and subcommunities must stay within network members."""
+        store = get_global_intelligence_store()
+        analysis = NetworkAnalysisEngine(store=store)
+
+        members = [
+            self._make_entity(store, "member-1"),
+            self._make_entity(store, "member-2"),
+            self._make_entity(store, "member-3"),
+        ]
+        # A connected-but-non-member node sits next to member-1.
+        self._make_entity(store, "outsider-1", partner_id="partner-2")
+
+        # Intra-network edges.
+        self._link(store, "member-1", "member-2")
+        self._link(store, "member-2", "member-3")
+        # member-1 is also directly linked to the non-member.
+        self._link(store, "member-1", "outsider-1")
+
+        network = analysis._create_network(members, None)
+
+        assert network is not None
+        assert "outsider-1" not in network.nodes
+
+        member_ids = set(network.nodes)
+        for edge in network.edges:
+            assert edge["source"] in member_ids, (
+                f"edge source {edge['source']} is not a network member"
+            )
+            assert edge["target"] in member_ids, (
+                f"edge target {edge['target']} is not a network member"
+            )
+
+        # No edge may reference the non-member node.
+        assert all(
+            edge["source"] != "outsider-1" and edge["target"] != "outsider-1"
+            for edge in network.edges
+        )
+
+        store.store_network(network)
+        analysis_result = analysis.analyze_network(network.network_id)
+        metrics = analysis_result["metrics"]
+        n = len(network.nodes)
+        # Density must be computed from member-only edges: an edge to the
+        # non-member must not inflate it.
+        assert metrics["edge_count"] > 0
+        assert metrics["density"] == (2 * metrics["edge_count"]) / (n * (n - 1))
+        assert metrics["density"] <= 1.0
+
+        # No subcommunity may contain the non-member node.
+        for community in analysis_result["communities"]:
+            assert "outsider-1" not in community
 
 
 class TestRiskPropagation:
