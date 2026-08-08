@@ -223,8 +223,7 @@ class TestIdentityFederationStore:
         # Revoke
         assert store.revoke_session("session-1") is True
         retrieved = store.get_session("session-1")
-        assert retrieved is not None
-        assert retrieved.state == SessionState.REVOKED
+        assert retrieved is None
     
     def test_o1_lookup_performance(self):
         """Test O(1) lookup performance."""
