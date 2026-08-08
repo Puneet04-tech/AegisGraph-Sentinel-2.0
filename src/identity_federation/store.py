@@ -167,7 +167,7 @@ class IdentityFederationStore:
         """Get session by ID - O(1) lookup."""
         with self._lock:
             session = self._sessions.get(session_id)
-            if session and not session.is_expired:
+            if session and not session.is_expired and session.state == SessionState.ACTIVE:
                 return session
             elif session and session.is_expired:
                 self._expire_session(session)
