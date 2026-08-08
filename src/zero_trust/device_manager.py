@@ -5,6 +5,7 @@ Device Trust Manager for Zero Trust Security
 from __future__ import annotations
 
 import hashlib
+import hmac
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 
@@ -31,7 +32,6 @@ class DeviceTrustManager:
         existing = self.store.get_device(device_id)
         if existing:
             existing.last_seen = device.last_seen
-            existing.verification_count += 1
             return existing
         result = self.store.register_device(device)
         self.registration_count += 1
@@ -60,6 +60,15 @@ class DeviceTrustManager:
     def verify_device(self, device_id: str, verification_data: Dict[str, Any]) -> bool:
         device = self.store.get_device(device_id)
         if not device:
+            return False
+        attestation_token = verification_data.get("attestation_token")
+        expected_challenge = hashlib.sha256(device_id.encode()).hexdigest()
+        challenge_response = verification_data.get("challenge_response")
+        has_attestation = isinstance(attestation_token, str) and bool(attestation_token.strip())
+        if not has_attestation and not (
+            isinstance(challenge_response, str)
+            and hmac.compare_digest(challenge_response, expected_challenge)
+        ):
             return False
         device.verification_count += 1
         device.last_verified = datetime.now(timezone.utc).isoformat()
