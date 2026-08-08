@@ -47,9 +47,10 @@ def test_verify_evidence_recovers_from_journal_after_restart(tmp_path):
     restarted_manager = _manager(tmp_path)
     result = restarted_manager.verify_evidence(evidence.evidence_id, evidence.block_number)
 
-    assert result["verified"] is True
+    assert result["evidence_found"] is True
     assert result["block_exists"] is True
-    assert result["chain_integrity"] is True
+    # Without the live block payload, integrity must not be claimed from stored hashes alone.
+    assert result["chain_integrity"] is False
     assert result["details"]["storage_backend"] == "journal"
 
 
@@ -59,8 +60,8 @@ def test_export_legal_proceedings_uses_durable_record_after_restart(tmp_path, mo
     monkeypatch.setenv("AEGIS_LEGAL_EXPORT_TOKEN_HASH", hashlib.sha256(b"legal-token").hexdigest())
     monkeypatch.setenv("AEGIS_LEGAL_EXPORT_AUTHORITY_ALLOWLIST", "CBI,Police Dept")
 
-    restarted_manager = _manager(tmp_path)
-    export = restarted_manager.export_for_legal_proceedings(
+    # Successful export requires a live block so hashes can be recomputed.
+    export = first_manager.export_for_legal_proceedings(
         evidence_id=evidence.evidence_id,
         case_number="CASE-149",
         requesting_authority="CBI",
@@ -71,6 +72,18 @@ def test_export_legal_proceedings_uses_durable_record_after_restart(tmp_path, mo
     assert export["package"]["evidence"]["evidence_id"] == evidence.evidence_id
     assert export["package"]["chain_verification"]["verified"] is True
     assert export["chain_of_custody"][-1]["event"] == "legal_export_generated"
+
+    restarted_manager = _manager(tmp_path)
+    restarted = restarted_manager.verify_evidence(evidence.evidence_id, evidence.block_number)
+    assert restarted["evidence_found"] is True
+    assert restarted["details"]["storage_backend"] == "journal"
+    # Restart without the live block payload must not claim cryptographic integrity.
+    assert restarted_manager.export_for_legal_proceedings(
+        evidence_id=evidence.evidence_id,
+        case_number="CASE-149",
+        requesting_authority="CBI",
+        authorization_token="legal-token",
+    ) == {"error": "Evidence verification failed - integrity compromised"}
 
 
 def test_export_legal_proceedings_rejects_unauthorized_authority(tmp_path, monkeypatch):
@@ -203,3 +216,56 @@ def test_get_statistics_reuses_fresh_chain_integrity_cache(tmp_path, monkeypatch
     assert first["chain_verified"] is True
     assert second["chain_verified"] is True
     assert guard.calls == 0
+
+def test_verify_evidence_passes_with_live_chain_hash(tmp_path):
+    manager = _manager(tmp_path)
+    evidence = _seal(manager)
+    result = manager.verify_evidence(evidence.evidence_id, evidence.block_number)
+    assert result["chain_integrity"] is True
+    assert result["block_exists"] is True
+
+
+def _live_block(manager, block_number):
+    for node in manager.nodes:
+        block = node.get_block(block_number)
+        if block is not None:
+            return block
+    return None
+
+
+def test_verify_evidence_detects_tampered_block_payload(tmp_path):
+    manager = _manager(tmp_path)
+    evidence = _seal(manager)
+    block = _live_block(manager, evidence.block_number)
+    assert block is not None
+
+    # Tamper transaction payload while leaving the stored hash unchanged.
+    block["transactions"] = list(block["transactions"]) + [{"evidence_id": "EV_TAMPERED"}]
+
+    result = manager.verify_evidence(evidence.evidence_id, evidence.block_number)
+    assert result["chain_integrity"] is False
+    assert result["verified"] is False
+
+
+def test_verify_evidence_detects_tampered_block_hash(tmp_path):
+    manager = _manager(tmp_path)
+    evidence = _seal(manager)
+    block = _live_block(manager, evidence.block_number)
+    assert block is not None
+    block["hash"] = "0" * 64
+
+    result = manager.verify_evidence(evidence.evidence_id, evidence.block_number)
+    assert result["chain_integrity"] is False
+
+
+def test_verify_evidence_detects_broken_previous_hash_link(tmp_path):
+    manager = _manager(tmp_path)
+    evidence = _seal(manager)
+    block = _live_block(manager, evidence.block_number)
+    assert block is not None
+    block["previous_hash"] = "f" * 64
+    # Keep stored hash consistent with evidence so only the prev-link check fails
+    # after recomputation also fails — either way integrity must be false.
+    result = manager.verify_evidence(evidence.evidence_id, evidence.block_number)
+    assert result["chain_integrity"] is False
+
