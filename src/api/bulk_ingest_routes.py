@@ -29,7 +29,7 @@ class CSVValidationError(Exception):
         self.raw_value = raw_value
 
 import networkx as nx
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Header
 
 from src.api.schemas import (
     BulkIngestRequest,
@@ -38,6 +38,7 @@ from src.api.schemas import (
     BulkTaskProgress,
 )
 from src.api.security import Role, require_role
+from src.api.middleware.multi_tenancy import get_current_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,8 @@ class BulkIngestionManager:
         nodes: List[Dict[str, Any]],
         edges: List[Dict[str, Any]],
         initial_errors: List[str] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> str:
         """Create a task entry, queue it for execution, and return its ID."""
         task_id = str(uuid.uuid4())
@@ -230,6 +233,8 @@ class BulkIngestionManager:
                 "failed_items": len(initial_errors) if initial_errors else 0,
             },
             "errors": list(initial_errors) if initial_errors else [],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
         }
         async with self._lock:
             self.tasks[task_id] = task_info
@@ -392,7 +397,7 @@ router = APIRouter(prefix="/api/v1/bulk", tags=["Bulk Ingestion"])
     description="Asynchronously loads a payload containing lists of nodes and edges into the graph.",
     dependencies=[Depends(require_role(Role.ANALYST))],
 )
-async def ingest_bulk_json(payload: BulkIngestRequest):
+async def ingest_bulk_json(payload: BulkIngestRequest, x_api_key: str = Header(...)):
     """Submit JSON nodes and edges payload to the bulk ingestion background queue."""
     nodes = [n.model_dump() for n in payload.nodes] if payload.nodes else []
     edges = [e.model_dump() for e in payload.edges] if payload.edges else []
@@ -414,7 +419,10 @@ async def ingest_bulk_json(payload: BulkIngestRequest):
             detail=f"Request exceeds the maximum of {MAX_EDGES_PER_REQUEST} edges.",
         )
 
-    task_id = await bulk_ingestion_manager.create_task(nodes, edges)
+    tenant_id = get_current_tenant()
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context is required.")
+    task_id = await bulk_ingestion_manager.create_task(nodes, edges, tenant_id=tenant_id, user_id=hashlib.sha256(x_api_key.encode()).hexdigest())
     return BulkIngestResponse(
         task_id=task_id,
         status="pending",
@@ -434,6 +442,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 )
 async def ingest_bulk_file(
     file: UploadFile = File(...),
+    x_api_key: str = Header(...),
     data_type: str = Query(
         "auto",
         enum=["auto", "nodes", "edges"],
@@ -628,7 +637,10 @@ async def ingest_bulk_file(
             detail=f"File exceeds the maximum of {MAX_EDGES_PER_REQUEST} edges.",
         )
 
-    task_id = await bulk_ingestion_manager.create_task(nodes, edges, initial_errors)
+    tenant_id = get_current_tenant()
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context is required.")
+    task_id = await bulk_ingestion_manager.create_task(nodes, edges, initial_errors, tenant_id=tenant_id, user_id=hashlib.sha256(x_api_key.encode()).hexdigest())
     return BulkIngestResponse(
         task_id=task_id,
         status="pending",
@@ -643,10 +655,11 @@ async def ingest_bulk_file(
     description="Retrieve execution state, processed elements counts, and skipped row error messages.",
     dependencies=[Depends(require_role(Role.ANALYST))],
 )
-async def get_bulk_ingest_status(task_id: str):
+async def get_bulk_ingest_status(task_id: str, role: Role = Depends(require_role(Role.ANALYST))):
     """Return task state or raise 404 if invalid UUID."""
     task_info = bulk_ingestion_manager.get_task_status(task_id)
-    if not task_info:
+    tenant_id = get_current_tenant()
+    if not task_info or (role not in {Role.ADMIN, Role.SUPER_ADMIN} and task_info.get("tenant_id") != tenant_id):
         raise HTTPException(
             status_code=404, detail=f"Bulk ingestion task with ID {task_id} not found."
         )
