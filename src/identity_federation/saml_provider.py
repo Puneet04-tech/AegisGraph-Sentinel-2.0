@@ -275,7 +275,22 @@ class SAMLProvider:
             )
         except Exception:
             return False, "Assertion signature verification failed", assertion
-        return True, None, result.signed_xml
+        # ``signxml`` returns the verified document root. When the whole
+        # Response is signed that root is the Response wrapper; when only the
+        # assertion is signed it is the assertion itself. Locate the signed
+        # ``saml:Assertion`` so validation, user extraction and session
+        # creation always operate on the assertion.
+        verified_root = result.signed_xml
+        assertion_tag = f"{{{self.NAMESPACES['saml']}}}Assertion"
+        if verified_root.tag == assertion_tag:
+            verified_assertion = verified_root
+        else:
+            verified_assertion = verified_root.find(
+                ".//saml:Assertion", self.NAMESPACES
+            )
+        if verified_assertion is None:
+            return False, "Verified response contains no SAML assertion", assertion
+        return True, None, verified_assertion
     
     def _validate_assertion(self, assertion: ET.Element) -> tuple[bool, Optional[str]]:
         """Validate SAML assertion conditions (validity window)."""

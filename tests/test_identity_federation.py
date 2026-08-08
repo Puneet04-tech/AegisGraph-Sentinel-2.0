@@ -61,7 +61,11 @@ def _self_signed_cert_and_key() -> tuple[str, str]:
 
 
 def _build_saml_response(
-    name_id: str, issuer: str, sign_with_key: str = None, sign_with_cert: str = None
+    name_id: str,
+    issuer: str,
+    sign_with_key: str = None,
+    sign_with_cert: str = None,
+    conditions: dict = None,
 ) -> str:
     """Build a base64-encoded SAML Response, optionally with a signed assertion."""
     import lxml.etree as lxml_etree
@@ -84,11 +88,45 @@ def _build_saml_response(
     subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
     lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
 
+    if conditions is not None:
+        conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
+        for attr, value in conditions.items():
+            conditions_elem.set(attr, value)
+
     if sign_with_key:
         signed_assertion = XMLSigner().sign(assertion, key=sign_with_key, cert=sign_with_cert)
         response.replace(assertion, signed_assertion)
 
     xml_bytes = lxml_etree.tostring(response, xml_declaration=True, encoding="UTF-8")
+    return base64.b64encode(xml_bytes).decode()
+
+
+def _build_saml_response_signed_root(
+    name_id: str, issuer: str, sign_with_key: str, sign_with_cert: str
+) -> str:
+    """Build a SAML Response whose whole root (not just the assertion) is signed."""
+    import lxml.etree as lxml_etree
+    from signxml import XMLSigner
+
+    samlp_ns = "urn:oasis:names:tc:SAML:2.0:protocol"
+    saml_ns = "urn:oasis:names:tc:SAML:2.0:assertion"
+    response = lxml_etree.Element(
+        f"{{{samlp_ns}}}Response",
+        nsmap={"samlp": samlp_ns, "saml": saml_ns},
+        ID="_resp_signed",
+        Version="2.0",
+    )
+    status = lxml_etree.SubElement(response, f"{{{samlp_ns}}}Status")
+    lxml_etree.SubElement(
+        status, f"{{{samlp_ns}}}StatusCode", Value="urn:oasis:names:tc:SAML:2.0:status:Success"
+    )
+    assertion = lxml_etree.SubElement(response, f"{{{saml_ns}}}Assertion", ID="_assertion_signed", Version="2.0")
+    lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Issuer").text = issuer
+    subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
+    lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
+
+    signed = XMLSigner().sign(response, key=sign_with_key, cert=sign_with_cert)
+    xml_bytes = lxml_etree.tostring(signed, xml_declaration=True, encoding="UTF-8")
     return base64.b64encode(xml_bytes).decode()
 
 
@@ -382,6 +420,127 @@ class TestSAMLProvider:
         
         assert response.success is True
         assert response.user.email == "real.user@example.com"
+
+    def test_process_response_rejects_expired_assertion(self):
+        """An assertion whose NotOnOrAfter has passed must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        expired = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            conditions={
+                "NotBefore": (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "NotOnOrAfter": (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+
+        response = saml.process_response(expired)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert response.user is None
+
+    def test_process_response_rejects_not_yet_valid_assertion(self):
+        """An assertion whose NotBefore is in the future must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        future = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            conditions={
+                "NotBefore": (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "NotOnOrAfter": (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+
+        response = saml.process_response(future)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert response.user is None
+
+    def test_process_response_signed_root_still_yields_user_info(self):
+        """A response whose whole root is signed must still resolve the
+        Assertion inside it and produce the federated user."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        signed = _build_saml_response_signed_root(
+            "root.signed@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(signed)
+
+        assert response.success is True
+        assert response.user.email == "root.signed@example.com"
+        assert response.user.provider_user_id == "root.signed@example.com"
+
+    def test_distinct_nameids_produce_distinct_users(self):
+        """Two different NameIDs from the same IdP must map to two distinct
+        FederatedUser records instead of collapsing into one."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+
+        first = saml.process_response(_build_saml_response(
+            "alice@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        ))
+        second = saml.process_response(_build_saml_response(
+            "bob@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        ))
+
+        assert first.success is True
+        assert second.success is True
+        assert first.user.id != second.user.id
+        assert first.user.provider_user_id != second.user.provider_user_id
+        assert first.user.email != second.user.email
 
 
 class TestOIDCProvider:
