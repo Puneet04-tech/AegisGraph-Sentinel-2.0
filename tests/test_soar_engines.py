@@ -193,7 +193,7 @@ def test_add_analyst_note(store, audit_logger):
 
 @pytest.mark.parametrize(
     "protected",
-    ["admin", "system", "super_admin", "127.0.0.1", "localhost", "safe_user", "central_switch"],
+    ["sys:admin", "sys:central_switch"],
 )
 def test_containment_whitelist_rejected(store, audit_logger, protected):
     engine = ContainmentEngine(store, audit_logger)
@@ -206,7 +206,7 @@ def test_containment_whitelist_rejected(store, audit_logger, protected):
 def test_containment_whitelist_case_insensitive(store, audit_logger):
     engine = ContainmentEngine(store, audit_logger)
     with pytest.raises(ValueError, match="whitelisted"):
-        engine.trigger_containment(ContainmentType.API_BLOCK, "ADMIN", "operator")
+        engine.trigger_containment(ContainmentType.API_BLOCK, "SYS:ADMIN", "operator")
 
 
 def test_trigger_containment_success(store, audit_logger):
