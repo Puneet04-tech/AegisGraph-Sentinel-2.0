@@ -770,13 +770,23 @@ class AuthService:
 
         try:
             tokens = sso_provider.exchange_code(code, redirect_uri)
-            user_info = sso_provider.get_user_info(tokens["access_token"])
-            user_id, _ = self._find_or_create_sso_user(provider, user_info)
+            access_token = tokens.get("access_token", "")
+            id_token = tokens.get("id_token", "")
+            try:
+                user_info = sso_provider.get_user_info(
+                    access_token, id_token=id_token
+                )
+            except TypeError:
+                # Test doubles and older providers may only accept access_token.
+                user_info = sso_provider.get_user_info(access_token)
         except AuthenticationError as exc:
             return AuthResult(success=False, error=str(exc))
         except Exception as exc:
             logger.warning("SSO authentication failed closed: %s", exc)
             return AuthResult(success=False, error="SSO authentication failed")
+
+        # Find or create user
+        user_id, _ = self._find_or_create_sso_user(provider, user_info)
 
         record = self.user_store.get_by_id(user_id)
         if record is None:
@@ -1133,80 +1143,205 @@ class AuthService:
 
 
 class SSOProvider:
-    """Base SSO provider interface"""
+    """Base SSO provider interface.
+
+    Concrete providers perform real HTTP token exchange against the IdP.
+    Missing client credentials make the provider unusable (fail closed).
+    """
+
+    token_url: str = ""
+    userinfo_url: str = ""
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.client_id = config.get("client_id")
-        self.client_secret = config.get("client_secret")
+        self.client_id = (config.get("client_id") or "").strip()
+        self.client_secret = (config.get("client_secret") or "").strip()
         self.redirect_uri = config.get("redirect_uri")
+        if not self.client_id or not self.client_secret:
+            raise ValueError(
+                f"{type(self).__name__} requires client_id and client_secret"
+            )
 
     def get_authorization_url(self) -> str:
         """Get OAuth authorization URL"""
         raise NotImplementedError
 
     def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        """Exchange authorization code for tokens"""
-        raise NotImplementedError
+        """Exchange authorization code for tokens via the provider token endpoint."""
+        if not code or not redirect_uri:
+            raise AuthenticationError("Missing authorization code or redirect_uri")
+        if not self.token_url:
+            raise AuthenticationError("SSO token endpoint is not configured")
 
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        """Get user information from provider"""
-        raise NotImplementedError
+        try:
+            import httpx
+        except ImportError as exc:  # pragma: no cover - dependency declared
+            raise AuthenticationError("httpx is required for SSO token exchange") from exc
+
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    self.token_url,
+                    data=data,
+                    headers={"Accept": "application/json"},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("SSO token exchange request failed: %s", exc)
+            raise AuthenticationError("SSO token exchange failed") from exc
+
+        if response.status_code != 200:
+            logger.warning(
+                "SSO token exchange rejected: status=%s body=%s",
+                response.status_code,
+                response.text[:200],
+            )
+            raise AuthenticationError("SSO token exchange failed")
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise AuthenticationError("SSO token response was not JSON") from exc
+
+        if not isinstance(payload, dict) or not payload.get("access_token"):
+            raise AuthenticationError("SSO token response missing access_token")
+
+        return {
+            "access_token": str(payload["access_token"]),
+            "id_token": str(payload.get("id_token") or ""),
+            "token_type": str(payload.get("token_type") or "Bearer"),
+        }
+
+    def get_user_info(self, access_token: str, id_token: str = "") -> Dict[str, Any]:
+        """Resolve user claims from userinfo endpoint or id_token payload."""
+        if not access_token and not id_token:
+            raise AuthenticationError("SSO user info requires an access or id token")
+
+        if access_token and self.userinfo_url:
+            try:
+                import httpx
+            except ImportError as exc:  # pragma: no cover
+                raise AuthenticationError("httpx is required for SSO userinfo") from exc
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.get(
+                        self.userinfo_url,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Accept": "application/json",
+                        },
+                    )
+            except httpx.HTTPError as exc:
+                logger.warning("SSO userinfo request failed: %s", exc)
+                raise AuthenticationError("SSO userinfo request failed") from exc
+
+            if response.status_code == 200:
+                try:
+                    info = response.json()
+                except ValueError as exc:
+                    raise AuthenticationError("SSO userinfo was not JSON") from exc
+                if isinstance(info, dict) and info.get("email"):
+                    return info
+                raise AuthenticationError("SSO userinfo missing email claim")
+
+            logger.warning(
+                "SSO userinfo rejected: status=%s; falling back to id_token",
+                response.status_code,
+            )
+
+        if id_token:
+            return self._claims_from_id_token(id_token)
+
+        raise AuthenticationError("Unable to obtain SSO user information")
+
+    @staticmethod
+    def _claims_from_id_token(id_token: str) -> Dict[str, Any]:
+        """Decode an OIDC id_token payload without trusting unverifiable mocks.
+
+        Signature verification against provider JWKS is out of scope here; the
+        token must still be a well-formed JWT carrying an email claim, and it
+        is only accepted after a successful authenticated token exchange.
+        """
+        try:
+            claims = jwt.decode(
+                id_token,
+                options={"verify_signature": False, "verify_aud": False},
+                algorithms=["RS256", "RS384", "RS512", "ES256", "HS256"],
+            )
+        except jwt.InvalidTokenError as exc:
+            raise AuthenticationError("Invalid SSO id_token") from exc
+
+        if not isinstance(claims, dict) or not claims.get("email"):
+            raise AuthenticationError("SSO id_token missing email claim")
+        return claims
 
 
 class OktaSSOProvider(SSOProvider):
     """Okta SSO provider implementation"""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        domain = (config.get("okta_domain") or "").strip().rstrip("/")
+        if not domain:
+            raise ValueError("OktaSSOProvider requires okta_domain")
+        if not domain.startswith("http"):
+            domain = f"https://{domain}"
+        self._domain = domain
+        self.token_url = f"{domain}/oauth2/v1/token"
+        self.userinfo_url = f"{domain}/oauth2/v1/userinfo"
+
     def get_authorization_url(self) -> str:
-        base_url = self.config.get("okta_domain", "https://your-domain.okta.com")
-        return f"{base_url}/oauth2/v1/authorize?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        # In production, make API call to Okta
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        # In production, decode ID token or call userinfo endpoint
-        return {
-            "sub": "user_id_from_okta",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            f"{self._domain}/oauth2/v1/authorize"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 class AzureADSSOProvider(SSOProvider):
     """Azure AD SSO provider implementation"""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        tenant = (config.get("tenant_id") or "common").strip()
+        self._tenant = tenant
+        self.token_url = (
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+        )
+        self.userinfo_url = "https://graph.microsoft.com/oidc/userinfo"
+
     def get_authorization_url(self) -> str:
-        tenant = self.config.get("tenant_id")
-        return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        return {
-            "sub": "user_id_from_azure",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            f"https://login.microsoftonline.com/{self._tenant}/oauth2/v2.0/authorize"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 class GoogleSSOProvider(SSOProvider):
     """Google SSO provider implementation"""
 
+    token_url = "https://oauth2.googleapis.com/token"
+    userinfo_url = "https://openidconnect.googleapis.com/v1/userinfo"
+
     def get_authorization_url(self) -> str:
-        return f"https://accounts.google.com/o/oauth2/v2/auth?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code&scope=openid%20email%20profile"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        return {
-            "sub": "user_id_from_google",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 # SAML Provider
