@@ -1053,18 +1053,22 @@ class AuthService:
 
         self.user_store.update_password_hash(user_id, self.hash_password(new_password))
 
-    def set_password(self, user_id: str, new_password: str) -> None:
-        """Set a password without knowing the previous one.
-
-        Used by the reset flow, where possession of a valid single-use token
-        stands in for knowledge of the old password.
-        """
+    def validate_password_policy(self, user_id: str, new_password: str) -> None:
+        """Validate a prospective password against the user's policy context."""
         record = self.user_store.get_by_id(user_id)
         if record is None:
             raise AuthenticationError("User not found")
         enforce_password_policy(
             new_password, email=record.email, username=record.username
         )
+
+    def set_password(self, user_id: str, new_password: str) -> None:
+        """Set a password without knowing the previous one.
+
+        Used by the reset flow, where possession of a valid single-use token
+        stands in for knowledge of the old password.
+        """
+        self.validate_password_policy(user_id, new_password)
         self.user_store.update_password_hash(user_id, self.hash_password(new_password))
 
     def begin_mfa_enrolment(self, user_id: str) -> Tuple[str, str, List[str]]:

@@ -695,6 +695,24 @@ async def request_password_reset(request: PasswordResetRequest):
 async def confirm_password_reset(request: PasswordResetConfirm):
     """Confirm a password reset with a single-use token."""
     service = _get_auth_service()
+    # Validate before consuming the single-use token, so a policy error leaves
+    # the caller able to correct the password and retry with the same token.
+    pending_user_id = service.reset_token_store.peek(request.token)
+    if pending_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token is invalid, expired, or already used",
+        )
+
+    try:
+        service.validate_password_policy(pending_user_id, request.new_password)
+    except PasswordPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     user_id = service.reset_token_store.consume(request.token)
     if user_id is None:
         raise HTTPException(
