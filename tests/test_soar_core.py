@@ -234,7 +234,7 @@ class TestSOARStore:
         assert store.list_response_actions() == [action]
         action.status = ActionStatus.COMPLETED
         store.update_response_action(action)
-        assert store.get_response_action("ACT-TEST").status == ActionStatus.ACTIVE
+        assert store.get_response_action("ACT-TEST").status == ActionStatus.COMPLETED
 
     def test_correlation_crud(self):
         store = SOARStore()
@@ -993,10 +993,12 @@ class TestSOARService:
     def test_containment_whitelist_raises(self):
         service = SOARService()
         with pytest.raises(ValueError):
-            service.trigger_containment(ContainmentType.ACCOUNT_SUSPEND, "admin", "sec_operator")
+            service.trigger_containment(ContainmentType.ACCOUNT_SUSPEND, "sys:admin", "sec_operator")
         with pytest.raises(ValueError):
-            service.trigger_containment(ContainmentType.API_BLOCK, "Admin", "sec_operator")
-        assert service.store.list_containment_actions() == []
+            service.trigger_containment(ContainmentType.API_BLOCK, "Sys:Admin", "sec_operator")
+        # Human-controlled labels remain containable.
+        service.trigger_containment(ContainmentType.ACCOUNT_SUSPEND, "admin", "sec_operator")
+        assert len(service.store.list_containment_actions()) == 1
 
     def test_containment_rate_limit_raises(self, monkeypatch):
         patch_utc_now(monkeypatch)

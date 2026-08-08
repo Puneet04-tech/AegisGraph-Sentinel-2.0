@@ -152,17 +152,23 @@ def test_containment_safeguards():
     """Test containment engine rules, whitelisting, and rate-limiting."""
     service = get_soar_service()
     
-    # Whitelisting check - should raise ValueError when attempting to block admin
+    # Only stable internal identifiers are protected; user-controlled labels
+    # remain containable.
     with pytest.raises(ValueError) as excinfo:
         service.trigger_containment(
             containment_type=ContainmentType.ACCOUNT_SUSPEND,
-            target_entity="admin",
+            target_entity="sys:admin",
             initiated_by="sec_operator"
         )
     assert "whitelisted" in str(excinfo.value)
+    service.trigger_containment(
+        containment_type=ContainmentType.ACCOUNT_SUSPEND,
+        target_entity="admin",
+        initiated_by="sec_operator"
+    )
     
     # Rate-limiting check - should raise RuntimeError after 5 requests in a minute
-    for i in range(5):
+    for i in range(4):
         service.trigger_containment(
             containment_type=ContainmentType.API_BLOCK,
             target_entity=f"bad_ip_{i}",
