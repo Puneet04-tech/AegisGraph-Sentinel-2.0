@@ -5,7 +5,9 @@ AegisGraph Sentinel Enterprise SaaS Platform
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import List, Optional
+import os
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from src.exceptions import BillingError
@@ -22,6 +24,14 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
 # Initialize usage metering service
 usage_metering_service = UsageMeteringService(billing_service)
+
+
+def _validate_redirect_url(url: str) -> None:
+    configured = os.getenv("AEGIS_BILLING_REDIRECT_ALLOWLIST")
+    prefixes = [item.strip() for item in configured.split(",") if item.strip()] if configured else ["https://app.aegisgraph.com/"]
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not any(url.startswith(prefix) for prefix in prefixes):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Redirect URL is not allowed")
 
 
 class SubscriptionResponse(BaseModel):
@@ -402,6 +412,8 @@ async def create_checkout_session(
 ):
     """Create Stripe checkout session"""
     _require_org_access(organization_id, current_user)
+    _validate_redirect_url(success_url)
+    _validate_redirect_url(cancel_url)
     _ensure_stripe_configured()
 
     customer_id = _get_customer_id(organization_id)
