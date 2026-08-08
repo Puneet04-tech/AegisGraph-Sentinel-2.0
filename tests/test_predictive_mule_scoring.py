@@ -109,3 +109,43 @@ def test_email_with_surrounding_whitespace(scorer):
 def test_empty_and_whitespace_only_email(scorer):
     assert _email_risk(scorer, "") == 10.0
     assert _email_risk(scorer, "   ") == 10.0
+
+
+def _phone_risk(scorer, phone_age_days=None, phone="9876543210"):
+    kwargs = dict(
+        name="test",
+        age=25,
+        profession="engineer",
+        stated_address="Mumbai",
+        email="user@acme-corp.example",
+        phone=phone,
+        document_type="Aadhaar",
+        facial_match=0.95,
+        document_quality_score=0.95,
+        ip_address="10.0.0.1",
+        device_id="DEV1",
+        device_age_days=100,
+        browser_fingerprint="fp",
+        initial_deposit=5000.0,
+        account_type="savings",
+        referral=None,
+        existing_customer_connections=5,
+    )
+    if phone_age_days is not None:
+        kwargs["phone_age_days"] = phone_age_days
+    result = scorer.score_account_opening(**kwargs)
+    return result["phone_risk"]
+
+
+def test_phone_age_missing_returns_neutral_zero(scorer):
+    assert _phone_risk(scorer) == 0.0
+    # Different numbers must not invent different simulated risk
+    assert _phone_risk(scorer, phone="1111111111") == 0.0
+    assert _phone_risk(scorer, phone="9999999999") == 0.0
+
+
+def test_phone_age_days_scores_from_real_value(scorer):
+    assert _phone_risk(scorer, phone_age_days=3) == 85.0
+    assert _phone_risk(scorer, phone_age_days=15) == 60.0
+    assert _phone_risk(scorer, phone_age_days=45) == 35.0
+    assert _phone_risk(scorer, phone_age_days=120) == 10.0
