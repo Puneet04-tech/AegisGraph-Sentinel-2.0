@@ -95,6 +95,8 @@ class FraudCase:
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
     tags: List[str] = field(default_factory=list)
+    tenant_id: str = "default"
+    workspace_id: Optional[str] = None
 
     # Child records (stored separately in the store, referenced here for
     # fast serialisation)

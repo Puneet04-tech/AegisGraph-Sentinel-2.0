@@ -3,11 +3,19 @@ from typing import Optional
 from datetime import datetime, timezone
 from src.api.actor import resolve_analyst_id
 from src.api.security import require_role, Role
+from src.api.middleware.multi_tenancy import get_current_tenant
 from src.case_management.store import get_case_store, CaseStatus, CasePriority, EvidenceType
 from src.api.schemas import *
 from src.api.main import _serialise_case, _api_logger
 
 router = APIRouter()
+
+
+def _require_current_tenant() -> str:
+    tenant_id = get_current_tenant()
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context is required.")
+    return tenant_id
 
 @router.post(
     "/api/v1/cases",
@@ -19,6 +27,7 @@ router = APIRouter()
 async def create_case(
     request: CreateCaseRequest,
     analyst: str = Depends(resolve_analyst_id),
+    tenant_id: str = Depends(_require_current_tenant),
 ):
     """Open a new fraud investigation case from a detected alert."""
     store = get_case_store()
@@ -30,6 +39,7 @@ async def create_case(
         analyst_id=analyst,
         priority=priority,
         tags=request.tags or [],
+        tenant_id=tenant_id,
     )
     return _serialise_case(case)
 
@@ -47,6 +57,7 @@ async def list_cases(
     assigned_analyst: Optional[str] = Query(default=None, description="Filter by analyst ID"),
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Page size"),
+    tenant_id: str = Depends(_require_current_tenant),
 ):
     """Return a paginated, filterable list of all fraud cases."""
     store = get_case_store()
@@ -56,6 +67,7 @@ async def list_cases(
         status=status_filter,
         priority=priority_filter,
         assigned_analyst=assigned_analyst,
+        tenant_id=tenant_id,
         page=page,
         page_size=page_size,
     )
@@ -91,11 +103,11 @@ async def get_case_dashboard():
     dependencies=[Depends(require_role(Role.ANALYST))],
     summary="Get full details of a fraud case",
 )
-async def get_case(case_id: str):
+async def get_case(case_id: str, tenant_id: str = Depends(_require_current_tenant)):
     """Return full details of a specific fraud case."""
     store = get_case_store()
     case = store.get_case(case_id)
-    if case is None:
+    if case is None or case.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
     return _serialise_case(case)
 
@@ -116,12 +128,13 @@ async def update_case(
     case_id: str,
     request: UpdateCaseRequest,
     analyst: str = Depends(resolve_analyst_id),
+    tenant_id: str = Depends(_require_current_tenant),
 ):
     """Partially update a fraud case (status, assigned analyst, or priority)."""
     store = get_case_store()
     try:
         case = store.get_case(case_id)
-        if case is None:
+        if case is None or case.tenant_id != tenant_id:
             raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found.")
         if request.status:
             store.update_status(case_id, CaseStatus(request.status), analyst)

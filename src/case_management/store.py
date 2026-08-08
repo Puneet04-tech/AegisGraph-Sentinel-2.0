@@ -179,6 +179,8 @@ class CaseStore:
         analyst_id: str,
         priority: CasePriority = CasePriority.MEDIUM,
         tags: Optional[List[str]] = None,
+        tenant_id: str = "default",
+        workspace_id: Optional[str] = None,
     ) -> FraudCase:
         with self._lock:
             case = FraudCase(
@@ -187,6 +189,8 @@ class CaseStore:
                 decision=decision,
                 priority=priority,
                 tags=tags or [],
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
             )
             self._cases[case.case_id] = case
             self._index_case(case)
@@ -208,6 +212,7 @@ class CaseStore:
         status: Optional[CaseStatus] = None,
         priority: Optional[CasePriority] = None,
         assigned_analyst: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[List[FraudCase], int]:
@@ -222,6 +227,9 @@ class CaseStore:
         """
         with self._lock:
             candidate_ids = self._candidate_ids(status, priority, assigned_analyst)
+            if tenant_id is not None:
+                tenant_cases = {case_id for case_id, case in self._cases.items() if case.tenant_id == tenant_id}
+                candidate_ids = tenant_cases if candidate_ids is None else candidate_ids & tenant_cases
             total = len(self._cases) if candidate_ids is None else len(candidate_ids)
 
             start = (page - 1) * page_size
