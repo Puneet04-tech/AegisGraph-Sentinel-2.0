@@ -234,7 +234,7 @@ class TestSOARStore:
         assert store.list_response_actions() == [action]
         action.status = ActionStatus.COMPLETED
         store.update_response_action(action)
-        assert store.get_response_action("ACT-TEST").status == ActionStatus.ACTIVE
+        assert store.get_response_action("ACT-TEST").status == ActionStatus.COMPLETED
 
     def test_correlation_crud(self):
         store = SOARStore()
