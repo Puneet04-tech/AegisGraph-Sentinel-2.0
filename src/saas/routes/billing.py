@@ -24,6 +24,11 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 usage_metering_service = UsageMeteringService(billing_service)
 
 
+def _require_billing_admin(current_user: dict) -> None:
+    if str(current_user.get("role", "")).strip().lower() not in {"owner", "admin", "billing"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Billing administrator access required")
+
+
 class SubscriptionResponse(BaseModel):
     id: str
     tier: str
@@ -144,6 +149,7 @@ async def create_subscription(
 ):
     """Create new subscription via Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_billing_admin(current_user)
     _ensure_stripe_configured()
 
     customer_id = _get_customer_id(organization_id)
@@ -182,6 +188,7 @@ async def update_subscription(
 ):
     """Update subscription (upgrade/downgrade) via Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_billing_admin(current_user)
     _ensure_stripe_configured()
 
     try:
@@ -213,6 +220,7 @@ async def cancel_subscription(
 ):
     """Cancel subscription via Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_billing_admin(current_user)
     _ensure_stripe_configured()
 
     try:
@@ -243,6 +251,7 @@ async def resume_subscription(
 ):
     """Resume canceled subscription"""
     _require_org_access(organization_id, current_user)
+    _require_billing_admin(current_user)
     _ensure_stripe_configured()
 
     try:
@@ -402,6 +411,7 @@ async def create_checkout_session(
 ):
     """Create Stripe checkout session"""
     _require_org_access(organization_id, current_user)
+    _require_billing_admin(current_user)
     _ensure_stripe_configured()
 
     customer_id = _get_customer_id(organization_id)
