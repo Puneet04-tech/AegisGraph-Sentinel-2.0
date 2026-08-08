@@ -10,6 +10,11 @@ from ...audit import log_audit_event
 from .abuse_tracker import AbuseTracker
 from .threat import Threat
 from .threat_registry import ThreatRegistry
+import logging
+
+from src.security.audit_dispatch import dispatch_audit, record_drop
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLDS: Dict[int, str] = {
     5: "medium",
@@ -74,22 +79,30 @@ class ThreatDetector:
                     **threat.metadata,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Escalation for a high/critical threat failing silently would
+            # mean the threat is detected but never actioned, with no trace.
+            record_drop("runtime_threat_detector.incident_escalation")
+            logger.error(
+                "Incident escalation dropped for threat %s (%s): %s: %s",
+                threat.threat_id,
+                threat.threat_type,
+                type(exc).__name__,
+                exc,
+            )
 
     def _audit(self, event_type: str, threat: Threat) -> None:
         if self.audit_logger is None:
             return
-        try:
-            self.audit_logger(
-                event_type=event_type,
-                severity=threat.severity,
-                source="runtime_threat_detector",
-                metadata={
-                    "threat_id": threat.threat_id,
-                    "threat_type": threat.threat_type,
-                    **threat.metadata,
-                },
-            )
-        except Exception:
-            pass
+        dispatch_audit(
+            self.audit_logger,
+            audit_source="runtime_threat_detector",
+            event_type=event_type,
+            severity=threat.severity,
+            source="runtime_threat_detector",
+            metadata={
+                "threat_id": threat.threat_id,
+                "threat_type": threat.threat_type,
+                **threat.metadata,
+            },
+        )
