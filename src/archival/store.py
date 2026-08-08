@@ -15,7 +15,7 @@ import threading
 import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from .models import ArchivalRunSummary, ArchiveRecord, SentinelLog
 
@@ -37,6 +37,7 @@ class SentinelLogStore:
     ) -> None:
         self._hot: Deque[SentinelLog] = deque(maxlen=hot_max_size)
         self._archive: Deque[ArchiveRecord] = deque(maxlen=archive_max_size)
+        self._archive_ids: Set[str] = set()
         self._run_history: Deque[ArchivalRunSummary] = deque(maxlen=run_history_max)
         self._lock = threading.RLock()
 
@@ -134,10 +135,26 @@ class SentinelLogStore:
     # Archive / cold collection
     # ------------------------------------------------------------------
 
-    def add_archive_records(self, records: List[ArchiveRecord]) -> None:
-        """Bulk-insert records into the cold collection."""
+    def add_archive_records(self, records: List[ArchiveRecord]) -> int:
+        """
+        Bulk-insert records into the cold collection.
+
+        Idempotent: a record whose ``log_id`` is already present in the cold
+        collection is skipped, so re-running a partially-failed archival cycle
+        cannot duplicate documents.  Returns the number of records newly
+        committed to the cold collection.
+        """
         with self._lock:
-            self._archive.extend(records)
+            new_records = []
+            seen: Set[str] = set()
+            for record in records:
+                if record.log_id in self._archive_ids or record.log_id in seen:
+                    continue
+                seen.add(record.log_id)
+                new_records.append(record)
+            self._archive.extend(new_records)
+            self._archive_ids.update(seen)
+            return len(new_records)
 
     def get_archive_logs(
         self,
