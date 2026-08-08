@@ -47,11 +47,13 @@ def store():
 
 def severity_of(store, index=-1):
     """Return the RFC 5424 severity recorded at *index* in the call log."""
+    store.flush_syslog()
     return store.syslog_client.calls[index]["severity"]
 
 
 def call_of(store, index=-1):
     """Return the raw recorded call at *index*."""
+    store.flush_syslog()
     return store.syslog_client.calls[index]
 
 
@@ -192,6 +194,7 @@ class TestSyslogCallShape:
         store.update_priority(case.case_id, CasePriority.HIGH, "a1")
         store.add_comment(case.case_id, "a1", "noted")
 
+        store.flush_syslog()
         assert len(store.syslog_client.calls) == 4
 
 
