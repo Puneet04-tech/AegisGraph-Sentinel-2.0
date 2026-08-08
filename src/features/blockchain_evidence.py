@@ -282,7 +282,9 @@ class BlockchainNode:
             creation_time,
         )
         
-        # Clear processed transactions
+        self.chain.append(block)
+
+        # Clear only transactions included in this block.
         self.pending_transactions = self.pending_transactions[100:]
         
         return block
