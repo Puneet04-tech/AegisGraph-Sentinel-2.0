@@ -4,7 +4,6 @@ Threat Intelligence Agent.
 Analyzes threat data, tracks threat actors, and generates threat intelligence reports.
 """
 
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -15,6 +14,8 @@ from .models import (
     TaskPriority,
     ThreatIntelligenceReport,
 )
+from src.cyber_threat_intel.store import get_cti_store
+
 from .store import SOCStore, get_soc_store
 
 logger = logging.getLogger(__name__)
@@ -31,13 +32,16 @@ class ThreatIntelligenceAgent:
         - Threat intelligence report generation
     """
     
-    def __init__(self, store: Optional[SOCStore] = None):
+    def __init__(self, store: Optional[SOCStore] = None, cti_store=None):
         """Initialize the threat intelligence agent.
         
         Args:
             store: Optional SOC store
         """
         self._store = store or get_soc_store()
+        # Real intelligence source. Enrichment previously invented every field
+        # it returned without consulting any store.
+        self._cti = cti_store or get_cti_store()
         self._agent_id = "threat_intelligence_agent"
         
         # Known threat patterns
@@ -76,7 +80,9 @@ class ThreatIntelligenceAgent:
         ttps = self._map_to_attack_techniques(threat_type)
         
         # Calculate confidence and severity
-        confidence = random.uniform(0.7, 0.95)
+        # Derived from how much corroborating intelligence exists, not drawn
+        # from random.uniform(0.7, 0.95).
+        confidence = self._confidence_from_evidence(indicators, threat_actors, ttps)
         severity = self._calculate_severity(len(indicators), confidence)
         
         # Generate recommendations
@@ -112,23 +118,42 @@ class ThreatIntelligenceAgent:
         """
         ioc_type = ioc.get("type", "unknown")
         
+        record = self._lookup_ioc(ioc.get("value") or ioc.get("indicator"))
+
+        if record is None:
+            # Nothing is known about this indicator. Say so, rather than
+            # inventing an association count, a prevalence band and a source
+            # country -- an invented attribution is a specific,
+            # actionable-looking claim with no basis whatsoever.
+            return {
+                **ioc,
+                "known": False,
+                "confidence_score": 0.0,
+                "threat_associations": 0,
+                "historical_prevalence": "unknown",
+                "last_seen": None,
+            }
+
+        campaigns = self._campaigns_for_ioc(record.ioc_id)
+        associations = len(campaigns) + len(
+            {actor for campaign in campaigns for actor in (campaign.actors or [])}
+        )
+
         enriched = {
             **ioc,
-            "confidence_score": random.uniform(0.6, 0.95),
-            "threat_associations": random.randint(0, 10),
-            "last_seen": datetime.now(timezone.utc).isoformat(),
-            "historical_prevalence": random.choice(["rare", "uncommon", "common", "widespread"]),
+            "known": True,
+            "confidence_score": round(float(record.confidence or 0.0), 4),
+            "threat_associations": associations,
+            "threat_level": record.threat_level.value,
+            "last_seen": record.last_seen.isoformat() if record.last_seen else None,
+            "historical_prevalence": self._prevalence_band(len(campaigns)),
         }
-        
-        if ioc_type == "ip_address":
-            enriched["geolocation"] = {
-                "country": random.choice(["US", "RU", "CN", "BR", "IN"]),
-                "reputation_score": random.uniform(0.1, 0.9),
-            }
-        elif ioc_type == "email":
-            enriched["domain_age"] = random.randint(1, 3650)
-            enriched["mail_server_verified"] = random.choice([True, False])
-        
+
+        # Attribution only ever comes from a stored record's own metadata.
+        country = (record.metadata or {}).get("country")
+        if country:
+            enriched["geolocation"] = {"country": country}
+
         return enriched
     
     def track_threat_actor(self, actor_name: str, activity: Dict[str, Any]) -> Dict[str, Any]:
@@ -141,16 +166,93 @@ class ThreatIntelligenceAgent:
         Returns:
             Actor tracking data
         """
+        record = self._lookup_actor(actor_name)
+        if record is None:
+            return {
+                "actor_name": actor_name,
+                "known": False,
+                "last_activity": None,
+                "activity_count": 0,
+                "primary_ttps": [],
+                "associated_campaigns": [],
+                "confidence": 0.0,
+            }
+
+        campaigns = self._campaigns_for_actor(record.actor_id)
         return {
             "actor_name": actor_name,
-            "last_activity": datetime.now(timezone.utc).isoformat(),
-            "activity_count": random.randint(1, 100),
-            "primary_ttps": random.sample([
-                "T1078", "T1484", "T1566", "T1587", "T1591"
-            ], k=random.randint(1, 3)),
-            "associated_campaigns": [f"campaign_{random.randint(1, 100)}" for _ in range(random.randint(0, 3))],
-            "confidence": random.uniform(0.6, 0.95),
+            "known": True,
+            "last_activity": max(
+                (c.start_date for c in campaigns if c.start_date), default=None
+            ),
+            "activity_count": len(campaigns),
+            # Capabilities are what the store actually records; inventing
+            # MITRE technique ids would be the same defect in a new place.
+            "primary_ttps": list(record.capabilities or []),
+            "associated_campaigns": [c.name for c in campaigns],
+            "confidence": round(float(record.confidence or 0.0), 4),
         }
+
+    # ------------------------------------------------------------------
+    # Intelligence lookups
+    # ------------------------------------------------------------------
+
+    def _lookup_ioc(self, value):
+        """Resolve an indicator against the CTI store, or None if unknown."""
+        if not value:
+            return None
+        try:
+            for ioc in self._cti._iocs.values():
+                if ioc.value == value:
+                    return ioc
+        except Exception as exc:
+            logger.warning("IOC lookup failed for %s: %s", value, exc)
+        return None
+
+    def _lookup_actor(self, name):
+        """Resolve a threat actor against the CTI store, or None if unknown."""
+        if not name:
+            return None
+        try:
+            for actor in self._cti._actors.values():
+                if actor.name == name or name in (actor.aliases or []):
+                    return actor
+        except Exception as exc:
+            logger.warning("Actor lookup failed for %s: %s", name, exc)
+        return None
+
+    def _campaigns_for_ioc(self, ioc_id: str) -> List[Any]:
+        try:
+            return [c for c in self._cti._campaigns.values() if ioc_id in (c.iocs or [])]
+        except Exception:
+            return []
+
+    def _campaigns_for_actor(self, actor_id: str) -> List[Any]:
+        try:
+            return [c for c in self._cti._campaigns.values() if actor_id in (c.actors or [])]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _prevalence_band(sightings: int) -> str:
+        """Map an observed campaign count onto a prevalence band."""
+        if sightings <= 0:
+            return "unknown"
+        if sightings == 1:
+            return "rare"
+        if sightings <= 3:
+            return "uncommon"
+        if sightings <= 10:
+            return "common"
+        return "widespread"
+
+    @staticmethod
+    def _confidence_from_evidence(indicators, actors, ttps) -> float:
+        """Confidence scaled by how much corroborating evidence exists."""
+        evidence = len(indicators or []) + len(actors or []) + len(ttps or [])
+        if evidence == 0:
+            return 0.0
+        return round(min(0.95, 0.4 + 0.05 * evidence), 4)
     
     def create_threat_hunt_task(
         self,
