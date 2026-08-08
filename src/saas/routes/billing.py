@@ -23,6 +23,8 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 # Initialize usage metering service
 usage_metering_service = UsageMeteringService(billing_service)
 
+_ORGANIZATION_SUBSCRIPTIONS: dict[str, str] = {}
+
 
 class SubscriptionResponse(BaseModel):
     id: str
@@ -338,23 +340,32 @@ async def get_invoice(
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(
     organization_id: str,
-    plan: PriceTier = PriceTier.PROFESSIONAL,
     current_user: dict = Depends(get_current_user),
 ):
     """Get usage metrics from UsageMeteringService"""
     _require_org_access(organization_id, current_user)
 
+    subscription_id = _ORGANIZATION_SUBSCRIPTIONS.get(organization_id)
+    if subscription_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found for organization")
+    try:
+        subscription = billing_service.get_subscription(subscription_id)
+        plan = PriceTier(subscription["tier"])
+        usage = billing_service.get_usage(subscription_id, subscription["current_period_start"], subscription["current_period_end"])
+    except (BillingError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
     api_limit_check = usage_metering_service.check_limit(
         organization_id=organization_id,
         limit_type="api_calls_per_month",
-        current_usage=0,
+        current_usage=usage.get("total_api_calls", 0),
         plan=plan,
     )
 
     storage_limit_check = usage_metering_service.check_limit(
         organization_id=organization_id,
         limit_type="storage_gb",
-        current_usage=0,
+        current_usage=usage.get("storage_used_gb", 0),
         plan=plan,
     )
 
@@ -384,11 +395,14 @@ async def get_daily_usage(
     """Get daily usage breakdown"""
     _require_org_access(organization_id, current_user)
 
-    return {
-        "daily_usage": [],
-        "total_api_calls": 0,
-        "avg_daily_calls": 0,
-    }
+    subscription_id = _ORGANIZATION_SUBSCRIPTIONS.get(organization_id)
+    if subscription_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found for organization")
+    subscription = billing_service.get_subscription(subscription_id)
+    usage = billing_service.get_usage(subscription_id, subscription["current_period_start"], subscription["current_period_end"])
+    total = usage.get("total_api_calls", 0)
+    return {"daily_usage": [], "total_api_calls": total, "avg_daily_calls": total / max(days, 1)}
+
 
 
 @router.post("/checkout")
