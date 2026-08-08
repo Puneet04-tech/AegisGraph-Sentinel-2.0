@@ -382,7 +382,7 @@ async def get_optional_user(authorization: Optional[str] = Depends(bearer_scheme
 
 
 async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
-    """Verify API key authentication"""
+    """Verify an API key and return its scopes for route authorization checks."""
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -397,7 +397,12 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)):
         )
 
     return {
+        "user_id": result.user_id,
         "organization_id": result.organization_id,
+        "role": result.role,
+        "scopes": result.scopes,
+        # API-key scopes are the permissions available to scope-aware routes.
+        "permissions": result.scopes,
         "auth_method": "api_key",
     }
 

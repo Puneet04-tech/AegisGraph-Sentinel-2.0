@@ -387,6 +387,17 @@ class TestAPIKeys:
         assert result.success is True
         assert result.organization_id == "org1"
         assert result.user_id == "u1"
+        assert result.role == "member"
+        assert result.scopes == ["read"]
+
+    def test_authentication_uses_key_owner_role(self):
+        svc, _ = _service_with_user()
+        svc.user_store.get_by_id("u1").role = "admin"
+        raw_key, _ = svc.api_key_store.create("admin", "org1", "u1", ["audit.read"])
+
+        result = svc.authenticate_api_key(raw_key)
+        assert result.role == "admin"
+        assert result.scopes == ["audit.read"]
 
     def test_raw_key_is_not_stored(self):
         store = InMemoryAPIKeyStore()

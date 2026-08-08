@@ -322,6 +322,7 @@ class AuthResult:
     refresh_token: Optional[str] = None
     mfa_required: bool = False
     mfa_token: Optional[str] = None
+    scopes: List[str] = field(default_factory=list)
     error: Optional[str] = None
     provider: Optional[AuthProvider] = None
     # Set when the attempt was refused by the lockout policy rather than by a
@@ -745,11 +746,14 @@ class AuthService:
                 provider=AuthProvider.API_KEY,
             )
 
+        user = self.user_store.get_by_id(record.user_id)
         return AuthResult(
             success=True,
             user_id=record.user_id,
+            email=user.email if user is not None else None,
             organization_id=record.organization_id,
-            role="member",
+            role=user.role if user is not None and user.role else "member",
+            scopes=list(record.scopes),
             provider=AuthProvider.API_KEY,
         )
 
