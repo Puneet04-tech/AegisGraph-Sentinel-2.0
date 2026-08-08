@@ -24,9 +24,7 @@ from src.saas.auth.service import auth_service
 from src.saas.routes.auth import get_current_user
 from src.saas.services.billing import PriceTier
 from src.saas.services.limit_enforcer import (
-    enforce_tenant_limit,
-    get_tenant_resource_count,
-    set_tenant_resource_count,
+    increment_if_within_limit,
 )
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -289,7 +287,6 @@ async def create_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required")
 
     tenant_id = _require_tenant_context(current_user)
-    enforce_tenant_limit(tenant_id, "max_users", PriceTier.COMMUNITY)
 
     with _STORE_LOCK:
         if any(user["tenant_id"] == tenant_id and user["email"].lower() == data.email.lower() for user in _USER_STORE.values()):
@@ -313,9 +310,8 @@ async def create_user(
             "created_at": now,
             "password_hash": auth_service.hash_password(data.password),
         }
+        increment_if_within_limit(tenant_id, "max_users", PriceTier.COMMUNITY)
         _USER_STORE[user_id] = record
-        current_count = get_tenant_resource_count(tenant_id, "max_users")
-        set_tenant_resource_count(tenant_id, "max_users", current_count + 1)
         _audit("user_created", current_user["user_id"], tenant_id, user_id)
 
     # Issued outside the store lock: delivery must not hold up other writers.
