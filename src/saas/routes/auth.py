@@ -547,7 +547,6 @@ async def list_sso_providers():
 async def sso_authorize(
     provider: AuthProvider,
     redirect_uri: str,
-    current_user: dict = Depends(get_current_user),
 ):
     """Initiate SSO authorization."""
     if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
