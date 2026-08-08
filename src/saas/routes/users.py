@@ -25,6 +25,7 @@ from src.saas.routes.auth import get_current_user
 from src.saas.services.billing import PriceTier
 from src.saas.services.limit_enforcer import (
     increment_if_within_limit,
+    set_tenant_resource_count,  # re-exported for tests/callers
 )
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
