@@ -24,7 +24,8 @@ from dataclasses import dataclass, asdict
 
 from .device_risk import DeviceRiskCalculator, get_device_calculator
 from .timestamps import hour_in_zone
-from datetime import datetime, timezone
+from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
+from datetime import datetime, timezone, tzinfo
 import json
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,8 @@ class ProductionRiskScorer:
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
         device_calculator: Optional[DeviceRiskCalculator] = None,
+        velocity_calculator: Optional[VelocityRiskCalculator] = None,
+        temporal_reference_zone: Optional[tzinfo] = None,
     ):
         """
         Args:
@@ -128,6 +131,9 @@ class ProductionRiskScorer:
             model_version: Version string for logging
             enable_heuristic_fallback: Fall back if model fails
             device_calculator: Device scorer; defaults to the shared one
+            velocity_calculator: Velocity scorer; defaults to the shared one
+            temporal_reference_zone: Timezone the fraud-window hours are
+                evaluated in; defaults to UTC so results are host-independent
         """
         self.model = model
         self.model.eval()
@@ -141,6 +147,14 @@ class ProductionRiskScorer:
         # Injectable so tests can supply an isolated registry; defaults to the
         # process-wide one so device history accumulates across calls.
         self.device_calculator = device_calculator or get_device_calculator()
+
+        # Defaults to the process-wide calculator so history accumulates
+        # across scoring calls, while tests can supply an isolated one.
+        self.velocity_calculator = velocity_calculator or get_velocity_calculator()
+
+        # Explicit rather than implicit: the hour a scoring rule sees must not
+        # depend on the host's TZ environment variable.
+        self.temporal_reference_zone = temporal_reference_zone or timezone.utc
 
         logger.info(
             f"Initialized ProductionRiskScorer "
