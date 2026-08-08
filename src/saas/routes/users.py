@@ -470,6 +470,12 @@ async def delete_user(
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
         user["is_active"] = False
+        auth_record = auth_service.user_store.get_by_id(user_id)
+        if auth_record is not None:
+            auth_record.is_active = False
+        session_id = current_user.get("session_id")
+        if session_id and current_user.get("user_id") == user_id:
+            auth_service.revoke_session(session_id)
         _audit("user_deleted", current_user["user_id"], tenant_id, user_id)
     return None
 
@@ -485,6 +491,12 @@ async def deactivate_user(
         user = _get_user_record(user_id, tenant_id)
         _require_owner_or_admin(current_user, user)
         user["is_active"] = False
+        auth_record = auth_service.user_store.get_by_id(user_id)
+        if auth_record is not None:
+            auth_record.is_active = False
+        session_id = current_user.get("session_id")
+        if session_id and current_user.get("user_id") == user_id:
+            auth_service.revoke_session(session_id)
         _audit("user_deactivated", current_user["user_id"], tenant_id, user_id)
     return {"success": True, "user_id": user_id, "is_active": False}
 

@@ -58,6 +58,7 @@ class UserRecord:
     mfa_secret: str = ""
     role: str = "member"
     permissions: List[str] = field(default_factory=lambda: ["read", "write"])
+    is_active: bool = True
 
 
 class UserStore(ABC):
@@ -665,6 +666,9 @@ class AuthService:
             # real accounts is throttled.
             self._record_failed_attempt(account_key, ip_address)
             return AuthResult(success=False, error="Invalid credentials")
+
+        if not record.is_active:
+            return AuthResult(success=False, error="Account is inactive")
 
         if record.password_hash:
             if not self.verify_password(password, record.password_hash):
