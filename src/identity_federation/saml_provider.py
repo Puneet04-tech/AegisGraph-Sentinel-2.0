@@ -275,7 +275,22 @@ class SAMLProvider:
             )
         except Exception:
             return False, "Assertion signature verification failed", assertion
-        return True, None, result.signed_xml
+        # ``signxml`` returns the verified document root. When the whole
+        # Response is signed that root is the Response wrapper; when only the
+        # assertion is signed it is the assertion itself. Locate the signed
+        # ``saml:Assertion`` so validation, user extraction and session
+        # creation always operate on the assertion.
+        verified_root = result.signed_xml
+        assertion_tag = f"{{{self.NAMESPACES['saml']}}}Assertion"
+        if verified_root.tag == assertion_tag:
+            verified_assertion = verified_root
+        else:
+            verified_assertion = verified_root.find(
+                ".//saml:Assertion", self.NAMESPACES
+            )
+        if verified_assertion is None:
+            return False, "Verified response contains no SAML assertion", assertion
+        return True, None, verified_assertion
     
     def _validate_assertion(self, assertion: ET.Element) -> tuple[bool, Optional[str]]:
         """Validate SAML assertion conditions (validity window)."""
@@ -325,11 +340,26 @@ class SAMLProvider:
         issuer = assertion.find("saml:Issuer", self.NAMESPACES)
         return issuer.text if issuer is not None and issuer.text else ""
     
-    def _get_provider_by_issuer(self, issuer: str) -> Optional[IdentityProvider]:
-        """Get provider by issuer URL."""
+    @staticmethod
+    def _normalize_issuer(issuer: Optional[str]) -> Optional[str]:
+        """Normalize issuer for exact comparison (strip trailing slash)."""
+        if issuer is None:
+            return None
+        normalized = issuer.strip()
+        if not normalized:
+            return None
+        return normalized.rstrip("/")
+
+    def _get_provider_by_issuer(self, issuer: Optional[str]) -> Optional[IdentityProvider]:
+        """Get provider by issuer URL using exact match only."""
+        normalized_issuer = self._normalize_issuer(issuer)
+        if not normalized_issuer:
+            return None
+
         providers = self._store.list_providers()
         for provider in providers:
-            if provider.issuer == issuer or issuer in provider.issuer:
+            provider_issuer = self._normalize_issuer(provider.issuer)
+            if provider_issuer and provider_issuer == normalized_issuer:
                 return provider
         return None
     

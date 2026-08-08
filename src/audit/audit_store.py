@@ -38,12 +38,10 @@ class AuditStore:
         with self._lock:
             if self._records and len(self._records) == self._records.maxlen:
                 evicted = self._records[0]
-                self._last_evicted_hash = evicted["current_hash"]
                 if self._archive_callback is not None:
-                    try:
-                        self._archive_callback(evicted)
-                    except Exception:
-                        pass
+                    # Fail closed: do not append (and thus do not evict) if archive fails.
+                    self._archive_callback(evicted)
+                self._last_evicted_hash = evicted["current_hash"]
             previous_hash = self._records[-1]["current_hash"] if self._records else ""
             record = {
                 "event": event,

@@ -20,6 +20,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     build_attempt_limiter,
     SCOPE_ACCOUNT,
+    SCOPE_PASSWORD_RESET,
     SCOPE_TOTP,
 )
 from src.saas.auth.password_policy import PasswordPolicyError
@@ -261,6 +262,42 @@ _SSO_REDIRECT_ALLOWLIST: List[str] = [
     for uri in os.getenv("OAUTH_REDIRECT_URIS", "").split(",")
     if uri.strip()
 ]
+
+
+class InMemorySSOStateStore:
+    """Short-TTL, single-use OAuth ``state`` values bound to an SSO provider.
+
+    Mirrors the MFA pending-token pattern: authorize mints a value, callback
+    must present the same value for the same provider, and the entry is
+    consumed so it cannot be replayed. Fail closed on missing/mismatched/
+    expired state.
+    """
+
+    def __init__(self, ttl_seconds: int = 600) -> None:
+        self._ttl_seconds = ttl_seconds
+        # state -> (provider, expires_at)
+        self._pending: dict[str, tuple[str, datetime]] = {}
+
+    def issue(self, provider: str) -> str:
+        state = secrets.token_urlsafe(24)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds)
+        self._pending[state] = (provider, expires_at)
+        return state
+
+    def consume(self, state: str, provider: str) -> bool:
+        if not state or not provider:
+            return False
+        entry = self._pending.pop(state, None)
+        if entry is None:
+            return False
+        stored_provider, expires_at = entry
+        if datetime.now(timezone.utc) > expires_at:
+            return False
+        return secrets.compare_digest(stored_provider, provider)
+
+
+# Module-level store for SSO CSRF state. Tests may replace this instance.
+_sso_state_store = InMemorySSOStateStore()
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -531,12 +568,22 @@ async def sso_authorize(
         )
 
     sso_provider.redirect_uri = redirect_uri
-    return {"authorization_url": sso_provider.get_authorization_url()}
+    state = _sso_state_store.issue(provider.value)
+    authorization_url = sso_provider.get_authorization_url()
+    separator = "&" if "?" in authorization_url else "?"
+    authorization_url = f"{authorization_url}{separator}state={state}"
+    return {"authorization_url": authorization_url, "state": state}
 
 
 @router.post("/sso/callback", response_model=LoginResponse)
 async def sso_callback(request: SSOCallbackRequest):
     """Handle SSO callback"""
+    if not _sso_state_store.consume(request.state, request.provider.value):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSO state",
+        )
+
     result = _get_auth_service().authenticate_sso(
         provider=request.provider,
         code=request.code,
@@ -611,12 +658,12 @@ async def request_password_reset(request: PasswordResetRequest):
 
     The response is identical whether or not the address exists, so this
     endpoint cannot be used to enumerate accounts. Request bursts are
-    throttled per address using the shared attempt budget so the reset
-    channel cannot be abused to hammer the mailer.
+    throttled per address using a dedicated password-reset attempt budget
+    so reset spam cannot lock out account login (SCOPE_ACCOUNT).
     """
     service = _get_auth_service()
     identity = request.email.lower()
-    state = service.attempt_limiter.check(identity, SCOPE_ACCOUNT)
+    state = service.attempt_limiter.check(identity, SCOPE_PASSWORD_RESET)
     if state.locked:
         retry_after = max(1, state.retry_after_seconds)
         raise HTTPException(
@@ -627,7 +674,7 @@ async def request_password_reset(request: PasswordResetRequest):
             ),
             headers={"Retry-After": str(retry_after)},
         )
-    service.attempt_limiter.record_failure(identity, SCOPE_ACCOUNT)
+    service.attempt_limiter.record_failure(identity, SCOPE_PASSWORD_RESET)
     record = service.user_store.get_by_email(request.email)
     if record is not None:
         token = service.reset_token_store.issue(record.user_id)

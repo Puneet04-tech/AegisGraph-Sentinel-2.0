@@ -324,18 +324,26 @@ class NetworkAnalysisEngine:
         if len(entities) < self._config.min_community_size:
             return None
 
-        # Create edges from graph relationships
+        # Create edges from graph relationships. Only edges whose BOTH
+        # endpoints are network members belong to the network: an edge to a
+        # non-member node would inflate the edge count/density and let
+        # subcommunity traversal leak outside the membership. Edges are also
+        # deduplicated because each endpoint visits the same underlying edge.
         edges = []
         node_ids = [e.entity_id for e in entities]
+        member_ids = set(node_ids)
+        seen_edges: Set[Tuple[str, str]] = set()
 
         for entity in entities:
             graph_node = self._store.get_graph_node(entity.entity_id)
             if graph_node:
                 for edge in self._store.get_node_edges(graph_node.node_id):
                     if (
-                        edge.source_id in node_ids
-                        or edge.target_id in node_ids
+                        edge.source_id in member_ids
+                        and edge.target_id in member_ids
+                        and (edge.source_id, edge.target_id) not in seen_edges
                     ):
+                        seen_edges.add((edge.source_id, edge.target_id))
                         edges.append({
                             "source": edge.source_id,
                             "target": edge.target_id,

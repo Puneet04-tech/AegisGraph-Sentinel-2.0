@@ -257,11 +257,11 @@ class TestSentinelLogStoreCold:
 
     def test_get_archive_stats_breakdown(self):
         store = SentinelLogStore()
-        for decision in ["BLOCK", "BLOCK", "REVIEW"]:
+        for i, decision in enumerate(["BLOCK", "BLOCK", "REVIEW"]):
             store.add_archive_records(
                 [
                     ArchiveRecord(
-                        log_id="log-x",
+                        log_id=f"log-{i}",
                         event_type="fraud_check",
                         source_account=None,
                         target_account=None,
@@ -278,6 +278,50 @@ class TestSentinelLogStoreCold:
         stats = store.get_archive_stats()
         assert stats["total_archived"] == 3
         assert stats["decision_breakdown"] == {"BLOCK": 2, "REVIEW": 1}
+
+    def test_add_archive_records_is_idempotent_by_log_id(self):
+        store = SentinelLogStore()
+        record = ArchiveRecord(
+            log_id="log-1",
+            event_type="fraud_check",
+            source_account=None,
+            target_account=None,
+            risk_score=0.5,
+            decision="ALLOW",
+            metadata={},
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            archived_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            archive_run_id="run-1",
+        )
+
+        assert store.add_archive_records([record]) == 1
+
+        # Re-writing the same log_id must not create a duplicate.
+        assert store.add_archive_records([record]) == 0
+        assert store.archive_count() == 1
+
+        # A different log_id is still committed.
+        record.log_id = "log-2"
+        assert store.add_archive_records([record]) == 1
+        assert store.archive_count() == 2
+
+    def test_add_archive_records_dedupes_within_a_single_batch(self):
+        store = SentinelLogStore()
+        record = ArchiveRecord(
+            log_id="log-1",
+            event_type="fraud_check",
+            source_account=None,
+            target_account=None,
+            risk_score=0.5,
+            decision="ALLOW",
+            metadata={},
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            archived_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            archive_run_id="run-1",
+        )
+
+        assert store.add_archive_records([record, record]) == 1
+        assert store.archive_count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +429,36 @@ class TestArchivalService:
 
         assert summary.documents_archived == 1
         assert store.get_hot_logs() == []
+
+    def test_rerun_after_cold_write_failure_does_not_duplicate(self, monkeypatch):
+        store = SentinelLogStore()
+        now = datetime.now(timezone.utc)
+        for i in range(2):
+            _make_log(store, created_at=now - timedelta(days=40 + i))
+        service = ArchivalService(store=store, threshold_days=30)
+
+        def boom(log_ids):
+            raise RuntimeError("simulated storage failure")
+
+        # First run commits records to cold storage but fails to mark the hot
+        # logs as archived, so the cycle does not finish.
+        monkeypatch.setattr(store, "mark_archived", boom)
+        first = service.run()
+        assert first.documents_failed == 2
+        assert store.archive_count() == 2
+
+        # Re-running must not duplicate the cold records and the hot logs now
+        # complete the archival cycle.
+        monkeypatch.undo()
+        second = service.run()
+        assert second.documents_archived == 0
+        assert store.archive_count() == 2
+
+        page, total = store.get_archive_logs()
+        assert total == 2
+        remaining = store.get_hot_logs()
+        assert len(remaining) == 2
+        assert all(log.archived for log in remaining)
 
 
 # ---------------------------------------------------------------------------

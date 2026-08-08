@@ -77,6 +77,7 @@ class LateralMovementDetector:
                 self._graph_cache_version = None
                 self._graph_cache_max_size = 1024
                 self.redis_client.setnx("aegis:graph:version", 0)
+                self.redis_client.setnx("aegis:cache:centrality:version", 0)
             except Exception as e:
                 failure_mode = runtime_settings.runtime.failure_mode
                 logger.warning(
@@ -114,6 +115,7 @@ class LateralMovementDetector:
                 pipe.hincrby(f"aegis:reverse:{dst_account}", src_account, 1)
                 pipe.sadd("aegis:nodes", src_account, dst_account)
                 pipe.incr("aegis:graph:version")
+                pipe.incr("aegis:cache:centrality:version")
                 pipe.execute()
                 return
             except Exception as e:
@@ -214,10 +216,15 @@ class LateralMovementDetector:
                 self._centrality_cache.move_to_end(account_id)
                 return value
 
-        # Try to fetch from Redis Cache if enabled
+        # Try to fetch from Redis Cache if enabled (versioned to invalidate on graph updates)
         if self.use_redis:
-            redis_cache_key = f"aegis:cache:centrality:{account_id}"
             try:
+                cache_version = int(
+                    self.redis_client.get("aegis:cache:centrality:version") or 0
+                )
+                redis_cache_key = (
+                    f"aegis:cache:centrality:{cache_version}:{account_id}"
+                )
                 cached_val = self.redis_client.get(redis_cache_key)
                 if cached_val is not None:
                     result = float(cached_val)
@@ -245,10 +252,15 @@ class LateralMovementDetector:
             )
             result = centralities.get(account_id, 0.0)
 
-        # Store in Redis Cache with 24 hours TTL
+        # Store in Redis Cache with 24 hours TTL (key includes centrality cache version)
         if self.use_redis:
-            redis_cache_key = f"aegis:cache:centrality:{account_id}"
             try:
+                cache_version = int(
+                    self.redis_client.get("aegis:cache:centrality:version") or 0
+                )
+                redis_cache_key = (
+                    f"aegis:cache:centrality:{cache_version}:{account_id}"
+                )
                 self.redis_client.setex(redis_cache_key, 86400, result)
             except Exception as e:
                 print(f"Redis cache save error: {e}")

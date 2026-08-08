@@ -158,7 +158,13 @@ class PolicyEnforcementEngine:
         # among allow/challenge policies; it never disables an explicit deny.
         for policy_id in matched_policies:
             policy = self.store.get_policy(policy_id)
-            if policy and policy.actions.get("decision") == PolicyDecision.DENY:
+            if not policy:
+                continue
+            decision = policy.actions.get("decision")
+            # TERMINATE is a hard deny override, same as DENY.
+            if decision == PolicyDecision.TERMINATE:
+                return PolicyDecision.TERMINATE, False
+            if decision == PolicyDecision.DENY:
                 return PolicyDecision.DENY, False
         if not matched_policies:
             if trust_score:

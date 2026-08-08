@@ -1123,6 +1123,15 @@ class BlockchainEvidenceManager:
         self._redis.save_evidence(_fallback_evidence)
         return _fallback_evidence
     
+
+    def _find_chain_block(self, block_number: int) -> Optional[dict]:
+        """Return block from any in-memory node chain (primary may not store sealed blocks)."""
+        for node in self.nodes:
+            block = node.get_block(block_number)
+            if block is not None:
+                return block
+        return None
+
     def verify_evidence(
         self,
         evidence_id: str,
@@ -1158,24 +1167,51 @@ class BlockchainEvidenceManager:
             stored_block_number = int(evidence.get('block_number', 0))
             verification['block_exists'] = stored_block_number == block_number and stored_block_number > 0
 
-            if verification['block_exists']:
-                verification['chain_integrity'] = bool(
-                    evidence.get('block_hash') and evidence.get('previous_block_hash')
-                )
-
             if block and verification['block_exists']:
-                block_hash = block.get('hash')
-                previous_hash = block.get('previous_hash')
-                if block_hash:
-                    verification['chain_integrity'] = (
-                        verification['chain_integrity']
-                        and block_hash == evidence.get('block_hash')
+                # Prefer a live chain block so hash recomputation uses the real payload.
+                # Primary node creates blocks but validators persist them via add_block.
+                chain_block = self._find_chain_block(block_number)
+                verify_block = chain_block or block
+
+                block_hash = verify_block.get('hash')
+                previous_hash = verify_block.get('previous_hash')
+                timestamp = verify_block.get('timestamp')
+                transactions = verify_block.get('transactions', [])
+                bn = int(verify_block.get('block_number', block_number))
+
+                hash_matches = False
+                previous_link_ok = False
+                evidence_hashes_ok = False
+
+                if block_hash and previous_hash is not None and timestamp is not None:
+                    block_data = 'genesis' if bn == 0 else f"block_{bn}"
+                    recomputed_hash = self.nodes[0]._compute_hash(
+                        block_data,
+                        previous_hash,
+                        transactions,
+                        timestamp,
                     )
-                if previous_hash:
-                    verification['chain_integrity'] = (
-                        verification['chain_integrity']
+                    hash_matches = recomputed_hash == block_hash
+                    evidence_hashes_ok = (
+                        block_hash == evidence.get('block_hash')
                         and previous_hash == evidence.get('previous_block_hash')
                     )
+
+                    if bn == 0:
+                        previous_link_ok = previous_hash == ('0' * 64)
+                    else:
+                        prev_block = (
+                            self._find_chain_block(bn - 1)
+                            or self._load_block_metadata(bn - 1)
+                        )
+                        if prev_block and prev_block.get('hash'):
+                            previous_link_ok = previous_hash == prev_block.get('hash')
+                        else:
+                            previous_link_ok = False
+
+                verification['chain_integrity'] = bool(
+                    hash_matches and previous_link_ok and evidence_hashes_ok
+                )
 
             authorized_validators = self._authorized_validator_ids()
             block_hash = (block or {}).get('hash') or evidence.get('block_hash')

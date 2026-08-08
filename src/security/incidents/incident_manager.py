@@ -8,6 +8,7 @@ from ...audit import log_audit_event
 from .containment import ContainmentManager
 from .incident import Incident
 from .incident_registry import IncidentRegistry
+from src.security.audit_dispatch import dispatch_audit
 
 
 class IncidentManager:
@@ -62,16 +63,15 @@ class IncidentManager:
     def _audit_incident(self, incident: Incident) -> None:
         if self.audit_logger is None:
             return
-        try:
-            self.audit_logger(
-                event_type="security_incident_created",
-                severity=incident.severity,
-                source="security_incident_manager",
-                metadata={
-                    "incident_id": incident.incident_id,
-                    "incident_type": incident.incident_type,
-                    "contained": incident.contained,
-                },
-            )
-        except Exception:
-            pass
+        dispatch_audit(
+            self.audit_logger,
+            audit_source="incident_manager",
+            event_type="security_incident_created",
+            severity=incident.severity,
+            source="security_incident_manager",
+            metadata={
+                "incident_id": incident.incident_id,
+                "incident_type": incident.incident_type,
+                "contained": incident.contained,
+            },
+        )

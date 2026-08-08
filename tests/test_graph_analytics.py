@@ -122,6 +122,64 @@ class TestGraphStore:
         communities = store.detect_communities()
         assert len(communities) >= 1
 
+    def test_detect_communities_includes_sink_when_enumerated_first(self):
+        """A chain routed through a sink is one weakly-connected component.
+
+        Inserting the sink first would previously split it into a spurious
+        size-1 community because the BFS only followed outgoing edges.
+        """
+        store = get_graph_store()
+        store.add_node(GraphNode(node_id="C", node_type=NodeType.ENTITY))
+        store.add_node(GraphNode(node_id="A", node_type=NodeType.ENTITY))
+        store.add_node(GraphNode(node_id="B", node_type=NodeType.ENTITY))
+        store.add_edge(GraphEdge(source_id="A", target_id="B"))
+        store.add_edge(GraphEdge(source_id="B", target_id="C"))
+
+        communities = store.detect_communities()
+
+        assert len(communities) == 1
+        assert set(communities[0].node_ids) == {"A", "B", "C"}
+        assert communities[0].size == 3
+
+    def test_detect_communities_is_order_independent(self):
+        """Same graph structure yields the same component in either order."""
+        edges = [
+            ("A", "B"),
+            ("B", "C"),
+            ("C", "D"),
+            ("A", "E"),
+        ]
+
+        forward = get_graph_store()
+        for nid in ("A", "B", "C", "D", "E"):
+            forward.add_node(GraphNode(node_id=nid, node_type=NodeType.ENTITY))
+        for source, target in edges:
+            forward.add_edge(GraphEdge(source_id=source, target_id=target))
+        components_forward = {frozenset(c.node_ids) for c in forward.detect_communities()}
+
+        reset_graph_store()
+        reversed_order = get_graph_store()
+        for nid in ("E", "D", "C", "B", "A"):
+            reversed_order.add_node(GraphNode(node_id=nid, node_type=NodeType.ENTITY))
+        for source, target in edges:
+            reversed_order.add_edge(GraphEdge(source_id=source, target_id=target))
+
+        components_reversed = {frozenset(c.node_ids) for c in reversed_order.detect_communities()}
+        assert components_forward == components_reversed == {frozenset({"A", "B", "C", "D", "E"})}
+
+    def test_detect_communities_density_counts_edges_symmetrically(self):
+        store = get_graph_store()
+        for nid in ("A", "B", "C"):
+            store.add_node(GraphNode(node_id=nid, node_type=NodeType.ENTITY))
+        store.add_edge(GraphEdge(source_id="A", target_id="B"))
+        store.add_edge(GraphEdge(source_id="B", target_id="C"))
+
+        communities = store.detect_communities()
+
+        assert len(communities) == 1
+        # Two undirected edges (A-B, B-C) out of three possible pairs.
+        assert communities[0].density == pytest.approx(2 / 3)
+
     def test_propagate_risk(self):
         """Test risk propagation."""
         store = get_graph_store()
@@ -195,6 +253,20 @@ class TestGraphService:
 
         rings = service.detect_fraud_rings(min_size=3)
         assert len(rings) >= 1
+
+    def test_detect_fraud_rings_includes_sink_routed_chain(self):
+        """A chain that routes through a sink must not lose the sink entity."""
+        service = get_graph_service()
+        service.add_entity("A", "account")
+        service.add_entity("B", "account")
+        service.add_entity("C", "account")
+        service.link_entities("A", "B")
+        service.link_entities("B", "C")
+
+        rings = service.detect_fraud_rings(min_size=3)
+
+        assert len(rings) == 1
+        assert set(rings[0].node_ids) == {"A", "B", "C"}
 
     def test_propagate_risk(self):
         """Test risk propagation through service."""

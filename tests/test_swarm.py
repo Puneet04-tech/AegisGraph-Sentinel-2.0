@@ -102,6 +102,57 @@ class TestCoordinator:
             for t in coordinator._tasks.values()
         )
 
+    def test_queues_drain_after_execute_all(self):
+        coordinator = SwarmCoordinator(max_workers=4)
+        coordinator.spawn_agents(SwarmAgentType.THREAT_HUNTER, count=2)
+
+        for i in range(6):
+            coordinator.submit_task("hunt", {"job": i})
+
+        assert any(coordinator._queues.values())
+        coordinator.execute_all()
+
+        assert all(len(queue) == 0 for queue in coordinator._queues.values())
+        assert len(coordinator._completed) == 6
+
+    def test_executed_task_attribution_is_stable(self):
+        executed_by = {}
+
+        def handler(agent_id: str, task) -> dict:
+            executed_by[task.task_id] = agent_id
+            return {"task_id": task.task_id}
+
+        coordinator = SwarmCoordinator(max_workers=4, handler=handler)
+        coordinator.spawn_agents(SwarmAgentType.ATTACK_SIMULATOR, count=4)
+
+        task_ids = [coordinator.submit_task("simulate", {"i": i}) for i in range(8)]
+        coordinator.execute_all()
+
+        for task_id in task_ids:
+            task = coordinator._tasks[task_id]
+            assert task.status == SwarmAgentStatus.COMPLETED
+            assert task.agent_id == executed_by[task_id]
+
+    def test_cycle_report_does_not_recount_previous_cycle(self):
+        coordinator = SwarmCoordinator(max_workers=4)
+        coordinator.spawn_agents(SwarmAgentType.THREAT_HUNTER, count=2)
+        for i in range(4):
+            coordinator.submit_task("hunt", {"job": i})
+        coordinator.execute_all()
+        assert len(coordinator._completed) == 4
+
+        report = coordinator.run_simulation_cycle(
+            attack_simulator=_StubAttackSimulator(),
+            threat_hunter=_StubThreatHunter(),
+            red_team=_StubRedTeam(),
+            feedback_loop=_StubFeedbackLoop(),
+            input_graph={"nodes": [], "edges": []},
+        )
+
+        assert report.tasks_completed == 0
+        assert report.tasks_failed == 0
+        assert report.discoveries == []
+
 
 # ---------------------------------------------------------------------------
 # Attack simulator
@@ -373,6 +424,34 @@ class TestAdversarialRobustness:
 
         assert comparison["candidate_robustness"] > comparison["baseline_robustness"]
         assert comparison["recommendation"] == "adopt candidate"
+
+
+# ---------------------------------------------------------------------------
+# Stub cycle components for report accounting tests
+# ---------------------------------------------------------------------------
+
+
+class _StubAttackSimulator:
+    def generate_patterns(self):
+        return []
+
+
+class _StubThreatHunter:
+    def hunt(self, graph):
+        return []
+
+
+class _StubRedTeam:
+    def run_benchmark(self):
+        return []
+
+
+class _StubFeedbackLoop:
+    def compute_coverage(self, graph):
+        return {}
+
+    def maybe_trigger_retraining(self, coverage):
+        return False
 
 
 # ---------------------------------------------------------------------------

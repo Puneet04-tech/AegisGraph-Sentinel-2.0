@@ -22,15 +22,20 @@ from src.global_intelligence import (
     InvestigationStatus,
     FederationPartner,
     FederationStatus,
+    KnowledgeGraphNode,
+    KnowledgeGraphEdge,
     # Engines
     get_federation_engine,
     get_knowledge_graph_engine,
+    KnowledgeGraphEngine,
     get_entity_correlation_engine,
     get_threat_exchange,
     get_campaign_discovery_engine,
     get_network_analysis_engine,
+    NetworkAnalysisEngine,
     get_federated_search_engine,
     get_risk_propagation_engine,
+    RiskPropagationEngine,
     get_audit_service,
     # Service
     get_global_intelligence_service,
@@ -470,6 +475,90 @@ class TestNetworkAnalysis:
         # May or may not find networks depending on connections
         assert isinstance(networks, list)
 
+    def _make_entity(self, store, entity_id, partner_id="partner-1"):
+        entity = FederatedEntity(
+            entity_id=entity_id,
+            entity_type=EntityType.ACCOUNT,
+            federation_id="fed-1",
+            partner_id=partner_id,
+            external_id=f"ext-{entity_id}",
+            risk_score=0.6,
+            threat_level=ThreatLevel.MEDIUM,
+        )
+        store.store_entity(entity)
+        store.store_graph_node(
+            KnowledgeGraphNode(
+                node_id=entity_id,
+                entity_type=EntityType.ACCOUNT,
+                properties={},
+            )
+        )
+        return entity
+
+    def _link(self, store, source_id, target_id, relationship_type="linked_to"):
+        store.store_graph_edge(
+            KnowledgeGraphEdge(
+                edge_id=f"{source_id}-{target_id}",
+                source_id=source_id,
+                target_id=target_id,
+                relationship_type=relationship_type,
+                properties={},
+            )
+        )
+
+    def test_create_network_excludes_edges_to_non_members(self):
+        """Edges, density and subcommunities must stay within network members."""
+        store = get_global_intelligence_store()
+        analysis = NetworkAnalysisEngine(store=store)
+
+        members = [
+            self._make_entity(store, "member-1"),
+            self._make_entity(store, "member-2"),
+            self._make_entity(store, "member-3"),
+        ]
+        # A connected-but-non-member node sits next to member-1.
+        self._make_entity(store, "outsider-1", partner_id="partner-2")
+
+        # Intra-network edges.
+        self._link(store, "member-1", "member-2")
+        self._link(store, "member-2", "member-3")
+        # member-1 is also directly linked to the non-member.
+        self._link(store, "member-1", "outsider-1")
+
+        network = analysis._create_network(members, None)
+
+        assert network is not None
+        assert "outsider-1" not in network.nodes
+
+        member_ids = set(network.nodes)
+        for edge in network.edges:
+            assert edge["source"] in member_ids, (
+                f"edge source {edge['source']} is not a network member"
+            )
+            assert edge["target"] in member_ids, (
+                f"edge target {edge['target']} is not a network member"
+            )
+
+        # No edge may reference the non-member node.
+        assert all(
+            edge["source"] != "outsider-1" and edge["target"] != "outsider-1"
+            for edge in network.edges
+        )
+
+        store.store_network(network)
+        analysis_result = analysis.analyze_network(network.network_id)
+        metrics = analysis_result["metrics"]
+        n = len(network.nodes)
+        # Density must be computed from member-only edges: an edge to the
+        # non-member must not inflate it.
+        assert metrics["edge_count"] > 0
+        assert metrics["density"] == (2 * metrics["edge_count"]) / (n * (n - 1))
+        assert metrics["density"] <= 1.0
+
+        # No subcommunity may contain the non-member node.
+        for community in analysis_result["communities"]:
+            assert "outsider-1" not in community
+
 
 class TestRiskPropagation:
     """Test risk propagation engine."""
@@ -499,6 +588,62 @@ class TestRiskPropagation:
         propagations = propagation.propagate_risk("high-risk-entity")
 
         assert isinstance(propagations, list)
+
+    def test_get_at_risk_entities_counts_propagations_to_others(self):
+        """propagation_count must reflect paths to other entities, not self."""
+        store = get_global_intelligence_store()
+        graph = KnowledgeGraphEngine(store=store)
+        propagation = RiskPropagationEngine(store=store, graph_engine=graph)
+
+        entities = {}
+        for i in range(4):
+            entity_id = f"risk-entity-{i}"
+            entity = FederatedEntity(
+                entity_id=entity_id,
+                entity_type=EntityType.ACCOUNT,
+                federation_id="fed-1",
+                partner_id="partner-1",
+                external_id=f"ext-{i}",
+                risk_score=0.8,
+                threat_level=ThreatLevel.HIGH,
+            )
+            store.store_entity(entity)
+            graph.add_entity(entity_id, EntityType.ACCOUNT, {"risk_score": 0.8})
+            entities[entity_id] = entity
+
+        # risk-entity-0 links to all three others; the rest link only to it.
+        graph.add_relationship("risk-entity-0", "risk-entity-1", "linked_to")
+        graph.add_relationship("risk-entity-0", "risk-entity-2", "linked_to")
+        graph.add_relationship("risk-entity-0", "risk-entity-3", "linked_to")
+
+        results = propagation.get_at_risk_entities(threshold=0.5)
+
+        # Only the well-connected entity should report a nonzero count.
+        by_id = {r["entity_id"]: r for r in results}
+        assert "risk-entity-0" in by_id
+        assert by_id["risk-entity-0"]["propagation_count"] > 0
+
+    def test_get_at_risk_entities_zero_when_no_connections(self):
+        """An isolated entity must report zero propagation, not the trivial 1."""
+        store = get_global_intelligence_store()
+        propagation = RiskPropagationEngine(store=store)
+
+        entity = FederatedEntity(
+            entity_id="isolated-risk-entity",
+            entity_type=EntityType.ACCOUNT,
+            federation_id="fed-1",
+            partner_id="partner-1",
+            external_id="ext-isolated",
+            risk_score=0.9,
+            threat_level=ThreatLevel.CRITICAL,
+        )
+        store.store_entity(entity)
+
+        results = propagation.get_at_risk_entities(threshold=0.5)
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "isolated-risk-entity"
+        assert results[0]["propagation_count"] == 0
 
 
 class TestFederatedSearch:

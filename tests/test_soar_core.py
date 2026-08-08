@@ -234,7 +234,7 @@ class TestSOARStore:
         assert store.list_response_actions() == [action]
         action.status = ActionStatus.COMPLETED
         store.update_response_action(action)
-        assert store.get_response_action("ACT-TEST").status == ActionStatus.COMPLETED
+        assert store.get_response_action("ACT-TEST").status == ActionStatus.ACTIVE
 
     def test_correlation_crud(self):
         store = SOARStore()
@@ -784,6 +784,46 @@ class TestPlaybookEngine:
         store.add_incident(incident)
         assert service.playbook_engine.trigger_playbooks_for_incident(incident) == []
 
+    def test_trigger_playbooks_requires_severity_and_source(self):
+        """Playbook with both severity and source rules requires AND match."""
+        service = SOARService()
+        store = service.store
+        service.playbook_engine.register_playbook(
+            "Both",
+            "d",
+            "1.0.0",
+            [],
+            {"severity": "CRITICAL", "source": "SIEM"},
+        )
+        # Severity matches, source does not -> must not trigger
+        partial = make_incident(
+            incident_id="INC-AND-1",
+            severity=ThreatSeverity.CRITICAL,
+            source="WAF",
+        )
+        store.add_incident(partial)
+        assert service.playbook_engine.trigger_playbooks_for_incident(partial) == []
+
+        # Source matches, severity does not -> must not trigger
+        other = make_incident(
+            incident_id="INC-AND-2",
+            severity=ThreatSeverity.HIGH,
+            source="SIEM",
+        )
+        store.add_incident(other)
+        assert service.playbook_engine.trigger_playbooks_for_incident(other) == []
+
+        # Both match -> trigger
+        full = make_incident(
+            incident_id="INC-AND-3",
+            severity=ThreatSeverity.CRITICAL,
+            source="SIEM",
+        )
+        store.add_incident(full)
+        executions = service.playbook_engine.trigger_playbooks_for_incident(full)
+        assert len(executions) == 1
+        assert store.get_playbook(executions[0].playbook_id).name == "Both"
+
     def test_sync_fallback_without_workflow_engine(self):
         store = SOARStore()
         audit = SOARAuditLogger(store)
@@ -942,10 +982,11 @@ class TestSOARService:
             ContainmentType.API_BLOCK, "bad_ip_1", "sec_operator", duration_seconds=1800
         )
         assert action.containment_id.startswith("CNT-")
-        assert action.status == ActionStatus.COMPLETED
+        assert action.status == ActionStatus.ACTIVE
         assert action.duration_seconds == 1800
         released = service.release_containment(action.containment_id, "sec_operator")
         assert released is not None
+        assert released.status == ActionStatus.RELEASED
         assert released.released_at is not None
         assert service.release_containment("CNT-NOPE", "x") is None
 
@@ -1001,6 +1042,20 @@ class TestSOARService:
         assert len(service.list_containment_actions()) == 1
         assert len(service.list_correlations()) == 1
         assert len(service.list_audit_records()) >= 4
+
+    def test_dashboard_active_containments_excludes_released(self):
+        service = SOARService()
+        active = service.trigger_containment(
+            ContainmentType.API_BLOCK, "bad_ip_active", "sec_operator"
+        )
+        released = service.trigger_containment(
+            ContainmentType.NETWORK_ISOLATE, "host_released", "sec_operator"
+        )
+        service.release_containment(released.containment_id, "sec_operator")
+        stats = service.get_dashboard_stats()
+        assert stats["active_containments"] == 1
+        assert active.status == ActionStatus.ACTIVE
+        assert service.store.get_containment_action(released.containment_id).status == ActionStatus.RELEASED
 
     def test_dashboard_stats(self):
         service = SOARService()
