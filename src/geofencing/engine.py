@@ -88,25 +88,27 @@ class GeofencingEngine:
                 self._asset_inside.setdefault(aid, {})[fence_id] = now_inside
                 continue
 
-            # State changed: determine event type and check alert flags.
+            # State changed: construct the event and check alert flags.
             event_type = "entry" if now_inside else "exit"
             should_alert = (event_type == "exit" and fence.alert_on_exit) or (
                 event_type == "entry" and fence.alert_on_entry
             )
 
-            if should_alert:
-                event = GeofenceEvent(
-                    asset_id=aid,
-                    fence_id=fence_id,
-                    fence_name=fence.name,
-                    event_type=event_type,
-                    position=location.position,
-                    timestamp=location.timestamp,
-                )
-                self._events.append(event)
-                new_events.append(event)
-                if self._alert_callback:
-                    self._alert_callback(event)
+            event = GeofenceEvent(
+                asset_id=aid,
+                fence_id=fence_id,
+                fence_name=fence.name,
+                event_type=event_type,
+                position=location.position,
+                timestamp=location.timestamp,
+                alert_raised=should_alert,
+            )
+            # Every boundary crossing is recorded regardless of alert flags so
+            # the audit history is complete; only alert delivery is gated.
+            self._events.append(event)
+            new_events.append(event)
+            if should_alert and self._alert_callback:
+                self._alert_callback(event)
 
             self._asset_inside.setdefault(aid, {})[fence_id] = now_inside
 
