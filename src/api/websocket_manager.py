@@ -28,6 +28,7 @@ class WebSocketManager:
         max_reconnect_attempts: int = 5,
         disconnect_history_ttl: float = 300.0,
         max_disconnect_history_entries: int = 2048,
+        pool_size_limit: int = 100,
     ):
         self.active_connections: Dict[str, ConnectionState] = {}
         # client_id -> list of disconnect timestamps
@@ -37,6 +38,7 @@ class WebSocketManager:
         self.max_reconnect_attempts = max_reconnect_attempts
         self.disconnect_history_ttl = disconnect_history_ttl
         self.max_disconnect_history_entries = max_disconnect_history_entries
+        self.pool_size_limit = pool_size_limit
 
         self._lock = asyncio.Lock()
 
@@ -74,6 +76,11 @@ class WebSocketManager:
         await self.evict_stale_disconnect_history()
 
         async with self._lock:
+            if client_id not in self.active_connections and len(self.active_connections) >= self.pool_size_limit:
+                logger.warning("WebSocket pool capacity reached (%d)", self.pool_size_limit)
+                await websocket.close(code=1013, reason="WebSocket capacity reached")
+                return False
+
             now = time.time()
             history = self.disconnect_history.get(client_id, [])
             # Keep only disconnects from the last 60 seconds
@@ -172,5 +179,4 @@ class WebSocketManager:
             except Exception as exc:
                 logger.warning("Broadcast send failed: %s", exc)
 
-pool_size_limit = 100
 
