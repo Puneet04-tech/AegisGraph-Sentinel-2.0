@@ -823,6 +823,14 @@ async def revoke_session(
             detail="Session is already revoked",
         )
 
+    # Session records control UI visibility, while the revocation store is
+    # consulted when validating JWTs. Update both so an already-issued token
+    # bearing this session id cannot be used until it expires.
+    expires_at = record.expires_at or (
+        datetime.now(timezone.utc) + timedelta(seconds=service.access_token_expiry)
+    )
+    service.revoke_session(session_id, expires_at)
+
     return {"success": True, "message": "Session revoked", "session_id": session_id}
 
 
