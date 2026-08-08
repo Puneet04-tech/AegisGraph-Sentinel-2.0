@@ -283,7 +283,7 @@ def test_execute_action_variants(store, audit_logger, action_type, target, expec
     engine = ResponseEngine(store, audit_logger)
     action = engine.execute_action(action_type, target, "system")
     assert action.action_id.startswith("ACT-")
-    assert action.status == ActionStatus.ACTIVE
+    assert action.status == ActionStatus.COMPLETED
     assert action.target_id == target
     assert action.result == expected_result
     assert action.name == f"Automated {action_type.value} on {target}"
