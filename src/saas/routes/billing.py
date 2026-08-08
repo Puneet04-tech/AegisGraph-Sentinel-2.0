@@ -23,6 +23,16 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 # Initialize usage metering service
 usage_metering_service = UsageMeteringService(billing_service)
 
+_ORGANIZATION_SUBSCRIPTIONS: dict[str, str] = {}
+
+
+def _require_owned_subscription(organization_id: str, subscription_id: str) -> None:
+    expected = _ORGANIZATION_SUBSCRIPTIONS.get(organization_id)
+    if expected is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found for organization")
+    if subscription_id != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Subscription does not belong to organization")
+
 
 class SubscriptionResponse(BaseModel):
     id: str
@@ -112,6 +122,7 @@ async def get_subscription(
 ):
     """Get current subscription details from Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_owned_subscription(organization_id, subscription_id)
     _ensure_stripe_configured()
 
     try:
@@ -162,6 +173,8 @@ async def create_subscription(
             detail=str(e),
         )
 
+    _ORGANIZATION_SUBSCRIPTIONS[organization_id] = result["subscription_id"]
+
     return {
         "subscription_id": result["subscription_id"],
         "tier": tier.value,
@@ -182,6 +195,7 @@ async def update_subscription(
 ):
     """Update subscription (upgrade/downgrade) via Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_owned_subscription(organization_id, subscription_id)
     _ensure_stripe_configured()
 
     try:
@@ -213,6 +227,7 @@ async def cancel_subscription(
 ):
     """Cancel subscription via Stripe"""
     _require_org_access(organization_id, current_user)
+    _require_owned_subscription(organization_id, subscription_id)
     _ensure_stripe_configured()
 
     try:
@@ -243,6 +258,7 @@ async def resume_subscription(
 ):
     """Resume canceled subscription"""
     _require_org_access(organization_id, current_user)
+    _require_owned_subscription(organization_id, subscription_id)
     _ensure_stripe_configured()
 
     try:
