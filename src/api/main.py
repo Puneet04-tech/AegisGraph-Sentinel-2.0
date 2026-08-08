@@ -1482,18 +1482,37 @@ def _run_scoring_pipeline(
             lm_risk_added, is_pivoting = lateral_detector.analyze_account(source_account)
 
             if is_pivoting:
-                current_score = risk_result.get("risk_score", 0.0)
-                new_score = min(1.0, current_score + lm_risk_added)
-                risk_result["risk_score"] = new_score
-                risk_result["breakdown"]["lateral_movement"] = lm_risk_added
+                breakdown = risk_result.setdefault("breakdown", {})
+                already_applied = bool(
+                    risk_result.get("lateral_movement_detected")
+                ) or float(breakdown.get("lateral_movement", 0) or 0) > 0
+
+                # Always expose detector signal for observability.
                 risk_result["lateral_movement_detected"] = True
-                risk_result["lateral_movement_reason"] = (
-                    "MITRE TA0008: Rapid centrality spike indicating network pivoting."
+                risk_result.setdefault(
+                    "lateral_movement_reason",
+                    "MITRE TA0008: Rapid centrality spike indicating network pivoting.",
                 )
-                if new_score >= 0.7:
-                    risk_result["decision"] = "BLOCK"
-                elif new_score >= 0.4 and risk_result["decision"] == "ALLOW":
-                    risk_result["decision"] = "REVIEW"
+                breakdown.setdefault("lateral_movement", lm_risk_added)
+
+                # Avoid double-counting when risk_scorer already applied the increment.
+                if not already_applied:
+                    current_score = float(risk_result.get("risk_score", 0.0) or 0.0)
+                    new_score = min(1.0, current_score + float(lm_risk_added or 0.0))
+                    risk_result["risk_score"] = new_score
+                    breakdown["lateral_movement"] = lm_risk_added
+                    # Keep decisions aligned with ThresholdConfig (not hardcoded 0.7/0.4).
+                    from src.scoring import ThresholdConfig
+
+                    risk_result["decision"] = ThresholdConfig().decision_for_score(
+                        new_score
+                    )
+                else:
+                    risk_result["lateral_movement_reason"] = risk_result.get(
+                        "lateral_movement_reason"
+                    ) or (
+                        "MITRE TA0008: Rapid centrality spike indicating network pivoting."
+                    )
         except Exception as e:
             _api_logger.warning(
                 f"Lateral movement check failed: {e}",

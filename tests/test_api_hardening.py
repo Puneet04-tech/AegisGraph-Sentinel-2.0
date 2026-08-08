@@ -309,8 +309,10 @@ def test_lateral_movement_deferred_to_lazy_provider(monkeypatch):
 @pytest.mark.parametrize(
     "base_score,lateral_boost,expected_decision",
     [
-        (0.25, 0.35, "REVIEW"),
-        (0.45, 0.35, "BLOCK"),
+        # ThresholdConfig defaults: review>=0.6, block>=0.9
+        (0.25, 0.35, "REVIEW"),  # 0.60 -> REVIEW via ThresholdConfig
+        (0.45, 0.35, "REVIEW"),  # 0.80 -> REVIEW (not BLOCK at hardcoded 0.7)
+        (0.70, 0.25, "BLOCK"),   # 0.95 -> BLOCK via ThresholdConfig
     ],
 )
 def test_scoring_applies_lateral_movement_even_when_innovations_flag_is_false(
@@ -330,6 +332,7 @@ def test_scoring_applies_lateral_movement_even_when_innovations_flag_is_false(
             "decision": "ALLOW",
             "confidence": 0.85,
             "breakdown": {"graph": 0.0, "velocity": 0.0, "behavior": 0.0, "entropy": 0.0},
+            "lateral_movement_detected": False,
         },
     )
 
@@ -348,6 +351,48 @@ def test_scoring_applies_lateral_movement_even_when_innovations_flag_is_false(
     assert result["breakdown"]["lateral_movement"] == lateral_boost
     assert result["lateral_movement_detected"] is True
     assert result["decision"] == expected_decision
+
+
+def test_scoring_does_not_double_apply_lateral_movement_when_scorer_already_did(
+    monkeypatch,
+):
+    detector = Mock()
+    detector.analyze_account.return_value = (0.35, True)
+
+    monkeypatch.setattr(
+        api_main,
+        "compute_risk_score",
+        lambda transaction, biometrics=None, **kwargs: {
+            "risk_score": 0.55,
+            "decision": "ALLOW",
+            "confidence": 0.85,
+            "breakdown": {
+                "graph": 0.40,
+                "velocity": 0.0,
+                "behavior": 0.0,
+                "entropy": 0.0,
+                "lateral_movement": 0.25,
+            },
+            "lateral_movement_detected": True,
+            "lateral_movement_reason": "already counted in graph risk",
+        },
+    )
+
+    result = api_main._run_scoring_pipeline(
+        transaction={"transaction_id": "txn_lateral_nodouble"},
+        biometrics=None,
+        source_account="acct_src",
+        target_account="acct_dst",
+        lateral_detector=detector,
+        innovations_available=True,
+    )
+
+    detector.update_graph.assert_called_once_with("acct_src", "acct_dst")
+    detector.analyze_account.assert_called_once_with("acct_src")
+    assert result["risk_score"] == pytest.approx(0.55)
+    assert result["decision"] == "ALLOW"
+    assert result["breakdown"]["lateral_movement"] == 0.25
+    assert result["lateral_movement_detected"] is True
 
 
 def test_scoring_continues_when_lateral_detector_is_unavailable(monkeypatch):
