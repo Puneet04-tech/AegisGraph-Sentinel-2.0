@@ -372,6 +372,7 @@ class OIDCProvider:
             "grant_type": "authorization_code",
             "code": code,
             "client_id": provider.client_id,
+            "redirect_uri": f"{self._issuer}/api/v1/identity/oidc/callback",
         }
         auth = (
             (provider.client_id, provider.client_secret)
