@@ -20,7 +20,7 @@ from src.saas.auth.credential_stores import (
     LoggingNotificationSender,
 )
 from src.saas.auth.password_policy import validate_password
-from src.saas.auth.service import auth_service
+from src.saas.auth.service import UserRecord, auth_service
 from src.saas.routes.auth import get_current_user
 from src.saas.services.billing import PriceTier
 from src.saas.services.limit_enforcer import (
@@ -314,6 +314,18 @@ async def create_user(
             "password_hash": auth_service.hash_password(data.password),
         }
         _USER_STORE[user_id] = record
+        auth_record = UserRecord(
+            user_id=user_id,
+            organization_id=tenant_id,
+            email=record["email"],
+            username=record["username"] or "",
+            password_hash=record["password_hash"],
+            role=record["role"],
+        )
+        add_user = getattr(auth_service.user_store, "add", None)
+        if add_user is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication user store does not support user creation")
+        add_user(auth_record)
         current_count = get_tenant_resource_count(tenant_id, "max_users")
         set_tenant_resource_count(tenant_id, "max_users", current_count + 1)
         _audit("user_created", current_user["user_id"], tenant_id, user_id)
