@@ -1,9 +1,9 @@
 """A rate limiter outage must not be reported once per request.
 
-check_rate_limit fails open when its backend is unreachable, which is the
-intended behaviour. It logged that decision at WARNING with a full traceback
-every time, so an outage produced a stack trace on every request and buried the
-incident in its own output.
+check_rate_limit falls back to a process-local token bucket when its backend is
+unreachable, so throttling still applies during an outage. It logged that
+decision at WARNING with a full traceback every time, so an outage produced a
+stack trace on every request and buried the incident in its own output.
 """
 
 import logging
@@ -26,8 +26,9 @@ def _clean_outage_state(monkeypatch):
 
 
 def _reset():
-    """Clear the outage throttle if the module has one."""
+    """Clear the outage throttle and local fallback buckets if present."""
     getattr(rate_limit_mod, "_reset_outage_log_state", lambda: None)()
+    getattr(rate_limit_mod, "_reset_local_buckets", lambda: None)()
 
 
 def _call(identity="caller"):
@@ -35,7 +36,7 @@ def _call(identity="caller"):
 
 
 def test_the_request_is_still_allowed_when_the_backend_is_down(caplog):
-    """Fail open is the intended behaviour and must not change."""
+    """Local fallback must keep serving within the configured budget."""
     with caplog.at_level(logging.WARNING):
         decision = _call()
 
@@ -118,6 +119,8 @@ def test_recovery_is_reported_and_resets_the_throttle(caplog, monkeypatch):
     assert any("available again" in m for m in messages), (
         f"recovery was never reported: {messages}"
     )
-    assert sum("unavailable" in m for m in messages) == 2, (
-        "a second outage should be reported afresh rather than stay suppressed"
+    outage_reports = [m for m in messages if "Rate limiter unavailable" in m or "still unavailable" in m]
+    assert len(outage_reports) == 2, (
+        "a second outage should be reported afresh rather than stay suppressed: "
+        f"{messages}"
     )

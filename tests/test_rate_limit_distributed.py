@@ -89,13 +89,22 @@ def test_check_rate_limit_isolated_by_identity(monkeypatch, fake_settings):
     assert other.allowed is True
 
 
-def test_check_rate_limit_fails_open_when_redis_unavailable(monkeypatch, fake_settings):
+def test_check_rate_limit_falls_back_to_local_when_redis_unavailable(monkeypatch, fake_settings):
+    rate_limit_mod._reset_local_buckets()
     monkeypatch.setattr(rate_limit_mod, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(rate_limit_mod, "get_redis_client", lambda redis_url=None: (_ for _ in ()).throw(RuntimeError("redis down")))
 
-    decision = rate_limit_mod.check_rate_limit("api-key-3")
-    assert decision.allowed is True
-    assert decision.retry_after_seconds == 0
+    # Local fallback still allows traffic within the configured burst.
+    for _ in range(5):
+        decision = rate_limit_mod.check_rate_limit("api-key-3")
+        assert decision.allowed is True
+        assert decision.retry_after_seconds == 0
+
+    # Exhausting the local bucket rejects instead of failing open.
+    denied = rate_limit_mod.check_rate_limit("api-key-3")
+    assert denied.allowed is False
+    assert denied.retry_after_seconds >= 1
+
 
 
 @pytest.mark.xfail(reason="Requires Redis; rate limiter returns 503 when unavailable", strict=False)
