@@ -53,18 +53,20 @@ class PlaybookEngine:
             if playbook.status != "Active":
                 continue
                 
-            # Evaluate rules
-            should_trigger = False
-            rule_severity = playbook.rules.get("severity")
-            rule_source = playbook.rules.get("source")
-            
-            if rule_severity and incident.severity == rule_severity:
+            # Evaluate rules: every present rule key must match (AND).
+            # Empty rules intentionally mean always trigger.
+            rules = playbook.rules or {}
+            if not rules:
                 should_trigger = True
-            if rule_source and incident.source == rule_source:
+            else:
                 should_trigger = True
-            if not rule_severity and not rule_source:
-                # Default fallback trigger
-                should_trigger = True
+                for key, expected in rules.items():
+                    if expected is None or expected == "":
+                        continue
+                    actual = getattr(incident, key, None)
+                    if actual != expected and str(actual) != str(expected):
+                        should_trigger = False
+                        break
                 
             if should_trigger:
                 execution = self.execute_playbook(playbook.playbook_id, incident.incident_id)
