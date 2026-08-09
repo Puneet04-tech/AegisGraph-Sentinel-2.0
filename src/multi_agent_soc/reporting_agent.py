@@ -4,7 +4,6 @@ Reporting Agent.
 Generates SOC reports, metrics dashboards, and compliance documentation.
 """
 
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -39,6 +38,27 @@ class ReportingAgent:
     #: Severity labels recognised on stored threat reports, in the order they
     #: are presented on the dashboard.
     SEVERITY_LEVELS = ("critical", "high", "medium", "low")
+
+    #: Controls assessed by `generate_compliance_report`, keyed by framework.
+    #: Each entry names the control and the store-backed signal that evidences
+    #: it. A control with no available signal is reported as not assessed
+    #: rather than as compliant.
+    COMPLIANCE_CONTROLS = {
+        "SOC2": (
+            ("CC6.1", "Logical access controls", "access_investigations"),
+            ("CC6.2", "Authentication controls", "authentication_threats"),
+            ("CC7.2", "Security monitoring", "monitoring_coverage"),
+            ("CC7.3", "Incident evaluation and response", "incident_resolution"),
+        ),
+        "PCI-DSS": (
+            ("10.2", "Audit trail for access to cardholder data", "monitoring_coverage"),
+            ("12.10", "Incident response plan execution", "incident_resolution"),
+        ),
+    }
+
+    #: Proportion of investigations left unresolved above which a monitoring or
+    #: response control is reported as needing attention.
+    CONTROL_ATTENTION_THRESHOLD = 0.25
 
     def __init__(self, store: Optional[SOCStore] = None):
         """Initialize the reporting agent.
@@ -232,33 +252,179 @@ class ReportingAgent:
         period_end = period_end or datetime.now(timezone.utc)
         period_start = period_start or (period_end - timedelta(days=30))
         
+        # Control status is evaluated against stored activity for the period.
+        # Each status was previously a `random.choice` over a weighted list, so
+        # a control could be reported as compliant on one run and needing
+        # attention on the next with no change in the underlying system, and
+        # `findings` was a `random.randint(0, 5)` unconnected to the controls
+        # above it. An attestation produced this way asserts a compliance
+        # posture that was never assessed.
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        definitions = self.COMPLIANCE_CONTROLS.get(framework)
+
+        if definitions is None:
+            logger.warning(
+                "No control definitions for framework %s; reporting as not assessed",
+                framework,
+            )
+            definitions = ()
+
+        signals = self._gather_control_signals(period_start, period_end)
+
+        controls = []
+        for control_id, description, signal_name in definitions:
+            status, basis = self._evaluate_control(signal_name, signals)
+            controls.append({
+                "control_id": control_id,
+                "description": description,
+                "status": status,
+                "basis": basis,
+                "last_reviewed": reviewed_at,
+            })
+
+        findings = [
+            {
+                "control_id": control["control_id"],
+                "description": control["description"],
+                "detail": control["basis"],
+            }
+            for control in controls
+            if control["status"] == "needs_attention"
+        ]
+
         return {
             "framework": framework,
             "period": {
                 "start": period_start.isoformat(),
                 "end": period_end.isoformat(),
             },
-            "controls": [
-                {
-                    "control_id": "CC6.1",
-                    "description": "Logical access controls",
-                    "status": random.choice(["compliant", "compliant", "needs_attention"]),
-                    "last_reviewed": datetime.now(timezone.utc).isoformat(),
-                },
-                {
-                    "control_id": "CC6.2",
-                    "description": "Authentication controls",
-                    "status": random.choice(["compliant", "compliant", "compliant"]),
-                    "last_reviewed": datetime.now(timezone.utc).isoformat(),
-                },
-            ],
-            "findings": random.randint(0, 5),
-            "recommendations": [
-                "Continue monitoring access patterns",
-                "Review high-risk entity access",
-            ],
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "controls": controls,
+            # Reported as the count of controls that actually failed, and the
+            # findings themselves so the number can be reconciled.
+            "findings": len(findings),
+            "findings_detail": findings,
+            "controls_assessed": sum(
+                1 for c in controls if c["status"] != "not_assessed"
+            ),
+            "recommendations": self._compliance_recommendations(controls),
+            "generated_at": reviewed_at,
         }
+
+    def _gather_control_signals(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> Dict[str, Any]:
+        """Collect the store-backed signals that compliance controls rest on."""
+        investigations = self._store.get_investigations_between(period_start, period_end)
+        threats = self._store.get_threats_between(period_start, period_end)
+
+        unresolved = [
+            inv for inv in investigations
+            if inv.status != InvestigationStatus.CLOSED
+        ]
+
+        authentication_threats = [
+            threat for threat in threats
+            if "auth" in threat.threat_type.lower()
+            or "credential" in threat.threat_type.lower()
+        ]
+
+        return {
+            "investigation_count": len(investigations),
+            "unresolved_count": len(unresolved),
+            "unresolved_ratio": (
+                len(unresolved) / len(investigations) if investigations else 0.0
+            ),
+            "threat_count": len(threats),
+            "authentication_threat_count": len(authentication_threats),
+            "high_risk_count": sum(
+                1 for inv in investigations if inv.risk_score >= self.HIGH_RISK_THRESHOLD
+            ),
+        }
+
+    def _evaluate_control(
+        self,
+        signal_name: str,
+        signals: Dict[str, Any],
+    ) -> tuple:
+        """Evaluate one control against the gathered signals.
+
+        Returns:
+            Tuple of (status, basis). A control whose evidencing signal recorded
+            no activity is reported as ``not_assessed`` rather than as
+            ``compliant``: an absence of evidence is not evidence of control
+            effectiveness, and reporting it as compliant is what made the
+            original attestation unsound.
+        """
+        if signal_name in ("access_investigations", "incident_resolution"):
+            if not signals["investigation_count"]:
+                return "not_assessed", "No investigations recorded in the period"
+
+            ratio = signals["unresolved_ratio"]
+            if ratio > self.CONTROL_ATTENTION_THRESHOLD:
+                return (
+                    "needs_attention",
+                    f"{signals['unresolved_count']} of {signals['investigation_count']} "
+                    f"investigations remain unresolved ({ratio:.0%})",
+                )
+            return (
+                "compliant",
+                f"{signals['investigation_count'] - signals['unresolved_count']} of "
+                f"{signals['investigation_count']} investigations resolved",
+            )
+
+        if signal_name == "authentication_threats":
+            if not signals["threat_count"]:
+                return "not_assessed", "No threat reports recorded in the period"
+
+            if signals["authentication_threat_count"]:
+                return (
+                    "needs_attention",
+                    f"{signals['authentication_threat_count']} authentication-related "
+                    "threats reported in the period",
+                )
+            return (
+                "compliant",
+                f"No authentication-related threats among {signals['threat_count']} reports",
+            )
+
+        if signal_name == "monitoring_coverage":
+            if not signals["threat_count"] and not signals["investigation_count"]:
+                return "not_assessed", "No monitoring activity recorded in the period"
+            return (
+                "compliant",
+                f"{signals['threat_count']} threat reports and "
+                f"{signals['investigation_count']} investigations recorded",
+            )
+
+        return "not_assessed", f"No signal available for {signal_name}"
+
+    def _compliance_recommendations(
+        self,
+        controls: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Derive recommendations from the controls that actually failed."""
+        recommendations = []
+
+        for control in controls:
+            if control["status"] == "needs_attention":
+                recommendations.append(
+                    f"Remediate {control['control_id']} ({control['description']}): "
+                    f"{control['basis']}"
+                )
+
+        unassessed = [c for c in controls if c["status"] == "not_assessed"]
+        if unassessed:
+            recommendations.append(
+                "Extend monitoring coverage so the following controls can be "
+                "evidenced: " + ", ".join(c["control_id"] for c in unassessed)
+            )
+
+        if not recommendations:
+            recommendations.append("Continue monitoring access patterns")
+
+        return recommendations
     
     def generate_threat_trend_report(self, days: int = 30) -> Dict[str, Any]:
         """Generate threat trend analysis from stored threat reports.

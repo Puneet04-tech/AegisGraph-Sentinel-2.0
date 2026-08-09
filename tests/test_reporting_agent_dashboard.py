@@ -87,25 +87,10 @@ class TestDeterminism:
             ))
         assert len(seen) == 1, f"dashboard still non-deterministic: {seen}"
 
-    def test_the_dashboard_draws_no_random_values(self):
-        """`generate_compliance_report` still uses `random` and is fixed
-        separately; the dashboard path must no longer reach it."""
+    def test_the_module_no_longer_imports_random(self):
         import src.multi_agent_soc.reporting_agent as module
 
-        calls = []
-        original = module.random.randint
-
-        def recording_randint(*args, **kwargs):
-            calls.append(args)
-            return original(*args, **kwargs)
-
-        module.random.randint = recording_randint
-        try:
-            agent(threats=[threat()]).generate_executive_dashboard()
-        finally:
-            module.random.randint = original
-
-        assert calls == []
+        assert not hasattr(module, "random")
 
 
 class TestDashboardOverview:
