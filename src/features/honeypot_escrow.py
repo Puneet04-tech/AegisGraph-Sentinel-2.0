@@ -29,13 +29,38 @@ import threading
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import uuid
 import secrets
 import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Current time as a timezone-aware UTC datetime.
+
+    Escrow release timing is money-handling: a honeypot holds a victim's funds
+    until `auto_release_time`. Reading the clock with a naive `datetime.now()`
+    ties that deadline to whatever local zone the process happens to run in, so
+    the same honeypot releases at a different absolute instant depending on the
+    host, and shifts by an hour across a DST transition.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(value: datetime) -> datetime:
+    """Interpret a naive datetime as UTC, leaving aware values untouched.
+
+    Records persisted before this change carry naive datetimes, and callers may
+    supply either form. Mixing the two raises `TypeError` on comparison or
+    subtraction, which in `check_auto_release` would leave escrowed funds held
+    indefinitely, so every boundary coerces to aware here.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class HoneypotStatus(Enum):
@@ -133,7 +158,7 @@ class HoneypotEscrowManager:
         
         # Daily statistics for realtime monitoring
         self.daily_stats = {
-            'date': datetime.now().date(),
+            'date': _utcnow().date(),
             'arrests': 0,
             'recovered': 0.0,
         }
@@ -195,7 +220,7 @@ class HoneypotEscrowManager:
         honeypot_id = f"HP_{secrets.token_hex(6).upper()}"
         escrow_account = f"{self.escrow_prefix}{secrets.token_hex(8).upper()}"
         
-        activation_time = datetime.now()
+        activation_time = _utcnow()
         auto_release_time = activation_time + timedelta(hours=self.auto_release_hours)
         
         honeypot = HoneypotTransaction(
@@ -234,7 +259,10 @@ class HoneypotEscrowManager:
                 "currency": currency,
                 "amount": amount,
                 "risk_score": round(risk_score, 4),
-                "auto_release_time": auto_release_time.strftime("%H:%M:%S"),
+                # Full ISO-8601 with offset rather than a bare wall-clock time:
+                # "14:30:00" is ambiguous in an operations log that may be read
+                # from a different zone than the one that wrote it.
+                "auto_release_time": auto_release_time.isoformat(),
             },
         )
         
@@ -269,7 +297,7 @@ class HoneypotEscrowManager:
         
         # Record attempt
         attempt = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': _utcnow().isoformat(),
             'type': withdrawal_type,
             'amount': amount,
             'location': location,
@@ -385,8 +413,10 @@ class HoneypotEscrowManager:
             arrest_time = arrest_details.get('arrest_time')
             if arrest_time:
                 try:
-                    withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
-                    arrest_time_dt = datetime.fromisoformat(arrest_time)
+                    withdrawal_time = _ensure_aware(
+                        datetime.fromisoformat(first_withdrawal['timestamp'])
+                    )
+                    arrest_time_dt = _ensure_aware(datetime.fromisoformat(arrest_time))
                     response_minutes = (arrest_time_dt - withdrawal_time).total_seconds() / 60
                 except (ValueError, TypeError):
                     logger.warning(
@@ -424,12 +454,12 @@ class HoneypotEscrowManager:
         Check and auto-release honeypots past their timeout
         Called periodically by background task
         """
-        now = datetime.now()
+        now = _utcnow()
         with self._lock:
             to_release = [
                 hp_id
                 for hp_id, hp in list(self.active_honeypots.items())
-                if now >= hp.auto_release_time and not hp.released
+                if now >= _ensure_aware(hp.auto_release_time) and not hp.released
             ]
 
         for hp_id in to_release:
@@ -500,7 +530,7 @@ class HoneypotEscrowManager:
         """Generate police alert for withdrawal attempt"""
         alert = {
             'alert_id': f"ALERT_{secrets.token_hex(4).upper()}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': _utcnow().isoformat(),
             'priority': 'CRITICAL',
             'honeypot_id': honeypot.honeypot_id,
             'mule_account': honeypot.target_account,
@@ -542,7 +572,7 @@ class HoneypotEscrowManager:
     
     def _check_daily_reset(self):
         """Reset daily statistics if 24 hours have elapsed."""
-        today = datetime.now().date()
+        today = _utcnow().date()
         if self.daily_stats['date'] != today:
             self.daily_stats['date'] = today
             self.daily_stats['arrests'] = 0
@@ -582,7 +612,9 @@ class HoneypotEscrowManager:
         with self._lock:
             honeypots = list(self.active_honeypots.values())
         for hp in honeypots:
-            time_remaining_secs = max(0, (hp.auto_release_time - datetime.now()).total_seconds())
+            time_remaining_secs = max(
+                0, (_ensure_aware(hp.auto_release_time) - _utcnow()).total_seconds()
+            )
             
             # Determine location from last withdrawal attempt
             last_location = None
