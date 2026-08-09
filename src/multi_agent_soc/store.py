@@ -135,6 +135,16 @@ class SOCStore:
         for agent in default_agents:
             self._agents[agent.agent_id] = agent
     
+    def get_all_agents(self) -> List[AgentState]:
+        """Get every registered agent.
+
+        Callers previously read `store._agents` directly to count registered
+        agents, reaching past the lock that guards every other access to the
+        store's internals.
+        """
+        with self._lock:
+            return list(self._agents.values())
+
     def store_task(self, task: AgentTask) -> AgentTask:
         """Store a task."""
         with self._lock:

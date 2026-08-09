@@ -32,9 +32,17 @@ class ReportingAgent:
         - Executive dashboard data
     """
     
+    #: Risk score at or above which an investigated entity is counted as high
+    #: risk on the dashboard.
+    HIGH_RISK_THRESHOLD = 0.7
+
+    #: Severity labels recognised on stored threat reports, in the order they
+    #: are presented on the dashboard.
+    SEVERITY_LEVELS = ("critical", "high", "medium", "low")
+
     def __init__(self, store: Optional[SOCStore] = None):
         """Initialize the reporting agent.
-        
+
         Args:
             store: Optional SOC store
         """
@@ -96,32 +104,114 @@ class ReportingAgent:
             Dashboard data
         """
         stats = self._store.get_stats()
-        
+
+        # Every figure below is counted from the store over an explicit window.
+        # Alert volumes, high-risk entity counts, trend deltas, task throughput
+        # and the severity breakdown were all `random` draws, so the executive
+        # dashboard reported a different security posture on each refresh and
+        # the severity buckets never summed to the alert total.
+        now = datetime.now(timezone.utc)
+        day_start = now - timedelta(days=1)
+        previous_day_start = day_start - timedelta(days=1)
+
+        todays_threats = self._store.get_threats_between(day_start, now)
+        previous_threats = self._store.get_threats_between(previous_day_start, day_start)
+
+        todays_investigations = self._store.get_investigations_between(day_start, now)
+        risk_scores = [inv.risk_score for inv in todays_investigations]
+
+        investigation_tasks = self._store.get_tasks_by_agent(AgentType.INVESTIGATION)
+
+        completed_today = []
+        resolution_minutes = []
+        response_minutes = []
+
+        for task in investigation_tasks:
+            started_at = task.started_at
+            completed_at = task.completed_at
+
+            if completed_at is not None and day_start <= completed_at <= now:
+                completed_today.append(task)
+                # A task completed without a recorded start contributes to
+                # throughput but cannot contribute a duration.
+                if started_at is not None:
+                    resolution_minutes.append(
+                        (completed_at - started_at).total_seconds() / 60
+                    )
+
+            if started_at is not None and day_start <= started_at <= now:
+                response_minutes.append(
+                    (started_at - task.created_at).total_seconds() / 60
+                )
+
+        # High-risk entities are counted distinctly; one entity investigated
+        # repeatedly is one entity at risk, not several.
+        high_risk_entities = {
+            inv.entity_id
+            for inv in todays_investigations
+            if inv.risk_score >= self.HIGH_RISK_THRESHOLD
+        }
+
         return {
             "overview": {
-                "total_alerts_today": random.randint(50, 200),
-                "high_risk_entities": random.randint(10, 50),
+                "total_alerts_today": len(todays_threats),
+                "high_risk_entities": len(high_risk_entities),
                 "active_investigations": stats.get("pending_tasks", 0),
                 "fraud_rings_detected": len(self._store.get_all_fraud_rings()),
             },
             "trends": {
-                "alert_volume_change": random.uniform(-0.2, 0.3),
-                "risk_score_trend": random.uniform(0.4, 0.8),
-                "investigation_resolution_time": random.randint(30, 120),
+                "alert_volume_change": self._change_ratio(
+                    len(todays_threats), len(previous_threats)
+                ),
+                "risk_score_trend": (
+                    round(sum(risk_scores) / len(risk_scores), 4) if risk_scores else 0.0
+                ),
+                "investigation_resolution_time": (
+                    round(sum(resolution_minutes) / len(resolution_minutes), 2)
+                    if resolution_minutes else 0.0
+                ),
             },
             "performance": {
-                "agents_online": len(self._store._agents),
-                "tasks_completed_today": random.randint(20, 100),
-                "average_response_time": random.uniform(5, 30),
+                "agents_online": len(self._store.get_all_agents()),
+                "tasks_completed_today": len(completed_today),
+                "average_response_time": (
+                    round(sum(response_minutes) / len(response_minutes), 2)
+                    if response_minutes else 0.0
+                ),
             },
-            "alerts_by_severity": {
-                "critical": random.randint(0, 5),
-                "high": random.randint(5, 20),
-                "medium": random.randint(20, 50),
-                "low": random.randint(50, 100),
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "alerts_by_severity": self._count_by_severity(todays_threats),
+            "timestamp": now.isoformat(),
         }
+
+    @staticmethod
+    def _change_ratio(current: int, previous: int) -> float:
+        """Ratio of change between two counts.
+
+        Returns 0.0 when there is no prior period to compare against, matching
+        how `generate_threat_trend_report` treats the same situation, rather
+        than reporting an infinite increase.
+        """
+        if not previous:
+            return 0.0
+        return round((current - previous) / previous, 4)
+
+    def _count_by_severity(self, threats: List[Any]) -> Dict[str, int]:
+        """Count threat reports into severity buckets.
+
+        Unrecognised severities are counted under ``low`` so the buckets always
+        sum to the reported alert total; the random buckets they replace could
+        not be reconciled against it at all.
+        """
+        counts = {level: 0 for level in self.SEVERITY_LEVELS}
+
+        for threat in threats:
+            level = str(getattr(threat, "severity", "") or "").strip().lower()
+            if level in counts:
+                counts[level] += 1
+            else:
+                counts["low"] += 1
+
+        return counts
     
     def generate_compliance_report(
         self,
