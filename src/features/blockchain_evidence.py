@@ -93,6 +93,10 @@ class BlockchainEvidence:
     # Consensus
     consensus_timestamp: str
     finality_time_ms: float
+    
+    # Zero-Knowledge Proof (ZKP) Attestation
+    zkp_proof: Optional[Dict] = None
+
 
 
 class BlockchainNode:
@@ -1031,6 +1035,16 @@ class BlockchainEvidenceManager:
                 
                 consensus_time = (time.time() - consensus_start) * 1000  # ms
                 
+                # Generate Zero-Knowledge Proof (ZKP) Attestation
+                zkp_proof = None
+                try:
+                    from src.quantum_security.zkp_verifier import ZKPVerifier
+                    verifier = ZKPVerifier()
+                    if risk_score >= 0.70:
+                        zkp_proof = verifier.generate_proof(risk_score=risk_score, threshold=0.70, transaction_id=transaction_id)
+                except Exception as zkp_err:
+                    logger.warning(f"ZKP proof generation skipped: {zkp_err}")
+
                 evidence = BlockchainEvidence(
                     evidence_id=evidence_id,
                     transaction_hash=transaction_hash,
@@ -1052,7 +1066,9 @@ class BlockchainEvidenceManager:
                     validator_signatures=validator_signatures,
                     consensus_timestamp=block['timestamp'],
                     finality_time_ms=consensus_time,
+                    zkp_proof=zkp_proof,
                 )
+
                 
                 # Update statistics
                 self.stats['total_sealed'] += 1
