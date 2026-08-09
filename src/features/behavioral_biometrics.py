@@ -470,4 +470,24 @@ def analyze_keystroke_data(
     stress_indicators = analyzer.detect_stress(features)
     
     # Combine
-    return {**features, **stress_indicators}
+    result = {**features, **stress_indicators}
+
+    # Compute 1D Temporal Transformer Stress Score
+    try:
+        import torch
+        from src.models.keystroke_transformer import KeystrokeTransformer
+        model = KeystrokeTransformer()
+        model.eval()
+        
+        hold_times = [rt - pt for pt, rt in zip(press_times, release_times)]
+        flight_times = [press_times[i+1] - release_times[i] for i in range(len(press_times)-1)] + [0.0]
+        
+        seq_tensor = torch.tensor([[ht, ft] for ht, ft in zip(hold_times, flight_times)], dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            tf_score = float(model(seq_tensor).squeeze().item())
+        result["transformer_stress_score"] = round(tf_score, 4)
+    except Exception:
+        result["transformer_stress_score"] = result.get("stress_score", 0.0)
+
+    return result
+
