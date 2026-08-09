@@ -6742,4 +6742,25 @@ async def verify_zk_proof_endpoint(
     }
 
 
+@app.post(
+    "/api/v1/explain/counterfactual",
+    tags=["Explainable AI"],
+    summary="Generate Actionable Graph Counterfactual Explanation",
+)
+async def explain_counterfactual_endpoint(
+    transaction: dict = Body(..., description="Transaction details"),
+    risk_assessment: dict = Body(..., description="Risk assessment object"),
+):
+    """Generate minimal graph edge/feature modifications required to lower risk score below threshold."""
+    from src.features.aegis_oracle_explainer import AegisOracleExplainer
+
+    explainer = AegisOracleExplainer()
+    explanation = explainer.generate_counterfactual_explanation(
+        transaction=transaction,
+        risk_assessment=risk_assessment,
+    )
+    return explanation
+
+
+
 

@@ -513,6 +513,44 @@ class AegisOracleExplainer:
         """Extract entropy-based evidence"""
         return "Transaction amount and timing show anomalous characteristics"
 
+    def generate_counterfactual_explanation(
+        self,
+        transaction: Dict,
+        risk_assessment: Dict,
+        break_down: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Generates actionable counterfactual explanation and regulatory recourse narrative.
+
+        Args:
+            transaction: Transaction data dict
+            risk_assessment: Assessment dict containing decision & risk_score
+            break_down: Risk breakdown dictionary
+
+        Returns:
+            Counterfactual explanation dictionary matching regulatory standards
+        """
+        from ..inference.counterfactual_search import GraphCounterfactualSearchEngine
+
+        search_engine = GraphCounterfactualSearchEngine(allow_threshold=0.70)
+        risk_score = risk_assessment.get("risk_score", 0.0)
+
+        counterfactual_result = search_engine.search_minimal_counterfactual(
+            transaction=transaction,
+            risk_score=risk_score,
+            risk_breakdown=break_down or risk_assessment.get("breakdown", {}),
+        )
+
+        return {
+            "transaction_id": transaction.get("transaction_id", "UNKNOWN"),
+            "original_decision": risk_assessment.get("decision", "BLOCK"),
+            "original_risk_score": risk_score,
+            "target_allowed_threshold": 0.70,
+            "counterfactual": counterfactual_result,
+            "model_version": self.model_version,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
 
 # Example usage
 if __name__ == "__main__":
