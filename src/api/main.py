@@ -38,7 +38,7 @@ import os
 # Dedicated thread pool for CPU-bound ML inference
 inference_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 1)))
 import uvicorn
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
@@ -6061,6 +6061,142 @@ async def oidc_login(
         "redirect_url": response.redirect_url,
         "state": response.metadata.get("state") if response.metadata else None,
         "nonce": response.metadata.get("nonce") if response.metadata else None,
+    }
+
+
+def _identity_callback_response(response):
+    """Serialize a federated callback result for the API layer."""
+    return {
+        "success": True,
+        "user": response.user,
+        "session": response.session,
+        "access_token": response.access_token,
+        "id_token": response.id_token,
+        "refresh_token": response.refresh_token,
+        "redirect_url": response.redirect_url,
+        "provider_id": response.provider_id,
+        "authentication_method": response.authentication_method,
+    }
+
+
+@app.post(
+    "/api/v1/identity/saml/acs",
+    tags=["Identity Federation"],
+    summary="SAML Assertion Consumer Service",
+)
+async def saml_acs(
+    SAMLResponse: str = Form(...),
+    RelayState: Optional[str] = Form(None),
+):
+    """Process the SAML Response POSTed by the IdP (HTTP-POST binding).
+
+    This is the AssertionConsumerService URL advertised in the AuthnRequest,
+    so it must be reachable without an API key: the IdP redirects the user's
+    browser here directly.
+    """
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id="",
+        protocol="saml",
+        SAMLResponse=SAMLResponse,
+        RelayState=RelayState,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return _identity_callback_response(response)
+
+
+@app.post(
+    "/api/v1/identity/saml/slo",
+    tags=["Identity Federation"],
+    summary="SAML Single Logout",
+)
+async def saml_slo(
+    SAMLRequest: Optional[str] = Form(None),
+    SAMLResponse: Optional[str] = Form(None),
+):
+    """Process a SAML LogoutRequest/LogoutResponse POSTed by the IdP."""
+    service = get_identity_federation_service()
+    payload = SAMLRequest or SAMLResponse or ""
+    response = service._saml.process_logout_request(payload)
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return {"success": True}
+
+
+@app.get(
+    "/api/v1/identity/oidc/callback",
+    tags=["Identity Federation"],
+    summary="OIDC Redirect Callback",
+)
+async def oidc_callback(
+    code: str = Query(...),
+    state: str = Query(...),
+    provider_id: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+):
+    """Handle the IdP redirect after the user authenticates (OIDC code flow).
+
+    The IdP redirect carries only code/state; the provider is recovered from
+    the pending authentication recorded when the flow was initiated.
+    """
+    if error:
+        raise HTTPException(status_code=400, detail=error_description or error)
+
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id=provider_id,
+        protocol="oidc",
+        code=code,
+        state=state,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return _identity_callback_response(response)
+
+
+@app.get(
+    "/api/v1/identity/oauth/authorize",
+    tags=["Identity Federation"],
+    summary="OAuth2 Authorization Endpoint",
+)
+async def oauth_authorize(
+    client_id: str = Query(...),
+    redirect_uri: str = Query(...),
+    response_type: str = Query("code"),
+    scope: str = Query("openid profile email"),
+    state: Optional[str] = Query(None),
+    code_challenge: Optional[str] = Query(None),
+    code_challenge_method: Optional[str] = Query(None),
+):
+    """Issue an authorization code to a registered OAuth2 client."""
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id="",
+        protocol="oauth",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        response_type=response_type,
+        scope=scope,
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "authentication_method": response.authentication_method,
     }
 
 
