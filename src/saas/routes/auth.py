@@ -561,7 +561,18 @@ async def sso_authorize(
     current_user: dict = Depends(get_current_user),
 ):
     """Initiate SSO authorization."""
-    if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
+    # Fail closed: with no configured allowlist, SSO authorization is disabled
+    # rather than accepting arbitrary redirect targets.
+    if not _SSO_REDIRECT_ALLOWLIST:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "SSO authorization is disabled: set the OAUTH_REDIRECT_URIS "
+                "environment variable before enabling SSO"
+            ),
+        )
+
+    if redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="redirect_uri is not in the configured allow-list",
