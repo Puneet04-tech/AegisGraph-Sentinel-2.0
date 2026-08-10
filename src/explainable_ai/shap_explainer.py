@@ -119,25 +119,19 @@ class SHAPExplainer:
         # Sort features by value for marginal contribution approximation
         sorted_features = sorted(features.items(), key=lambda x: abs(x[1]), reverse=True)
         
-        remaining_diff = total_diff
+        # Earlier features get higher weight, normalized so contributions sum to total_diff
+        raw_weights = [1.0 / (i + 1) for i in range(len(sorted_features))]
+        weight_total = sum(raw_weights)
+        
         for i, (feature, value) in enumerate(sorted_features):
-            # Approximate marginal contribution
-            weight = 1.0 / (i + 1)  # Earlier features get higher weight
-            
-            # Add some randomness to simulate actual SHAP computation
-            contribution = remaining_diff * weight * random.uniform(0.8, 1.2)
-            
-            # Ensure we don't overshoot
-            if i == len(sorted_features) - 1:
-                contribution = remaining_diff
-            
-            remaining_diff -= contribution
+            weight = raw_weights[i] / weight_total
+            contribution = total_diff * weight
             
             importance = FeatureImportance(
                 feature=feature,
                 importance=contribution,
                 direction="positive" if contribution > 0 else "negative",
-                confidence=random.uniform(0.85, 0.99),
+                confidence=round(max(0.7, 0.99 - i * 0.05), 3),
             )
             feature_importances.append(importance)
         

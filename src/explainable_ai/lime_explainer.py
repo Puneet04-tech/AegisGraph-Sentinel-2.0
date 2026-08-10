@@ -5,6 +5,7 @@ LIME (Local Interpretable Model-agnostic Explanations) implementation.
 """
 
 import random
+import hashlib
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -97,13 +98,15 @@ class LIMEExplainer:
     ) -> Dict[str, float]:
         """Compute LIME weights using perturbation and locally weighted regression."""
         weights = {}
+        seed = int(hashlib.md5(f"{sorted(features.items())}{prediction}".encode()).hexdigest()[:8], 16)
+        rng = random.Random(seed)
         
         for feature, value in features.items():
-            # Simulate perturbation
-            perturbations = []
-            for _ in range(self._num_samples // len(features)):
-                perturbed_value = value * random.uniform(0.5, 1.5)
-                perturbations.append(perturbed_value)
+            # Simulate perturbation, seeded so identical input reproduces the same sample
+            perturbations = [
+                value * rng.uniform(0.5, 1.5)
+                for _ in range(self._num_samples // len(features))
+            ]
             
             # Compute local weight based on proximity
             # Features closer to original value get higher weight
@@ -118,8 +121,7 @@ class LIMEExplainer:
                 for p, ps in zip(perturbations, proximity_scores)
             ) / sum(proximity_scores) if proximity_scores else 0
             
-            # Scale by prediction
-            weights[feature] = weighted_contribution * prediction * random.uniform(0.8, 1.2)
+            weights[feature] = weighted_contribution * prediction
         
         return weights
     
