@@ -45,6 +45,7 @@ from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_late
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
 from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details
+from src.inference.timestamps import to_utc
 
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
@@ -730,8 +731,8 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     breakdown['behavior'] = behavior_risk
 
     entropy_risk = 0.0
-    hour = datetime.now(timezone.utc).hour
-    if hour >= 2 and hour <= 5:
+    transaction_time = to_utc(transaction.get('timestamp'))
+    if transaction_time is not None and 2 <= transaction_time.hour <= 5:
         entropy_risk += 0.4
     if amount % 1000 == 0 and amount >= 5000:
         entropy_risk += 0.3
