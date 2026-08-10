@@ -33,7 +33,22 @@ class AdvancedAnalyticsModule:
         - Anomaly detection
         - Business insights generation
     """
-    
+
+    #: Lags tested for seasonality, in samples. Covers weekly, fortnightly,
+    #: monthly and quarterly cycles in daily data.
+    SEASONAL_LAGS = (7, 14, 30, 90)
+
+    #: Autocorrelation at a candidate lag above which a series is treated as
+    #: seasonal.
+    SEASONALITY_THRESHOLD = 0.5
+
+    #: A lag is only tested when the series holds at least this many full
+    #: cycles; one repetition is not evidence of a cycle.
+    MIN_CYCLES = 2
+
+    #: p-value at or above which a correlation is not treated as significant.
+    SIGNIFICANCE_ALPHA = 0.05
+
     def __init__(self, store: Optional[AnalyticsStore] = None):
         """Initialize the advanced analytics module.
         
@@ -120,7 +135,10 @@ class AdvancedAnalyticsModule:
             volatility=round(volatility, 4),
             forecast_values=[round(v, 2) for v in forecast_values],
             confidence_interval=confidence_interval,
-            seasonality_detected=random.choice([True, False]),
+            # Measured by autocorrelation at candidate lags. This used to be
+            # random.choice([True, False]) -- a coin flip reported as a
+            # property of the data.
+            seasonality_detected=self._detect_seasonality(data_points),
             anomaly_detected=len(anomaly_points) > 0,
             anomaly_points=anomaly_points,
         )
@@ -128,6 +146,63 @@ class AdvancedAnalyticsModule:
         self._store.store_trend(analysis)
         return analysis
     
+    def _detect_seasonality(self, data_points: List[float]) -> bool:
+        """Whether the series repeats at any candidate lag.
+
+        Uses the autocorrelation of the series against itself shifted by each
+        lag. A lag is only considered when the series covers at least
+        ``MIN_CYCLES`` full periods.
+        """
+        n = len(data_points)
+        for lag in self.SEASONAL_LAGS:
+            if n < lag * self.MIN_CYCLES:
+                continue
+            if self._autocorrelation(data_points, lag) >= self.SEASONALITY_THRESHOLD:
+                return True
+        return False
+
+    @staticmethod
+    def _autocorrelation(data_points: List[float], lag: int) -> float:
+        """Autocorrelation of a series at a given lag."""
+        n = len(data_points)
+        mean_value = sum(data_points) / n
+
+        variance = sum((y - mean_value) ** 2 for y in data_points)
+        if variance == 0:
+            # A constant series has no cycle to find.
+            return 0.0
+
+        covariance = sum(
+            (data_points[i] - mean_value) * (data_points[i + lag] - mean_value)
+            for i in range(n - lag)
+        )
+        return covariance / variance
+
+    @staticmethod
+    def _correlation_p_value(correlation: float, n: int) -> float:
+        """Two-tailed p-value for a Pearson correlation.
+
+        Returns 1.0 when the test is undefined -- fewer than three points, or
+        a perfect correlation where the t statistic diverges -- rather than a
+        small number that would read as significant.
+        """
+        degrees_of_freedom = n - 2
+        if degrees_of_freedom < 1:
+            return 1.0
+
+        r_squared = min(1.0, correlation ** 2)
+        if r_squared >= 1.0:
+            # Perfect correlation: significant for any usable sample size.
+            return 0.0
+
+        t_statistic = abs(correlation) * math.sqrt(
+            degrees_of_freedom / (1 - r_squared)
+        )
+
+        from scipy import stats
+
+        return float(2 * stats.t.sf(t_statistic, degrees_of_freedom))
+
     def analyze_correlation(
         self,
         variable_a: List[float],
@@ -168,11 +243,23 @@ class AdvancedAnalyticsModule:
         denominator = math.sqrt(a_var * b_var)
         correlation = numerator / denominator if denominator != 0 else 0
         
-        # Calculate p-value (simplified)
-        p_value = random.uniform(0.001, 0.05)
-        
-        # Determine significance
-        if abs(correlation) >= 0.7:
+        # Two-tailed p-value for the correlation, from the t statistic
+        # t = r * sqrt(n - 2) / sqrt(1 - r^2) on n - 2 degrees of freedom.
+        #
+        # This used to be random.uniform(0.001, 0.05) -- always below 0.05, so
+        # every correlation this module produced was "statistically
+        # significant", including a correlation of 0.0 between two unrelated
+        # variables.
+        p_value = self._correlation_p_value(correlation, n)
+
+        # Determine significance. This graded purely on the size of the
+        # coefficient, so a correlation of 0.9 measured over four points --
+        # which the t-test does not distinguish from chance -- was reported
+        # as HIGH significance. A result that fails the test is LOW however
+        # large the coefficient.
+        if p_value >= self.SIGNIFICANCE_ALPHA:
+            significance = "LOW"
+        elif abs(correlation) >= 0.7:
             significance = "HIGH"
         elif abs(correlation) >= 0.4:
             significance = "MEDIUM"
