@@ -593,7 +593,12 @@ class TestAttackPathPredictor:
         )
         
         assert prediction.source_entity_id == "entity_1"
-        assert len(prediction.predicted_path) == 4  # source + 3 hops
+        # Hops are now real graph neighbours, so the path is bounded by the
+        # requested depth rather than always padded out to it with invented
+        # identifiers. With no graph data the path is the source alone.
+        assert 1 <= len(prediction.predicted_path) <= 4
+        assert prediction.predicted_path[0] == "entity_1"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
         assert prediction.probability > 0
         assert prediction.estimated_damage > 0
     
@@ -606,9 +611,12 @@ class TestAttackPathPredictor:
             depth=2,
         )
         
-        assert len(prediction.predicted_path) == 4  # 2 known + 2 new
+        # The known prefix is always preserved; the extension is only as long
+        # as the graph can actually supply.
+        assert 2 <= len(prediction.predicted_path) <= 4
         assert prediction.predicted_path[0] == "entity_1"
         assert prediction.predicted_path[1] == "entity_2"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
     
     def test_predict_network_expansion(self, attack_predictor):
         """Test network expansion prediction."""
