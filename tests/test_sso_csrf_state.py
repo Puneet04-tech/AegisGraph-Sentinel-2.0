@@ -26,33 +26,39 @@ def _run(coro):
 class TestInMemorySSOStateStore:
     def test_issue_and_consume_matching_provider(self):
         store = InMemorySSOStateStore(ttl_seconds=60)
+        state = store.issue("google", "https://app.example.com/cb")
+        assert store.consume(state, "google") == "https://app.example.com/cb"
+        assert store.consume(state, "google") is None
+
+    def test_issue_without_redirect_uri_consumes_as_empty_string(self):
+        store = InMemorySSOStateStore(ttl_seconds=60)
         state = store.issue("google")
-        assert store.consume(state, "google") is True
-        assert store.consume(state, "google") is False
+        assert store.consume(state, "google") == ""
 
     def test_provider_mismatch_rejected(self):
         store = InMemorySSOStateStore(ttl_seconds=60)
         state = store.issue("google")
-        assert store.consume(state, "okta") is False
-        assert store.consume(state, "google") is False
+        assert store.consume(state, "okta") is None
+        assert store.consume(state, "google") is None
 
     def test_unknown_state_rejected(self):
         store = InMemorySSOStateStore()
-        assert store.consume("missing", "google") is False
+        assert store.consume("missing", "google") is None
 
     def test_empty_state_rejected(self):
         store = InMemorySSOStateStore()
-        assert store.consume("", "google") is False
+        assert store.consume("", "google") is None
 
     def test_expired_state_rejected(self):
         store = InMemorySSOStateStore(ttl_seconds=60)
-        state = store.issue("azure_ad")
-        provider, _ = store._pending[state]
+        state = store.issue("azure_ad", "https://app.example.com/cb")
+        provider, redirect_uri, _ = store._pending[state]
         store._pending[state] = (
             provider,
+            redirect_uri,
             datetime.now(timezone.utc) - timedelta(seconds=1),
         )
-        assert store.consume(state, "azure_ad") is False
+        assert store.consume(state, "azure_ad") is None
 
 
 class TestSSOAuthorizeCallbackState:
@@ -78,27 +84,11 @@ class TestSSOAuthorizeCallbackState:
 
         assert "state=" in result["authorization_url"]
         assert result["state"]
-        assert store.consume(result["state"], "google") is True
+        assert store.consume(result["state"], "google") == "https://app.example.com/cb"
 
-    def test_callback_rejects_invalid_state(self):
+    def test_callback_uses_stored_redirect_uri_for_exchange(self):
         store = InMemorySSOStateStore()
-        with patch.object(auth_routes, "_sso_state_store", store):
-            with pytest.raises(HTTPException) as exc:
-                _run(
-                    sso_callback(
-                        SSOCallbackRequest(
-                            code="abc",
-                            state="forged",
-                            provider=AuthProvider.GOOGLE,
-                        )
-                    )
-                )
-        assert exc.value.status_code == 401
-        assert "state" in exc.value.detail.lower()
-
-    def test_callback_consumes_valid_state_then_authenticates(self):
-        store = InMemorySSOStateStore()
-        state = store.issue("google")
+        state = store.issue("google", "https://app.example.com/cb")
         service = MagicMock()
         service.authenticate_sso.return_value = AuthResult(
             success=True,
@@ -123,8 +113,61 @@ class TestSSOAuthorizeCallbackState:
             )
 
         assert response.access_token == "access"
-        assert store.consume(state, "google") is False
-        service.authenticate_sso.assert_called_once()
+        service.authenticate_sso.assert_called_once_with(
+            provider=AuthProvider.GOOGLE,
+            code="auth-code",
+            redirect_uri="https://app.example.com/cb",
+        )
+
+    def test_callback_rejects_invalid_state(self):
+        store = InMemorySSOStateStore()
+        with patch.object(auth_routes, "_sso_state_store", store):
+            with pytest.raises(HTTPException) as exc:
+                _run(
+                    sso_callback(
+                        SSOCallbackRequest(
+                            code="abc",
+                            state="forged",
+                            provider=AuthProvider.GOOGLE,
+                        )
+                    )
+                )
+        assert exc.value.status_code == 401
+        assert "state" in exc.value.detail.lower()
+
+    def test_callback_consumes_valid_state_then_authenticates(self):
+        store = InMemorySSOStateStore()
+        state = store.issue("google", "https://app.example.com/cb")
+        service = MagicMock()
+        service.authenticate_sso.return_value = AuthResult(
+            success=True,
+            user_id="u1",
+            organization_id="org1",
+            role="member",
+            access_token="access",
+            refresh_token="refresh",
+        )
+
+        with patch.object(auth_routes, "_sso_state_store", store), patch.object(
+            auth_routes, "_get_auth_service", return_value=service
+        ):
+            response = _run(
+                sso_callback(
+                    SSOCallbackRequest(
+                        code="auth-code",
+                        state=state,
+                        provider=AuthProvider.GOOGLE,
+                    )
+                )
+            )
+
+        assert response.access_token == "access"
+        assert store.consume(state, "google") is None
+        service.authenticate_sso.assert_called_once_with(
+            provider=AuthProvider.GOOGLE,
+            code="auth-code",
+            redirect_uri="https://app.example.com/cb",
+        )
 
     def test_callback_rejects_provider_mismatch(self):
         store = InMemorySSOStateStore()
