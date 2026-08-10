@@ -6864,9 +6864,9 @@ async def verify_zk_proof_endpoint(
     proof_payload: dict = Body(..., description="ZKP proof payload object"),
 ):
     """Verify zero-knowledge proof attestation without revealing underlying risk score metadata."""
-    from src.quantum_security.zkp_verifier import ZKPVerifier
+    from src.quantum_security.zkp_verifier import get_zkp_verifier
 
-    verifier = ZKPVerifier()
+    verifier = get_zkp_verifier()
     is_valid = verifier.verify_proof(proof_payload)
 
     return {
