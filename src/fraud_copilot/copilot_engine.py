@@ -19,13 +19,12 @@ from .models import (
     InvestigationInsight,
     KnowledgeDocument,
     MessageRole,
-    Recommendation,
-    RecommendationType,
     ReportSection,
     ThreatExplanation,
     ConversationMessage,
 )
 from .store import FraudCopilotStore, get_copilot_store
+from .recommendation_engine import get_recommendation_engine
 
 
 class CopilotEngine:
@@ -34,6 +33,7 @@ class CopilotEngine:
     def __init__(self, store: Optional[FraudCopilotStore] = None) -> None:
         """Initialize the engine."""
         self.store = store or get_copilot_store()
+        self.recommendations = get_recommendation_engine()
 
     async def create_session(
         self,
@@ -232,40 +232,12 @@ class CopilotEngine:
         self,
         session_id: str,
         case_id: str,
+        case_data: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Generate recommendations for a case."""
-        recommendations = [
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.INVESTIGATION,
-                title="Conduct Deep Transaction Analysis",
-                description="Review all recent transactions for the involved accounts",
-                priority=1,
-                confidence=0.85,
-            ),
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.ESCALATION,
-                title="Escalate to Senior Analyst",
-                description="Given the complexity, escalate to senior fraud analyst",
-                priority=2,
-                confidence=0.78,
-            ),
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.ENHANCED_MONITORING,
-                title="Enable Enhanced Monitoring",
-                description="Set up real-time alerts for suspicious activity",
-                priority=3,
-                confidence=0.82,
-            ),
-        ]
-        
-        for rec in recommendations:
-            self.store.store_recommendation(case_id, rec)
+        recommendations = await self.recommendations.generate_recommendations(
+            case_id, case_data or {}
+        )
         
         return [
             {
