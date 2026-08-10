@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import logging
 
 from .models import (
+    DataCube,
     MetricDefinition,
     MetricValue,
     KPI,
@@ -49,6 +50,9 @@ class AnalyticsStore:
         
         # Metric definitions
         self._metric_definitions: Dict[str, MetricDefinition] = {}
+
+        # Data cubes
+        self._cubes: Dict[str, DataCube] = {}
         
         # Metric values (time-series)
         self._metric_values: OrderedDict[str, MetricValue] = OrderedDict()
@@ -142,6 +146,32 @@ class AnalyticsStore:
         """Get all metric definitions."""
         return list(self._metric_definitions.values())
     
+    # Data Cube Methods
+    def store_cube(self, cube: DataCube) -> DataCube:
+        """Store a data cube.
+
+        Cubes were previously created and thrown away, so every OLAP
+        operation taking a cube_name had nothing to resolve it against.
+        """
+        with self._lock:
+            self._cubes[cube.cube_id] = cube
+        return cube
+
+    def get_cube(self, cube_id: str) -> Optional[DataCube]:
+        """Get a data cube by ID."""
+        return self._cubes.get(cube_id)
+
+    def get_cube_by_name(self, name: str) -> Optional[DataCube]:
+        """Get the most recently created cube with this name."""
+        matches = [c for c in self._cubes.values() if c.name == name]
+        if not matches:
+            return None
+        return max(matches, key=lambda c: c.created_at)
+
+    def get_all_cubes(self) -> List[DataCube]:
+        """Get all data cubes."""
+        return list(self._cubes.values())
+
     # Metric Value Methods
     def store_metric_value(self, value: MetricValue) -> MetricValue:
         """Store a metric value."""

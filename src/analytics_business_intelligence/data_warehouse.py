@@ -4,8 +4,9 @@ Data Warehouse Module.
 Provides analytical data layer, data cubes, and aggregation capabilities.
 """
 
-import random
-from typing import Dict, List, Optional, Any
+from collections import defaultdict
+from statistics import median
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone, timedelta
 import logging
 
@@ -30,7 +31,10 @@ class DataWarehouseModule:
         - Data aggregation and caching
         - Time-series data management
     """
-    
+
+    #: Metric values scanned when answering a cube query.
+    MAX_SCAN = 10000
+
     def __init__(self, store: Optional[AnalyticsStore] = None):
         """Initialize the data warehouse module.
         
@@ -57,36 +61,96 @@ class DataWarehouseModule:
             DataCube
         """
         logger.info(f"Creating data cube: {name}")
-        
+
+        # facts used to be random.randint(1000, 100000) -- a cube over an
+        # empty warehouse still claimed tens of thousands of rows. It is now
+        # the number of recorded values the cube's measures actually cover.
+        facts = self._fact_values(measures)
+
         cube = DataCube(
             name=name,
             dimensions=dimensions,
             measures=measures,
-            facts=random.randint(1000, 100000),
-            aggregations=self._generate_aggregations(dimensions, measures),
+            facts=len(facts),
+            aggregations=self._generate_aggregations(dimensions, measures, facts),
         )
-        
+
+        # The cube was previously returned and discarded, so every operation
+        # below that takes a cube_name had nothing to resolve it against.
+        self._store.store_cube(cube)
         return cube
     
     def _generate_aggregations(
         self,
         dimensions: List[str],
         measures: List[str],
+        facts: List[MetricValue],
     ) -> Dict[str, Any]:
-        """Generate pre-computed aggregations."""
+        """Pre-compute aggregations from the recorded facts.
+
+        Each value used to be a random.uniform draw, so two cubes over the
+        same warehouse disagreed about the same sum.
+        """
         aggregations = {}
-        
+
         for dim in dimensions[:3]:  # Limit combinations
             for measure in measures[:3]:
+                relevant = [
+                    fact.value for fact in facts
+                    if fact.metric_id == measure and dim in fact.dimensions
+                ]
                 key = f"{dim}_{measure}_sum"
                 aggregations[key] = {
                     "type": AggregationType.SUM.value,
                     "dimension": dim,
                     "measure": measure,
-                    "value": random.uniform(1000, 100000),
+                    "value": round(sum(relevant), 4),
+                    "fact_count": len(relevant),
                 }
-        
+
         return aggregations
+
+    def _fact_values(self, measures: List[str]) -> List[MetricValue]:
+        """Recorded values belonging to any of the cube's measures."""
+        facts: List[MetricValue] = []
+        for measure in measures:
+            facts.extend(
+                self._store.get_metric_values(measure, limit=self.MAX_SCAN)
+            )
+        return facts
+
+    def _cube_facts(self, cube_name: str) -> Tuple[Optional[DataCube], List[MetricValue]]:
+        """Resolve a cube by name and load the facts behind it."""
+        cube = self._store.get_cube_by_name(cube_name)
+        if cube is None:
+            logger.warning("Cube '%s' does not exist", cube_name)
+            return None, []
+        return cube, self._fact_values(cube.measures)
+
+    @staticmethod
+    def _matches(fact: MetricValue, filters: Dict[str, Any]) -> bool:
+        """Whether a fact satisfies every dimension filter."""
+        return all(
+            str(fact.dimensions.get(key)) == str(value)
+            for key, value in filters.items()
+        )
+
+    @staticmethod
+    def _aggregate(values: List[float], aggregation: AggregationType) -> float:
+        """Apply an aggregation to a list of values."""
+        if aggregation == AggregationType.COUNT:
+            return len(values)
+        if not values:
+            return 0.0
+        if aggregation == AggregationType.AVG:
+            return round(sum(values) / len(values), 4)
+        if aggregation == AggregationType.MIN:
+            return min(values)
+        if aggregation == AggregationType.MAX:
+            return max(values)
+        if aggregation == AggregationType.MEDIAN:
+            return median(values)
+        return round(sum(values), 4)
     
     def query_cube(
         self,
@@ -110,28 +174,44 @@ class DataWarehouseModule:
         """
         logger.info(f"Querying cube: {cube_name}")
         
-        dimensions = dimensions or {}
-        measures = measures or ["count"]
-        filters = filters or {}
-        
-        # Generate sample results
+        # The query used to return between 5 and 20 rows of random numbers.
+        # cube_name was never resolved, the filters were echoed back into
+        # every row unexamined, and the aggregation type only chose which
+        # random range to draw from.
+        cube, facts = self._cube_facts(cube_name)
+        if cube is None:
+            return []
+
+        selected_measures = measures or cube.measures
+        all_filters = {**(dimensions or {}), **(filters or {})}
+
+        # Group by the cube dimensions that were not pinned by a filter.
+        group_by = [dim for dim in cube.dimensions if dim not in all_filters]
+
+        grouped: Dict[tuple, Dict[str, List[float]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for fact in facts:
+            if fact.metric_id not in selected_measures:
+                continue
+            if not self._matches(fact, all_filters):
+                continue
+            key = tuple(str(fact.dimensions.get(dim)) for dim in group_by)
+            grouped[key][fact.metric_id].append(fact.value)
+
         results = []
-        for i in range(random.randint(5, 20)):
-            row = {"row_id": i}
-            row.update(dimensions)
-            
-            for measure in measures:
-                if aggregation == AggregationType.AVG:
-                    row[measure] = random.uniform(50, 200)
-                elif aggregation == AggregationType.SUM:
-                    row[measure] = random.uniform(1000, 50000)
-                elif aggregation == AggregationType.COUNT:
-                    row[measure] = random.randint(10, 1000)
-                else:
-                    row[measure] = random.uniform(0, 100)
-            
+        for row_id, (key, measure_values) in enumerate(sorted(grouped.items())):
+            row: Dict[str, Any] = {"row_id": row_id}
+            row.update(all_filters)
+            row.update(dict(zip(group_by, key)))
+
+            for measure in selected_measures:
+                row[measure] = self._aggregate(
+                    measure_values.get(measure, []), aggregation,
+                )
+
             results.append(row)
-        
+
         return results
     
     def rollup_cube(
@@ -150,12 +230,28 @@ class DataWarehouseModule:
         """
         logger.info(f"Rolling up cube {cube_name} by {rollup_dimensions}")
         
+        cube, facts = self._cube_facts(cube_name)
+        if cube is None:
+            return {
+                "rolled_dimensions": rollup_dimensions,
+                "total_records": 0,
+                "aggregated_values": {},
+                "cube_found": False,
+            }
+
+        # Total per dimension, over the facts that actually carry it.
+        aggregated_values = {
+            dim: round(
+                sum(f.value for f in facts if dim in f.dimensions), 4,
+            )
+            for dim in rollup_dimensions
+        }
+
         return {
             "rolled_dimensions": rollup_dimensions,
-            "total_records": random.randint(1000, 100000),
-            "aggregated_values": {
-                dim: random.uniform(1000, 50000) for dim in rollup_dimensions
-            },
+            "total_records": len(facts),
+            "aggregated_values": aggregated_values,
+            "cube_found": True,
         }
     
     def drilldown_cube(
@@ -176,17 +272,29 @@ class DataWarehouseModule:
         """
         logger.info(f"Drilling down cube {cube_name} on {drilldown_dimension}")
         
-        results = []
-        for i in range(random.randint(5, 15)):
-            results.append({
+        # Values were literally named "detail_0", "detail_1", ... with random
+        # counts attached; the drilldown dimension was never read.
+        cube, facts = self._cube_facts(cube_name)
+        if cube is None:
+            return []
+
+        grouped: Dict[str, List[float]] = defaultdict(list)
+        for fact in facts:
+            value = fact.dimensions.get(drilldown_dimension)
+            if value is None:
+                continue
+            grouped[str(value)].append(fact.value)
+
+        return [
+            {
                 "dimension": drilldown_dimension,
                 "level": level,
-                "value": f"detail_{i}",
-                "count": random.randint(10, 500),
-                "total": random.uniform(1000, 50000),
-            })
-        
-        return results
+                "value": value,
+                "count": len(values),
+                "total": round(sum(values), 4),
+            }
+            for value, values in sorted(grouped.items())
+        ]
     
     def slice_cube(
         self,
@@ -206,11 +314,24 @@ class DataWarehouseModule:
         """
         logger.info(f"Slicing cube {cube_name} on {dimension}={value}")
         
+        cube, facts = self._cube_facts(cube_name)
+        if cube is None:
+            return {
+                "sliced_dimension": dimension,
+                "slice_value": value,
+                "record_count": 0,
+                "total": 0.0,
+                "cube_found": False,
+            }
+
+        matching = [f for f in facts if self._matches(f, {dimension: value})]
+
         return {
             "sliced_dimension": dimension,
             "slice_value": value,
-            "record_count": random.randint(100, 5000),
-            "total": random.uniform(10000, 500000),
+            "record_count": len(matching),
+            "total": round(sum(f.value for f in matching), 4),
+            "cube_found": True,
         }
     
     def define_metric(
@@ -307,16 +428,15 @@ class DataWarehouseModule:
             end_time=end_time,
         )
         
-        # Generate sample data if no values
+        # A metric with nothing recorded used to be filled in with a full
+        # period of random points, so an unreported metric was indistinguishable
+        # from a healthy one.
         if not values:
-            data = []
-            for i in range(period_days):
-                timestamp = start_time + timedelta(days=i)
-                data.append({
-                    "timestamp": timestamp.isoformat(),
-                    "value": random.uniform(50, 150),
-                })
-            return data
+            logger.warning(
+                "No values recorded for metric '%s' in the last %d day(s)",
+                metric_id, period_days,
+            )
+            return []
         
         return [
             {
