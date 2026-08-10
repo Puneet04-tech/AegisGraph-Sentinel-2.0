@@ -337,6 +337,16 @@ class OAuthProvider:
                 error_description="Invalid client credentials",
             )
         
+        # RFC 6749 §4.1.3: the authorization code is bound to the client it was
+        # issued to. A different (even legitimate) registered client must not be
+        # able to redeem it.
+        if auth_code["client_id"] != client_id:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code was issued to a different client",
+            )
+        
         # Validate redirect URI
         if redirect_uri != auth_code["redirect_uri"]:
             return AuthenticationResponse(
