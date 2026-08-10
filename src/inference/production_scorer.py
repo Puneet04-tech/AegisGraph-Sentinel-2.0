@@ -950,3 +950,44 @@ def create_mock_graph_constructor():
         temporal_dim=16,
         temporal_decay_lambda=0.01,
     )
+
+
+class VelocityPSIDriftMonitor:
+    """Population Stability Index (PSI) Drift Monitor for Velocity Features.
+
+    Tracks velocity feature distributions over sliding time windows across timezones
+    to detect feature drift and miscalibration.
+    """
+
+    def __init__(self, num_bins: int = 5):
+        self.num_bins = num_bins
+        # Baseline reference distribution (uniform/calibrated)
+        self.baseline_dist = np.full(num_bins, 1.0 / num_bins)
+
+    def calculate_psi(self, current_scores: List[float]) -> float:
+        """Calculates Population Stability Index (PSI) between baseline and current distribution.
+
+        PSI < 0.10: No significant drift
+        0.10 <= PSI < 0.25: Moderate drift
+        PSI >= 0.25: Significant drift / miscalibration alert
+        """
+        if not current_scores:
+            return 0.0
+
+        hist, _ = np.histogram(current_scores, bins=self.num_bins, range=(0.0, 1.0))
+        total = sum(hist)
+        if total == 0:
+            return 0.0
+
+        target_dist = np.maximum(hist / float(total), 1e-4)
+        expected_dist = np.maximum(self.baseline_dist, 1e-4)
+
+        psi = np.sum((target_dist - expected_dist) * np.log(target_dist / expected_dist))
+        return float(max(0.0, round(psi, 4)))
+
+
+def validate_and_normalize_timestamp(raw_timestamp: object) -> float:
+    """Validates raw timestamp input and normalizes it to strict UTC float epoch seconds."""
+    from src.features.velocity_calculator import normalize_utc_timestamp
+    return normalize_utc_timestamp(raw_timestamp)
+

@@ -6718,3 +6718,49 @@ async def correlate_campaigns(request: dict):
     return service.correlate_campaigns(campaign_ids)
 
 
+@app.post(
+    "/api/v1/blockchain/verify-zk",
+    tags=["Blockchain Evidence"],
+    summary="Verify Zero-Knowledge Proof (ZKP) Fraud Attestation",
+)
+async def verify_zk_proof_endpoint(
+    proof_payload: dict = Body(..., description="ZKP proof payload object"),
+):
+    """Verify zero-knowledge proof attestation without revealing underlying risk score metadata."""
+    from src.quantum_security.zkp_verifier import ZKPVerifier
+
+    verifier = ZKPVerifier()
+    is_valid = verifier.verify_proof(proof_payload)
+
+    return {
+        "verified": is_valid,
+        "proof_id": proof_payload.get("proof_id"),
+        "transaction_id": proof_payload.get("transaction_id"),
+        "threshold": proof_payload.get("threshold"),
+        "timestamp": proof_payload.get("timestamp"),
+        "proof_type": proof_payload.get("proof_type"),
+    }
+
+
+@app.post(
+    "/api/v1/explain/counterfactual",
+    tags=["Explainable AI"],
+    summary="Generate Actionable Graph Counterfactual Explanation",
+)
+async def explain_counterfactual_endpoint(
+    transaction: dict = Body(..., description="Transaction details"),
+    risk_assessment: dict = Body(..., description="Risk assessment object"),
+):
+    """Generate minimal graph edge/feature modifications required to lower risk score below threshold."""
+    from src.features.aegis_oracle_explainer import AegisOracleExplainer
+
+    explainer = AegisOracleExplainer()
+    explanation = explainer.generate_counterfactual_explanation(
+        transaction=transaction,
+        risk_assessment=risk_assessment,
+    )
+    return explanation
+
+
+
+

@@ -111,6 +111,8 @@ class HoneypotEscrowManager:
         self.auto_release_hours = auto_release_hours
         self.escrow_prefix = escrow_prefix
         self._lock = threading.RLock()
+        self._async_lock = None  # Lazy initialized asyncio.Lock
+        self._cleanup_task = None
         
         # Active honeypots
         self.active_honeypots: Dict[str, HoneypotTransaction] = {}
@@ -137,6 +139,75 @@ class HoneypotEscrowManager:
             'arrests': 0,
             'recovered': 0.0,
         }
+
+    def _get_async_lock(self):
+        import asyncio
+        if self._async_lock is None:
+            try:
+                self._async_lock = asyncio.Lock()
+            except RuntimeError:
+                pass
+        return self._async_lock
+
+    async def activate_honeypot_async(
+        self,
+        transaction_id: str,
+        source_account: str,
+        target_account: str,
+        amount: float,
+        currency: str,
+        risk_score: float,
+        fraud_indicators: List[str],
+    ) -> HoneypotTransaction:
+        """Asyncio-safe honeypot activation wrapper."""
+        import asyncio
+        lock = self._get_async_lock()
+        if lock is not None:
+            async with lock:
+                return self.activate_honeypot(
+                    transaction_id=transaction_id,
+                    source_account=source_account,
+                    target_account=target_account,
+                    amount=amount,
+                    currency=currency,
+                    risk_score=risk_score,
+                    fraud_indicators=fraud_indicators,
+                )
+        return self.activate_honeypot(
+            transaction_id=transaction_id,
+            source_account=source_account,
+            target_account=target_account,
+            amount=amount,
+            currency=currency,
+            risk_score=risk_score,
+            fraud_indicators=fraud_indicators,
+        )
+
+    async def cleanup_expired_honeypots_async(self):
+        """Asynchronously cleans up expired honeypots past TTL safety threshold."""
+        import asyncio
+        lock = self._get_async_lock()
+        if lock is not None:
+            async with lock:
+                self.check_auto_release()
+        else:
+            self.check_auto_release()
+
+    def start_ttl_cleanup_task(self, interval_seconds: float = 60.0):
+        """Starts automated background TTL cleanup task."""
+        import asyncio
+        if self._cleanup_task is None or self._cleanup_task.done():
+            async def _cleanup_loop():
+                while True:
+                    await asyncio.sleep(interval_seconds)
+                    await self.cleanup_expired_honeypots_async()
+
+            try:
+                loop = asyncio.get_running_loop()
+                self._cleanup_task = loop.create_task(_cleanup_loop())
+            except RuntimeError:
+                pass
+
     
     def should_activate_honeypot(
         self,
