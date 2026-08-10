@@ -25,6 +25,11 @@ def standard_case(engine: WorkflowEngine):
     return engine.create_case("Fraud case", "desc", "wf-standard")
 
 
+@pytest.fixture
+def incident_case(engine: WorkflowEngine):
+    return engine.create_case("Breach case", "desc", "wf-incident")
+
+
 # ---------------------------------------------------------------------------
 # Default workflows
 # ---------------------------------------------------------------------------
@@ -128,6 +133,19 @@ class TestCaseLifecycle:
         assert assignment.assignee == "alice"
         assert standard_case.assignee == "alice"
         assert engine.assign_case("missing", "alice", "manager") is None
+
+
+# ---------------------------------------------------------------------------
+# Incident workflow
+# ---------------------------------------------------------------------------
+
+
+class TestIncidentWorkflow:
+    def test_incident_transitions_track_status(self, engine, incident_case):
+        for to_state in ["INVESTIGATING", "CONTAINED", "ERADICATED", "RECOVERED", "CLOSED"]:
+            engine.transition_case(incident_case.case_id, to_state)
+            assert incident_case.current_state == to_state
+            assert incident_case.status == CaseStatus(to_state)
 
 
 # ---------------------------------------------------------------------------
