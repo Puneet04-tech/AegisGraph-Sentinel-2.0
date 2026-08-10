@@ -5,7 +5,6 @@ Enterprise ecosystem simulation and analysis.
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-import random
 
 from .models import (
     DigitalTwin,
@@ -159,10 +158,35 @@ class ScenarioBuilder:
 
 class ThreatModelingEngine:
     """Engine for threat modeling."""
-    
+
+    #: Base likelihood that an attack of each type is attempted successfully
+    #: against an unhardened target, before scenario modifiers.
+    ATTACK_LIKELIHOOD: Dict[str, float] = {
+        "phishing": 0.6,
+        "credential_stuffing": 0.5,
+        "malware": 0.45,
+        "ddos": 0.35,
+        "insider": 0.25,
+        "supply_chain": 0.2,
+    }
+
+    #: Base impact of each attack type if it succeeds.
+    ATTACK_IMPACT: Dict[str, float] = {
+        "supply_chain": 0.9,
+        "insider": 0.85,
+        "malware": 0.75,
+        "credential_stuffing": 0.6,
+        "phishing": 0.5,
+        "ddos": 0.4,
+    }
+
+    #: Applied to attack types with no entry in the tables above.
+    DEFAULT_LIKELIHOOD = 0.4
+    DEFAULT_IMPACT = 0.6
+
     def __init__(self):
         self.models: Dict[str, Dict[str, Any]] = {}
-    
+
     def create_threat_model(
         self,
         twin_id: str,
@@ -186,34 +210,103 @@ class ThreatModelingEngine:
         self,
         threat_scenario: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Generate attack paths."""
+        """Generate attack paths.
+
+        Likelihood and impact come from the attack type and the scenario's own
+        parameters. They used to be ``random.uniform`` draws, so the same
+        threat model scored differently every time it was built, and a
+        supply chain attack could score below a DDoS.
+        """
         paths = []
-        
+
         attack_types = threat_scenario.get("attack_types", ["phishing", "malware", "insider"])
-        
+
+        # Scenario modifiers, all optional and defaulted to neutral.
+        sophistication = self._clamp(threat_scenario.get("sophistication", 0.5))
+        controls = self._clamp(threat_scenario.get("controls_effectiveness", 0.0))
+        criticality = self._clamp(threat_scenario.get("asset_criticality", 0.5))
+
         for attack_type in attack_types:
+            base_likelihood = self.ATTACK_LIKELIHOOD.get(
+                str(attack_type).lower(), self.DEFAULT_LIKELIHOOD,
+            )
+            base_impact = self.ATTACK_IMPACT.get(
+                str(attack_type).lower(), self.DEFAULT_IMPACT,
+            )
+
+            # A more sophisticated adversary is likelier to get through;
+            # effective controls cut that down proportionally.
+            likelihood = base_likelihood * (0.5 + sophistication) * (1 - controls)
+
+            # Impact scales with how critical the assets in scope are.
+            impact = base_impact * (0.5 + criticality)
+
             paths.append({
                 "path_id": str(uuid4()),
                 "attack_type": attack_type,
                 "steps": ["reconnaissance", "initial_access", "execution", "impact"],
-                "likelihood": random.uniform(0.3, 0.9),
-                "impact": random.uniform(0.5, 1.0),
+                "likelihood": round(self._clamp(likelihood), 3),
+                "impact": round(self._clamp(impact), 3),
             })
-        
+
         return paths
-    
+
+    @staticmethod
+    def _clamp(value: Any, low: float = 0.0, high: float = 1.0) -> float:
+        """Constrain a caller-supplied modifier to [0, 1]."""
+        try:
+            return max(low, min(high, float(value)))
+        except (TypeError, ValueError):
+            return low
+
     def evaluate_risk(
         self,
         twin_id: str,
         threat_model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Evaluate risk based on threat model."""
+        """Evaluate risk based on threat model.
+
+        Both arguments used to be ignored outright: the method returned four
+        independent random numbers, so a twin with no threat model at all
+        still reported between 5 and 20 threats.
+        """
+        if threat_model_id is not None:
+            model = self.models.get(threat_model_id)
+            models = [model] if model else []
+        else:
+            models = [m for m in self.models.values() if m["twin_id"] == twin_id]
+
+        paths = [path for model in models for path in model["attack_paths"]]
+
+        if not paths:
+            return {
+                "twin_id": twin_id,
+                "risk_score": 0.0,
+                "threat_count": 0,
+                "vulnerability_count": 0,
+                "attack_probability": 0.0,
+                "models_evaluated": len(models),
+                "insufficient_data": True,
+            }
+
+        # Risk is carried by the worst credible path, not the average -- an
+        # attacker only needs one to work.
+        risk_score = max(p["likelihood"] * p["impact"] for p in paths)
+
+        # Probability that at least one path succeeds, treating paths as
+        # independent.
+        no_success = 1.0
+        for path in paths:
+            no_success *= (1 - path["likelihood"])
+
         return {
             "twin_id": twin_id,
-            "risk_score": random.uniform(0.2, 0.8),
-            "threat_count": random.randint(5, 20),
-            "vulnerability_count": random.randint(2, 10),
-            "attack_probability": random.uniform(0.3, 0.7),
+            "risk_score": round(risk_score, 3),
+            "threat_count": len(paths),
+            "vulnerability_count": sum(len(m["vulnerabilities"]) for m in models),
+            "attack_probability": round(1 - no_success, 3),
+            "models_evaluated": len(models),
+            "insufficient_data": False,
         }
 
 
