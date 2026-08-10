@@ -130,7 +130,9 @@ class SegmentAnalysis(BaseModel):
     segment_name: str
     segment_definition: Dict[str, Any] = Field(default_factory=dict)
     size: int
-    percentage: float
+    #: Share of the wider population, when a population size is known.
+    #: None rather than a placeholder when it cannot be computed.
+    percentage: Optional[float] = None
     metrics: Dict[str, float] = Field(default_factory=dict)
     risk_distribution: Dict[str, int] = Field(default_factory=dict)
     top_characteristics: List[str] = Field(default_factory=list)
@@ -143,8 +145,10 @@ class CohortAnalysis(BaseModel):
     cohort_definition: Dict[str, Any] = Field(default_factory=dict)
     retention_rates: List[float] = Field(default_factory=list)
     period_count: int
-    average_retention: float
-    churn_rate: float
+    #: None when no retention observations were supplied, rather than a
+    #: figure derived from an invented decay curve.
+    average_retention: Optional[float] = None
+    churn_rate: Optional[float] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

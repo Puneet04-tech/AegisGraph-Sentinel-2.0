@@ -4,7 +4,6 @@ Advanced Analytics Module.
 Provides trend analysis, correlation analysis, segmentation, and cohort analysis.
 """
 
-import random
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone, timedelta
 import logging
@@ -48,6 +47,23 @@ class AdvancedAnalyticsModule:
 
     #: p-value at or above which a correlation is not treated as significant.
     SIGNIFICANCE_ALPHA = 0.05
+
+    #: Entity keys read as a risk score when summarising a segment.
+    RISK_SCORE_KEYS = ("risk_score", "risk", "score")
+
+    #: Entity keys read as transaction volume.
+    VOLUME_KEYS = ("transaction_volume", "volume", "amount", "total_amount")
+
+    #: Entity keys read as a confirmed fraud flag.
+    FRAUD_KEYS = ("is_fraud", "fraud", "confirmed_fraud")
+
+    #: Risk score bands used for a segment's risk distribution.
+    CRITICAL_RISK = 0.8
+    HIGH_RISK = 0.6
+    MEDIUM_RISK = 0.4
+
+    #: Attribute values listed as a segment's top characteristics.
+    TOP_CHARACTERISTIC_COUNT = 5
 
     def __init__(self, store: Optional[AnalyticsStore] = None):
         """Initialize the advanced analytics module.
@@ -296,47 +312,52 @@ class AdvancedAnalyticsModule:
         self,
         entities: List[Dict[str, Any]],
         segment_definition: Dict[str, Any],
+        population_size: Optional[int] = None,
     ) -> SegmentAnalysis:
         """Perform entity segmentation.
-        
+
         Args:
             entities: List of entities with features
             segment_definition: Segmentation criteria
-            
+            population_size: Size of the population this segment was drawn
+                from, used to compute the segment's share. May also be given
+                as ``population_size`` inside ``segment_definition``. Without
+                it the percentage is not reported rather than invented.
+
         Returns:
             SegmentAnalysis
         """
         logger.info(f"Segmenting {len(entities)} entities")
-        
+
         segment_name = segment_definition.get("name", "Custom Segment")
-        
-        # Calculate segment metrics
+
+        # Every figure below used to be a random draw, and `entities` was read
+        # only for its length. The risk distribution in particular summed to
+        # somewhere between 260 and 760 regardless of how many entities were
+        # actually segmented.
         size = len(entities)
-        percentage = random.uniform(5, 30)  # Simulated
-        
-        metrics = {
-            "avg_risk_score": random.uniform(0.3, 0.8),
-            "avg_transaction_volume": random.uniform(1000, 10000),
-            "fraud_rate": random.uniform(0.01, 0.15),
-        }
-        
-        risk_distribution = {
-            "critical": random.randint(0, 10),
-            "high": random.randint(10, 50),
-            "medium": random.randint(50, 200),
-            "low": random.randint(200, 500),
-        }
-        
-        top_characteristics = [
-            f"Characteristic {i+1}: {random.choice(['High Value', 'Frequent Transactor', 'New Customer', 'High Risk'])}"
-            for i in range(5)
-        ]
-        
+
+        # Share of the wider population this segment represents. Needs a
+        # population size to be meaningful; without one it is not reported.
+        population_size = (
+            population_size
+            if population_size is not None
+            else segment_definition.get("population_size")
+        )
+        percentage = (
+            round(100 * size / population_size, 2)
+            if population_size else None
+        )
+
+        metrics = self._segment_metrics(entities)
+        risk_distribution = self._risk_distribution(entities)
+        top_characteristics = self._top_characteristics(entities)
+
         segment = SegmentAnalysis(
             segment_name=segment_name,
             segment_definition=segment_definition,
             size=size,
-            percentage=round(percentage, 2),
+            percentage=percentage,
             metrics=metrics,
             risk_distribution=risk_distribution,
             top_characteristics=top_characteristics,
@@ -345,38 +366,167 @@ class AdvancedAnalyticsModule:
         self._store.store_segment(segment)
         return segment
     
+    def _segment_metrics(self, entities: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Average the segment's numeric attributes.
+
+        Reads the entities themselves rather than reporting invented averages.
+        A metric no entity carries is absent, not zero.
+        """
+        metrics: Dict[str, float] = {}
+        if not entities:
+            return metrics
+
+        risk_scores = self._numeric_field(entities, self.RISK_SCORE_KEYS)
+        if risk_scores:
+            metrics["avg_risk_score"] = round(sum(risk_scores) / len(risk_scores), 4)
+
+        volumes = self._numeric_field(entities, self.VOLUME_KEYS)
+        if volumes:
+            metrics["avg_transaction_volume"] = round(sum(volumes) / len(volumes), 2)
+
+        fraud_flags = [
+            bool(entity[key])
+            for entity in entities
+            for key in self.FRAUD_KEYS
+            if key in entity
+        ]
+        if fraud_flags:
+            metrics["fraud_rate"] = round(
+                sum(fraud_flags) / len(fraud_flags), 4,
+            )
+
+        return metrics
+
+    def _risk_distribution(self, entities: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Bucket the segment's entities by risk score.
+
+        The counts previously came from four independent ``random.randint``
+        calls, so they summed to somewhere between 260 and 760 whatever the
+        segment size. These sum to the number of entities carrying a score.
+        """
+        distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+
+        for entity in entities:
+            score = self._first_numeric(entity, self.RISK_SCORE_KEYS)
+            if score is None:
+                continue
+            if score >= self.CRITICAL_RISK:
+                distribution["critical"] += 1
+            elif score >= self.HIGH_RISK:
+                distribution["high"] += 1
+            elif score >= self.MEDIUM_RISK:
+                distribution["medium"] += 1
+            else:
+                distribution["low"] += 1
+
+        return distribution
+
+    def _top_characteristics(self, entities: List[Dict[str, Any]]) -> List[str]:
+        """Most common attribute values across the segment.
+
+        Previously five strings of the form "Characteristic 3: High Risk" with
+        the label chosen at random -- they described nothing.
+        """
+        if not entities:
+            return []
+
+        counts: Dict[tuple, int] = {}
+        for entity in entities:
+            for key, value in entity.items():
+                if isinstance(value, (dict, list)):
+                    continue
+                counts[(key, str(value))] = counts.get((key, str(value)), 0) + 1
+
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        total = len(entities)
+
+        return [
+            f"{key}={value} ({100 * count / total:.0f}% of segment)"
+            for (key, value), count in ranked[:self.TOP_CHARACTERISTIC_COUNT]
+            if count > 1 or total == 1
+        ]
+
+    @staticmethod
+    def _first_numeric(entity: Dict[str, Any], keys: tuple) -> Optional[float]:
+        """First numeric value on an entity under any of the given keys."""
+        for key in keys:
+            value = entity.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
+
+    def _numeric_field(
+        self,
+        entities: List[Dict[str, Any]],
+        keys: tuple,
+    ) -> List[float]:
+        """Numeric values across entities under any of the given keys."""
+        values = []
+        for entity in entities:
+            value = self._first_numeric(entity, keys)
+            if value is not None:
+                values.append(value)
+        return values
+
+    @staticmethod
+    def _retention_rates(active_counts: Optional[List[int]]) -> List[float]:
+        """Retention per period as a share of the cohort's initial size."""
+        if not active_counts or not active_counts[0]:
+            return []
+
+        initial = active_counts[0]
+        return [round(100 * count / initial, 2) for count in active_counts]
+
     def perform_cohort_analysis(
         self,
         cohort_name: str,
         cohort_definition: Dict[str, Any],
         retention_periods: int = 12,
+        active_counts: Optional[List[int]] = None,
     ) -> CohortAnalysis:
         """Perform cohort retention analysis.
-        
+
         Args:
             cohort_name: Name of the cohort
             cohort_definition: Cohort definition
             retention_periods: Number of retention periods
-            
+            active_counts: Members still active at the start of each period,
+                beginning with the cohort's initial size. Retention is
+                measured against ``active_counts[0]``.
+
         Returns:
             CohortAnalysis
         """
         logger.info(f"Performing cohort analysis for {cohort_name}")
-        
-        # Generate retention rates (typically decreasing)
-        retention_rates = []
-        rate = 100.0
-        for _ in range(retention_periods):
-            rate = max(10, rate - random.uniform(2, 10))
-            retention_rates.append(round(rate, 2))
-        
+
+        # Retention used to be manufactured: starting at 100% and subtracting
+        # random.uniform(2, 10) each period produced a plausible-looking decay
+        # curve for a cohort nobody had observed. No caller ever supplied
+        # observations, because there was no parameter to supply them through.
+        retention_rates = self._retention_rates(active_counts)
+
+        if not retention_rates:
+            logger.warning(
+                "No retention observations supplied for cohort '%s'; "
+                "retention is unavailable", cohort_name,
+            )
+            average_retention = None
+            churn_rate = None
+        else:
+            average_retention = round(
+                sum(retention_rates) / len(retention_rates), 2,
+            )
+            churn_rate = round(100 - average_retention, 2)
+
         cohort = CohortAnalysis(
             cohort_name=cohort_name,
             cohort_definition=cohort_definition,
             retention_rates=retention_rates,
-            period_count=retention_periods,
-            average_retention=round(sum(retention_rates) / len(retention_rates), 2),
-            churn_rate=round(100 - sum(retention_rates) / len(retention_rates), 2),
+            period_count=len(retention_rates) or retention_periods,
+            average_retention=average_retention,
+            churn_rate=churn_rate,
         )
         
         self._store.store_cohort(cohort)
