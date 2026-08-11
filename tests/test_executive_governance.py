@@ -227,9 +227,34 @@ class TestExecutiveDashboard:
     def test_get_compliance_kpis(self, dashboard_module):
         """Test getting compliance KPIs."""
         kpis = dashboard_module.get_compliance_kpis()
-        
+
         assert "overall_compliance" in kpis
         assert "frameworks_count" in kpis
+
+    def test_get_risk_kpis_reflects_stored_scorecard(self, dashboard_module, store):
+        """Risk KPIs must be derived from the latest scorecard, not random."""
+        scorecard = RiskScorecard(
+            period="quarterly",
+            overall_risk_score=0.42,
+            risk_level=RiskLevel.MEDIUM,
+            risk_categories={"fraud": 0.6, "cyber": 0.3},
+            risk_trend="stable",
+        )
+        store.store_scorecard(scorecard)
+
+        kpis = dashboard_module.get_risk_kpis()
+
+        assert kpis["risk_score"] == 0.42
+        assert kpis["risk_level"] == "MEDIUM"
+        assert kpis["trend"] == "stable"
+        assert kpis["top_risk_categories"][0]["category"] == "fraud"
+
+    def test_get_risk_kpis_no_scorecard_reports_missing_data(self, dashboard_module):
+        """With no scorecard recorded, KPIs must say so instead of inventing values."""
+        kpis = dashboard_module.get_risk_kpis()
+
+        assert kpis["risk_score"] is None
+        assert "note" in kpis
     
     def test_get_performance_kpis(self, dashboard_module):
         """Test getting performance KPIs."""
