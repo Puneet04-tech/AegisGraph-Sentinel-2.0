@@ -30,7 +30,7 @@ async def test_concurrent_honeypot_activations():
 
     assert len(results) == 500
     assert len(manager.active_honeypots) == 500
-    assert manager.stats["total_activated"] == 38 + 500
+    assert manager.stats["total_activated"] == 500
 
 
 @pytest.mark.asyncio

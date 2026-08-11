@@ -148,14 +148,26 @@ class HoneypotEscrowManager:
         # Historical honeypots
         self.honeypot_history: deque = deque(maxlen=10000)
         
-        # Statistics (from pilot study - HDFC Mumbai, 6 months)
+        # Live runtime statistics. A fresh deployment must not inherit the
+        # pilot-study baseline (HDFC Mumbai, 6 months); those figures are kept
+        # separately as a reference and are never merged into live statistics.
         self.stats = {
-            'total_activated': 38,  # Pilot study baseline
-            'total_arrests': 27,  # 87% arrest rate
+            'total_activated': 0,
+            'total_arrests': 0,
+            'total_networks_dismantled': 0,
+            'total_recovered': 0.0,
+            'total_false_positives': 0,
+            'average_response_time_minutes': 0.0,
+        }
+        # Pilot-study reference figures (HDFC Mumbai, 6 months), exposed for
+        # informational purposes only and never merged into live stats.
+        self.pilot_study_reference = {
+            'total_activated': 38,
+            'total_arrests': 27,
             'total_networks_dismantled': 18,
-            'total_recovered': 47000000.0,  # ₹4.7 crore
-            'total_false_positives': 7,  # 18% false positive rate
-            'average_response_time_minutes': 12.0,  # 12-min avg response time
+            'total_recovered': 47000000.0,
+            'total_false_positives': 7,
+            'average_response_time_minutes': 12.0,
         }
         
         # Daily statistics for realtime monitoring
@@ -498,10 +510,15 @@ class HoneypotEscrowManager:
 
                 if response_minutes is not None:
                     with self._lock:
-                        # Update average response time
+                        # Update average response time. The first real arrest
+                        # seeds the average rather than being diluted by a
+                        # fictional baseline.
                         total_arrests = self.stats['total_arrests']
                         old_avg = self.stats['average_response_time_minutes']
-                        new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
+                        if total_arrests <= 1:
+                            new_avg = response_minutes
+                        else:
+                            new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
                         self.stats['average_response_time_minutes'] = new_avg
         
         logger.info(
