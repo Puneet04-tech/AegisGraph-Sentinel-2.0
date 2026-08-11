@@ -561,14 +561,19 @@ class HoneypotEscrowManager:
         # Find connected accounts (depth=2)
         network_members = set([mule_account])
         
-        # Add predecessors (who sent to mule)
+        # Bounded breadth-first expansion: walk both predecessor and successor
+        # edges for two levels so second-order members of the fraud network
+        # (e.g. mule -> intermediary -> cash-out) are discovered too.
         if transaction_graph.has_node(mule_account):
-            predecessors = list(transaction_graph.predecessors(mule_account))
-            network_members.update(predecessors)
-            
-            # Add successors (who received from mule)
-            successors = list(transaction_graph.successors(mule_account))
-            network_members.update(successors)
+            frontier = set([mule_account])
+            for _ in range(2):  # depth-2
+                next_frontier = set()
+                for node in frontier:
+                    next_frontier.update(transaction_graph.predecessors(node))
+                    next_frontier.update(transaction_graph.successors(node))
+                new_members = next_frontier - network_members
+                network_members.update(new_members)
+                frontier = new_members
         
             with self._lock:
                 honeypot.network_members = list(network_members)
