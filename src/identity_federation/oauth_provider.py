@@ -305,20 +305,64 @@ class OAuthProvider:
                 error_description="Invalid authorization code",
             )
         
-        # Redeem the code atomically: the single-use check and the mark must
-        # happen under one lock, otherwise concurrent exchanges could both pass
-        # the used check and receive tokens for the same code.
-        with self._lock:
-            # Check if used
-            if auth_code["used"]:
-                return AuthenticationResponse(
-                    success=False,
-                    error="invalid_grant",
-                    error_description="Authorization code already used",
-                )
-            
-            # Check expiration
-            if datetime.now(timezone.utc) > auth_code["expires_at"]:
+        # Check if used
+        if auth_code["used"]:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code already used",
+            )
+        
+        # Check expiration
+        if datetime.now(timezone.utc) > auth_code["expires_at"]:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code expired",
+            )
+        
+        # Guard against missing client_secret
+        if client_secret is None:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="client_secret is required",
+            )
+
+        # Validate client
+        client = self._clients.get(client_id)
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+        
+        # RFC 6749 §4.1.3: the authorization code is bound to the client it was
+        # issued to. A different (even legitimate) registered client must not be
+        # able to redeem it.
+        if auth_code["client_id"] != client_id:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code was issued to a different client",
+            )
+        
+        # Validate redirect URI
+        if redirect_uri != auth_code["redirect_uri"]:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Redirect URI mismatch",
+            )
+        
+        # Validate PKCE if used
+        if auth_code["code_challenge"]:
+            if not code_verifier:
                 return AuthenticationResponse(
                     success=False,
                     error="invalid_grant",
