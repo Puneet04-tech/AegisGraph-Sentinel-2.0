@@ -318,6 +318,28 @@ class TestComplianceAnalytics:
         
         assert assessment.assessment_id is not None
         assert assessment.control_id == "CC6.1"
+
+    def test_assess_control_derives_effectiveness_from_check_counts(self, compliance_analytics):
+        """Effectiveness can be derived from checks_passed/checks_total instead of a score."""
+        assessment = compliance_analytics.assess_control(
+            control_id="CC6.2",
+            control_name="Change Management",
+            framework="SOC2",
+            test_results={"checks_passed": 9, "checks_total": 10},
+        )
+
+        assert assessment.effectiveness_score == 0.9
+        assert assessment.status == ComplianceStatus.COMPLIANT
+
+    def test_assess_control_requires_real_results(self, compliance_analytics):
+        """Assessing a control without any way to measure effectiveness fails closed."""
+        with pytest.raises(ValueError):
+            compliance_analytics.assess_control(
+                control_id="CC6.3",
+                control_name="Monitoring",
+                framework="SOC2",
+                test_results={},
+            )
     
     def test_get_framework_status(self, compliance_analytics):
         """Test getting framework status."""
