@@ -474,7 +474,7 @@ class SAMLProvider:
             session_index = authn_statement.get("SessionIndex")
         
         session_id = f"saml_{secrets.token_hex(24)}"
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=self._store._session_ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._store._session_ttl_seconds)
         
         session = FederationSession(
             id=session_id,
