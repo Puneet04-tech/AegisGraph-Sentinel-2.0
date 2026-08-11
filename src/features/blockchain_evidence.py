@@ -1038,8 +1038,8 @@ class BlockchainEvidenceManager:
                 # Generate Zero-Knowledge Proof (ZKP) Attestation
                 zkp_proof = None
                 try:
-                    from src.quantum_security.zkp_verifier import ZKPVerifier
-                    verifier = ZKPVerifier()
+                    from src.quantum_security.zkp_verifier import get_zkp_verifier
+                    verifier = get_zkp_verifier()
                     if risk_score >= 0.70:
                         zkp_proof = verifier.generate_proof(risk_score=risk_score, threshold=0.70, transaction_id=transaction_id)
                 except Exception as zkp_err:
