@@ -1434,12 +1434,21 @@ async def _stop_runtime_background_tasks():
     _api_logger.info("Shutting down AegisGraph Sentinel 2.0...", event_type="shutdown_start")
     await state.tasks.cancel_all_tasks(timeout_seconds=10.0)
     # Gracefully stop the archival scheduler daemon (Issue #1477)
+    archival_stopped_cleanly = True
     try:
         from ..archival.scheduler import get_archival_scheduler
         get_archival_scheduler().stop(timeout=5.0)
-    except Exception:
-        pass
-    _api_logger.info("Background tasks stopped cleanly", event_type="shutdown_complete")
+    except Exception as exc:
+        archival_stopped_cleanly = False
+        _api_logger.error(
+            "Archival scheduler failed to stop cleanly",
+            event_type="shutdown_archival_error",
+            metadata={"error": str(exc)},
+        )
+    _api_logger.info(
+        "Background tasks stopped cleanly" if archival_stopped_cleanly else "Background tasks stopped with errors",
+        event_type="shutdown_complete" if archival_stopped_cleanly else "shutdown_complete_with_errors",
+    )
 
 
 def _run_scoring_pipeline(
