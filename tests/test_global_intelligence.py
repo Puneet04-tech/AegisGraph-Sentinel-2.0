@@ -475,14 +475,14 @@ class TestNetworkAnalysis:
         # May or may not find networks depending on connections
         assert isinstance(networks, list)
 
-    def _make_entity(self, store, entity_id, partner_id="partner-1"):
+    def _make_entity(self, store, entity_id, partner_id="partner-1", risk_score=0.6):
         entity = FederatedEntity(
             entity_id=entity_id,
             entity_type=EntityType.ACCOUNT,
             federation_id="fed-1",
             partner_id=partner_id,
             external_id=f"ext-{entity_id}",
-            risk_score=0.6,
+            risk_score=risk_score,
             threat_level=ThreatLevel.MEDIUM,
         )
         store.store_entity(entity)
@@ -558,6 +558,39 @@ class TestNetworkAnalysis:
         # No subcommunity may contain the non-member node.
         for community in analysis_result["communities"]:
             assert "outsider-1" not in community
+
+    def test_classify_community_reflects_member_risk(self):
+        """Two disconnected communities with different average risk must not
+        both be labelled 'fraud_ring' — classification should track the real
+        member risk data, not return a fixed label for every community."""
+        store = get_global_intelligence_store()
+        analysis = NetworkAnalysisEngine(store=store)
+
+        high_risk_ids = ["fraud-1", "fraud-2", "fraud-3"]
+        for entity_id in high_risk_ids:
+            self._make_entity(store, entity_id, risk_score=0.95)
+        self._link(store, "fraud-1", "fraud-2")
+        self._link(store, "fraud-2", "fraud-3")
+        self._link(store, "fraud-1", "fraud-3")
+
+        low_risk_ids = ["normal-1", "normal-2", "normal-3"]
+        for entity_id in low_risk_ids:
+            self._make_entity(store, entity_id, risk_score=0.02)
+        self._link(store, "normal-1", "normal-2")
+        self._link(store, "normal-2", "normal-3")
+        self._link(store, "normal-1", "normal-3")
+
+        by_members = {
+            frozenset(c.member_ids): c.community_type
+            for c in analysis.detect_communities()
+        }
+
+        high_risk_type = by_members[frozenset(high_risk_ids)]
+        low_risk_type = by_members[frozenset(low_risk_ids)]
+
+        assert high_risk_type == "fraud_ring"
+        assert low_risk_type != "fraud_ring"
+        assert high_risk_type != low_risk_type
 
 
 class TestRiskPropagation:
