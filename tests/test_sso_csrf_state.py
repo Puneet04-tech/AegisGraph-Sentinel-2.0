@@ -73,7 +73,9 @@ class TestSSOAuthorizeCallbackState:
 
         with patch.object(auth_routes, "_sso_state_store", store), patch.object(
             auth_routes, "_get_auth_service", return_value=service
-        ), patch.object(auth_routes, "_SSO_REDIRECT_ALLOWLIST", []):
+        ), patch.object(
+            auth_routes, "_SSO_REDIRECT_ALLOWLIST", ["https://app.example.com/cb"]
+        ):
             result = _run(
                 sso_authorize(
                     provider=AuthProvider.GOOGLE,

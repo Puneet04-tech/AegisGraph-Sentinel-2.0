@@ -359,7 +359,15 @@ class GraphStore:
             return edges
 
     def bfs_traverse(self, start_id: str, max_depth: int = 5, edge_types: Optional[List[EdgeType]] = None) -> List[GraphNode]:
-        """Breadth-first search traversal."""
+        """Breadth-first search traversal.
+
+        Args:
+            start_id: Node to start traversal from.
+            max_depth: Maximum number of hops to walk.
+            edge_types: When given, only edges whose type is in this list are
+                crossed, so the traversal stays inside the filtered subgraph.
+        """
+        allowed_types = None if edge_types is None else set(edge_types)
         with self._lock:
             visited = set()
             queue = deque([(start_id, 0)])
@@ -376,8 +384,14 @@ class GraphStore:
                     result.append(node)
 
                 for neighbor_id in self._adjacency.get(node_id, set()):
-                    if neighbor_id not in visited:
-                        queue.append((neighbor_id, depth + 1))
+                    if neighbor_id in visited:
+                        continue
+                    if allowed_types is not None and not any(
+                        edge.edge_type in allowed_types
+                        for edge in self.get_edges_between(node_id, neighbor_id)
+                    ):
+                        continue
+                    queue.append((neighbor_id, depth + 1))
 
             return result
 
