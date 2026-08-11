@@ -50,16 +50,27 @@ class TestDriftDetection:
         assert drift.drift_score == 0.0
         assert drift.severity == "LOW"
 
-    def test_identical_key_sets_produce_low_score(self, registry, model_id):
+    def test_identical_key_sets_with_no_value_change_produce_zero_score(self, registry, model_id):
+        engine = DriftDetectionEngine(registry)
+        current = [{"amount": 100.0, "velocity": 3.0}]
+        baseline = [{"amount": 100.0, "velocity": 3.0}]
+
+        drift = engine.detect_drift(model_id, current, baseline)
+
+        assert drift.drift_score == 0.0
+        assert drift.severity == "LOW"
+        assert drift.drift_type == DriftType.DATA_DRIFT
+
+    def test_identical_key_sets_reflect_real_value_drift(self, registry, model_id):
         engine = DriftDetectionEngine(registry)
         current = [{"amount": 100.0, "velocity": 3.0}]
         baseline = [{"amount": 50.0, "velocity": 1.0}]
 
         drift = engine.detect_drift(model_id, current, baseline)
 
-        assert 0.1 <= drift.drift_score <= 0.3
-        assert drift.severity == "LOW"
-        assert drift.drift_type == DriftType.DATA_DRIFT
+        # amount changed 100%, velocity changed 200% (capped at 100% each): avg = 1.0
+        assert drift.drift_score == 1.0
+        assert drift.severity == "CRITICAL"
 
     def test_missing_keys_raise_drift_score(self, registry, model_id):
         engine = DriftDetectionEngine(registry)

@@ -5,7 +5,6 @@ Security, drift detection, bias detection, and explainability.
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
-import random
 
 from .models import (
     Model,
@@ -82,15 +81,35 @@ class DriftDetectionEngine:
         for item in baseline_data:
             baseline_keys.update(item.keys())
         
-        if current_keys == baseline_keys:
-            return random.uniform(0.1, 0.3)
-        
         missing_keys = baseline_keys - current_keys
         extra_keys = current_keys - baseline_keys
-        
+
         key_drift = (len(missing_keys) + len(extra_keys)) / max(1, len(current_keys | baseline_keys))
-        
-        return min(1.0, key_drift + random.uniform(0.1, 0.3))
+
+        # Value drift: for numeric fields present in both datasets, compare
+        # the relative change in mean value between current and baseline.
+        shared_numeric_keys = [
+            key for key in (current_keys & baseline_keys)
+            if all(isinstance(item.get(key), (int, float)) for item in current_data if key in item)
+            and all(isinstance(item.get(key), (int, float)) for item in baseline_data if key in item)
+        ]
+
+        value_drift = 0.0
+        if shared_numeric_keys:
+            deltas = []
+            for key in shared_numeric_keys:
+                current_values = [item[key] for item in current_data if key in item]
+                baseline_values = [item[key] for item in baseline_data if key in item]
+                if not current_values or not baseline_values:
+                    continue
+                current_mean = sum(current_values) / len(current_values)
+                baseline_mean = sum(baseline_values) / len(baseline_values)
+                denom = max(abs(baseline_mean), 1e-9)
+                deltas.append(min(1.0, abs(current_mean - baseline_mean) / denom))
+            if deltas:
+                value_drift = sum(deltas) / len(deltas)
+
+        return min(1.0, key_drift + value_drift)
     
     def get_drift_history(self, model_id: str) -> List[ModelDrift]:
         """Get drift history for a model."""
@@ -140,18 +159,47 @@ class BiasDetectionEngine:
         predictions: List[Dict[str, Any]],
         protected_attributes: List[str],
     ) -> BiasReport:
-        """Evaluate a specific bias metric."""
-        score = random.uniform(0.0, 1.0)
+        """Evaluate a specific bias metric.
+
+        Selection rate (share of positive outcomes) is compared across the
+        groups found under each protected attribute in the prediction
+        records. Without group labels on the predictions there is nothing
+        to measure, so the metric fails closed rather than guessing.
+        """
         threshold = 0.8
-        
-        is_fair = score >= threshold
-        
-        affected = []
-        if not is_fair:
-            for attr in protected_attributes:
-                if random.random() > 0.5:
-                    affected.append(attr)
-        
+        score = 0.0
+        affected: List[str] = []
+
+        for attr in protected_attributes:
+            group_outcomes: Dict[Any, List[float]] = {}
+            for prediction in predictions:
+                if attr not in prediction:
+                    continue
+                outcome = prediction.get("outcome", prediction.get("pred", prediction.get("risk")))
+                if not isinstance(outcome, (int, float)):
+                    continue
+                group_outcomes.setdefault(prediction[attr], []).append(float(outcome))
+
+            if len(group_outcomes) < 2:
+                # No usable grouping for this attribute: cannot certify fairness.
+                affected.append(attr)
+                continue
+
+            selection_rates = [
+                sum(1 for v in values if v >= 0.5) / len(values)
+                for values in group_outcomes.values()
+            ]
+            max_rate = max(selection_rates)
+            min_rate = min(selection_rates)
+            attr_score = min_rate / max_rate if max_rate > 0 else 1.0
+            if attr_score < threshold:
+                affected.append(attr)
+
+        if protected_attributes:
+            score = 1.0 if not affected else max(0.0, 1.0 - len(affected) / len(protected_attributes))
+
+        is_fair = score >= threshold and not affected
+
         return BiasReport(
             report_id=str(uuid4()),
             model_id=model_id,
@@ -193,14 +241,21 @@ class ExplainabilityEngine:
     ) -> ModelExplanation:
         """Generate explanation for a prediction."""
         feature_importance = self._calculate_feature_importance(input_features)
-        
+
+        # Confidence tracks how concentrated the importance is on a few
+        # features: a dominant driver is a clearer explanation than a
+        # uniform spread across many equally-weighted features.
+        confidence = 0.5
+        if feature_importance:
+            confidence = min(0.99, 0.5 + max(feature_importance.values()) * 0.49)
+
         explanation = ModelExplanation(
             explanation_id=str(uuid4()),
             model_id=model_id,
             prediction_id=prediction_id,
             feature_importance=feature_importance,
             explanation_method="SHAP",
-            confidence=random.uniform(0.7, 0.99),
+            confidence=confidence,
         )
         
         if model_id not in self.explanations:

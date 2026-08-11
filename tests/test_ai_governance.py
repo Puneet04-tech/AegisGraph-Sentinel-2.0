@@ -189,35 +189,43 @@ class TestDriftDetection:
         assert engine._calculate_drift_score([], []) == 0.0
         assert engine._calculate_drift_score([{"a": 1}], []) == 0.0
 
-    def test_drift_score_matching_keys(self, registry, monkeypatch):
+    def test_drift_score_matching_keys_no_value_change(self, registry):
         engine = DriftDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.25)
 
-        score = engine._calculate_drift_score([{"a": 1, "b": 2}], [{"a": 3, "b": 4}])
-        assert score == 0.25
+        score = engine._calculate_drift_score([{"a": 1, "b": 2}], [{"a": 1, "b": 2}])
+        assert score == 0.0
 
-    def test_drift_score_differing_keys_capped(self, registry, monkeypatch):
+    def test_drift_score_matching_keys_reflects_value_change(self, registry):
         engine = DriftDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.9)
+
+        score = engine._calculate_drift_score([{"a": 100.0}], [{"a": 50.0}])
+        assert score == 1.0  # 100% relative change, capped at 1.0
+
+    def test_drift_score_differing_keys_capped(self, registry):
+        engine = DriftDetectionEngine(registry=registry)
 
         score = engine._calculate_drift_score(
             [{"a": 1, "b": 2, "c": 3}], [{"a": 1, "d": 4, "e": 5, "f": 6}]
         )
         assert 0.0 < score <= 1.0
 
-    def test_severity_classification(self, registry, monkeypatch):
+    def test_severity_classification(self, registry):
         engine = DriftDetectionEngine(registry=registry)
         model_id = _register(registry)
 
-        for value, expected in [(0.2, "LOW"), (0.5, "MEDIUM"), (0.7, "HIGH"), (0.9, "CRITICAL")]:
-            monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: value)
-            drift = engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
-            assert drift.severity == expected, f"value {value}"
+        # Numeric value drift deterministically drives severity.
+        cases = [
+            ([{"a": 100.0}], [{"a": 95.0}], "LOW"),        # ~5% change
+            ([{"a": 100.0}], [{"a": 70.0}], "MEDIUM"),      # ~43% change
+            ([{"a": 100.0}], [{"a": 40.0}], "CRITICAL"),    # 150% change, capped at 1.0
+        ]
+        for current, baseline, expected in cases:
+            drift = engine.detect_drift(model_id, current, baseline)
+            assert drift.severity == expected, f"{current} vs {baseline}"
 
-    def test_drift_history_and_latest(self, registry, monkeypatch):
+    def test_drift_history_and_latest(self, registry):
         engine = DriftDetectionEngine(registry=registry)
         model_id = _register(registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.2)
 
         engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
         engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
@@ -234,28 +242,46 @@ class TestDriftDetection:
 
 
 class TestBiasDetection:
-    def test_one_report_per_metric(self, registry, monkeypatch):
+    def test_one_report_per_metric(self, registry):
         engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.95)
+        # Equal selection rates across both groups for both attributes.
+        predictions = [
+            {"outcome": 1, "age": "young", "gender": "m"},
+            {"outcome": 0, "age": "young", "gender": "m"},
+            {"outcome": 1, "age": "old", "gender": "f"},
+            {"outcome": 0, "age": "old", "gender": "f"},
+        ]
 
-        reports = engine.detect_bias("m1", [{"pred": 1}], ["age", "gender"])
+        reports = engine.detect_bias("m1", predictions, ["age", "gender"])
 
         assert len(reports) == len(list(BiasMetric))
         assert all(r.is_fair for r in reports)
 
-    def test_unfair_report_attributes_groups(self, registry, monkeypatch):
+    def test_unfair_report_attributes_groups_without_group_labels(self, registry):
         engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.5)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.random", lambda: 1.0)
-
+        # Predictions carry no group labels for either attribute, so
+        # fairness cannot be measured and must fail closed.
         reports = engine.detect_bias("m1", [{"pred": 1}], ["age", "gender"])
 
-        assert any(not r.is_fair for r in reports)
-        assert any(set(r.affected_groups) == {"age", "gender"} for r in reports)
+        assert all(not r.is_fair for r in reports)
+        assert all(set(r.affected_groups) == {"age", "gender"} for r in reports)
 
-    def test_report_retrieval(self, registry, monkeypatch):
+    def test_unfair_report_from_disparate_selection_rates(self, registry):
         engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.95)
+        predictions = [
+            {"outcome": 1, "age": "young"},
+            {"outcome": 1, "age": "young"},
+            {"outcome": 0, "age": "old"},
+            {"outcome": 0, "age": "old"},
+        ]
+
+        reports = engine.detect_bias("m1", predictions, ["age"])
+
+        assert all(not r.is_fair for r in reports)
+        assert all("age" in r.affected_groups for r in reports)
+
+    def test_report_retrieval(self, registry):
+        engine = BiasDetectionEngine(registry=registry)
 
         engine.detect_bias("m1", [{"pred": 1}], ["age"])
         engine.detect_bias("m1", [{"pred": 1}], ["age"])
@@ -287,17 +313,24 @@ class TestExplainability:
         assert importance["f1"] == 0.5
         assert importance["f2"] == 0.5
 
-    def test_explain_prediction_and_lookup(self, registry, monkeypatch):
+    def test_explain_prediction_and_lookup(self, registry):
         engine = ExplainabilityEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.9)
 
         explanation = engine.explain_prediction("m1", "pred-1", {"amount": 1000, "risk": 0.5})
 
         assert explanation.explanation_method == "SHAP"
-        assert explanation.confidence == 0.9
+        assert 0.5 <= explanation.confidence <= 0.99
         assert "amount" in explanation.feature_importance
         assert engine.get_explanation(explanation.explanation_id) is explanation
         assert engine.get_explanation("missing") is None
+
+    def test_explain_prediction_confidence_is_deterministic(self, registry):
+        engine = ExplainabilityEngine(registry=registry)
+
+        first = engine.explain_prediction("m1", "pred-1", {"amount": 1000, "risk": 0.5})
+        second = engine.explain_prediction("m1", "pred-2", {"amount": 1000, "risk": 0.5})
+
+        assert first.confidence == second.confidence
 
 
 # ---------------------------------------------------------------------------
