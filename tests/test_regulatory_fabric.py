@@ -215,6 +215,39 @@ class TestControlValidator:
         assert hasattr(result, "score")
         assert 0 <= result.score <= 1
 
+    def test_control_test_is_deterministic_not_random(self):
+        """A well-implemented, recently tested control must always pass."""
+        from datetime import datetime, timezone
+
+        ctrl_id = self.store.add_control({
+            "control_name": "Solid Control",
+            "description": "A test control for validation",
+            "implementation": "x" * 60,
+            "owner": "Test Owner",
+            "test_frequency_days": 90,
+            "last_tested": datetime.now(timezone.utc).isoformat(),
+        })
+        control = self.store.get_control(ctrl_id)
+
+        for _ in range(50):
+            result = self.validator._perform_control_test(control)
+            assert result["passed"] is True
+
+    def test_control_test_fails_closed_when_never_tested(self):
+        """A control with no test history must always fail, not randomly pass."""
+        ctrl_id = self.store.add_control({
+            "control_name": "Untested Control",
+            "description": "A test control for validation",
+            "implementation": "x" * 60,
+            "owner": "Test Owner",
+        })
+        control = self.store.get_control(ctrl_id)
+
+        for _ in range(50):
+            result = self.validator._perform_control_test(control)
+            assert result["passed"] is False
+            assert "never tested" in result["message"]
+
 
 class TestRiskEngine:
     """Tests for ComplianceRiskEngine."""
