@@ -108,6 +108,69 @@ def _get_betweenness_centrality(graph: nx.Graph) -> Dict:
         return nx.betweenness_centrality(graph, k=min(100, graph.number_of_nodes()))
 
 
+def extract_degree_capped_k_hop_subgraph(
+    graph: nx.Graph,
+    seed_nodes: List[str],
+    k_hops: int = 3,
+    max_neighbors_per_node: int = 100,
+) -> nx.Graph:
+    """Bounded k-hop neighborhood extractor with degree capping.
+
+    Prevents RAM/VRAM out-of-memory (OOM) crashes on high-degree merchant or utility hub accounts
+    by capping the maximum number of neighbors sampled per node. Temporal recency is prioritized.
+    """
+    if graph is None or not seed_nodes:
+        return nx.DiGraph() if isinstance(graph, nx.DiGraph) else nx.Graph()
+
+    visited_nodes = set(seed_nodes)
+    current_layer = set(seed_nodes)
+
+    subgraph_nodes = set(seed_nodes)
+    subgraph_edges = set()
+
+    for hop in range(k_hops):
+        next_layer = set()
+        for node in current_layer:
+            if not graph.has_node(node):
+                continue
+
+            # Retrieve neighbors
+            if graph.is_directed():
+                neighbors = list(set(graph.predecessors(node)) | set(graph.successors(node)))
+            else:
+                neighbors = list(graph.neighbors(node))
+
+            # Truncate high-degree hub nodes (> max_neighbors_per_node)
+            if len(neighbors) > max_neighbors_per_node:
+                # Prioritize neighbors with timestamp edges if present
+                def _get_edge_timestamp(nbr):
+                    edge_data = graph.get_edge_data(node, nbr) or graph.get_edge_data(nbr, node) or {}
+                    if isinstance(edge_data, dict):
+                        return float(edge_data.get("timestamp", 0.0))
+                    return 0.0
+
+                neighbors = sorted(neighbors, key=_get_edge_timestamp, reverse=True)[:max_neighbors_per_node]
+
+            for nbr in neighbors:
+                if graph.has_edge(node, nbr):
+                    subgraph_edges.add((node, nbr))
+                elif graph.has_edge(nbr, node):
+                    subgraph_edges.add((nbr, node))
+
+                if nbr not in visited_nodes:
+                    visited_nodes.add(nbr)
+                    next_layer.add(nbr)
+                    subgraph_nodes.add(nbr)
+
+        current_layer = next_layer
+        if not current_layer:
+            break
+
+    sub = graph.subgraph(subgraph_nodes).copy()
+    return sub
+
+
+
 class RiskScorer:
     """
     Unified risk scoring system

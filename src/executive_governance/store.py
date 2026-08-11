@@ -158,6 +158,11 @@ class GovernanceStore:
         if not self._scorecards:
             return None
         return max(self._scorecards.values(), key=lambda s: s.created_at)
+
+    def get_scorecards_since(self, cutoff: datetime) -> List[RiskScorecard]:
+        """Get scorecards created at or after cutoff, oldest first."""
+        matches = [s for s in self._scorecards.values() if s.created_at >= cutoff]
+        return sorted(matches, key=lambda s: s.created_at)
     
     def store_framework(self, framework: ComplianceFramework) -> ComplianceFramework:
         """Store compliance framework."""

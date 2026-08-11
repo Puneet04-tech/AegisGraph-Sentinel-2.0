@@ -55,6 +55,10 @@ class SAMLProvider:
         self._issuer = (issuer or default_issuer()).rstrip("/")
         self._sp_sso_url = f"{self._issuer}/api/v1/identity/saml/acs"
         self._sp_slo_url = f"{self._issuer}/api/v1/identity/saml/slo"
+        # Pending login flows keyed by AuthnRequest ID. Each entry is consumed
+        # exactly once by process_response to bind the response to the request
+        # and to reject replayed assertions.
+        self._pending_logins: dict[str, dict] = {}
     
     def initiate_login(
         self,
@@ -113,6 +117,13 @@ class SAMLProvider:
         # Create relay state
         relay_state = self._create_relay_state(request_id, return_url)
         
+        # Record the pending login so process_response can bind the SAML
+        # Response to this request (and consume it exactly once).
+        self._pending_logins[request_id] = {
+            "request_id": request_id,
+            "return_url": return_url,
+        }
+        
         # Build redirect URL
         redirect_url = f"{provider.saml_sso_url}?{urlencode({'SAMLRequest': encoded_request, 'RelayState': relay_state})}"
         
@@ -157,6 +168,28 @@ class SAMLProvider:
         """Create and store relay state."""
         relay_data = f"{request_id}:{return_url or ''}"
         return base64.b64encode(relay_data.encode()).decode()
+    
+    def _validate_relay_state(
+        self, relay_state: Optional[str]
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Validate the RelayState request-id binding and consume it once.
+
+        Returns:
+            Tuple of (valid, error, return_url). Missing, malformed, unknown
+            or replayed request ids are rejected; the stored return_url is
+            returned when the binding holds.
+        """
+        if not relay_state:
+            return False, "Missing RelayState", None
+        try:
+            decoded = base64.b64decode(relay_state).decode()
+        except Exception:
+            return False, "Malformed RelayState", None
+        request_id = decoded.split(":", 1)[0]
+        pending = self._pending_logins.pop(request_id, None)
+        if pending is None:
+            return False, "Unknown or replayed RelayState request_id", None
+        return True, None, pending.get("return_url")
     
     def process_response(
         self,
@@ -217,6 +250,18 @@ class SAMLProvider:
                     error_description=error,
                 )
             
+            # Bind the response to the AuthnRequest via RelayState. Validated
+            # after the signature so a forged response cannot consume a pending
+            # login; the request id is consumed exactly once, which rejects
+            # replayed responses and recovers the original return_url.
+            relay_state_ok, relay_error, return_url = self._validate_relay_state(relay_state)
+            if not relay_state_ok:
+                return AuthenticationResponse(
+                    success=False,
+                    error="relay_state_invalid",
+                    error_description=relay_error,
+                )
+            
             # Validate assertion conditions
             is_valid, error = self._validate_assertion(assertion)
             if not is_valid:
@@ -233,7 +278,7 @@ class SAMLProvider:
             user = self._get_or_create_user(provider, user_info)
             
             # Create session
-            session = self._create_session(user, provider, assertion)
+            session = self._create_session(user, provider, assertion, return_url)
             
             return AuthenticationResponse(
                 success=True,
@@ -241,6 +286,7 @@ class SAMLProvider:
                 session=session,
                 provider_id=provider.id,
                 authentication_method="saml",
+                redirect_url=return_url,
             )
             
         except Exception as e:
@@ -293,26 +339,43 @@ class SAMLProvider:
         return True, None, verified_assertion
     
     def _validate_assertion(self, assertion: ET.Element) -> tuple[bool, Optional[str]]:
-        """Validate SAML assertion conditions (validity window)."""
+        """Validate SAML assertion conditions (validity window and audience)."""
         conditions = assertion.find("saml:Conditions", self.NAMESPACES)
-        if conditions is not None:
-            # Check not_before
-            not_before = conditions.get("NotBefore")
-            if not_before:
-                not_before_time = datetime.strptime(
-                    not_before, "%Y-%m-%dT%H:%M:%SZ"
-                ).replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) < not_before_time:
-                    return False, "Assertion not yet valid"
-            
-            # Check not_on_or_after
-            not_on_or_after = conditions.get("NotOnOrAfter")
-            if not_on_or_after:
-                not_after_time = datetime.strptime(
-                    not_on_or_after, "%Y-%m-%dT%H:%M:%SZ"
-                ).replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) >= not_after_time:
-                    return False, "Assertion expired"
+        if conditions is None:
+            return False, "Assertion contains no conditions"
+        
+        # Check not_before
+        not_before = conditions.get("NotBefore")
+        if not_before:
+            not_before_time = datetime.strptime(
+                not_before, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < not_before_time:
+                return False, "Assertion not yet valid"
+        
+        # Check not_on_or_after
+        not_on_or_after = conditions.get("NotOnOrAfter")
+        if not_on_or_after:
+            not_after_time = datetime.strptime(
+                not_on_or_after, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= not_after_time:
+                return False, "Assertion expired"
+        
+        # Audience restriction: the assertion must be intended for this
+        # service provider. A response captured for a different relying
+        # party must not authenticate against this SP.
+        audiences = [
+            a.text
+            for a in conditions.findall(
+                "saml:AudienceRestriction/saml:Audience", self.NAMESPACES
+            )
+            if a.text
+        ]
+        if not audiences:
+            return False, "Assertion contains no audience restriction"
+        if self._sp_id not in audiences:
+            return False, "Assertion audience does not match this service provider"
         
         return True, None
     
@@ -401,6 +464,7 @@ class SAMLProvider:
         user: FederatedUser,
         provider: IdentityProvider,
         assertion: ET.Element,
+        return_url: Optional[str] = None,
     ) -> FederationSession:
         """Create federation session from SAML assertion."""
         # Extract session index
@@ -418,6 +482,7 @@ class SAMLProvider:
             provider_id=provider.id,
             state=SessionState.ACTIVE,
             session_index=session_index,
+            relay_state=return_url,
             expires_at=expires_at,
             authentication_method="saml",
         )

@@ -12,7 +12,7 @@ Comprehensive tests for:
 
 import pytest
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from src.predictive_intelligence import (
@@ -483,27 +483,39 @@ class TestRiskForecaster:
         assert result.forecast_period == ForecastPeriod.DAYS_30
     
     def test_predict_risk_trend_increasing(self, forecaster):
-        """Test risk trend prediction - increasing."""
-        with patch('random.random', return_value=0.85):  # 85% chance of INCREASING
-            trend = forecaster.predict_risk_trend(
-                entity_id="entity_1",
-                current_risk=0.5,
-            )
-        
+        """Test risk trend prediction - increasing.
+
+        The trend is now fitted to the entity's recorded risk history rather
+        than chosen by `random.random()`, so this seeds a rising series instead
+        of patching the RNG to steer the outcome.
+        """
+        base = datetime.now(timezone.utc) - timedelta(hours=5)
+        for hour, risk in enumerate([0.1, 0.2, 0.3, 0.4, 0.5]):
+            forecaster.record_observation("entity_1", risk, base + timedelta(hours=hour))
+
+        trend = forecaster.predict_risk_trend(
+            entity_id="entity_1",
+            current_risk=0.5,
+        )
+
         assert trend.entity_id == "entity_1"
         assert trend.current_risk == 0.5
+        assert trend.risk_trend == "INCREASING"
         assert trend.predicted_risk >= trend.current_risk
-        assert trend.risk_trend in ["INCREASING", "STABLE", "DECREASING"]
-    
+
     def test_predict_risk_trend_decreasing(self, forecaster):
         """Test risk trend prediction - decreasing."""
-        with patch('random.random', return_value=0.15):  # 15% chance of DECREASING
-            trend = forecaster.predict_risk_trend(
-                entity_id="entity_1",
-                current_risk=0.8,
-            )
-        
-        assert trend.risk_trend in ["INCREASING", "STABLE", "DECREASING"]
+        base = datetime.now(timezone.utc) - timedelta(hours=5)
+        for hour, risk in enumerate([0.9, 0.8, 0.7, 0.6, 0.5]):
+            forecaster.record_observation("entity_1", risk, base + timedelta(hours=hour))
+
+        trend = forecaster.predict_risk_trend(
+            entity_id="entity_1",
+            current_risk=0.5,
+        )
+
+        assert trend.risk_trend == "DECREASING"
+        assert trend.predicted_risk <= trend.current_risk
     
     def test_get_high_risk_forecasts(self, forecaster):
         """Test getting high-risk forecasts."""
@@ -593,7 +605,12 @@ class TestAttackPathPredictor:
         )
         
         assert prediction.source_entity_id == "entity_1"
-        assert len(prediction.predicted_path) == 4  # source + 3 hops
+        # Hops are now real graph neighbours, so the path is bounded by the
+        # requested depth rather than always padded out to it with invented
+        # identifiers. With no graph data the path is the source alone.
+        assert 1 <= len(prediction.predicted_path) <= 4
+        assert prediction.predicted_path[0] == "entity_1"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
         assert prediction.probability > 0
         assert prediction.estimated_damage > 0
     
@@ -606,9 +623,12 @@ class TestAttackPathPredictor:
             depth=2,
         )
         
-        assert len(prediction.predicted_path) == 4  # 2 known + 2 new
+        # The known prefix is always preserved; the extension is only as long
+        # as the graph can actually supply.
+        assert 2 <= len(prediction.predicted_path) <= 4
         assert prediction.predicted_path[0] == "entity_1"
         assert prediction.predicted_path[1] == "entity_2"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
     
     def test_predict_network_expansion(self, attack_predictor):
         """Test network expansion prediction."""

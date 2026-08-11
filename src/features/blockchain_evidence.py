@@ -93,6 +93,10 @@ class BlockchainEvidence:
     # Consensus
     consensus_timestamp: str
     finality_time_ms: float
+    
+    # Zero-Knowledge Proof (ZKP) Attestation
+    zkp_proof: Optional[Dict] = None
+
 
 
 class BlockchainNode:
@@ -1031,6 +1035,16 @@ class BlockchainEvidenceManager:
                 
                 consensus_time = (time.time() - consensus_start) * 1000  # ms
                 
+                # Generate Zero-Knowledge Proof (ZKP) Attestation
+                zkp_proof = None
+                try:
+                    from src.quantum_security.zkp_verifier import ZKPVerifier
+                    verifier = ZKPVerifier()
+                    if risk_score >= 0.70:
+                        zkp_proof = verifier.generate_proof(risk_score=risk_score, threshold=0.70, transaction_id=transaction_id)
+                except Exception as zkp_err:
+                    logger.warning(f"ZKP proof generation skipped: {zkp_err}")
+
                 evidence = BlockchainEvidence(
                     evidence_id=evidence_id,
                     transaction_hash=transaction_hash,
@@ -1052,7 +1066,9 @@ class BlockchainEvidenceManager:
                     validator_signatures=validator_signatures,
                     consensus_timestamp=block['timestamp'],
                     finality_time_ms=consensus_time,
+                    zkp_proof=zkp_proof,
                 )
+
                 
                 # Update statistics
                 self.stats['total_sealed'] += 1
@@ -1769,3 +1785,73 @@ def seal_fraud_decision(
         explanation=explanation,
         fraud_patterns=fraud_patterns,
     )
+
+
+class AsyncFabricConnectionPool:
+    """Async Connection Pool Manager for Hyperledger Fabric gRPC Clients.
+
+    Maintains a dynamically scaling connection queue (min 10, max 50 active channels)
+    with exponential backoff retries to prevent FastAPI event loop starvation under high load.
+    """
+
+    def __init__(self, min_size: int = 10, max_size: int = 50, retries: int = 3):
+        self.min_size = min_size
+        self.max_size = max_size
+        self.retries = retries
+        self.active_count = 0
+        self._pool = None
+
+    def _get_pool(self):
+        import asyncio
+        if self._pool is None:
+            self._pool = asyncio.Queue(maxsize=self.max_size)
+            for i in range(self.min_size):
+                self._pool.put_nowait(f"FabricChannel_{i}")
+                self.active_count += 1
+        return self._pool
+
+    async def acquire(self) -> str:
+        """Acquire a connection channel from pool or dynamically expand pool up to max_size."""
+        import asyncio
+        pool = self._get_pool()
+        if pool.empty() and self.active_count < self.max_size:
+            conn_id = f"FabricChannel_{self.active_count}"
+            self.active_count += 1
+            return conn_id
+        return await pool.get()
+
+    async def release(self, conn_id: str):
+        """Release connection back to the queue pool."""
+        pool = self._get_pool()
+        await pool.put(conn_id)
+
+    async def execute_async(self, func, *args, **kwargs):
+        """Executes a gRPC call asynchronously with exponential backoff retry logic."""
+        import asyncio
+        import random
+
+        conn = await self.acquire()
+        attempt = 0
+        try:
+            while attempt < self.retries:
+                try:
+                    # Run sync blocking call in thread pool executor to avoid event loop starvation
+                    return await asyncio.to_thread(func, *args, **kwargs)
+                except Exception as exc:
+                    attempt += 1
+                    if attempt >= self.retries:
+                        raise exc
+                    backoff = (2 ** attempt) * 0.05 + random.uniform(0, 0.02)
+                    await asyncio.sleep(backoff)
+        finally:
+            await self.release(conn)
+
+
+_global_fabric_pool = None
+
+def get_async_fabric_pool() -> AsyncFabricConnectionPool:
+    global _global_fabric_pool
+    if _global_fabric_pool is None:
+        _global_fabric_pool = AsyncFabricConnectionPool(min_size=10, max_size=50)
+    return _global_fabric_pool
+

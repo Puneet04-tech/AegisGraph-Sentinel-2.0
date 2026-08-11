@@ -66,6 +66,7 @@ def _build_saml_response(
     sign_with_key: str = None,
     sign_with_cert: str = None,
     conditions: dict = None,
+    audience: str = "test-sp",
 ) -> str:
     """Build a base64-encoded SAML Response, optionally with a signed assertion."""
     import lxml.etree as lxml_etree
@@ -88,10 +89,13 @@ def _build_saml_response(
     subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
     lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
 
+    conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
     if conditions is not None:
-        conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
         for attr, value in conditions.items():
             conditions_elem.set(attr, value)
+    if audience:
+        restriction = lxml_etree.SubElement(conditions_elem, f"{{{saml_ns}}}AudienceRestriction")
+        lxml_etree.SubElement(restriction, f"{{{saml_ns}}}Audience").text = audience
 
     if sign_with_key:
         signed_assertion = XMLSigner().sign(assertion, key=sign_with_key, cert=sign_with_cert)
@@ -102,7 +106,7 @@ def _build_saml_response(
 
 
 def _build_saml_response_signed_root(
-    name_id: str, issuer: str, sign_with_key: str, sign_with_cert: str
+    name_id: str, issuer: str, sign_with_key: str, sign_with_cert: str, audience: str = "test-sp"
 ) -> str:
     """Build a SAML Response whose whole root (not just the assertion) is signed."""
     import lxml.etree as lxml_etree
@@ -124,10 +128,21 @@ def _build_saml_response_signed_root(
     lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Issuer").text = issuer
     subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
     lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
+    conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
+    if audience:
+        restriction = lxml_etree.SubElement(conditions_elem, f"{{{saml_ns}}}AudienceRestriction")
+        lxml_etree.SubElement(restriction, f"{{{saml_ns}}}Audience").text = audience
 
     signed = XMLSigner().sign(response, key=sign_with_key, cert=sign_with_cert)
     xml_bytes = lxml_etree.tostring(signed, xml_declaration=True, encoding="UTF-8")
     return base64.b64encode(xml_bytes).decode()
+
+
+def _relay_state_for(saml, provider_id: str, return_url: str = None) -> str:
+    """Initiate a login and return the RelayState bound to that AuthnRequest."""
+    init = saml.initiate_login(provider_id=provider_id, return_url=return_url)
+    assert init.success, init.error_description
+    return parse_qs(urlparse(init.redirect_url).query)["RelayState"][0]
 
 
 class TestIdentityFederationStore:
@@ -409,6 +424,7 @@ class TestSAMLProvider:
             saml_certificate=cert_pem,
         ))
         saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
         signed = _build_saml_response(
             "real.user@example.com",
             "https://okta.example.com/saml",
@@ -416,7 +432,7 @@ class TestSAMLProvider:
             sign_with_cert=cert_pem,
         )
         
-        response = saml.process_response(signed)
+        response = saml.process_response(signed, relay_state=relay)
         
         assert response.success is True
         assert response.user.email == "real.user@example.com"
@@ -434,6 +450,7 @@ class TestSAMLProvider:
             saml_certificate=cert_pem,
         ))
         saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
         expired = _build_saml_response(
             "real.user@example.com",
             "https://okta.example.com/saml",
@@ -445,7 +462,7 @@ class TestSAMLProvider:
             },
         )
 
-        response = saml.process_response(expired)
+        response = saml.process_response(expired, relay_state=relay)
 
         assert response.success is False
         assert response.error == "assertion_invalid"
@@ -464,6 +481,7 @@ class TestSAMLProvider:
             saml_certificate=cert_pem,
         ))
         saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
         future = _build_saml_response(
             "real.user@example.com",
             "https://okta.example.com/saml",
@@ -475,7 +493,7 @@ class TestSAMLProvider:
             },
         )
 
-        response = saml.process_response(future)
+        response = saml.process_response(future, relay_state=relay)
 
         assert response.success is False
         assert response.error == "assertion_invalid"
@@ -495,6 +513,7 @@ class TestSAMLProvider:
             saml_certificate=cert_pem,
         ))
         saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
         signed = _build_saml_response_signed_root(
             "root.signed@example.com",
             "https://okta.example.com/saml",
@@ -502,7 +521,7 @@ class TestSAMLProvider:
             sign_with_cert=cert_pem,
         )
 
-        response = saml.process_response(signed)
+        response = saml.process_response(signed, relay_state=relay)
 
         assert response.success is True
         assert response.user.email == "root.signed@example.com"
@@ -523,24 +542,169 @@ class TestSAMLProvider:
         ))
         saml = SAMLProvider(store, "test-sp")
 
+        first_relay = _relay_state_for(saml, "okta-prod")
         first = saml.process_response(_build_saml_response(
             "alice@example.com",
             "https://okta.example.com/saml",
             sign_with_key=key_pem,
             sign_with_cert=cert_pem,
-        ))
+        ), relay_state=first_relay)
+        second_relay = _relay_state_for(saml, "okta-prod")
         second = saml.process_response(_build_saml_response(
             "bob@example.com",
             "https://okta.example.com/saml",
             sign_with_key=key_pem,
             sign_with_cert=cert_pem,
-        ))
+        ), relay_state=second_relay)
 
         assert first.success is True
         assert second.success is True
         assert first.user.id != second.user.id
         assert first.user.provider_user_id != second.user.provider_user_id
         assert first.user.email != second.user.email
+
+    def test_process_response_rejects_assertion_for_another_sp(self):
+        """An assertion restricted to a different audience must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        forged = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            audience="some-other-sp",
+        )
+
+        response = saml.process_response(forged, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert "audience" in response.error_description
+        assert response.user is None
+
+    def test_process_response_rejects_assertion_without_audience(self):
+        """An assertion with no AudienceRestriction must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        forged = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            audience=None,
+        )
+
+        response = saml.process_response(forged, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert "audience" in response.error_description
+        assert response.user is None
+
+    def test_process_response_rejects_replayed_relay_state(self):
+        """A signature-valid response replayed with the same RelayState must
+        be rejected once the pending login has been consumed."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        first = saml.process_response(response_xml, relay_state=relay)
+        second = saml.process_response(response_xml, relay_state=relay)
+
+        assert first.success is True
+        assert second.success is False
+        assert second.error == "relay_state_invalid"
+        assert "replayed" in second.error_description
+
+    def test_process_response_rejects_missing_relay_state(self):
+        """A response without a RelayState binding must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(response_xml)
+
+        assert response.success is False
+        assert response.error == "relay_state_invalid"
+        assert response.user is None
+
+    def test_process_response_returns_stored_return_url(self):
+        """The return_url recorded at initiate time must be recovered from the
+        RelayState binding and surfaced on the response."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        return_url = "https://app.example.com/dashboard"
+        relay = _relay_state_for(saml, "okta-prod", return_url=return_url)
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(response_xml, relay_state=relay)
+
+        assert response.success is True
+        assert response.redirect_url == return_url
+        assert response.session.relay_state == return_url
 
 
 class TestOIDCProvider:

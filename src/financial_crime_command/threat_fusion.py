@@ -88,7 +88,18 @@ class ThreatFusionEngine:
                 )
                 clusters.append(cluster)
         
-        return sorted(clusters, key=lambda c: c.threat_level.value)
+        return sorted(clusters, key=lambda c: self._severity_rank(c.threat_level), reverse=True)
+    
+    def _severity_rank(self, level: ThreatLevel) -> int:
+        """Map threat level to a numeric rank for sorting, most severe first."""
+        ranks = {
+            ThreatLevel.SEVERE: 5,
+            ThreatLevel.CRITICAL: 4,
+            ThreatLevel.HIGH: 3,
+            ThreatLevel.MEDIUM: 2,
+            ThreatLevel.LOW: 1,
+        }
+        return ranks.get(level, 0)
 
     def _is_related(self, t1: ThreatIndicator, t2: ThreatIndicator) -> bool:
         """Check if two threats are related."""
