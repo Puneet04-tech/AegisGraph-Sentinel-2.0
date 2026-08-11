@@ -338,7 +338,21 @@ class TestFraudSimulator:
         assert result.risk_score > 0
         assert len(result.predicted_outcomes) > 0
         assert result.confidence > 0
-    
+
+    def test_simulate_account_takeover_is_deterministic(self, simulator, scenario_builder):
+        """The same scenario must produce the same simulated outcome every time."""
+        scenario = scenario_builder.build_scenario(
+            simulation_type=SimulationType.ACCOUNT_TAKEOVER,
+            source_entity_ids=["entity_1", "entity_2", "entity_3"],
+            parameters={"base_risk": 0.5, "compromised_rate": 0.3},
+        )
+
+        results = [simulator._simulate_account_takeover(scenario) for _ in range(20)]
+
+        assert len({r.risk_score for r in results}) == 1
+        assert len({tuple(r.affected_entities) for r in results}) == 1
+        assert len({r.predicted_outcomes[1]["estimated_loss"] for r in results}) == 1
+
     def test_simulate_fraud_ring_expansion(self, simulator, scenario_builder):
         """Test fraud ring expansion simulation."""
         scenario = scenario_builder.build_scenario(
