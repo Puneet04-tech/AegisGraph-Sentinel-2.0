@@ -173,6 +173,64 @@ class TestNeo4jGraphProvider(unittest.TestCase):
             self.assertEqual(kwargs["timestamp"], 12345.6)
 
     @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_add_transaction_stores_amount_as_weight(self, mock_neo4j_lib) -> None:
+        """Verify TRANSFER relationships are written with the amount as weight."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True)
+            provider.add_transaction("ACC1", "ACC2", 500.0, 12345.6)
+
+            args, kwargs = mock_session.run.call_args
+            self.assertIn("weight: $amount", args[0])
+            self.assertEqual(kwargs["amount"], 500.0)
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
+    def test_blast_radius_query_weights_by_amount(self, mock_neo4j_lib) -> None:
+        """Verify the blast-radius Cypher weights edges by amount, not a constant 1.0."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result_exists = MagicMock()
+        mock_result_blast = MagicMock()
+
+        mock_neo4j_lib.GraphDatabase.driver.return_value = mock_driver
+        mock_driver.session.return_value.__enter__.return_value = mock_session
+        mock_result_exists.single.return_value = {"exists": True}
+        mock_result_blast.__iter__.return_value = []
+        mock_session.run.side_effect = [MagicMock(), mock_result_exists, mock_result_blast]
+
+        with patch("src.core.providers.neo4j.NEO4J_AVAILABLE", True):
+            provider = Neo4jGraphProvider(enabled=True)
+            provider.compute_blast_radius("ACC1", max_depth=3)
+
+            query = mock_session.run.call_args.args[0]
+            self.assertIn("coalesce(r.weight, r.amount, 1.0)", query)
+
+    def test_blast_radius_amount_weighting_matches_formula(self) -> None:
+        """Verify contagion weights edges by transaction amount per the documented formula."""
+        from src.features.blast_radius import BlastRadiusAnalyzer
+
+        graph = nx.DiGraph()
+        graph.add_edge("S", "BIG", weight=5_000_000.0)
+        graph.add_edge("S", "SMALL", weight=5.0)
+
+        report = BlastRadiusAnalyzer().compute("S", graph, max_depth=1)
+        scores = {
+            r.node_id: r.contagion_score
+            for r in report.critical + report.high + report.suspicious
+        }
+
+        self.assertIn("BIG", scores)
+        self.assertIn("SMALL", scores)
+        self.assertGreater(scores["BIG"], scores["SMALL"])
+        # depth 1 contribution == weight / 1^2 == weight
+        self.assertEqual(scores["BIG"], 5_000_000.0)
+        self.assertEqual(scores["SMALL"], 5.0)
+
+    @patch("src.core.providers.neo4j.neo4j", create=True)
     def test_subgraph_extraction_and_mapping(self, mock_neo4j_lib) -> None:
         """Verify k-hop path query is executed and parsed correctly into a NetworkX DiGraph."""
         mock_driver = MagicMock()

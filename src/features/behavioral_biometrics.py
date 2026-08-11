@@ -16,7 +16,6 @@ Features extracted:
 
 import math
 import numpy as np
-import torch
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from scipy.stats import variation
@@ -448,6 +447,12 @@ def analyze_keystroke_data(
     if is_backspace is None:
         is_backspace = [False] * len(press_times)
 
+    # Validate optional list lengths so zip() below cannot silently drop events
+    if len(key_ids) != len(press_times) or len(is_backspace) != len(press_times):
+        raise ValueError(
+            "key_ids and is_backspace must have the same length as press_times/release_times"
+        )
+
     events = [
         KeystrokeEvent(kid, pt, rt, bs)
         for kid, pt, rt, bs in zip(key_ids, press_times, release_times, is_backspace)
@@ -465,4 +470,24 @@ def analyze_keystroke_data(
     stress_indicators = analyzer.detect_stress(features)
     
     # Combine
-    return {**features, **stress_indicators}
+    result = {**features, **stress_indicators}
+
+    # Compute 1D Temporal Transformer Stress Score
+    try:
+        import torch
+        from src.models.keystroke_transformer import KeystrokeTransformer
+        model = KeystrokeTransformer()
+        model.eval()
+        
+        hold_times = [rt - pt for pt, rt in zip(press_times, release_times)]
+        flight_times = [press_times[i+1] - release_times[i] for i in range(len(press_times)-1)] + [0.0]
+        
+        seq_tensor = torch.tensor([[ht, ft] for ht, ft in zip(hold_times, flight_times)], dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            tf_score = float(model(seq_tensor).squeeze().item())
+        result["transformer_stress_score"] = round(tf_score, 4)
+    except Exception:
+        result["transformer_stress_score"] = result.get("stress_score", 0.0)
+
+    return result
+

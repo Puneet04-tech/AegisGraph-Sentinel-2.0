@@ -23,6 +23,7 @@ from .models import (
     ShareLevel,
     SharedCase,
 )
+from src.audit.bounded_log import BoundedAuditLog, next_event_id
 
 
 class FinIntelStore:
@@ -36,7 +37,9 @@ class FinIntelStore:
         self._shared_cases: Dict[str, SharedCase] = {}
         self._aml_intel: Dict[str, AMLIntelligence] = {}
         self._investigations: Dict[str, CrossBorderInvestigation] = {}
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
         self._lock = threading.RLock()
 
     def add_institution(self, institution: Institution) -> None:
@@ -129,7 +132,7 @@ class FinIntelStore:
     ) -> None:
         """Log an audit event."""
         event = AuditEvent(
-            event_id=f"audit-{len(self._audit_log) + 1}",
+            event_id=next_event_id(),
             timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             action=action,
@@ -143,7 +146,7 @@ class FinIntelStore:
 
     def get_audit_log(self, limit: int = 100) -> List[AuditEvent]:
         """Get audit log."""
-        return self._audit_log[-limit:]
+        return self._audit_log.tail(limit)
 
     def get_dashboard_metrics(self) -> Dict[str, Any]:
         """Get dashboard metrics."""

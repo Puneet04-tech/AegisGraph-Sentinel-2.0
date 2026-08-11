@@ -172,6 +172,7 @@ class TransactionAssessment:
     device_score: float = 0.0
     location_score: float = 0.0
     amount_score: float = 0.0
+    history_score: float = 0.0
     assessed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     processing_time_ms: float = 0.0
     controls_triggered: List[str] = field(default_factory=list)

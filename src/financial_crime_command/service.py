@@ -45,6 +45,7 @@ from .threat_fusion import (
     get_threat_fusion_engine,
     reset_threat_fusion_engine,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class FinancialCrimeCommandCenter:
@@ -57,7 +58,9 @@ class FinancialCrimeCommandCenter:
         self.correlation = get_correlation_engine()
         self.prioritization = get_risk_prioritization_engine()
         self.threat_fusion = get_threat_fusion_engine()
-        self._audit_log: List[AuditEntry] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
 
     async def create_case(
         self,
@@ -302,7 +305,7 @@ class FinancialCrimeCommandCenter:
                 "resource_type": e.resource_type,
                 "resource_id": e.resource_id,
             }
-            for e in self._audit_log[-limit:]
+            for e in self._audit_log.tail(limit)
         ]
 
     async def _audit(

@@ -10,10 +10,10 @@ class ScoreCalculator:
 
     @staticmethod
     def normalize_score(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
-        raw_value = EdgeCaseHandler.safe_float(value, default=min_value, min_value=min_value, max_value=max_value)
         if max_value == min_value:
             return 0.0
 
+        raw_value = EdgeCaseHandler.safe_float(value, default=min_value, min_value=min_value, max_value=max_value)
         normalized = (raw_value - min_value) / (max_value - min_value)
         return EdgeCaseHandler.safe_score(normalized)
 

@@ -4,8 +4,9 @@ Zero Trust Service - Combined interface for all Zero Trust components
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timezone
 
 from .models import TrustLevel, TrustScore, DeviceTrust, DeviceFingerprint, SessionRisk, Policy, EvaluationContext
@@ -15,14 +16,25 @@ from .device_manager import DeviceTrustManager
 from .session_analyzer import SessionRiskAnalyzer
 from .policy_engine import PolicyEnforcementEngine
 
+logger = logging.getLogger(__name__)
+
 
 class ZeroTrustService:
-    def __init__(self, store: Optional[ZeroTrustStore] = None):
+    def __init__(
+        self,
+        store: Optional[ZeroTrustStore] = None,
+        revocation_store: Optional[Any] = None,
+        revocation_callback: Optional[Callable[[str], None]] = None,
+        auto_revoke_on_block: bool = True,
+    ):
         self.store = store or get_store()
         self.trust_engine = TrustEngine(self.store)
         self.device_manager = DeviceTrustManager(self.store)
         self.session_analyzer = SessionRiskAnalyzer(self.store)
         self.policy_engine = PolicyEnforcementEngine(self.store)
+        self.revocation_store = revocation_store
+        self.revocation_callback = revocation_callback
+        self.auto_revoke_on_block = auto_revoke_on_block
         self.total_requests = 0
         self.blocked_requests = 0
         self.allowed_requests = 0
@@ -69,6 +81,8 @@ class ZeroTrustService:
 
         if final_decision == "BLOCK":
             self.blocked_requests += 1
+            if self.auto_revoke_on_block and session_id:
+                self._revoke_session_tokens(session_id)
         elif final_decision == "ALLOW":
             self.allowed_requests += 1
         else:
@@ -102,6 +116,32 @@ class ZeroTrustService:
         if trust_score.score < 0.3:
             return "CHALLENGE"
         return "ALLOW"
+
+    def _revoke_session_tokens(self, session_id: str) -> None:
+        if not session_id:
+            return
+        logger.warning(
+            "ZeroTrust policy BLOCK decision reached for session %s; revoking active session tokens",
+            session_id,
+        )
+        if self.revocation_store is not None:
+            try:
+                self.revocation_store.revoke_session(session_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to revoke session %s via revocation_store: %s",
+                    session_id,
+                    e,
+                )
+        if self.revocation_callback is not None:
+            try:
+                self.revocation_callback(session_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to invoke revocation_callback for session %s: %s",
+                    session_id,
+                    e,
+                )
 
     def _generate_recommendations(self, trust_score: TrustScore, device_trust: Optional[Dict[str, Any]],
                                   session_risk: Optional[SessionRisk], policy_result) -> List[str]:

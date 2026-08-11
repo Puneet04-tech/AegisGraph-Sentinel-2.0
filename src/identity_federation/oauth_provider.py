@@ -5,6 +5,7 @@ Implements OAuth2 authorization flows.
 """
 
 import secrets
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -34,6 +35,10 @@ class OAuthProvider:
         self._store = store
         self._issuer = issuer
         
+        # Serialises authorization-code redemption so the single-use
+        # check-and-mark cannot race across threads (RFC 6749 4.1.2).
+        self._lock = threading.Lock()
+        
         # Registered OAuth2 clients
         self._clients: dict[str, dict] = {}
         
@@ -42,6 +47,9 @@ class OAuthProvider:
         
         # Token storage
         self._tokens: dict[str, dict] = {}
+        
+        # Refresh tokens that have been rotated and must not be replayed
+        self._used_refresh_tokens: set[str] = set()
     
     def register_client(
         self,
@@ -77,11 +85,51 @@ class OAuthProvider:
         self._clients[client_id] = client
         return {"client_id": client_id, "client_secret": client_secret}
     
-    def _hash_secret(self, secret: str) -> str:
-        """Hash client secret for storage."""
+    def _hash_secret(self, secret: Optional[str]) -> str:
+        """Hash client secret for storage.
+
+        Defensively handles missing or non-string input by returning an empty
+        string so callers never trigger an ``AttributeError`` when a client
+        secret is omitted. An empty hash can never match a registered client's
+        secret hash, so omitted secrets are treated as invalid credentials.
+        """
         import hashlib
+        if not isinstance(secret, str) or not secret:
+            return ""
         return hashlib.sha256(secret.encode()).hexdigest()
     
+
+    def _validate_requested_scopes(
+        self,
+        client: dict,
+        scope: Optional[str],
+    ) -> tuple[Optional[str], Optional[AuthenticationResponse]]:
+        """Intersect requested scopes with the client's registered allow-list.
+
+        Rejects the request when any requested scope is not registered for the
+        client (prefer fail-closed over silently dropping unknown scopes).
+        """
+        allowed = set(client.get("scopes") or [])
+        if scope is None or not str(scope).strip():
+            # Default to the full registered allow-list when none requested
+            return " ".join(client.get("scopes") or []), None
+
+        requested = [s for s in str(scope).split() if s]
+        if not requested:
+            return " ".join(client.get("scopes") or []), None
+
+        unknown = [s for s in requested if s not in allowed]
+        if unknown:
+            return None, AuthenticationResponse(
+                success=False,
+                error="invalid_scope",
+                error_description=(
+                    "Requested scope is not allowed for this client: "
+                    + " ".join(unknown)
+                ),
+            )
+        return " ".join(requested), None
+
     def authorize(
         self,
         client_id: str,
@@ -130,6 +178,11 @@ class OAuthProvider:
                 error="invalid_request",
                 error_description="Invalid redirect_uri",
             )
+
+        validated_scope, scope_error = self._validate_requested_scopes(client, scope)
+        if scope_error:
+            return scope_error
+        scope = validated_scope
         
         # Generate authorization code
         if response_type == "code":
@@ -218,7 +271,9 @@ class OAuthProvider:
         
         # Refresh Token Flow
         if grant_type == "refresh_token":
-            return self._refresh_token_grant(refresh_token, scope)
+            return self._refresh_token_grant(
+                refresh_token, client_id, client_secret, scope
+            )
         
         # Authorization Code Flow
         if grant_type == "authorization_code":
@@ -266,13 +321,35 @@ class OAuthProvider:
                 error_description="Authorization code expired",
             )
         
+        # Guard against missing client_secret
+        if client_secret is None:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="client_secret is required",
+            )
+
         # Validate client
         client = self._clients.get(client_id)
-        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
                 error_description="Invalid client credentials",
+            )
+        
+        # RFC 6749 §4.1.3: the authorization code is bound to the client it was
+        # issued to. A different (even legitimate) registered client must not be
+        # able to redeem it.
+        if auth_code["client_id"] != client_id:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code was issued to a different client",
             )
         
         # Validate redirect URI
@@ -288,23 +365,67 @@ class OAuthProvider:
             if not code_verifier:
                 return AuthenticationResponse(
                     success=False,
-                    error="invalid_request",
-                    error_description="Code verifier required",
+                    error="invalid_grant",
+                    error_description="Authorization code expired",
                 )
             
-            if not self._verify_pkce(
-                code_verifier,
-                auth_code["code_challenge"],
-                auth_code["code_challenge_method"],
+            # Guard against missing client_secret
+            if client_secret is None:
+                return AuthenticationResponse(
+                    success=False,
+                    error="invalid_client",
+                    error_description="client_secret is required",
+                )
+
+            # Validate client
+            client = self._clients.get(client_id)
+            if (
+                not client
+                or not client_secret
+                or client["client_secret_hash"] != self._hash_secret(client_secret)
             ):
                 return AuthenticationResponse(
                     success=False,
-                    error="invalid_grant",
-                    error_description="Invalid code verifier",
+                    error="invalid_client",
+                    error_description="Invalid client credentials",
                 )
-        
-        # Mark code as used
-        auth_code["used"] = True
+            
+            # Validate redirect URI
+            if redirect_uri != auth_code["redirect_uri"]:
+                return AuthenticationResponse(
+                    success=False,
+                    error="invalid_grant",
+                    error_description="Redirect URI mismatch",
+                )
+            
+            # Validate PKCE if used
+            if auth_code["code_challenge"]:
+                if not code_verifier:
+                    return AuthenticationResponse(
+                        success=False,
+                        error="invalid_request",
+                        error_description="Code verifier required",
+                    )
+                
+                if not self._verify_pkce(
+                    code_verifier,
+                    auth_code["code_challenge"],
+                    auth_code["code_challenge_method"],
+                ):
+                    return AuthenticationResponse(
+                        success=False,
+                        error="invalid_grant",
+                        error_description="Invalid code verifier",
+                    )
+            
+            # Mark code as used
+            auth_code["used"] = True
+
+        validated_scope, scope_error = self._validate_requested_scopes(
+            client, auth_code.get("scope")
+        )
+        if scope_error:
+            return scope_error
         
         # Generate tokens
         access_token = self._generate_access_token()
@@ -315,7 +436,7 @@ class OAuthProvider:
             access_token=access_token,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=auth_code["scope"],
+            scope=validated_scope,
             client_id=client_id,
             refresh_token=refresh_token_value,
         )
@@ -329,7 +450,7 @@ class OAuthProvider:
             metadata={
                 "token_type": "Bearer",
                 "expires_in": expires_in,
-                "scope": auth_code["scope"],
+                "scope": validated_scope,
             },
         )
     
@@ -341,22 +462,21 @@ class OAuthProvider:
     ) -> AuthenticationResponse:
         """Process client credentials grant."""
         client = self._clients.get(client_id)
-        if not client:
+        if (
+            not client
+            or not client_secret
+            or client["client_secret_hash"] != self._hash_secret(client_secret)
+        ):
             return AuthenticationResponse(
                 success=False,
                 error="invalid_client",
                 error_description="Invalid client credentials",
             )
         
-        if client["client_secret_hash"] != self._hash_secret(client_secret):
-            return AuthenticationResponse(
-                success=False,
-                error="invalid_client",
-                error_description="Invalid client credentials",
-            )
-        
-        # Generate token with client scopes
-        token_scope = scope or " ".join(client["scopes"])
+        token_scope, scope_error = self._validate_requested_scopes(client, scope)
+        if scope_error:
+            return scope_error
+
         access_token = self._generate_access_token()
         expires_in = 3600
         
@@ -383,23 +503,70 @@ class OAuthProvider:
     def _refresh_token_grant(
         self,
         refresh_token: str,
-        scope: Optional[str],
+        client_id: Optional[str],
+        client_secret: Optional[str],
+        scope: Optional[str] = None,
     ) -> AuthenticationResponse:
-        """Process refresh token grant."""
+        """Process refresh token grant.
+
+        Per RFC 6749 section 6, the client must be authenticated on the token
+        endpoint, the refresh token is bound to the client it was issued to,
+        and rotating refresh tokens are required for reuse detection.
+        """
+        # Validate the presenting client's credentials, mirroring the
+        # authorization-code grant path.
+        if not client_id or not client_secret:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
+        client = self._clients.get(client_id)
+        if not client or client["client_secret_hash"] != self._hash_secret(client_secret):
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Invalid client credentials",
+            )
+
+        if not client["enabled"]:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_client",
+                error_description="Client is disabled",
+            )
+
+        # Reject replays of an already-rotated refresh token.
+        if refresh_token in self._used_refresh_tokens:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Refresh token has already been used",
+            )
+
         # Find token by refresh token
         token_info = None
         for access_token, info in self._tokens.items():
             if info.get("refresh_token") == refresh_token:
                 token_info = info
                 break
-        
+
         if not token_info:
             return AuthenticationResponse(
                 success=False,
                 error="invalid_grant",
                 error_description="Invalid refresh token",
             )
-        
+
+        # The refresh token is bound to the client it was issued to.
+        if token_info.get("client_id") != client_id:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Refresh token was issued to another client",
+            )
+
         # Check expiration
         if datetime.now(timezone.utc) > token_info.get("refresh_expires_at", datetime.now(timezone.utc)):
             return AuthenticationResponse(
@@ -407,27 +574,30 @@ class OAuthProvider:
                 error="invalid_grant",
                 error_description="Refresh token expired",
             )
-        
-        # Generate new access token
+
+        # Rotate: issue a new refresh token so a stolen token cannot be replayed.
         new_access_token = self._generate_access_token()
+        new_refresh_token = self._generate_refresh_token()
         expires_in = 3600
-        
-        # Revoke old token
+
+        # Mark the old refresh token as used for reuse detection, then revoke
+        # the old access token.
+        self._used_refresh_tokens.add(refresh_token)
         self._revoke_token(token_info["access_token"])
-        
+
         self._store_token(
             access_token=new_access_token,
             token_type="Bearer",
             expires_in=expires_in,
             scope=scope or token_info["scope"],
-            client_id=token_info["client_id"],
-            refresh_token=refresh_token,
+            client_id=client_id,
+            refresh_token=new_refresh_token,
         )
-        
+
         return AuthenticationResponse(
             success=True,
             access_token=new_access_token,
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
             authentication_method="oauth2",
             metadata={
                 "token_type": "Bearer",

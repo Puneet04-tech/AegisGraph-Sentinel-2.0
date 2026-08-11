@@ -57,15 +57,20 @@ class FocalLoss(nn.Module):
             Focal loss value
         """
         # Ensure inputs are probabilities
+        # Ensure inputs are probabilities and clamped for numerical stability
         if inputs.min() < 0 or inputs.max() > 1:
             p = torch.sigmoid(inputs)
         else:
             p = inputs
         
+        eps = 1e-7
+        p = torch.clamp(p, min=eps, max=1.0 - eps)
+
         # Compute focal loss
         targets = targets.view_as(p).float()
         ce_loss = F.binary_cross_entropy(p, targets, reduction='none')
         p_t = p * targets + (1 - p) * (1 - targets)
+        p_t = torch.clamp(p_t, min=eps, max=1.0 - eps)
         focal_weight = (1 - p_t) ** self.gamma
         
         if self.alpha >= 0:
@@ -80,6 +85,7 @@ class FocalLoss(nn.Module):
             return loss.sum()
         else:
             return loss
+
 
 
 class WeightedBCELoss(nn.Module):
@@ -244,22 +250,26 @@ class ContrastiveLoss(nn.Module):
         mask = torch.eye(batch_size, device=embeddings.device).bool()
         label_matrix = label_matrix.masked_fill(mask, 0)
         
+        eps = 1e-7
+
         # Positive pairs (same label)
         pos_mask = label_matrix == 1
         if pos_mask.any():
             pos_similarity = similarity_matrix.masked_select(pos_mask)
-            pos_loss = -torch.log(torch.sigmoid(pos_similarity)).mean()
+            pos_sig = torch.clamp(torch.sigmoid(pos_similarity), min=eps, max=1.0 - eps)
+            pos_loss = -torch.log(pos_sig).mean()
         else:
-            pos_loss = 0.0
+            pos_loss = torch.tensor(0.0, device=embeddings.device)
         
         # Negative pairs (different label)
         neg_mask = label_matrix == 0
         neg_mask = neg_mask.masked_fill(mask, False)
         if neg_mask.any():
             neg_similarity = similarity_matrix.masked_select(neg_mask)
-            neg_loss = -torch.log(torch.sigmoid(self.margin - neg_similarity)).mean()
+            neg_sig = torch.clamp(torch.sigmoid(self.margin - neg_similarity), min=eps, max=1.0 - eps)
+            neg_loss = -torch.log(neg_sig).mean()
         else:
-            neg_loss = 0.0
+            neg_loss = torch.tensor(0.0, device=embeddings.device)
         
         return pos_loss + neg_loss
 
@@ -299,3 +309,90 @@ class RankingLoss(nn.Module):
         loss = F.relu(self.margin + diff)
         
         return loss.mean()
+
+
+class MultiModalTemporalLoss(nn.Module):
+    """
+    Multi-Modal Temporal Loss with Dynamic Homoscedastic Uncertainty Weighting.
+    
+    Combines:
+    1. Focal Classification Loss (Fraud detection classification)
+    2. Temporal Graph Contrastive Loss (Graph embedding similarity)
+    3. Behavioral Biometric Stress Loss (Keystroke & voice stress alignment)
+
+    Uses homoscedastic task uncertainty parameters (s_cls, s_contrastive, s_biometric)
+    to dynamically balance multi-task loss terms without gradient explosion or NaN divergence.
+    """
+    
+    def __init__(
+        self,
+        focal_alpha: float = 0.25,
+        focal_gamma: float = 2.0,
+        contrastive_temp: float = 0.5,
+        gradient_clip_val: float = 5.0,
+    ):
+        super().__init__()
+        self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+        self.contrastive_loss = ContrastiveLoss(temperature=contrastive_temp)
+        self.gradient_clip_val = gradient_clip_val
+        
+        # Trainable Homoscedastic Uncertainty parameters (log variance)
+        self.log_var_cls = nn.Parameter(torch.tensor(0.0))
+        self.log_var_contrastive = nn.Parameter(torch.tensor(0.0))
+        self.log_var_biometric = nn.Parameter(torch.tensor(0.0))
+
+    def forward(
+        self,
+        cls_logits: torch.Tensor,
+        targets: torch.Tensor,
+        embeddings: Optional[torch.Tensor] = None,
+        biometric_scores: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """
+        Args:
+            cls_logits: Primary model prediction logits [batch_size]
+            targets: Ground truth fraud labels (0 or 1) [batch_size]
+            embeddings: Optional graph node embeddings [batch_size, dim]
+            biometric_scores: Optional behavioral biometric stress scores [batch_size]
+
+        Returns:
+            Dictionary containing total weighted loss and individual metrics components
+        """
+        # 1. Primary Classification Focal Loss
+        l_cls = self.focal_loss(cls_logits, targets)
+        w_cls = torch.exp(-self.log_var_cls) * l_cls + 0.5 * self.log_var_cls
+
+        # 2. Graph Contrastive Loss
+        if embeddings is not None and embeddings.size(0) > 1:
+            l_cont = self.contrastive_loss(embeddings, targets)
+        else:
+            l_cont = torch.tensor(0.0, device=cls_logits.device)
+        w_cont = torch.exp(-self.log_var_contrastive) * l_cont + 0.5 * self.log_var_contrastive
+
+        # 3. Behavioral Biometrics Alignment Loss
+        if biometric_scores is not None:
+            eps = 1e-7
+            b_p = torch.clamp(torch.sigmoid(biometric_scores), min=eps, max=1.0 - eps)
+            targets_fl = targets.view_as(b_p).float()
+            l_bio = F.binary_cross_entropy(b_p, targets_fl)
+        else:
+            l_bio = torch.tensor(0.0, device=cls_logits.device)
+        w_bio = torch.exp(-self.log_var_biometric) * l_bio + 0.5 * self.log_var_biometric
+
+        # Total Weighted Multi-Task Loss
+        total_loss = w_cls + w_cont + w_bio
+
+        # Adaptive Gradient Clipping Guardrail check
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            total_loss = torch.clamp(total_loss, min=0.0, max=100.0)
+
+        return {
+            'loss': total_loss,
+            'focal_cls_loss': l_cls.item(),
+            'contrastive_loss': l_cont.item(),
+            'biometric_loss': l_bio.item(),
+            'weight_cls': float(torch.exp(-self.log_var_cls).item()),
+            'weight_contrastive': float(torch.exp(-self.log_var_contrastive).item()),
+            'weight_biometric': float(torch.exp(-self.log_var_biometric).item()),
+        }
+

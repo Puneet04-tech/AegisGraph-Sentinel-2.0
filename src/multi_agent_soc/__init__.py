@@ -36,7 +36,7 @@ from .threat_intelligence_agent import ThreatIntelligenceAgent, get_threat_intel
 from .forensics_agent import ForensicsAgent, get_forensics_agent
 from .fraud_ring_agent import FraudRingAgent, get_fraud_ring_agent
 from .reporting_agent import ReportingAgent, get_reporting_agent
-from .orchestrator import AgentOrchestrator, get_orchestrator
+from .orchestrator import AgentOrchestrator, get_orchestrator, WorkflowValidationError
 
 __all__ = [
     # Models
@@ -71,4 +71,5 @@ __all__ = [
     "get_reporting_agent",
     "AgentOrchestrator",
     "get_orchestrator",
+    "WorkflowValidationError",
 ]

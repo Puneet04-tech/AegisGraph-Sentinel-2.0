@@ -119,6 +119,25 @@ class TestTrustEngine:
         assert isinstance(result, TrustScore)
         assert 0.0 <= result.score <= 1.0
 
+    def test_vpn_ip_flagged(self):
+        engine = TrustEngine()
+        context = EvaluationContext(user_id="vpn-user", ip_address="100.64.0.1")
+        result = engine.evaluate_trust(context, cached=False)
+        assert result.factors.vpn_detected is True
+
+    def test_tor_ip_flagged_and_recommended(self):
+        engine = TrustEngine()
+        context = EvaluationContext(user_id="tor-user", ip_address="185.220.101.5")
+        result = engine.evaluate_trust(context, cached=False)
+        assert result.factors.tor_detected is True
+        assert any("TOR" in r for r in result.recommendations)
+
+    def test_threat_intelligence_penalizes_blacklisted_ip(self):
+        engine = TrustEngine()
+        clean = engine.evaluate_trust(EvaluationContext(user_id="clean-user", ip_address="8.8.8.8"), cached=False)
+        flagged = engine.evaluate_trust(EvaluationContext(user_id="flagged-user", ip_address="203.0.113.100"), cached=False)
+        assert flagged.factors_breakdown["threat_intelligence"] < clean.factors_breakdown["threat_intelligence"]
+
 
 class TestDeviceTrustManager:
     def test_manager_creation(self):
@@ -160,6 +179,47 @@ class TestPolicyEnforcementEngine:
         context = EvaluationContext(user_id="policy-test-user")
         result = engine.evaluate_access(context)
         assert result.decision in ["ALLOW", "DENY", "CHALLENGE"]
+
+    def _engine_with_deny_policy(self, priority):
+        store = ZeroTrustStore()
+        store.policies.clear()
+        engine = PolicyEnforcementEngine(store=store)
+        engine.create_policy(
+            name="Deny All",
+            description="Deny every request",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=priority,
+        )
+        return engine
+
+    def test_deny_policy_with_default_priority_blocks(self):
+        engine = self._engine_with_deny_policy(priority=50)
+        result = engine.evaluate_access(EvaluationContext(user_id="deny-user"))
+        assert result.decision == "DENY"
+        assert result.allowed is False
+
+    def test_deny_policy_with_high_priority_blocks(self):
+        engine = self._engine_with_deny_policy(priority=100)
+        result = engine.evaluate_access(EvaluationContext(user_id="deny-user"))
+        assert result.decision == "DENY"
+        assert result.allowed is False
+
+    def test_non_matching_deny_policy_does_not_block(self):
+        store = ZeroTrustStore()
+        store.policies.clear()
+        engine = PolicyEnforcementEngine(store=store)
+        engine.create_policy(
+            name="Deny Low Trust",
+            description="Deny only very low trust users",
+            conditions={"trust_score_below": 0.1},
+            actions={"decision": "DENY"},
+            priority=50,
+        )
+        trusted = TrustScore(score=0.9, level=TrustLevel.TRUSTED)
+        result = engine.evaluate_access(EvaluationContext(user_id="trusted-user"), trust_score=trusted)
+        assert result.decision == "ALLOW"
+        assert result.allowed is True
 
 
 class TestZeroTrustService:
@@ -213,11 +273,56 @@ class TestZeroTrustSecurity:
             score = result["trust_score"]["score"]
             assert 0.0 <= score <= 1.0
 
-    def test_device_fingerprint_uniqueness(self):
+    def test_device_id_deterministic_for_same_fingerprint(self):
         manager = DeviceTrustManager()
         device1 = manager.register_device("fp-user", {"device_type": "desktop"})
         device2 = manager.register_device("fp-user", {"device_type": "desktop"})
-        assert device1.device_id != device2.device_id
+        assert device1.device_id == device2.device_id
+
+    def test_block_persists_after_reregistration(self):
+        manager = DeviceTrustManager()
+        device = manager.register_device("fp-user", {"device_type": "desktop"})
+        manager.block_device(device.device_id, reason="stolen")
+        reregistered = manager.register_device("fp-user", {"device_type": "desktop"})
+        assert reregistered.status == DeviceStatus.BLOCKED
+
+class TestZeroTrustRevocation:
+    def test_block_decision_triggers_revocation_store(self):
+        from src.saas.auth.revocation import InMemoryTokenRevocationStore
+
+        revocation_store = InMemoryTokenRevocationStore()
+        service = ZeroTrustService(revocation_store=revocation_store, auto_revoke_on_block=True)
+        service.create_policy(
+            name="Block Test User",
+            description="Block specific test user",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=100,
+        )
+
+        res = service.evaluate(user_id="blocked-usr", session_id="sess-999")
+        assert res["final_decision"] == "BLOCK"
+        assert revocation_store.is_session_revoked("sess-999") is True
+
+    def test_block_decision_triggers_revocation_callback(self):
+        revoked_sessions = []
+
+        def callback(session_id: str):
+            revoked_sessions.append(session_id)
+
+        service = ZeroTrustService(revocation_callback=callback, auto_revoke_on_block=True)
+        service.create_policy(
+            name="Block Test User Callback",
+            description="Block specific test user",
+            conditions={"all_users": True},
+            actions={"decision": "DENY"},
+            priority=100,
+        )
+
+        res = service.evaluate(user_id="blocked-usr", session_id="sess-888")
+        assert res["final_decision"] == "BLOCK"
+        assert revoked_sessions == ["sess-888"]
+
 
 
 # Run with: pytest tests/test_zero_trust.py -v

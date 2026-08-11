@@ -26,6 +26,7 @@ from .models import (
     FederationStatus,
     ThreatLevel,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class LRUCache(OrderedDict):
@@ -95,13 +96,15 @@ class GlobalIntelligenceStore:
         self._campaigns: Dict[str, FraudCampaign] = {}
         self._investigations: Dict[str, InvestigationCase] = {}
         self._partners: Dict[str, FederationPartner] = {}
-        self._audit_records: List[AuditRecord] = []
+        # deque eviction is O(1); the manual `= self._audit_records[-N:]` trim this
+        # replaces copied the whole retained list on every append past the cap.
+        self._audit_records = BoundedAuditLog(capacity=10000)
         self._graph_nodes: Dict[str, KnowledgeGraphNode] = {}
         self._graph_edges: Dict[str, KnowledgeGraphEdge] = {}
 
         # Index structures for fast lookup
         self._entity_index: Dict[EntityType, Dict[str, str]] = defaultdict(dict)
-        self._indicator_index: Dict[str, List[str]] = defaultdict(list)
+        self._indicator_index: Dict[str, Dict[str, str]] = defaultdict(dict)
         self._partner_entities: Dict[str, Set[str]] = defaultdict(set)
         self._network_members: Dict[str, Set[str]] = defaultdict(set)
 
@@ -181,8 +184,8 @@ class GlobalIntelligenceStore:
         """Store a threat indicator."""
         with self._lock:
             self._indicators[indicator.indicator_id] = indicator
-            self._indicator_index[indicator.indicator_type].append(indicator.indicator_id)
-            self._indicator_index[indicator.threat_type].append(indicator.indicator_id)
+            self._indicator_index[indicator.indicator_type][indicator.indicator_id] = indicator.indicator_id
+            self._indicator_index[indicator.threat_type][indicator.indicator_id] = indicator.indicator_id
 
     def get_indicator(self, indicator_id: str) -> Optional[ThreatIndicator]:
         """Get indicator by ID."""
@@ -192,7 +195,7 @@ class GlobalIntelligenceStore:
         self, indicator_type: str, limit: int = 100
     ) -> List[ThreatIndicator]:
         """Get indicators by type."""
-        indicator_ids = self._indicator_index.get(indicator_type, [])[:limit]
+        indicator_ids = list(self._indicator_index.get(indicator_type, {}).values())[:limit]
         return [
             self._indicators[iid]
             for iid in indicator_ids
@@ -429,8 +432,6 @@ class GlobalIntelligenceStore:
         with self._lock:
             self._audit_records.append(record)
             # Keep only last 10000 records
-            if len(self._audit_records) > 10000:
-                self._audit_records = self._audit_records[-10000:]
 
     def get_audit_records(
         self,

@@ -4,7 +4,7 @@ Report Automation Module.
 Provides automated report generation, scheduling, and delivery.
 """
 
-import random
+import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -123,101 +123,256 @@ class ReportAutomationModule:
         else:
             content = self._generate_generic_report(content_config)
         
+        # Derive page count and size from the actual generated content rather
+        # than inventing random values. ~3000 bytes of serialized content per page.
+        content_bytes = json.dumps(content, indent=2).encode("utf-8")
+        page_count = max(1, min(20, round(len(content_bytes) / 3000)))
+        
         return {
             "report_id": f"report_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             "report_type": report_type,
             "format": format,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "content": content,
-            "page_count": random.randint(5, 20),
-            "size_bytes": random.randint(50000, 500000),
+            "page_count": page_count,
+            "size_bytes": len(content_bytes),
         }
     
+    # ------------------------------------------------------------------
+    # Live data sources
+    # ------------------------------------------------------------------
+
+    def _live_insights(self, limit: int = 10) -> List[Any]:
+        """Return recently generated insights from the analytics store."""
+        try:
+            return self._store.get_recent_insights(limit)
+        except Exception:
+            return []
+
+    def _live_case_stats(self) -> Dict[str, Any]:
+        """Return case management statistics from the live case store."""
+        try:
+            from src.case_management.store import get_case_store
+            return get_case_store().get_dashboard_stats()
+        except Exception:
+            return {}
+
+    def _live_fraud_metrics(self) -> Dict[str, Any]:
+        """Return fraud metrics from the live financial crime store."""
+        try:
+            from src.financial_crime_command.store import get_financial_crime_store
+            return get_financial_crime_store().get_dashboard_metrics()
+        except Exception:
+            return {}
+
+    def _live_compliance_overview(self) -> Dict[str, Any]:
+        """Return compliance status from the live governance store."""
+        try:
+            from src.executive_governance.compliance_analytics import get_compliance_analytics_module
+            return get_compliance_analytics_module().get_compliance_overview()
+        except Exception:
+            return {}
+
+    def _live_kpis(self) -> List[Dict[str, Any]]:
+        """Return a snapshot of tracked KPIs with their live values."""
+        kpis = []
+        for kpi in self._store.get_all_kpis():
+            unit = ""
+            try:
+                definition = self._store.get_metric_definition(kpi.metric_id)
+                if definition:
+                    unit = definition.unit
+            except Exception:
+                pass
+            kpis.append({
+                "name": kpi.name,
+                "category": kpi.category,
+                "unit": unit,
+                "current_value": kpi.current_value,
+                "target_value": kpi.target_value,
+                "change_percent": kpi.change_percent,
+                "status": kpi.status,
+            })
+        return kpis
+
+    def _format_kpi_value(self, value: Any, unit: str) -> str:
+        """Format a KPI value with its unit for report display."""
+        if value is None:
+            return "No data"
+        if isinstance(value, float):
+            value_str = f"{value:.2f}"
+        else:
+            value_str = str(value)
+        if unit:
+            return f"{value_str} {unit}"
+        return value_str
+
     def _generate_executive_summary(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate executive summary report."""
+        """Generate executive summary report from live analytics data."""
+        kpis = self._live_kpis()
+        case_stats = self._live_case_stats()
+        insights = self._live_insights(limit=10)
+
+        highlights = []
+        for kpi in kpis:
+            if kpi["current_value"] is None:
+                continue
+            highlights.append({
+                "metric": kpi["name"],
+                "value": self._format_kpi_value(kpi["current_value"], kpi["unit"]),
+            })
+
+        if case_stats.get("total_cases") is not None:
+            highlights.append({"metric": "Investigations Completed", "value": str(case_stats["total_cases"])})
+        if case_stats.get("open_cases") is not None:
+            highlights.append({"metric": "Open Investigations", "value": str(case_stats["open_cases"])})
+
+        key_insights = [
+            {"title": insight.title, "description": insight.description, "severity": insight.severity}
+            for insight in insights
+        ]
+
+        recommendations = []
+        for insight in insights:
+            recommendations.extend(insight.recommendations)
+        recommendations = recommendations[:5]
+
         return {
             "title": "Executive Summary Report",
             "period": config.get("period", "Monthly"),
-            "highlights": [
-                {"metric": "Fraud Detection Rate", "value": f"{random.uniform(85, 98):.1f}%"},
-                {"metric": "False Positive Rate", "value": f"{random.uniform(3, 10):.1f}%"},
-                {"metric": "Avg Resolution Time", "value": f"{random.uniform(24, 72):.0f} hours"},
-                {"metric": "Investigations Completed", "value": str(random.randint(100, 500))},
-            ],
-            "key_insights": [
-                "Fraud detection rate improved by 5% this month",
-                "Average resolution time decreased by 12%",
-                "New fraud patterns identified in payment channel",
-            ],
-            "recommendations": [
-                "Continue monitoring high-risk segments",
-                "Update detection rules based on new patterns",
-            ],
+            "highlights": highlights,
+            "key_insights": key_insights,
+            "recommendations": recommendations,
         }
     
     def _generate_operational_metrics(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate operational metrics report."""
+        """Generate operational metrics report from live data."""
+        stats = self._store.get_stats()
+        case_stats = self._live_case_stats()
+        fraud = self._live_fraud_metrics()
+        kpis = self._live_kpis()
+
+        metrics = {
+            "total_cases": case_stats.get("total_cases", 0),
+            "open_cases": case_stats.get("open_cases", 0),
+            "in_progress_cases": case_stats.get("in_progress_cases", 0),
+            "escalated_cases": case_stats.get("escalated_cases", 0),
+            "metric_definitions": stats.get("metric_definitions_stored", 0),
+            "metric_values_recorded": stats.get("metric_values_stored", 0),
+            "kpis_tracked": stats.get("kpis_stored", 0),
+            "insights_generated": stats.get("insights_stored", 0),
+            "recent_alerts": fraud.get("recent_alerts", 0),
+            "pending_investigations": fraud.get("pending_investigations", 0),
+        }
+
+        performance = [
+            {
+                "metric": kpi["name"],
+                "current_value": kpi["current_value"],
+                "target_value": kpi["target_value"],
+                "status": kpi["status"],
+            }
+            for kpi in kpis
+            if kpi["current_value"] is not None
+        ]
+
         return {
             "title": "Operational Metrics Report",
             "period": config.get("period", "Weekly"),
-            "metrics": {
-                "total_alerts": random.randint(500, 2000),
-                "alerts_processed": random.randint(400, 1800),
-                "investigations_created": random.randint(50, 200),
-                "cases_closed": random.randint(40, 150),
-                "analyst_hours": random.randint(200, 800),
-            },
-            "performance": {
-                "detection_rate": f"{random.uniform(85, 98):.1f}%",
-                "false_positive_rate": f"{random.uniform(3, 10):.1f}%",
-                "avg_resolution_time": f"{random.uniform(24, 72):.0f} hours",
-            },
+            "metrics": metrics,
+            "performance": performance,
         }
     
     def _generate_fraud_analysis(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate fraud analysis report."""
+        """Generate fraud analysis report from live data."""
+        fraud = self._live_fraud_metrics()
+        cases_by_type = fraud.get("cases_by_type", {})
+
+        top_fraud_types = [
+            {"type": crime_type, "count": count}
+            for crime_type, count in sorted(
+                cases_by_type.items(), key=lambda item: item[1], reverse=True
+            )
+            if count > 0
+        ]
+
+        fraud_trends = []
+        try:
+            trends = self._store.get_recent_trends(limit=5)
+            fraud_trends = [
+                {
+                    "metric": trend.metric_name,
+                    "direction": trend.direction,
+                    "slope": round(trend.slope, 4) if trend.slope is not None else None,
+                    "volatility": round(trend.volatility, 4) if trend.volatility is not None else None,
+                    "period_start": trend.period_start.isoformat(),
+                    "period_end": trend.period_end.isoformat(),
+                }
+                for trend in trends
+            ]
+        except Exception:
+            pass
+
         return {
             "title": "Fraud Analysis Report",
             "period": config.get("period", "Monthly"),
             "fraud_summary": {
-                "total_fraud_attempts": random.randint(100, 500),
-                "fraud_amount_prevented": f"${random.randint(100000, 1000000):,}",
-                "fraud_amount_lost": f"${random.randint(10000, 100000):,}",
+                "total_fraud_cases": fraud.get("total_cases", 0),
+                "open_cases": fraud.get("open_cases", 0),
+                "closed_cases": fraud.get("closed_cases", 0),
+                "escalated_cases": fraud.get("escalated_cases", 0),
+                "high_priority_cases": fraud.get("high_priority_cases", 0),
             },
-            "top_fraud_types": [
-                {"type": "Account Takeover", "count": random.randint(20, 100)},
-                {"type": "Payment Fraud", "count": random.randint(15, 80)},
-                {"type": "Identity Theft", "count": random.randint(10, 50)},
-            ],
-            "fraud_trends": {
-                "7_day_change": f"{random.uniform(-15, 20):.1f}%",
-                "30_day_change": f"{random.uniform(-20, 30):.1f}%",
-            },
+            "top_fraud_types": top_fraud_types,
+            "fraud_trends": fraud_trends,
         }
     
     def _generate_compliance_report(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate compliance report."""
+        """Generate compliance report from live governance data."""
+        overview = self._live_compliance_overview()
+
+        if overview:
+            compliance_score = overview.get("overall_compliance")
+            frameworks = [
+                {
+                    "name": entry.get("name"),
+                    "status": entry.get("status"),
+                    "compliance": entry.get("compliance"),
+                }
+                for entry in overview.get("framework_summary", [])
+            ]
+            frameworks_tracked = overview.get("frameworks_tracked", 0)
+            compliant_frameworks = overview.get("compliant_frameworks", 0)
+            open_findings = overview.get("open_findings", 0)
+            critical_findings = overview.get("critical_findings", 0)
+        else:
+            compliance_score = None
+            frameworks = []
+            frameworks_tracked = 0
+            compliant_frameworks = 0
+            open_findings = 0
+            critical_findings = 0
+
         return {
             "title": "Compliance Report",
             "period": config.get("period", "Quarterly"),
-            "compliance_score": f"{random.uniform(85, 98):.1f}%",
-            "frameworks": [
-                {"name": "SOC 2", "status": "COMPLIANT", "score": f"{random.uniform(90, 100):.0f}%"},
-                {"name": "PCI-DSS", "status": "PARTIAL", "score": f"{random.uniform(75, 95):.0f}%"},
-                {"name": "ISO 27001", "status": "COMPLIANT", "score": f"{random.uniform(85, 98):.0f}%"},
-            ],
-            "open_findings": random.randint(0, 10),
-            "critical_findings": random.randint(0, 2),
+            "compliance_score": compliance_score,
+            "frameworks_tracked": frameworks_tracked,
+            "compliant_frameworks": compliant_frameworks,
+            "frameworks": frameworks,
+            "open_findings": open_findings,
+            "critical_findings": critical_findings,
         }
     
     def _generate_generic_report(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate generic report."""
+        """Generate generic report from live analytics data."""
+        stats = self._store.get_stats()
         return {
             "title": config.get("title", "Analytics Report"),
             "period": config.get("period", "Monthly"),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "summary": "Report generated successfully.",
-            "data_points": random.randint(100, 1000),
+            "summary": "Report generated from live analytics data.",
+            "data_points": stats.get("metric_values_stored", 0),
         }
     
     def run_scheduled_reports(self) -> List[Dict[str, Any]]:

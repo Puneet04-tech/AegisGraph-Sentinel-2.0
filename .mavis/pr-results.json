@@ -1,0 +1,42 @@
+{
+  "src/api/governance_routes.py": {
+    "issue": 3010,
+    "pr": null
+  },
+  "src/api/omega_routes.py": {
+    "issue": 3011,
+    "pr": 3020
+  },
+  "src/api/agent_routes.py": {
+    "issue": 3012,
+    "pr": 3021
+  },
+  "src/api/decision_routes.py": {
+    "issue": 3013,
+    "pr": 3022
+  },
+  "src/api/knowledge_routes.py": {
+    "issue": 3014,
+    "pr": 3023
+  },
+  "src/api/nexus_routes.py": {
+    "issue": 3015,
+    "pr": 3024
+  },
+  "src/api/simulation_routes.py": {
+    "issue": 3016,
+    "pr": 3025
+  },
+  "src/api/metaverse_routes.py": {
+    "issue": 3017,
+    "pr": 3026
+  },
+  "src/api/warfare_routes.py": {
+    "issue": 3018,
+    "pr": null
+  },
+  "src/api/research_routes.py": {
+    "issue": 3019,
+    "pr": 3027
+  }
+}

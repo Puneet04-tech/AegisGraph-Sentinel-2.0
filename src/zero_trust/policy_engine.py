@@ -153,11 +153,19 @@ class PolicyEnforcementEngine:
 
     def _determine_final_decision(self, matched_policies: List[str], failed_policies: List[str],
                                    trust_score: Optional[TrustScore]) -> tuple[str, bool]:
-        if failed_policies:
-            for policy_id in failed_policies:
-                policy = self.store.get_policy(policy_id)
-                if policy and policy.priority < 50:
-                    return PolicyDecision.DENY, False
+        # A policy whose conditions matched and whose action is DENY must deny
+        # the request regardless of priority. Priority only orders/selects
+        # among allow/challenge policies; it never disables an explicit deny.
+        for policy_id in matched_policies:
+            policy = self.store.get_policy(policy_id)
+            if not policy:
+                continue
+            decision = policy.actions.get("decision")
+            # TERMINATE is a hard deny override, same as DENY.
+            if decision == PolicyDecision.TERMINATE:
+                return PolicyDecision.TERMINATE, False
+            if decision == PolicyDecision.DENY:
+                return PolicyDecision.DENY, False
         if not matched_policies:
             if trust_score:
                 if trust_score.level in (TrustLevel.BLOCKED, TrustLevel.UNTRUSTED):

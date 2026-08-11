@@ -21,7 +21,11 @@ from collections import deque, OrderedDict
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+
+from .device_risk import DeviceRiskCalculator, get_device_calculator
+from .timestamps import hour_in_zone
+from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
+from datetime import datetime, timezone, tzinfo
 import json
 
 logger = logging.getLogger(__name__)
@@ -61,11 +65,11 @@ class _ThreadSafeCache:
     """
 
     def __init__(self, maxsize: int = 256):
-        self._data: OrderedDict[str, Dict] = OrderedDict()
+        self._data: OrderedDict[Any, Dict] = OrderedDict()
         self._lock = Lock()
         self._maxsize = maxsize
 
-    def get(self, key: str) -> Optional[Dict]:
+    def get(self, key: Any) -> Optional[Dict]:
         """Retrieve a cached value and move it to the end (most recently used)."""
         with self._lock:
             if key not in self._data:
@@ -73,7 +77,7 @@ class _ThreadSafeCache:
             self._data.move_to_end(key)
             return self._data[key]
 
-    def set(self, key: str, value: Dict) -> None:
+    def set(self, key: Any, value: Dict) -> None:
         """Store a value in the cache, evicting the least recently used item if at capacity."""
         with self._lock:
             if key in self._data:
@@ -92,6 +96,10 @@ class ProductionRiskScorer:
     - 0.6 ≤ score < 0.9: REVIEW (needs analyst)
     - score < 0.6: ALLOW (normal transaction)
 
+    UNPARSEABLE_TEMPORAL_RISK: Risk returned when a timestamp cannot be
+    interpreted at all -- the same neutral value the previous implementation
+    used, kept as a named constant so it is not a bare literal in two branches.
+
     Lifecycle:
     Use as a context manager or call `.close()` explicitly when done.
     Failing to do so will emit a ResourceWarning and may leave threads
@@ -101,6 +109,9 @@ class ProductionRiskScorer:
             result = scorer.score_transaction(request)
     """
     
+    #: Returned when a timestamp cannot be interpreted at all.
+    UNPARSEABLE_TEMPORAL_RISK = 0.2
+
     def __init__(
         self,
         model: nn.Module,
@@ -108,6 +119,9 @@ class ProductionRiskScorer:
         device: str = 'cpu',
         model_version: str = '2.0.0',
         enable_heuristic_fallback: bool = True,
+        device_calculator: Optional[DeviceRiskCalculator] = None,
+        velocity_calculator: Optional[VelocityRiskCalculator] = None,
+        temporal_reference_zone: Optional[tzinfo] = None,
     ):
         """
         Args:
@@ -116,6 +130,10 @@ class ProductionRiskScorer:
             device: 'cuda' or 'cpu'
             model_version: Version string for logging
             enable_heuristic_fallback: Fall back if model fails
+            device_calculator: Device scorer; defaults to the shared one
+            velocity_calculator: Velocity scorer; defaults to the shared one
+            temporal_reference_zone: Timezone the fraud-window hours are
+                evaluated in; defaults to UTC so results are host-independent
         """
         self.model = model
         self.model.eval()
@@ -125,6 +143,18 @@ class ProductionRiskScorer:
         self.enable_heuristic_fallback = enable_heuristic_fallback
         
         self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
+
+        # Injectable so tests can supply an isolated registry; defaults to the
+        # process-wide one so device history accumulates across calls.
+        self.device_calculator = device_calculator or get_device_calculator()
+
+        # Defaults to the process-wide calculator so history accumulates
+        # across scoring calls, while tests can supply an isolated one.
+        self.velocity_calculator = velocity_calculator or get_velocity_calculator()
+
+        # Explicit rather than implicit: the hour a scoring rule sees must not
+        # depend on the host's TZ environment variable.
+        self.temporal_reference_zone = temporal_reference_zone or timezone.utc
 
         logger.info(
             f"Initialized ProductionRiskScorer "
@@ -158,9 +188,10 @@ class ProductionRiskScorer:
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Extract subgraph around source account (cached per batch)
+            # Extract subgraph around source account (cached per batch with temporal and hop key)
             source = transaction['source_account']
-            subgraph = _subgraph_cache.get(source) if _subgraph_cache is not None else None
+            cache_key = (source, reference_time, k_hops)
+            subgraph = _subgraph_cache.get(cache_key) if _subgraph_cache is not None else None
             if subgraph is None:
                 subgraph = self.graph_constructor.get_subgraph_around_node(
                     node_id=source,
@@ -168,7 +199,14 @@ class ProductionRiskScorer:
                     reference_time=reference_time,
                 )
                 if _subgraph_cache is not None:
-                    _subgraph_cache.set(source, subgraph)
+                    _subgraph_cache.set(cache_key, subgraph)
+            
+            # Clone tensors to prevent thread data races when executing concurrent workers
+            if isinstance(subgraph, dict):
+                subgraph = {
+                    k: (v.clone() if isinstance(v, torch.Tensor) else v)
+                    for k, v in subgraph.items()
+                }
             
             # Run inference
             with torch.no_grad():
@@ -209,6 +247,8 @@ class ProductionRiskScorer:
                 transaction['source_account'],
                 subgraph,
                 top_k=5,
+                attention_weights=attention_weights,
+                attention_edge_index=attention_edge_index,
             )
             top_relationships = self._extract_top_relationships(
                 subgraph,
@@ -375,44 +415,148 @@ class ProductionRiskScorer:
         node_id: str,
         subgraph: Dict,
         top_k: int = 5,
+        attention_weights=None,
+        attention_edge_index=None,
     ) -> List[Dict]:
         """
         Identify most influential neighbors via attention analysis.
-        
-        Extracts attention weights from the last HTGNN layer if available.
+
+        Ranks by the model's own attention weights when the HTGNN exposes
+        them, and by a structural fallback otherwise. The relationship label
+        is the real edge type rather than a constant.
+
+        This previously attached ``'influence_score': 0.5`` to every neighbour
+        and returned them in edge-index order, so any sort by influence was a
+        no-op and the set an analyst saw was determined by internal tensor
+        ordering rather than by anything about the graph.
         """
-        influential = []
-        
-        # This would require extracting attention weights from the model
-        # For now, return placeholder based on subgraph structure
-        idx_to_node_id = subgraph['idx_to_node_id']
-        node_id_to_idx = subgraph['node_id_to_idx']
-        
+        node_id_to_idx = subgraph.get('node_id_to_idx') or {}
+        idx_to_node_id = subgraph.get('idx_to_node_id') or {}
+
         if node_id not in node_id_to_idx:
-            return influential
-        
+            return []
+
         source_idx = node_id_to_idx[node_id]
-        edge_index = subgraph['edge_index']
-        
-        # Find edges connected to source
+        edge_index = subgraph.get('edge_index')
+        if edge_index is None or edge_index.numel() == 0:
+            return []
+
+        attention_by_pair = self._attention_by_pair(
+            attention_weights, attention_edge_index
+        )
+
         connected_edges = (edge_index[0] == source_idx) | (edge_index[1] == source_idx)
         connected_indices = torch.nonzero(connected_edges).squeeze(-1)
-        
-        for edge_idx in connected_indices[:top_k]:
-            src_idx = edge_index[0, edge_idx].item()
-            tgt_idx = edge_index[1, edge_idx].item()
-            
-            # The neighbor is the node we didn't start from
+
+        # Best score per neighbour: a pair joined by several edges is one
+        # neighbour, ranked by its strongest connection.
+        best: Dict[int, Dict] = {}
+
+        for edge_idx in connected_indices.tolist():
+            src_idx = int(edge_index[0, edge_idx].item())
+            tgt_idx = int(edge_index[1, edge_idx].item())
+
+            # A self-loop has no neighbour to report.
+            if src_idx == tgt_idx:
+                continue
+
             neighbor_idx = tgt_idx if src_idx == source_idx else src_idx
-            neighbor_id = idx_to_node_id.get(neighbor_idx, 'UNKNOWN')
-            
-            influential.append({
-                'node_id': neighbor_id,
-                'influence_score': 0.5,  # Placeholder
-                'relationship': 'CONNECTED',
-            })
-        
-        return influential[:top_k]
+            score = attention_by_pair.get((src_idx, tgt_idx))
+            if score is None:
+                score = attention_by_pair.get((tgt_idx, src_idx))
+            if score is None:
+                score = self._structural_influence(subgraph, edge_idx, neighbor_idx)
+
+            existing = best.get(neighbor_idx)
+            if existing is None or score > existing['influence_score']:
+                best[neighbor_idx] = {
+                    'node_id': idx_to_node_id.get(neighbor_idx, 'UNKNOWN'),
+                    'influence_score': round(float(score), 4),
+                    'relationship': self._edge_type_label(subgraph, edge_idx),
+                }
+
+        # Descending by influence, with node_id breaking ties so repeated
+        # scoring of an unchanged subgraph returns a stable ordering.
+        ranked = sorted(
+            best.values(),
+            key=lambda item: (-item['influence_score'], item['node_id']),
+        )
+        return ranked[:top_k]
+
+    @staticmethod
+    def _attention_by_pair(attention_weights, attention_edge_index) -> Dict:
+        """Map each attended (src, dst) pair to its normalised attention score."""
+        if attention_weights is None or attention_edge_index is None:
+            return {}
+        if attention_edge_index.numel() == 0 or attention_weights.numel() == 0:
+            return {}
+
+        scores = (
+            attention_weights.mean(dim=-1)
+            if attention_weights.dim() > 1
+            else attention_weights
+        )
+
+        # Normalised so influence is comparable across transactions, whose
+        # raw attention magnitudes depend on subgraph size.
+        peak = float(scores.max().item()) if scores.numel() else 0.0
+        if peak <= 0:
+            return {}
+
+        pair_scores: Dict = {}
+        edge_count = min(scores.numel(), attention_edge_index.shape[1])
+        for position in range(edge_count):
+            src = int(attention_edge_index[0, position].item())
+            dst = int(attention_edge_index[1, position].item())
+            value = float(scores[position].item()) / peak
+            key = (src, dst)
+            # Several attention heads or layers may touch one pair; keep the
+            # strongest.
+            if value > pair_scores.get(key, 0.0):
+                pair_scores[key] = value
+        return pair_scores
+
+    @staticmethod
+    def _structural_influence(subgraph: Dict, edge_idx: int, neighbor_idx: int) -> float:
+        """Fallback influence when the model exposes no attention weights.
+
+        Combines the edge's own weight with the neighbour's risk, both of
+        which are defensible proxies for how much a connection matters.
+        """
+        score = 0.5
+        edge_attr = subgraph.get('edge_attr')
+        if edge_attr is not None and edge_attr.numel() > 0 and edge_idx < edge_attr.shape[0]:
+            row = edge_attr[edge_idx]
+            magnitude = float(row.abs().mean().item()) if row.numel() else 0.0
+            # Squashed into (0, 1) so an unbounded feature cannot dominate.
+            score = magnitude / (1.0 + magnitude)
+
+        node_risk = subgraph.get('node_risk')
+        if node_risk is not None and neighbor_idx < len(node_risk):
+            try:
+                risk = float(node_risk[neighbor_idx])
+            except (TypeError, ValueError):
+                risk = 0.0
+            score = max(score, min(1.0, max(0.0, risk)))
+
+        return min(1.0, max(0.0, score))
+
+    @staticmethod
+    def _edge_type_label(subgraph: Dict, edge_idx: int) -> str:
+        """Real edge type for an edge, replacing the constant 'CONNECTED'."""
+        edge_type = subgraph.get('edge_type')
+        if edge_type is None or edge_idx >= edge_type.shape[0]:
+            return 'CONNECTED'
+
+        try:
+            type_id = int(edge_type[edge_idx].item())
+        except (TypeError, ValueError, RuntimeError):
+            return 'CONNECTED'
+
+        names = subgraph.get('edge_type_names')
+        if names and 0 <= type_id < len(names):
+            return str(names[type_id])
+        return f'EDGE_TYPE_{type_id}'
 
     def _extract_top_relationships(
         self,
@@ -515,32 +659,49 @@ class ProductionRiskScorer:
     def _compute_velocity_risk(self, transaction: Dict) -> float:
         """
         Compute velocity-based risk (multiple transactions in short time).
-        
-        Placeholder: would query transaction history in production.
+
+        Scored against the source account's recent activity, then the
+        transaction is recorded so subsequent scoring sees it. Scoring happens
+        before recording so a transaction never contributes to its own
+        velocity.
+
+        This previously returned the constant 0.3, which meant a burst of
+        transfers and a single monthly payment contributed identically.
         """
-        # In production: check transactions from source account in last hour
-        # For now, return a reasonable default
-        return 0.3
+        account_id = (
+            transaction.get('source_account')
+            or transaction.get('from_account')
+            or transaction.get('account_id')
+        )
+        if not account_id:
+            # Nothing to attribute the activity to; fall back to the
+            # calculator's documented cold-start value rather than guessing.
+            return self.velocity_calculator.cold_start_risk
+
+        return self.velocity_calculator.score_and_record(
+            account_id=str(account_id),
+            amount=transaction.get('amount', 0.0),
+            timestamp=transaction.get('timestamp'),
+            transaction_id=transaction.get('transaction_id'),
+        )
     
     def _compute_temporal_risk(self, transaction: Dict) -> float:
         """
         Compute temporal risk (unusual time of day, new account, etc.).
-        """
-        timestamp = transaction.get('timestamp')
-        if isinstance(timestamp, str):
-            try:
-                txn_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            except ValueError:
-                return 0.2
-        elif isinstance(timestamp, (int, float)):
-            txn_time = datetime.fromtimestamp(timestamp)
-        elif hasattr(timestamp, 'isoformat'):
-            txn_time = datetime.fromisoformat(timestamp.isoformat())
-        else:
-            return 0.2
 
-        hour = txn_time.hour
-        
+        The hour is evaluated in an explicit reference timezone (UTC by
+        default), not the host's. Numeric timestamps previously went through
+        `datetime.fromtimestamp(value)` with no tz argument, which returns
+        naive local time -- so the same transaction scored 0.6 or 0.2 depending
+        purely on which region a worker ran in, and moving a deployment
+        silently re-classified its entire traffic profile.
+        """
+        hour = hour_in_zone(
+            transaction.get('timestamp'), self.temporal_reference_zone
+        )
+        if hour is None:
+            return self.UNPARSEABLE_TEMPORAL_RISK
+
         # High risk: 2am-4am (common fraud window)
         if 2 <= hour <= 4:
             return 0.6
@@ -550,16 +711,37 @@ class ProductionRiskScorer:
         # Low risk: business hours
         else:
             return 0.2
-    
+
     def _compute_device_risk(self, transaction: Dict) -> float:
         """
         Compute risk based on device information.
+
+        Scores the three checks the previous placeholder only described in a
+        comment: device registration age, links to confirmed fraud, and
+        geo-velocity between consecutive sightings. Scoring precedes recording
+        so a sighting is never compared against itself.
+
+        This previously returned the constant 0.2, so a first-ever device in a
+        different country scored the same as the account's daily phone.
         """
-        # Placeholder: in production would check:
-        # - Device registration age
-        # - Device linked to other fraud cases
-        # - Geo-velocity (impossible location jumps)
-        return 0.2
+        device_id = (
+            transaction.get('source_device_id')
+            or transaction.get('device_id')
+        )
+        if not device_id:
+            return self.device_calculator.unknown_device_risk
+
+        return self.device_calculator.score_and_record(
+            device_id=str(device_id),
+            account_id=(
+                transaction.get('source_account')
+                or transaction.get('from_account')
+                or transaction.get('account_id')
+            ),
+            timestamp=transaction.get('timestamp'),
+            latitude=transaction.get('latitude'),
+            longitude=transaction.get('longitude'),
+        )
     
     def _generate_explanation(
         self,
@@ -768,3 +950,44 @@ def create_mock_graph_constructor():
         temporal_dim=16,
         temporal_decay_lambda=0.01,
     )
+
+
+class VelocityPSIDriftMonitor:
+    """Population Stability Index (PSI) Drift Monitor for Velocity Features.
+
+    Tracks velocity feature distributions over sliding time windows across timezones
+    to detect feature drift and miscalibration.
+    """
+
+    def __init__(self, num_bins: int = 5):
+        self.num_bins = num_bins
+        # Baseline reference distribution (uniform/calibrated)
+        self.baseline_dist = np.full(num_bins, 1.0 / num_bins)
+
+    def calculate_psi(self, current_scores: List[float]) -> float:
+        """Calculates Population Stability Index (PSI) between baseline and current distribution.
+
+        PSI < 0.10: No significant drift
+        0.10 <= PSI < 0.25: Moderate drift
+        PSI >= 0.25: Significant drift / miscalibration alert
+        """
+        if not current_scores:
+            return 0.0
+
+        hist, _ = np.histogram(current_scores, bins=self.num_bins, range=(0.0, 1.0))
+        total = sum(hist)
+        if total == 0:
+            return 0.0
+
+        target_dist = np.maximum(hist / float(total), 1e-4)
+        expected_dist = np.maximum(self.baseline_dist, 1e-4)
+
+        psi = np.sum((target_dist - expected_dist) * np.log(target_dist / expected_dist))
+        return float(max(0.0, round(psi, 4)))
+
+
+def validate_and_normalize_timestamp(raw_timestamp: object) -> float:
+    """Validates raw timestamp input and normalizes it to strict UTC float epoch seconds."""
+    from src.features.velocity_calculator import normalize_utc_timestamp
+    return normalize_utc_timestamp(raw_timestamp)
+

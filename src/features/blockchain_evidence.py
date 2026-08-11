@@ -93,6 +93,10 @@ class BlockchainEvidence:
     # Consensus
     consensus_timestamp: str
     finality_time_ms: float
+    
+    # Zero-Knowledge Proof (ZKP) Attestation
+    zkp_proof: Optional[Dict] = None
+
 
 
 class BlockchainNode:
@@ -1031,6 +1035,16 @@ class BlockchainEvidenceManager:
                 
                 consensus_time = (time.time() - consensus_start) * 1000  # ms
                 
+                # Generate Zero-Knowledge Proof (ZKP) Attestation
+                zkp_proof = None
+                try:
+                    from src.quantum_security.zkp_verifier import get_zkp_verifier
+                    verifier = get_zkp_verifier()
+                    if risk_score >= 0.70:
+                        zkp_proof = verifier.generate_proof(risk_score=risk_score, threshold=0.70, transaction_id=transaction_id)
+                except Exception as zkp_err:
+                    logger.warning(f"ZKP proof generation skipped: {zkp_err}")
+
                 evidence = BlockchainEvidence(
                     evidence_id=evidence_id,
                     transaction_hash=transaction_hash,
@@ -1052,7 +1066,9 @@ class BlockchainEvidenceManager:
                     validator_signatures=validator_signatures,
                     consensus_timestamp=block['timestamp'],
                     finality_time_ms=consensus_time,
+                    zkp_proof=zkp_proof,
                 )
+
                 
                 # Update statistics
                 self.stats['total_sealed'] += 1
@@ -1123,6 +1139,15 @@ class BlockchainEvidenceManager:
         self._redis.save_evidence(_fallback_evidence)
         return _fallback_evidence
     
+
+    def _find_chain_block(self, block_number: int) -> Optional[dict]:
+        """Return block from any in-memory node chain (primary may not store sealed blocks)."""
+        for node in self.nodes:
+            block = node.get_block(block_number)
+            if block is not None:
+                return block
+        return None
+
     def verify_evidence(
         self,
         evidence_id: str,
@@ -1158,24 +1183,51 @@ class BlockchainEvidenceManager:
             stored_block_number = int(evidence.get('block_number', 0))
             verification['block_exists'] = stored_block_number == block_number and stored_block_number > 0
 
-            if verification['block_exists']:
-                verification['chain_integrity'] = bool(
-                    evidence.get('block_hash') and evidence.get('previous_block_hash')
-                )
-
             if block and verification['block_exists']:
-                block_hash = block.get('hash')
-                previous_hash = block.get('previous_hash')
-                if block_hash:
-                    verification['chain_integrity'] = (
-                        verification['chain_integrity']
-                        and block_hash == evidence.get('block_hash')
+                # Prefer a live chain block so hash recomputation uses the real payload.
+                # Primary node creates blocks but validators persist them via add_block.
+                chain_block = self._find_chain_block(block_number)
+                verify_block = chain_block or block
+
+                block_hash = verify_block.get('hash')
+                previous_hash = verify_block.get('previous_hash')
+                timestamp = verify_block.get('timestamp')
+                transactions = verify_block.get('transactions', [])
+                bn = int(verify_block.get('block_number', block_number))
+
+                hash_matches = False
+                previous_link_ok = False
+                evidence_hashes_ok = False
+
+                if block_hash and previous_hash is not None and timestamp is not None:
+                    block_data = 'genesis' if bn == 0 else f"block_{bn}"
+                    recomputed_hash = self.nodes[0]._compute_hash(
+                        block_data,
+                        previous_hash,
+                        transactions,
+                        timestamp,
                     )
-                if previous_hash:
-                    verification['chain_integrity'] = (
-                        verification['chain_integrity']
+                    hash_matches = recomputed_hash == block_hash
+                    evidence_hashes_ok = (
+                        block_hash == evidence.get('block_hash')
                         and previous_hash == evidence.get('previous_block_hash')
                     )
+
+                    if bn == 0:
+                        previous_link_ok = previous_hash == ('0' * 64)
+                    else:
+                        prev_block = (
+                            self._find_chain_block(bn - 1)
+                            or self._load_block_metadata(bn - 1)
+                        )
+                        if prev_block and prev_block.get('hash'):
+                            previous_link_ok = previous_hash == prev_block.get('hash')
+                        else:
+                            previous_link_ok = False
+
+                verification['chain_integrity'] = bool(
+                    hash_matches and previous_link_ok and evidence_hashes_ok
+                )
 
             authorized_validators = self._authorized_validator_ids()
             block_hash = (block or {}).get('hash') or evidence.get('block_hash')
@@ -1733,3 +1785,73 @@ def seal_fraud_decision(
         explanation=explanation,
         fraud_patterns=fraud_patterns,
     )
+
+
+class AsyncFabricConnectionPool:
+    """Async Connection Pool Manager for Hyperledger Fabric gRPC Clients.
+
+    Maintains a dynamically scaling connection queue (min 10, max 50 active channels)
+    with exponential backoff retries to prevent FastAPI event loop starvation under high load.
+    """
+
+    def __init__(self, min_size: int = 10, max_size: int = 50, retries: int = 3):
+        self.min_size = min_size
+        self.max_size = max_size
+        self.retries = retries
+        self.active_count = 0
+        self._pool = None
+
+    def _get_pool(self):
+        import asyncio
+        if self._pool is None:
+            self._pool = asyncio.Queue(maxsize=self.max_size)
+            for i in range(self.min_size):
+                self._pool.put_nowait(f"FabricChannel_{i}")
+                self.active_count += 1
+        return self._pool
+
+    async def acquire(self) -> str:
+        """Acquire a connection channel from pool or dynamically expand pool up to max_size."""
+        import asyncio
+        pool = self._get_pool()
+        if pool.empty() and self.active_count < self.max_size:
+            conn_id = f"FabricChannel_{self.active_count}"
+            self.active_count += 1
+            return conn_id
+        return await pool.get()
+
+    async def release(self, conn_id: str):
+        """Release connection back to the queue pool."""
+        pool = self._get_pool()
+        await pool.put(conn_id)
+
+    async def execute_async(self, func, *args, **kwargs):
+        """Executes a gRPC call asynchronously with exponential backoff retry logic."""
+        import asyncio
+        import random
+
+        conn = await self.acquire()
+        attempt = 0
+        try:
+            while attempt < self.retries:
+                try:
+                    # Run sync blocking call in thread pool executor to avoid event loop starvation
+                    return await asyncio.to_thread(func, *args, **kwargs)
+                except Exception as exc:
+                    attempt += 1
+                    if attempt >= self.retries:
+                        raise exc
+                    backoff = (2 ** attempt) * 0.05 + random.uniform(0, 0.02)
+                    await asyncio.sleep(backoff)
+        finally:
+            await self.release(conn)
+
+
+_global_fabric_pool = None
+
+def get_async_fabric_pool() -> AsyncFabricConnectionPool:
+    global _global_fabric_pool
+    if _global_fabric_pool is None:
+        _global_fabric_pool = AsyncFabricConnectionPool(min_size=10, max_size=50)
+    return _global_fabric_pool
+

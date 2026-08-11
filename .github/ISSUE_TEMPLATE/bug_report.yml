@@ -1,0 +1,40 @@
+name: "Bug Report"
+description: "Report a bug or broken functionality to help us improve."
+title: "[Bug]: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the form below with as much detail as possible.
+  - type: input
+    id: bug-title
+    attributes:
+      label: "Bug Summary"
+      placeholder: "e.g., Voice endpoint returns 422 instead of 413 on oversized audio"
+    validations:
+      required: true
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: "Detailed Description"
+      placeholder: "Describe the bug, what you expected to happen, and what actually happened."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: "Steps to Reproduce"
+      placeholder: |
+        1. Go to '...'
+        2. Execute endpoint '...'
+        3. See error '...'
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: "Expected vs Actual Behavior"
+      placeholder: "Expected 413 Payload Too Large, but received 422 Unprocessable Entity."
+    validations:
+      required: false

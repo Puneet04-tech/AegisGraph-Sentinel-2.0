@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -74,6 +75,94 @@ def parse_value(
                 raw_value=val_clean,
             )
         return val_clean
+
+
+# ---------------------------------------------------------------------------
+# Upload limits
+# ---------------------------------------------------------------------------
+# Hard ceilings for a single ingestion request. These bound memory usage and
+# queue flooding regardless of the caller-provided payload size.
+MAX_UPLOAD_SIZE_BYTES = int(
+    os.environ.get("AEGIS_BULK_INGEST_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
+)
+MAX_NODES_PER_REQUEST = 10_000
+MAX_EDGES_PER_REQUEST = 10_000
+MAX_ROWS_PER_CSV = 10_000
+
+
+class UploadTooLargeError(Exception):
+    """Raised when an uploaded file exceeds the allowed byte budget."""
+
+
+def _bounded_bytes(file_obj, max_bytes: int = MAX_UPLOAD_SIZE_BYTES):
+    """Yield newline-terminated lines from a file object within a byte budget.
+
+    Streams the file in bounded chunks and raises UploadTooLargeError as soon
+    as the budget is exceeded so oversized uploads are never fully buffered in
+    memory. Each yielded item is a complete line ending in ``\\n`` so the output
+    can be fed directly to :class:`csv.DictReader`.
+    """
+    total = 0
+    remainder = b""
+    while True:
+        chunk = file_obj.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise UploadTooLargeError(
+                f"Upload exceeds the maximum allowed size of {max_bytes} bytes."
+            )
+        data = remainder + chunk
+        newline_index = data.rfind(b"\n")
+        if newline_index == -1:
+            remainder = data
+            continue
+        complete = data[: newline_index + 1]
+        remainder = data[newline_index + 1:]
+        start = 0
+        while True:
+            idx = complete.find(b"\n", start)
+            if idx == -1:
+                break
+            yield complete[start : idx + 1]
+            start = idx + 1
+    if remainder:
+        yield remainder
+
+
+async def _read_upload_with_budget(
+    upload_file, max_bytes: int = MAX_UPLOAD_SIZE_BYTES
+) -> bytes:
+    """Read an UploadFile with a strict byte budget.
+
+    Enforces the Content-Length header when present and otherwise streams the
+    body in bounded chunks, raising UploadTooLargeError as soon as the budget
+    is exceeded so oversized payloads are rejected before they are buffered.
+    """
+    content_length = upload_file.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                raise UploadTooLargeError(
+                    f"Upload exceeds the maximum allowed size of {max_bytes} bytes."
+                )
+        except (ValueError, TypeError):
+            pass
+
+    chunks = []
+    total = 0
+    while True:
+        chunk = await upload_file.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise UploadTooLargeError(
+                f"Upload exceeds the maximum allowed size of {max_bytes} bytes."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class BulkIngestionManager:
@@ -314,12 +403,26 @@ async def ingest_bulk_json(payload: BulkIngestRequest):
             detail="Request payload must contain at least one node or edge to ingest.",
         )
 
+    if len(nodes) > MAX_NODES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Request exceeds the maximum of {MAX_NODES_PER_REQUEST} nodes.",
+        )
+    if len(edges) > MAX_EDGES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Request exceeds the maximum of {MAX_EDGES_PER_REQUEST} edges.",
+        )
+
     task_id = await bulk_ingestion_manager.create_task(nodes, edges)
     return BulkIngestResponse(
         task_id=task_id,
         status="pending",
         message="Bulk ingestion task submitted successfully.",
     )
+
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 @router.post(
@@ -341,6 +444,16 @@ async def ingest_bulk_file(
     filename_lower = file.filename.lower() if file.filename else ""
     content_type_lower = file.content_type.lower() if file.content_type else ""
 
+    # Enforce file size limit
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size {file_size} bytes exceeds maximum allowed size of {MAX_FILE_SIZE} bytes.",
+        )
+
     nodes = []
     edges = []
     initial_errors = []
@@ -348,7 +461,11 @@ async def ingest_bulk_file(
     try:
         # Parse JSON
         if filename_lower.endswith(".json") or "json" in content_type_lower:
-            data = json.load(file.file)
+            # Read with a strict byte budget so oversized files are rejected
+            # (413) before they can be fully buffered in memory.
+            data = json.loads(
+                (await _read_upload_with_budget(file, MAX_UPLOAD_SIZE_BYTES)).decode("utf-8")
+            )
             payload = BulkIngestRequest.model_validate(data)
             nodes = [n.model_dump() for n in payload.nodes] if payload.nodes else []
             edges = [e.model_dump() for e in payload.edges] if payload.edges else []
@@ -356,7 +473,13 @@ async def ingest_bulk_file(
     # Parse CSV
         else:
             import codecs
-            reader = csv.DictReader(codecs.iterdecode(file.file, "utf-8"))
+            # Stream the file through a bounded reader so a 413 is raised as
+            # soon as the upload size budget is exhausted.
+            reader = csv.DictReader(
+                codecs.iterdecode(
+                    _bounded_bytes(file.file, MAX_UPLOAD_SIZE_BYTES), "utf-8"
+                )
+            )
             if not reader.fieldnames:
                 raise ValueError("CSV file is empty or lacks column headers.")
 
@@ -379,6 +502,10 @@ async def ingest_bulk_file(
             if is_edge:
                 # Parse Edges
                 for idx, row in enumerate(reader, start=1):
+                    if idx > MAX_ROWS_PER_CSV:
+                        raise ValueError(
+                            f"CSV exceeds the maximum of {MAX_ROWS_PER_CSV} data rows."
+                        )
                     row_lower = {
                         k.lower().strip() if k else "": v for k, v in row.items()
                     }
@@ -435,6 +562,10 @@ async def ingest_bulk_file(
             else:
                 # Parse Nodes
                 for idx, row in enumerate(reader, start=1):
+                    if idx > MAX_ROWS_PER_CSV:
+                        raise ValueError(
+                            f"CSV exceeds the maximum of {MAX_ROWS_PER_CSV} data rows."
+                        )
                     row_lower = {
                         k.lower().strip() if k else "": v for k, v in row.items()
                     }
@@ -472,6 +603,8 @@ async def ingest_bulk_file(
                         }
                     )
 
+    except UploadTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
         if isinstance(e, HTTPException):
             raise
@@ -482,6 +615,17 @@ async def ingest_bulk_file(
     if not nodes and not edges and not initial_errors:
         raise HTTPException(
             status_code=400, detail="The uploaded file contains no node or edge data."
+        )
+
+    if len(nodes) > MAX_NODES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the maximum of {MAX_NODES_PER_REQUEST} nodes.",
+        )
+    if len(edges) > MAX_EDGES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the maximum of {MAX_EDGES_PER_REQUEST} edges.",
         )
 
     task_id = await bulk_ingestion_manager.create_task(nodes, edges, initial_errors)

@@ -80,7 +80,7 @@ class AgentRegistry:
         self.agents: Dict[AgentType, BaseAgent] = {}
         self.agent_factories: Dict[AgentType, Callable] = {}
 
-    def register(self, agent_type: AgentType, agent: BaseAgent):
+    def register(self, agent_type: AgentType, agent: BaseAgent) -> None:
         """Register an agent instance"""
         self.agents[agent_type] = agent
 
@@ -181,7 +181,7 @@ class OrchestrationEngine:
             # Execute step
             result = await self._execute_step(step, current_output, execution, callback)
             
-            if result:
+            if result is not None:
                 execution.step_results.append({
                     "step_id": step.step_id,
                     "result": result,
@@ -189,9 +189,15 @@ class OrchestrationEngine:
                 })
                 
                 # Map outputs for next step
-                current_output = self._map_outputs(step.input_mapping, current_output, result)
-            elif step.on_failure == "stop":
-                raise Exception(f"Step {step.step_id} failed and stop-on-failure is set")
+                current_output = self._map_outputs(step.input_mapping, current_output, result, step.step_id)
+            else:
+                execution.errors.append({
+                    "step_id": step.step_id,
+                    "error": f"Step {step.step_id} produced no result",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                if step.on_failure == "stop":
+                    raise Exception(f"Step {step.step_id} failed and stop-on-failure is set")
         
         execution.output = current_output
 
@@ -214,6 +220,7 @@ class OrchestrationEngine:
         
         # Execute in batches
         results = []
+        mapped_output = dict(initial_input)
         for i in range(0, len(tasks), workflow.max_parallel):
             batch = tasks[i:i + workflow.max_parallel]
             batch_results = await asyncio.gather(*[t[1] for t in batch], return_exceptions=True)
@@ -225,16 +232,26 @@ class OrchestrationEngine:
                     execution.errors.append({
                         "step_id": step.step_id,
                         "error": str(result),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
-                else:
+                elif result is not None:
                     results.append(result)
                     execution.step_results.append({
                         "step_id": step.step_id,
                         "result": result,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
+                    mapped_output = self._map_outputs(
+                        step.input_mapping, mapped_output, result, step.step_id
+                    )
+                else:
+                    execution.errors.append({
+                        "step_id": step.step_id,
+                        "error": f"Step {step.step_id} produced no result",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
         
-        execution.output = {"results": results}
+        execution.output = {**mapped_output, "results": results}
 
     async def _execute_hybrid(
         self,
@@ -252,7 +269,21 @@ class OrchestrationEngine:
                 # Sequential execution for single step
                 step = group[0]
                 result = await self._execute_step(step, initial_input, execution, callback)
-                initial_input = self._map_outputs(step.input_mapping, initial_input, result)
+                if result is not None:
+                    initial_input = self._map_outputs(
+                        step.input_mapping, initial_input, result, step.step_id
+                    )
+                    execution.step_results.append({
+                        "step_id": step.step_id,
+                        "result": result,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                else:
+                    execution.errors.append({
+                        "step_id": step.step_id,
+                        "error": f"Step {step.step_id} produced no result",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
             else:
                 # Parallel execution for dependent steps
                 tasks = []
@@ -263,11 +294,28 @@ class OrchestrationEngine:
                 batch_results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
                 
                 for (step, _), result in zip(tasks, batch_results):
-                    if not isinstance(result, Exception):
-                        initial_input = self._map_outputs(step.input_mapping, initial_input, result)
+                    if isinstance(result, Exception):
+                        if step.on_failure == "stop":
+                            raise result
+                        execution.errors.append({
+                            "step_id": step.step_id,
+                            "error": str(result),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    elif result is not None:
+                        initial_input = self._map_outputs(
+                            step.input_mapping, initial_input, result, step.step_id
+                        )
                         execution.step_results.append({
                             "step_id": step.step_id,
                             "result": result,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    else:
+                        execution.errors.append({
+                            "step_id": step.step_id,
+                            "error": f"Step {step.step_id} produced no result",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         })
         
         execution.output = initial_input
@@ -292,10 +340,19 @@ class OrchestrationEngine:
             
             result = await self._execute_step(step, current_input, execution, callback)
             
-            if result:
+            if result is not None:
                 execution.step_results.append({
                     "step_id": step.step_id,
                     "result": result,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                current_input = self._map_outputs(
+                    step.input_mapping, current_input, result, step.step_id
+                )
+            else:
+                execution.errors.append({
+                    "step_id": step.step_id,
+                    "error": f"Step {step.step_id} produced no result",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
         
@@ -363,21 +420,34 @@ class OrchestrationEngine:
         self,
         input_mapping: Dict[str, str],
         current_output: Dict[str, Any],
-        new_result: Dict[str, Any],
+        new_result: Optional[Dict[str, Any]],
+        step_id: str,
     ) -> Dict[str, Any]:
-        """Map step outputs to next step inputs"""
+        """Map step outputs to next step inputs.
+
+        Each step's result is stored under a deterministic per-step key
+        (``<step_id>_output``) so downstream ``input_mapping`` sources can
+        reference it. ``None`` results are guarded so a failed step cannot
+        crash the mapping pass.
+        """
         mapped = current_output.copy()
-        
-        for target, source in input_mapping.items():
-            # Source can be in new_result or current_output
-            if source in new_result:
-                mapped[target] = new_result[source]
-            elif source in current_output:
-                mapped[target] = current_output[source]
-        
-        # Add new result with step-specific prefix
-        mapped[f"step_{len(current_output.get('steps', []))}_output"] = new_result
-        
+
+        if new_result is not None:
+            for target, source in input_mapping.items():
+                if source in new_result:
+                    mapped[target] = new_result[source]
+                elif source in current_output:
+                    mapped[target] = current_output[source]
+                else:
+                    logger.warning(
+                        "Step %s: input mapping source '%s' not found in step result or context",
+                        step_id,
+                        source,
+                    )
+
+            # Add new result under a deterministic per-step key namespace
+            mapped[f"{step_id}_output"] = new_result
+
         return mapped
 
     def _group_steps_by_dependencies(

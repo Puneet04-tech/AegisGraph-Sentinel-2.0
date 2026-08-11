@@ -110,8 +110,11 @@ class DataValidator:
             elif rule.rule_type == "range":
                 min_val = rule.config.get("min")
                 max_val = rule.config.get("max")
-                is_valid = (min_val is None or value >= min_val) and \
-                          (max_val is None or value <= max_val)
+                # None is outside any bounded range; the guard avoids the
+                # TypeError raised by comparing None against a number.
+                is_valid = \
+                    (min_val is None or (value is not None and value >= min_val)) and \
+                    (max_val is None or (value is not None and value <= max_val))
             elif rule.rule_type == "pattern":
                 pattern = rule.config.get("pattern")
                 is_valid = bool(re.match(pattern, str(value))) if value else False

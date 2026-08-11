@@ -154,6 +154,16 @@ class TestCopilotEngine:
         assert isinstance(recommendations, list)
         assert len(recommendations) >= 1
 
+    def test_recommend_varies_with_case_data(self):
+        """Recommendations should reflect case risk, not be identical for every case."""
+        session_result = asyncio.run(self.engine.create_session("user-1"))
+        session_id = session_result["session_id"]
+        
+        low_risk = asyncio.run(self.engine.recommend(session_id, "case-low", {"risk_score": 0.2}))
+        high_risk = asyncio.run(self.engine.recommend(session_id, "case-high", {"risk_score": 0.9}))
+        
+        assert [r["title"] for r in low_risk] != [r["title"] for r in high_risk]
+
     def test_explain(self):
         """Test threat explanation."""
         session_result = asyncio.run(self.engine.create_session("user-1"))

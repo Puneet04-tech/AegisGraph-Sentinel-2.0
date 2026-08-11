@@ -40,11 +40,11 @@ def test_syslog_udp_send(mock_socket_class) -> None:
 
 def test_store_triggers_syslog() -> None:
     store = CaseStore()
-    
+
     # Mock SyslogClient.log_event
     mock_log_event = MagicMock()
     store.syslog_client.log_event = mock_log_event
-    
+
     # Create case should trigger _append_audit -> log_event
     case = store.create_case(
         transaction_id="tx_123",
@@ -53,7 +53,12 @@ def test_store_triggers_syslog() -> None:
         analyst_id="ANALYST_1",
         priority=CasePriority.HIGH,
     )
-    
+
+    # Emission is queued and delivered by the store's worker thread, so that a
+    # slow or unreachable syslog host cannot block a case mutation. Wait for
+    # the queue to drain before asserting on delivery.
+    assert store.flush_syslog(timeout=5.0) is True
+
     mock_log_event.assert_called_once()
     _, kwargs = mock_log_event.call_args
     assert kwargs["msg_id"] == "CASE_CREATED"
