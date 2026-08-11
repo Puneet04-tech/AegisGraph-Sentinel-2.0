@@ -147,6 +147,7 @@ class ReportAutomationModule:
         try:
             return self._store.get_recent_insights(limit)
         except Exception:
+            logger.warning("Failed to fetch live insights for report", exc_info=True)
             return []
 
     def _live_case_stats(self) -> Dict[str, Any]:
@@ -155,6 +156,7 @@ class ReportAutomationModule:
             from src.case_management.store import get_case_store
             return get_case_store().get_dashboard_stats()
         except Exception:
+            logger.warning("Failed to fetch live case stats for report", exc_info=True)
             return {}
 
     def _live_fraud_metrics(self) -> Dict[str, Any]:
@@ -163,6 +165,7 @@ class ReportAutomationModule:
             from src.financial_crime_command.store import get_financial_crime_store
             return get_financial_crime_store().get_dashboard_metrics()
         except Exception:
+            logger.warning("Failed to fetch live fraud metrics for report", exc_info=True)
             return {}
 
     def _live_compliance_overview(self) -> Dict[str, Any]:
@@ -171,6 +174,7 @@ class ReportAutomationModule:
             from src.executive_governance.compliance_analytics import get_compliance_analytics_module
             return get_compliance_analytics_module().get_compliance_overview()
         except Exception:
+            logger.warning("Failed to fetch live compliance overview for report", exc_info=True)
             return {}
 
     def _live_kpis(self) -> List[Dict[str, Any]]:
@@ -183,7 +187,7 @@ class ReportAutomationModule:
                 if definition:
                     unit = definition.unit
             except Exception:
-                pass
+                logger.warning(f"Failed to resolve unit for KPI {kpi.metric_id}", exc_info=True)
             kpis.append({
                 "name": kpi.name,
                 "category": kpi.category,
@@ -311,7 +315,7 @@ class ReportAutomationModule:
                 for trend in trends
             ]
         except Exception:
-            pass
+            logger.warning("Failed to fetch fraud trends for report", exc_info=True)
 
         return {
             "title": "Fraud Analysis Report",
