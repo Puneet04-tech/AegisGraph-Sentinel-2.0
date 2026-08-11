@@ -157,6 +157,8 @@ class TestDataWarehouse:
     
     def test_query_cube(self, data_warehouse):
         """Test querying a cube."""
+        data_warehouse.create_data_cube(name="test_cube", dimensions=["time"], measures=["count"])
+        
         results = data_warehouse.query_cube(
             cube_name="test_cube",
             dimensions={"time": "2024"},
@@ -164,6 +166,22 @@ class TestDataWarehouse:
         )
         
         assert isinstance(results, list)
+        assert len(results) > 0
+    
+    def test_query_cube_unknown_cube_returns_empty(self, data_warehouse):
+        """Querying a cube that was never created should return no rows."""
+        results = data_warehouse.query_cube(cube_name="never_created", measures=["count"])
+        
+        assert results == []
+    
+    def test_query_cube_is_deterministic(self, data_warehouse):
+        """Identical queries should return identical results."""
+        data_warehouse.create_data_cube(name="sales", dimensions=["region"], measures=["revenue"])
+        
+        first = data_warehouse.query_cube(cube_name="sales", dimensions={"region": "US"}, measures=["revenue"])
+        second = data_warehouse.query_cube(cube_name="sales", dimensions={"region": "US"}, measures=["revenue"])
+        
+        assert first == second
     
     def test_define_metric(self, data_warehouse):
         """Test defining a metric."""
