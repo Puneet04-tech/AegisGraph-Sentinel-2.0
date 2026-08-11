@@ -5,6 +5,7 @@ Implements OAuth2 authorization flows.
 """
 
 import secrets
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -33,6 +34,10 @@ class OAuthProvider:
     def __init__(self, store: IdentityFederationStore, issuer: str):
         self._store = store
         self._issuer = issuer
+        
+        # Serialises authorization-code redemption so the single-use
+        # check-and-mark cannot race across threads (RFC 6749 4.1.2).
+        self._lock = threading.Lock()
         
         # Registered OAuth2 clients
         self._clients: dict[str, dict] = {}
@@ -337,6 +342,16 @@ class OAuthProvider:
                 error_description="Invalid client credentials",
             )
         
+        # RFC 6749 §4.1.3: the authorization code is bound to the client it was
+        # issued to. A different (even legitimate) registered client must not be
+        # able to redeem it.
+        if auth_code["client_id"] != client_id:
+            return AuthenticationResponse(
+                success=False,
+                error="invalid_grant",
+                error_description="Authorization code was issued to a different client",
+            )
+        
         # Validate redirect URI
         if redirect_uri != auth_code["redirect_uri"]:
             return AuthenticationResponse(
@@ -350,23 +365,61 @@ class OAuthProvider:
             if not code_verifier:
                 return AuthenticationResponse(
                     success=False,
-                    error="invalid_request",
-                    error_description="Code verifier required",
+                    error="invalid_grant",
+                    error_description="Authorization code expired",
                 )
             
-            if not self._verify_pkce(
-                code_verifier,
-                auth_code["code_challenge"],
-                auth_code["code_challenge_method"],
+            # Guard against missing client_secret
+            if client_secret is None:
+                return AuthenticationResponse(
+                    success=False,
+                    error="invalid_client",
+                    error_description="client_secret is required",
+                )
+
+            # Validate client
+            client = self._clients.get(client_id)
+            if (
+                not client
+                or not client_secret
+                or client["client_secret_hash"] != self._hash_secret(client_secret)
             ):
                 return AuthenticationResponse(
                     success=False,
-                    error="invalid_grant",
-                    error_description="Invalid code verifier",
+                    error="invalid_client",
+                    error_description="Invalid client credentials",
                 )
-        
-        # Mark code as used
-        auth_code["used"] = True
+            
+            # Validate redirect URI
+            if redirect_uri != auth_code["redirect_uri"]:
+                return AuthenticationResponse(
+                    success=False,
+                    error="invalid_grant",
+                    error_description="Redirect URI mismatch",
+                )
+            
+            # Validate PKCE if used
+            if auth_code["code_challenge"]:
+                if not code_verifier:
+                    return AuthenticationResponse(
+                        success=False,
+                        error="invalid_request",
+                        error_description="Code verifier required",
+                    )
+                
+                if not self._verify_pkce(
+                    code_verifier,
+                    auth_code["code_challenge"],
+                    auth_code["code_challenge_method"],
+                ):
+                    return AuthenticationResponse(
+                        success=False,
+                        error="invalid_grant",
+                        error_description="Invalid code verifier",
+                    )
+            
+            # Mark code as used
+            auth_code["used"] = True
 
         validated_scope, scope_error = self._validate_requested_scopes(
             client, auth_code.get("scope")
