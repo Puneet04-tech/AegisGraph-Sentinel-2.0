@@ -34,6 +34,34 @@ def test_zkp_proof_generation_and_verification():
     assert verifier.verify_proof(tampered_proof) is False
 
 
+def test_zkp_proof_rejects_tampered_response():
+    verifier = ZKPVerifier(secret_key="test-secret-key-zkp")
+    proof = verifier.generate_proof(risk_score=0.92, threshold=0.70, transaction_id="TXN-RESP-1")
+
+    # Every field except the response is intact; the forged response must be
+    # rejected instead of silently accepted.
+    tampered_proof = dict(proof)
+    tampered_proof["response"] = "0" * 64
+    assert verifier.verify_proof(tampered_proof) is False
+
+    truncated_proof = dict(proof)
+    truncated_proof["response"] = proof["response"][:16]
+    assert verifier.verify_proof(truncated_proof) is False
+
+
+def test_zkp_proof_rejects_missing_response_and_salt():
+    verifier = ZKPVerifier(secret_key="test-secret-key-zkp")
+    proof = verifier.generate_proof(risk_score=0.92, threshold=0.70, transaction_id="TXN-RESP-2")
+
+    missing_response = dict(proof)
+    missing_response.pop("response")
+    assert verifier.verify_proof(missing_response) is False
+
+    missing_salt = dict(proof)
+    missing_salt.pop("salt")
+    assert verifier.verify_proof(missing_salt) is False
+
+
 def test_blockchain_evidence_sealing_with_zkp():
     manager = BlockchainEvidenceManager(enable_blockchain=True)
     evidence = manager.seal_evidence(

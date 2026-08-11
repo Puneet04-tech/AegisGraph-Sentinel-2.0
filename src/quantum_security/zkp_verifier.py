@@ -102,6 +102,7 @@ class ZKPVerifier:
             "commitment_hash": commitment,
             "challenge": challenge,
             "response": response,
+            "salt": salt,
             "verification_key": verification_key,
             "threshold": threshold,
             "is_above_threshold": True,
@@ -136,6 +137,20 @@ class ZKPVerifier:
             expected_vk_data = f"{self.secret_key}:verification_key".encode("utf-8")
             expected_vk = hashlib.sha256(expected_vk_data).hexdigest()
             if not hmac.compare_digest(proof_payload.get("verification_key", ""), expected_vk):
+                return False
+
+            # 3. Verify the response proves knowledge of the secret key bound to
+            #    this proof's challenge and per-proof salt.
+            salt = proof_payload.get("salt")
+            if not salt:
+                return False
+            expected_response_data = f"{self.secret_key}:{challenge}:{salt}".encode("utf-8")
+            expected_response = hmac.new(
+                self.secret_key.encode("utf-8"),
+                expected_response_data,
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(response, expected_response):
                 return False
 
             return True
