@@ -201,6 +201,60 @@ class TestEntityResolutionEngine:
         
         assert canonical_id is not None
     
+    def test_resolve_returns_stable_id_across_calls(self):
+        """Resolving the same entity twice must return the same canonical ID."""
+        first = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="apt-29",
+        )
+        second = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="apt-29",
+        )
+        
+        assert first == second
+        assert first is not None
+    
+    def test_resolve_registers_canonical_identity(self):
+        """The generated canonical ID must be registered for future lookups."""
+        canonical_id = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="apt-29",
+        )
+        
+        assert self.engine._canonical_ids["apt-29"] == canonical_id
+        assert self.engine._resolution_cache["THREAT_ACTOR:apt-29"] == canonical_id
+    
+    def test_resolve_stable_when_cache_evicted_between_types(self):
+        """Identifiers registered for one entity type resolve stably for others."""
+        canonical_id = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="shared-entity",
+        )
+        # A second call with a different entity type misses the typed cache
+        # key but must still find the registered canonical identity.
+        resolved = self.engine.resolve(
+            entity_type=EntityType.FRAUD_ENTITY,
+            identifier="shared-entity",
+        )
+        
+        assert resolved == canonical_id
+    
+    def test_link_alias_resolves_to_canonical_id(self):
+        """A linked alias must resolve to its canonical ID, not a fresh UUID."""
+        canonical_id = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="apt-29",
+        )
+        self.engine.link_alias(canonical_id, "apt-29-alias")
+        
+        resolved = self.engine.resolve(
+            entity_type=EntityType.THREAT_ACTOR,
+            identifier="apt-29-alias",
+        )
+        
+        assert resolved == canonical_id
+    
     def test_merge_entities(self):
         """Test merging entities."""
         merged_id = self.engine.merge_entities("entity-1", "entity-2")
