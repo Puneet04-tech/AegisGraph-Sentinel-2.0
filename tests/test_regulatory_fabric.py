@@ -259,6 +259,68 @@ class TestDashboardService:
         assert hasattr(dashboard, "domain_scores")
         assert hasattr(dashboard, "trend_direction")
 
+    def test_domain_scores_are_averaged_across_regulations(self):
+        """Domain score must be an average, not a sum of regulation scores."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+
+        # Regulation 1: 1 compliant control -> 100%
+        reg1 = store.add_regulation({"domain": "PCI_DSS", "name": "PCI DSS 4.0", "regulation_id": "reg1"})
+        ctrl1 = store.add_control({"control_id": "ctrl1", "status": "COMPLIANT"})
+        store.add_control_mapping({"regulation_id": reg1, "control_id": ctrl1})
+
+        # Regulation 2: 0 of 2 compliant controls -> 0%
+        reg2 = store.add_regulation({"domain": "PCI_DSS", "name": "PCI DSS 2.0", "regulation_id": "reg2"})
+        ctrl2 = store.add_control({"control_id": "ctrl2", "status": "NON_COMPLIANT"})
+        ctrl3 = store.add_control({"control_id": "ctrl3", "status": "NON_COMPLIANT"})
+        store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl2})
+        store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl3})
+
+        service = ComplianceDashboardService(store, None, None, None)
+        domain_scores = service._calculate_domain_scores()
+
+        # 1 compliant out of 3 total controls -> 100/3, not 100 + 0 == 100
+        assert domain_scores == pytest.approx({"PCI_DSS": 100 / 3})
+
+    def test_domain_scores_are_control_weighted(self):
+        """Domain score must weight by control count, not regulation count."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+
+        # Regulation 1: 1 compliant control -> 100%
+        reg1 = store.add_regulation({"domain": "GDPR", "name": "GDPR 1", "regulation_id": "reg1"})
+        ctrl1 = store.add_control({"control_id": "ctrl1", "status": "COMPLIANT"})
+        store.add_control_mapping({"regulation_id": reg1, "control_id": ctrl1})
+
+        # Regulation 2: 0 of 3 compliant controls -> 0%
+        reg2 = store.add_regulation({"domain": "GDPR", "name": "GDPR 2", "regulation_id": "reg2"})
+        for i in range(3):
+            ctrl = store.add_control({"control_id": f"ctrl_nc_{i}", "status": "NON_COMPLIANT"})
+            store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl})
+
+        service = ComplianceDashboardService(store, None, None, None)
+        domain_scores = service._calculate_domain_scores()
+
+        # 1 compliant out of 4 total controls -> 25%, not (100 + 0) / 2 == 50
+        assert domain_scores == {"GDPR": 25.0}
+
+    def test_domain_scores_without_controls(self):
+        """Domains whose regulations have no mapped controls are skipped."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+        store.add_regulation({"domain": "SOC2", "name": "SOC 2", "regulation_id": "reg1"})
+
+        service = ComplianceDashboardService(store, None, None, None)
+        domain_scores = service._calculate_domain_scores()
+
+        assert domain_scores == {}
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
