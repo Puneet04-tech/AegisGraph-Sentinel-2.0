@@ -150,6 +150,31 @@ class TestPhishingDetection:
         alerts = self.engine.get_phishing_alerts()
         assert len(alerts) >= 1
 
+    def test_brand_misspelling_detected(self):
+        """Leetspeak brand variants must set the brand_misspelling indicator."""
+        result = self.engine.scan_domain("http://paypa1-secure.xyz/login")
+        
+        assert result["indicators"]["brand_misspelling"] is True
+        assert result["target_brand"] == "paypal"
+
+    def test_brand_misspelling_not_flagged_for_canonical_brand(self):
+        """A canonical brand spelling must not count as a misspelling."""
+        result = self.engine.scan_domain("http://paypal-secure.xyz/login")
+        
+        assert result["indicators"]["brand_misspelling"] is False
+
+    def test_brand_misspelling_absent_for_unrelated_url(self):
+        """URLs without a brand reference must not be flagged."""
+        result = self.engine.scan_domain("http://totally-unrelated-site.com")
+        
+        assert result["indicators"]["brand_misspelling"] is False
+
+    def test_misspelling_detected_alongside_canonical_brand(self):
+        """Misspelled variants must be flagged even when the canonical name appears."""
+        result = self.engine.scan_domain("http://paypal.com.secure-paypa1-verify.xyz")
+        
+        assert result["indicators"]["brand_misspelling"] is True
+
 
 class TestDomainIntelligence:
     """Test domain intelligence engine."""
