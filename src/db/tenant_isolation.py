@@ -26,7 +26,14 @@ class TenantScopedNeo4jSession:
 
     def run(self, query: str, **parameters: Any) -> Any:
         scoped_parameters = dict(parameters)
-        scoped_parameters.setdefault("tenant_id", self.tenant_id)
+        caller_tenant = scoped_parameters.get("tenant_id")
+        if caller_tenant is not None and caller_tenant != self.tenant_id:
+            logger.warning(
+                "Ignoring caller tenant_id override (%s); forcing session tenant_id=%s",
+                caller_tenant,
+                self.tenant_id,
+            )
+        scoped_parameters["tenant_id"] = self.tenant_id
         return self.session.run(query, **scoped_parameters)
 
     def __enter__(self) -> "TenantScopedNeo4jSession":

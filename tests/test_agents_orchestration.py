@@ -45,6 +45,19 @@ class ExplodingAgent(StubAgent):
         raise RuntimeError("agent exploded")
 
 
+class CapturingAgent(StubAgent):
+    """Agent that records every input it receives and echoes it back."""
+
+    def __init__(self, agent_id: str, agent_type: AgentType, config: dict):
+        super().__init__(agent_id, agent_type, config)
+        self.inputs: list[dict] = []
+
+    async def execute(self, task: AgentTask) -> dict:
+        received = dict(task.input_data)
+        self.inputs.append(received)
+        return {"seen": received}
+
+
 @pytest.fixture
 def engine() -> OrchestrationEngine:
     return OrchestrationEngine({"default_timeout": 10})
@@ -279,18 +292,32 @@ class TestStepHelpers:
         current = {"seed": 1, "steps": []}
         result = {"s1_output": "v"}
 
-        mapped = engine._map_outputs({"in": "s1_output"}, current, result)
+        mapped = engine._map_outputs({"in": "s1_output"}, current, result, "s1")
 
         assert mapped["in"] == "v"
-        assert "step_0_output" in mapped
+        assert mapped["s1_output"] == result
 
     def test_map_outputs_falls_back_to_current(self, engine):
         current = {"seed": 1}
         result = {}
 
-        mapped = engine._map_outputs({"in": "seed"}, current, result)
+        mapped = engine._map_outputs({"in": "seed"}, current, result, "s1")
 
         assert mapped["in"] == 1
+
+    def test_map_outputs_guards_none_result(self, engine):
+        current = {"seed": 1}
+
+        mapped = engine._map_outputs({"in": "seed"}, current, None, "s1")
+
+        assert mapped == {"seed": 1}
+
+    def test_map_outputs_stores_per_step_key(self, engine):
+        current = {"seed": 1}
+
+        mapped = engine._map_outputs({}, current, {"evidence": "e1"}, "collect_evidence")
+
+        assert mapped["collect_evidence_output"] == {"evidence": "e1"}
 
     def test_group_steps_by_dependencies(self, engine):
         independent = _step("s1", AgentType.INVESTIGATION)
@@ -360,3 +387,54 @@ class TestPrebuiltWorkflows:
         assert workflow.strategy == OrchestrationStrategy.PARALLEL
         assert workflow.max_parallel == 3
         assert len(workflow.steps) >= 4
+
+    def test_fraud_workflow_forwards_upstream_outputs(self, engine):
+        agents = {}
+        for agent_type in [
+            AgentType.INVESTIGATION,
+            AgentType.THREAT_INTELLIGENCE,
+            AgentType.COMPLIANCE,
+            AgentType.FORENSICS,
+            AgentType.REPORTING,
+        ]:
+            agent = CapturingAgent(agent_type.value, agent_type, {})
+            _register(engine, agent_type, agent)
+            agents[agent_type] = agent
+
+        workflow = create_fraud_investigation_workflow()
+        execution = asyncio.run(
+            engine.execute_workflow(workflow, {"case_id": "C-1", "evidence_raw": "raw"})
+        )
+
+        assert execution.status == AgentStatus.COMPLETED
+
+        evidence_output = {"seen": {"case_id": "C-1", "evidence_raw": "raw"}}
+
+        # Downstream steps receive the upstream steps' outputs.
+        threat_input = agents[AgentType.THREAT_INTELLIGENCE].inputs[0]
+        assert threat_input["collect_evidence_output"] == evidence_output
+
+        compliance_input = agents[AgentType.COMPLIANCE].inputs[0]
+        assert compliance_input["evidence"] == evidence_output
+
+        forensic_input = agents[AgentType.FORENSICS].inputs[0]
+        assert forensic_input["evidence"] == evidence_output
+        assert forensic_input["context"] == forensic_input["threat_analysis_output"]
+
+        report_input = agents[AgentType.REPORTING].inputs[0]
+        assert report_input["collect_evidence_output"] == evidence_output
+        assert report_input["threat_analysis_output"] is not None
+
+        # Every step's output is chained into the workflow output, and the
+        # report step's mapping is applied to produce the final output.
+        for step_key in (
+            "collect_evidence_output",
+            "threat_analysis_output",
+            "compliance_check_output",
+            "forensic_analysis_output",
+        ):
+            assert step_key in execution.output
+        assert execution.output["investigation"] == evidence_output
+        assert execution.output["threats"] == execution.output["threat_analysis_output"]
+        assert execution.output["compliance"] == execution.output["compliance_check_output"]
+        assert execution.output["forensics"] == execution.output["forensic_analysis_output"]

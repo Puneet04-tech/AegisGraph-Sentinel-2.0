@@ -58,6 +58,15 @@ def _validate_tenant_id(tenant_id: str) -> str:
     return tenant
 
 
+def _resolve_jwt_secret() -> Optional[str]:
+    """Resolve JWT signing secret, matching SaaS/settings fallbacks.
+
+    Prefer ``AEGIS_JWT_SECRET``; fall back to ``SECRET_KEY`` so deployments
+    that only configure the shared app secret still validate tenant JWTs.
+    """
+    return os.getenv("AEGIS_JWT_SECRET") or os.getenv("SECRET_KEY")
+
+
 def _decode_jwt_tenant(request: Request) -> Optional[TenantResolutionResult]:
     authorization = request.headers.get("Authorization", "")
     if not authorization.lower().startswith("bearer "):
@@ -67,7 +76,7 @@ def _decode_jwt_tenant(request: Request) -> Optional[TenantResolutionResult]:
     if token.count(".") != 2:
         return None
 
-    secret = os.getenv("AEGIS_JWT_SECRET")
+    secret = _resolve_jwt_secret()
     if not secret:
         raise TenantIsolationError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

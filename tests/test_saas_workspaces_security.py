@@ -203,6 +203,7 @@ class TestAdminGating:
         _as(MEMBER_A)
         assert api_client.get(f"/api/v1/workspaces/{created['id']}").status_code == 200
         assert api_client.get(f"/api/v1/workspaces/{created['id']}/settings").status_code == 200
+        assert api_client.get(f"/api/v1/workspaces/{created['id']}/cases").status_code == 200
 
 
 class TestPersistence:
@@ -346,3 +347,28 @@ class TestSettings:
             json={"default_case_priority": "catastrophic"},
         )
         assert response.status_code == 422
+
+class TestCases:
+    def test_unknown_workspace_cases_is_not_found(self, api_client):
+        _as(ADMIN_A)
+        assert api_client.get("/api/v1/workspaces/ws_missing/cases").status_code == 404
+
+    def test_cross_tenant_cases_read_is_refused(self, api_client):
+        created = _create(api_client)
+        _as(ADMIN_B)
+        assert api_client.get(f"/api/v1/workspaces/{created['id']}/cases").status_code == 404
+
+    def test_cases_for_a_real_workspace(self, api_client):
+        created = _create(api_client)
+        _as(ADMIN_A)
+        response = api_client.get(f"/api/v1/workspaces/{created['id']}/cases")
+        assert response.status_code == 200
+        assert response.json() == {"cases": [], "total": 0, "limit": 50}
+
+    def test_cases_limit_is_bounded(self, api_client):
+        created = _create(api_client)
+        _as(ADMIN_A)
+        path = f"/api/v1/workspaces/{created['id']}/cases"
+        assert api_client.get(path, params={"limit": 0}).status_code == 422
+        assert api_client.get(path, params={"limit": 1001}).status_code == 422
+        assert api_client.get(path, params={"limit": 5}).json()["limit"] == 5

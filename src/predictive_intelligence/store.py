@@ -4,9 +4,10 @@ Predictive Intelligence Storage Engine.
 Thread-safe storage for simulations, forecasts, and predictions with O(1) lookups.
 """
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime, timezone
 from threading import Lock
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
 
 from .models import (
@@ -51,6 +52,12 @@ class PredictiveStore:
         # Forecast storage
         self._forecasts: OrderedDict[str, ForecastResult] = OrderedDict()
         self._risk_forecasts: OrderedDict[str, RiskForecast] = OrderedDict()
+
+        # Observed risk history per entity, oldest first. Forecasting needs a
+        # series to extrapolate from; the forecast maps above keep only the
+        # latest record per entity, so nothing here retained the history a
+        # trend could be derived from.
+        self._risk_observations: OrderedDict[str, deque] = OrderedDict()
         
         # Campaign prediction storage
         self._campaigns: OrderedDict[str, CampaignPrediction] = OrderedDict()
@@ -67,6 +74,7 @@ class PredictiveStore:
             "results": Lock(),
             "forecasts": Lock(),
             "risk_forecasts": Lock(),
+            "risk_observations": Lock(),
             "campaigns": Lock(),
             "attack_paths": Lock(),
             "recommendations": Lock(),
@@ -197,6 +205,55 @@ class PredictiveStore:
         lock = self._locks["risk_forecasts"]
         with lock:
             return list(self._risk_forecasts.values())
+
+    #: Observations retained per entity. Enough to fit a trend over a recent
+    #: window without letting one busy entity grow without bound.
+    MAX_OBSERVATIONS_PER_ENTITY = 200
+
+    def record_risk_observation(
+        self,
+        entity_id: str,
+        risk_score: float,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
+        """Append an observed risk score to an entity's history.
+
+        Forecasting requires a series to extrapolate from. The forecast maps
+        keep only the most recent record per entity, so before this there was
+        no history any trend could be derived from, which is why the trend was
+        drawn from `random.random()` instead.
+
+        Args:
+            entity_id: Entity the observation belongs to
+            risk_score: Observed risk, clamped to [0, 1]
+            observed_at: Observation time; defaults to now in UTC
+        """
+        timestamp = observed_at or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+        bounded = max(0.0, min(1.0, float(risk_score)))
+
+        lock = self._locks["risk_observations"]
+        with lock:
+            series = self._risk_observations.get(entity_id)
+            if series is None:
+                series = deque(maxlen=self.MAX_OBSERVATIONS_PER_ENTITY)
+                self._risk_observations[entity_id] = series
+
+            series.append((timestamp, bounded))
+            self._risk_observations.move_to_end(entity_id)
+            self._evict_if_needed(self._risk_observations)
+
+    def get_risk_observations(self, entity_id: str) -> List[Tuple[datetime, float]]:
+        """Get an entity's observed risk history, oldest first."""
+        lock = self._locks["risk_observations"]
+        with lock:
+            series = self._risk_observations.get(entity_id)
+            if not series:
+                return []
+            self._risk_observations.move_to_end(entity_id)
+            return list(series)
     
     # =========================================================================
     # Campaign Prediction Storage

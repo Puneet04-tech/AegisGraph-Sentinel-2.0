@@ -92,3 +92,38 @@ def test_archive_callback_on_eviction():
     assert len(archived) == 1
     assert archived[0]["event"].event_id == "e1"
 
+
+def test_archive_callback_failure_refuses_append_and_keeps_events():
+    """Fail closed: archive errors must not silently drop the evicted record."""
+    calls = {"n": 0}
+
+    def on_archive(_record):
+        calls["n"] += 1
+        raise RuntimeError("archive backend unavailable")
+
+    store = AuditStore(max_size=2, archive_callback=on_archive)
+    store.append(make_event("e1", "login"))
+    store.append(make_event("e2", "login"))
+
+    with pytest.raises(RuntimeError, match="archive backend unavailable"):
+        store.append(make_event("e3", "login"))
+
+    assert calls["n"] == 1
+    assert [r["event"].event_id for r in store.get_events()] == ["e1", "e2"]
+    assert store.get_initial_hash_anchor() is None
+
+
+def test_archive_callback_success_still_evicts():
+    archived = []
+
+    def on_archive(record):
+        archived.append(record["event"].event_id)
+
+    store = AuditStore(max_size=2, archive_callback=on_archive)
+    store.append(make_event("e1", "login"))
+    store.append(make_event("e2", "login"))
+    store.append(make_event("e3", "login"))
+
+    assert archived == ["e1"]
+    assert [r["event"].event_id for r in store.get_events()] == ["e2", "e3"]
+

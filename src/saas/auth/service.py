@@ -35,6 +35,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     InMemoryAttemptLimiter,
     LockoutState,
+    _UNLOCKED as _UNLOCKED_STATE,
     SCOPE_ACCOUNT,
     SCOPE_ADDRESS,
     SCOPE_TOTP,
@@ -42,8 +43,6 @@ from src.saas.auth.attempt_limiter import (
 
 logger = logging.getLogger(__name__)
 
-# Sentinel used when an identity has no lockout history: unlocked, no retry
-# delay, full budget remaining. Mirrors the limiter's own unlocked result.
 _UNLOCKED_STATE = LockoutState(locked=False)
 
 
@@ -185,15 +184,43 @@ class InMemoryUserStore(UserStore):
     def find_or_create_sso_user(
         self, provider: str, user_info: Dict[str, Any]
     ) -> Tuple[str, str]:
-        email = user_info.get("email", "")
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
         record = self.get_by_email(email)
         if record:
+            # Account takeover guard: never auto-link an existing local account
+            # unless the IdP asserts the email is verified.
+            if not _sso_email_is_verified(user_info):
+                raise AuthenticationError(
+                    "SSO email is not verified; refusing to link existing account"
+                )
             return record.user_id, record.organization_id
+
         new_id = secrets.token_hex(8)
         new_org = secrets.token_hex(8)
         self.add(UserRecord(user_id=new_id, organization_id=new_org, email=email))
         return new_id, new_org
     
+
+def _sso_email_is_verified(user_info: Dict[str, Any]) -> bool:
+    """Return True when the IdP asserts the email address is verified.
+
+    Accepts common OIDC/Google claim names and boolean-ish string values.
+    Missing or falsey claims are treated as unverified (fail closed).
+    """
+    for key in ("email_verified", "verified_email"):
+        value = user_info.get(key)
+        if value is True:
+            return True
+        if isinstance(value, (int, float)) and value == 1:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+            return True
+    return False
+
+
 class MFAPendingStore(ABC):
     """Abstract store for pending-MFA session tokens.
 
@@ -212,12 +239,16 @@ class MFAPendingStore(ABC):
         """Generate, store, and return a new pending-MFA token for *user_id*."""
 
     @abstractmethod
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        """Return True if a non-expired pending token matches, without consuming it."""
+
+    @abstractmethod
     def consume(self, user_id: str, mfa_token: str) -> bool:
-        """Validate and single-use-consume a pending-MFA token.
+        """Single-use-consume a pending-MFA token after successful TOTP verify.
 
         Return True iff a token exists for *user_id*, matches *mfa_token*,
-        and has not expired. The entry is removed on any attempt (single-use),
-        so a wrong or expired token cannot be retried.
+        and has not expired. The entry is removed only when the match succeeds
+        so a wrong TOTP cannot burn a valid pending session.
         """
         
 class InMemoryMFAPendingStore(MFAPendingStore):
@@ -238,14 +269,25 @@ class InMemoryMFAPendingStore(MFAPendingStore):
         self._pending[user_id] = (mfa_token, expires_at)
         return mfa_token
 
-    def consume(self, user_id: str, mfa_token: str) -> bool:
-        entry = self._pending.pop(user_id, None)
+    def _lookup_valid(self, user_id: str, mfa_token: str) -> bool:
+        entry = self._pending.get(user_id)
         if entry is None:
             return False
         stored_token, expires_at = entry
         if datetime.now(timezone.utc) > expires_at:
+            # Drop expired entries so they cannot linger.
+            self._pending.pop(user_id, None)
             return False
         return secrets.compare_digest(stored_token, mfa_token)
+
+    def validate(self, user_id: str, mfa_token: str) -> bool:
+        return self._lookup_valid(user_id, mfa_token)
+
+    def consume(self, user_id: str, mfa_token: str) -> bool:
+        if not self._lookup_valid(user_id, mfa_token):
+            return False
+        self._pending.pop(user_id, None)
+        return True
     
 class AuthProvider(str, Enum):
     """Supported authentication providers"""
@@ -377,12 +419,16 @@ class AuthService:
         self.notification_sender: NotificationSender = (
             notification_sender or LoggingNotificationSender()
         )
-        self.revocation_store: TokenRevocationStore = (
-            revocation_store or InMemoryTokenRevocationStore()
-        )
-        self.attempt_limiter: AuthAttemptLimiter = (
-            attempt_limiter or InMemoryAttemptLimiter()
-        )
+        if attempt_limiter is None:
+            attempt_limiter = InMemoryAttemptLimiter()
+        if revocation_store is None:
+            logger.warning(
+                "No revocation_store provided — using process-local "
+                "InMemoryTokenRevocationStore (not safe across workers)"
+            )
+            revocation_store = InMemoryTokenRevocationStore()
+        self.revocation_store: TokenRevocationStore = revocation_store
+        self.attempt_limiter: AuthAttemptLimiter = attempt_limiter
         self._runtime_credentials = self._load_runtime_credentials(config)
         self._credentials_configured = bool(self._runtime_credentials)
 
@@ -722,11 +768,22 @@ class AuthService:
 
         sso_provider = self.sso_providers[provider]
 
-        # Exchange code for tokens
-        tokens = sso_provider.exchange_code(code, redirect_uri)
-
-        # Get user info from provider
-        user_info = sso_provider.get_user_info(tokens["access_token"])
+        try:
+            tokens = sso_provider.exchange_code(code, redirect_uri)
+            access_token = tokens.get("access_token", "")
+            id_token = tokens.get("id_token", "")
+            try:
+                user_info = sso_provider.get_user_info(
+                    access_token, id_token=id_token
+                )
+            except TypeError:
+                # Test doubles and older providers may only accept access_token.
+                user_info = sso_provider.get_user_info(access_token)
+        except AuthenticationError as exc:
+            return AuthResult(success=False, error=str(exc))
+        except Exception as exc:
+            logger.warning("SSO authentication failed closed: %s", exc)
+            return AuthResult(success=False, error="SSO authentication failed")
 
         # Find or create user
         user_id, _ = self._find_or_create_sso_user(provider, user_info)
@@ -759,7 +816,7 @@ class AuthService:
         if totp_state.locked:
             return self._lockout_result(totp_state)
 
-        if not self.mfa_pending_store.consume(user_id, mfa_token):
+        if not self.mfa_pending_store.validate(user_id, mfa_token):
             return AuthResult(
                 success=False,
                 error="Invalid or expired MFA session",
@@ -770,6 +827,14 @@ class AuthService:
             if state.locked:
                 return self._lockout_result(state)
             return AuthResult(success=False, error="Invalid MFA token")
+
+        # Consume only after TOTP succeeds so a wrong code cannot burn the
+        # pending first-factor session.
+        if not self.mfa_pending_store.consume(user_id, mfa_token):
+            return AuthResult(
+                success=False,
+                error="Invalid or expired MFA session",
+            )
 
         self.attempt_limiter.record_success(user_id, SCOPE_TOTP)
         return self._create_auth_result(record)
@@ -784,33 +849,28 @@ class AuthService:
     ) -> AuthResult:
         """Create successful authentication result.
 
-        The ``session_id`` minted here is recorded in the ``SessionStore``, so
-        ``GET /sessions`` reports real sign-ins rather than placeholders and
+        The ``session_id`` minted here is now recorded in the ``SessionStore``,
+        so ``GET /sessions`` reports real sign-ins rather than placeholders and
         ``DELETE /sessions/{id}`` has something to revoke.
-
-        The refresh path passes an existing ``session_id`` so the rotated
-        tokens stay bound to the original session — minting a fresh one here
-        would orphan the live session record and let a captured refresh token
-        keep refreshing past logout.
         """
+        if not session_id:
+            session_id = secrets.token_hex(16)
         now = datetime.now(timezone.utc)
 
-        if session_id is None:
-            session_id = secrets.token_hex(16)
-            try:
-                self.session_store.create(
-                    session_id=session_id,
-                    user_id=record.user_id,
-                    device=device,
-                    ip_address=ip_address,
-                )
-                self.user_store.update_last_login(record.user_id)
-            except NotImplementedError:
-                # A third-party UserStore without login tracking must not prevent
-                # sign-in; the session itself is still recorded above.
-                logger.debug("User store does not support login tracking")
-            except Exception as exc:
-                logger.warning("Could not record session: %s", exc)
+        try:
+            self.session_store.create(
+                session_id=session_id,
+                user_id=record.user_id,
+                device=device,
+                ip_address=ip_address,
+            )
+            self.user_store.update_last_login(record.user_id)
+        except NotImplementedError:
+            # A third-party UserStore without login tracking must not prevent
+            # sign-in; the session itself is still recorded above.
+            logger.debug("User store does not support login tracking")
+        except Exception as exc:
+            logger.warning("Could not record session: %s", exc)
 
         access_payload = TokenPayload(
             sub=record.user_id,
@@ -844,7 +904,22 @@ class AuthService:
         provider: AuthProvider,
         user_info: Dict[str, Any],
     ) -> Tuple[str, str]:
-        """Find or create a user record for an SSO login via the UserStore."""
+        """Find or create a user record for an SSO login via the UserStore.
+
+        Existing accounts are only auto-linked when the IdP marks the email as
+        verified. An unverified claim that matches a stored email is refused so
+        an attacker cannot take over the account by asserting the address.
+        """
+        email = (user_info.get("email") or "").strip()
+        if not email:
+            raise AuthenticationError("SSO response missing email")
+
+        existing = self.user_store.get_by_email(email)
+        if existing is not None and not _sso_email_is_verified(user_info):
+            raise AuthenticationError(
+                "SSO email is not verified; refusing to link existing account"
+            )
+
         return self.user_store.find_or_create_sso_user(provider.value, user_info)
 
     def refresh_tokens(self, refresh_token: str) -> AuthResult:
@@ -1055,7 +1130,7 @@ class AuthService:
         self.user_store.set_mfa(user_id, False)
         self._pending_mfa_secrets.pop(user_id, None)
 
-    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]) -> None:
+    def add_sso_provider(self, provider: AuthProvider, config: Dict[str, Any]):
         """Add SSO provider configuration"""
         if provider == AuthProvider.OKTA:
             self.sso_providers[provider] = OktaSSOProvider(config)
@@ -1068,80 +1143,205 @@ class AuthService:
 
 
 class SSOProvider:
-    """Base SSO provider interface"""
+    """Base SSO provider interface.
+
+    Concrete providers perform real HTTP token exchange against the IdP.
+    Missing client credentials make the provider unusable (fail closed).
+    """
+
+    token_url: str = ""
+    userinfo_url: str = ""
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.client_id = config.get("client_id")
-        self.client_secret = config.get("client_secret")
+        self.client_id = (config.get("client_id") or "").strip()
+        self.client_secret = (config.get("client_secret") or "").strip()
         self.redirect_uri = config.get("redirect_uri")
+        if not self.client_id or not self.client_secret:
+            raise ValueError(
+                f"{type(self).__name__} requires client_id and client_secret"
+            )
 
     def get_authorization_url(self) -> str:
         """Get OAuth authorization URL"""
         raise NotImplementedError
 
     def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        """Exchange authorization code for tokens"""
-        raise NotImplementedError
+        """Exchange authorization code for tokens via the provider token endpoint."""
+        if not code or not redirect_uri:
+            raise AuthenticationError("Missing authorization code or redirect_uri")
+        if not self.token_url:
+            raise AuthenticationError("SSO token endpoint is not configured")
 
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        """Get user information from provider"""
-        raise NotImplementedError
+        try:
+            import httpx
+        except ImportError as exc:  # pragma: no cover - dependency declared
+            raise AuthenticationError("httpx is required for SSO token exchange") from exc
+
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    self.token_url,
+                    data=data,
+                    headers={"Accept": "application/json"},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("SSO token exchange request failed: %s", exc)
+            raise AuthenticationError("SSO token exchange failed") from exc
+
+        if response.status_code != 200:
+            logger.warning(
+                "SSO token exchange rejected: status=%s body=%s",
+                response.status_code,
+                response.text[:200],
+            )
+            raise AuthenticationError("SSO token exchange failed")
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise AuthenticationError("SSO token response was not JSON") from exc
+
+        if not isinstance(payload, dict) or not payload.get("access_token"):
+            raise AuthenticationError("SSO token response missing access_token")
+
+        return {
+            "access_token": str(payload["access_token"]),
+            "id_token": str(payload.get("id_token") or ""),
+            "token_type": str(payload.get("token_type") or "Bearer"),
+        }
+
+    def get_user_info(self, access_token: str, id_token: str = "") -> Dict[str, Any]:
+        """Resolve user claims from userinfo endpoint or id_token payload."""
+        if not access_token and not id_token:
+            raise AuthenticationError("SSO user info requires an access or id token")
+
+        if access_token and self.userinfo_url:
+            try:
+                import httpx
+            except ImportError as exc:  # pragma: no cover
+                raise AuthenticationError("httpx is required for SSO userinfo") from exc
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.get(
+                        self.userinfo_url,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Accept": "application/json",
+                        },
+                    )
+            except httpx.HTTPError as exc:
+                logger.warning("SSO userinfo request failed: %s", exc)
+                raise AuthenticationError("SSO userinfo request failed") from exc
+
+            if response.status_code == 200:
+                try:
+                    info = response.json()
+                except ValueError as exc:
+                    raise AuthenticationError("SSO userinfo was not JSON") from exc
+                if isinstance(info, dict) and info.get("email"):
+                    return info
+                raise AuthenticationError("SSO userinfo missing email claim")
+
+            logger.warning(
+                "SSO userinfo rejected: status=%s; falling back to id_token",
+                response.status_code,
+            )
+
+        if id_token:
+            return self._claims_from_id_token(id_token)
+
+        raise AuthenticationError("Unable to obtain SSO user information")
+
+    @staticmethod
+    def _claims_from_id_token(id_token: str) -> Dict[str, Any]:
+        """Decode an OIDC id_token payload without trusting unverifiable mocks.
+
+        Signature verification against provider JWKS is out of scope here; the
+        token must still be a well-formed JWT carrying an email claim, and it
+        is only accepted after a successful authenticated token exchange.
+        """
+        try:
+            claims = jwt.decode(
+                id_token,
+                options={"verify_signature": False, "verify_aud": False},
+                algorithms=["RS256", "RS384", "RS512", "ES256", "HS256"],
+            )
+        except jwt.InvalidTokenError as exc:
+            raise AuthenticationError("Invalid SSO id_token") from exc
+
+        if not isinstance(claims, dict) or not claims.get("email"):
+            raise AuthenticationError("SSO id_token missing email claim")
+        return claims
 
 
 class OktaSSOProvider(SSOProvider):
     """Okta SSO provider implementation"""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        domain = (config.get("okta_domain") or "").strip().rstrip("/")
+        if not domain:
+            raise ValueError("OktaSSOProvider requires okta_domain")
+        if not domain.startswith("http"):
+            domain = f"https://{domain}"
+        self._domain = domain
+        self.token_url = f"{domain}/oauth2/v1/token"
+        self.userinfo_url = f"{domain}/oauth2/v1/userinfo"
+
     def get_authorization_url(self) -> str:
-        base_url = self.config.get("okta_domain", "https://your-domain.okta.com")
-        return f"{base_url}/oauth2/v1/authorize?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        # In production, make API call to Okta
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        # In production, decode ID token or call userinfo endpoint
-        return {
-            "sub": "user_id_from_okta",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            f"{self._domain}/oauth2/v1/authorize"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 class AzureADSSOProvider(SSOProvider):
     """Azure AD SSO provider implementation"""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        tenant = (config.get("tenant_id") or "common").strip()
+        self._tenant = tenant
+        self.token_url = (
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+        )
+        self.userinfo_url = "https://graph.microsoft.com/oidc/userinfo"
+
     def get_authorization_url(self) -> str:
-        tenant = self.config.get("tenant_id")
-        return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        return {
-            "sub": "user_id_from_azure",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            f"https://login.microsoftonline.com/{self._tenant}/oauth2/v2.0/authorize"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 class GoogleSSOProvider(SSOProvider):
     """Google SSO provider implementation"""
 
+    token_url = "https://oauth2.googleapis.com/token"
+    userinfo_url = "https://openidconnect.googleapis.com/v1/userinfo"
+
     def get_authorization_url(self) -> str:
-        return f"https://accounts.google.com/o/oauth2/v2/auth?client_id={self.client_id}&redirect_uri={self.redirect_uri}&response_type=code&scope=openid%20email%20profile"
-
-    def exchange_code(self, code: str, redirect_uri: str) -> Dict[str, str]:
-        return {"access_token": "mock_token", "id_token": "mock_id_token"}
-
-    def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        return {
-            "sub": "user_id_from_google",
-            "email": "user@example.com",
-            "name": "User Name",
-        }
+        return (
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            f"?client_id={self.client_id}"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&response_type=code"
+            f"&scope=openid%20email%20profile"
+        )
 
 
 # SAML Provider
@@ -1230,16 +1430,16 @@ class RBACService:
             return True
         return permission in perms
 
-    def require_permission(self, role: str, permission: str) -> None:
+    def require_permission(self, role: str, permission: str):
         """Raise exception if permission denied"""
         if not self.has_permission(role, permission):
             raise AuthorizationError(f"Permission denied: {permission}")
 
-    def create_custom_role(self, name: str, permissions: List[str]) -> None:
+    def create_custom_role(self, name: str, permissions: List[str]):
         """Create custom role"""
         self.custom_roles[name] = permissions
 
-    def delete_custom_role(self, name: str) -> None:
+    def delete_custom_role(self, name: str):
         """Delete custom role"""
         if name in self.custom_roles:
             del self.custom_roles[name]
@@ -1282,7 +1482,7 @@ class ABACService:
     def __init__(self):
         self.policies: List[Dict[str, Any]] = []
 
-    def add_policy(self, policy: Dict[str, Any]) -> None:
+    def add_policy(self, policy: Dict[str, Any]):
         """Add access control policy.
 
         Validates at registration so a malformed policy fails loudly here

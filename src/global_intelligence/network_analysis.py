@@ -185,11 +185,12 @@ class NetworkAnalysisEngine:
         # Create community detections
         for community_id, member_ids in community_groups.items():
             if len(member_ids) >= self._config.min_community_size:
+                metrics = self._calculate_community_metrics(member_ids)
                 community = CommunityDetection(
                     community_id=str(uuid.uuid4()),
                     member_ids=member_ids,
-                    community_type=self._classify_community(member_ids),
-                    metrics=self._calculate_community_metrics(member_ids),
+                    community_type=self._classify_community(metrics["avg_risk"]),
+                    metrics=metrics,
                     discovered_at=datetime.now(timezone.utc),
                 )
                 communities.append(community)
@@ -324,18 +325,26 @@ class NetworkAnalysisEngine:
         if len(entities) < self._config.min_community_size:
             return None
 
-        # Create edges from graph relationships
+        # Create edges from graph relationships. Only edges whose BOTH
+        # endpoints are network members belong to the network: an edge to a
+        # non-member node would inflate the edge count/density and let
+        # subcommunity traversal leak outside the membership. Edges are also
+        # deduplicated because each endpoint visits the same underlying edge.
         edges = []
         node_ids = [e.entity_id for e in entities]
+        member_ids = set(node_ids)
+        seen_edges: Set[Tuple[str, str]] = set()
 
         for entity in entities:
             graph_node = self._store.get_graph_node(entity.entity_id)
             if graph_node:
                 for edge in self._store.get_node_edges(graph_node.node_id):
                     if (
-                        edge.source_id in node_ids
-                        or edge.target_id in node_ids
+                        edge.source_id in member_ids
+                        and edge.target_id in member_ids
+                        and (edge.source_id, edge.target_id) not in seen_edges
                     ):
+                        seen_edges.add((edge.source_id, edge.target_id))
                         edges.append({
                             "source": edge.source_id,
                             "target": edge.target_id,
@@ -499,9 +508,18 @@ class NetworkAnalysisEngine:
 
         return communities
 
-    def _classify_community(self, member_ids: List[str]) -> str:
-        """Classify the type of community."""
-        return "fraud_ring"
+    def _classify_community(self, avg_risk: float) -> str:
+        """Classify the type of community from its members' average risk score.
+
+        Mirrors the same tiering style as ``_calculate_risk_level``-type
+        thresholds elsewhere: a community is only called a fraud ring once
+        its actual member risk supports that label.
+        """
+        if avg_risk >= 0.7:
+            return "fraud_ring"
+        elif avg_risk >= 0.4:
+            return "suspicious_cluster"
+        return "low_risk_cluster"
 
     def _calculate_community_metrics(
         self,

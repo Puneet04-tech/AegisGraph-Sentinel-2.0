@@ -153,20 +153,21 @@ class ArchivalService:
                     ArchiveRecord.from_sentinel_log(log, run_id) for log in batch
                 ]
 
-                # Step 3 — write to cold collection
-                self._store.add_archive_records(archive_records)
+                # Step 3 — write to cold collection (idempotent; returns the
+                # number of records newly committed to cold storage)
+                committed = self._store.add_archive_records(archive_records)
 
                 # Step 4 — mark originals as archived in hot collection
                 batch_ids = [log.log_id for log in batch]
-                updated = self._store.mark_archived(batch_ids)
+                self._store.mark_archived(batch_ids)
 
-                archived += updated
+                archived += committed
                 logger.debug(
                     "Batch archived",
                     extra={
                         "run_id": run_id,
                         "batch_size": len(batch),
-                        "updated": updated,
+                        "committed": committed,
                     },
                 )
 

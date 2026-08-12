@@ -20,6 +20,7 @@ from src.saas.auth.attempt_limiter import (
     AuthAttemptLimiter,
     build_attempt_limiter,
     SCOPE_ACCOUNT,
+    SCOPE_PASSWORD_RESET,
     SCOPE_TOTP,
 )
 from src.saas.auth.password_policy import PasswordPolicyError
@@ -261,6 +262,53 @@ _SSO_REDIRECT_ALLOWLIST: List[str] = [
     for uri in os.getenv("OAUTH_REDIRECT_URIS", "").split(",")
     if uri.strip()
 ]
+
+
+class InMemorySSOStateStore:
+    """Short-TTL, single-use OAuth ``state`` values bound to an SSO provider.
+
+    Mirrors the MFA pending-token pattern: authorize mints a value, callback
+    must present the same value for the same provider, and the entry is
+    consumed so it cannot be replayed. Fail closed on missing/mismatched/
+    expired state.
+
+    The state also carries the exact ``redirect_uri`` used to build the
+    authorization URL, so the callback can echo it in the token exchange
+    (RFC 6749 requires the exchange URI to match the authorization URI).
+    """
+
+    def __init__(self, ttl_seconds: int = 600) -> None:
+        self._ttl_seconds = ttl_seconds
+        # state -> (provider, redirect_uri, expires_at)
+        self._pending: dict[str, tuple[str, str, datetime]] = {}
+
+    def issue(self, provider: str, redirect_uri: str = "") -> str:
+        state = secrets.token_urlsafe(24)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds)
+        self._pending[state] = (provider, redirect_uri, expires_at)
+        return state
+
+    def consume(self, state: str, provider: str) -> Optional[str]:
+        """Consume a state and return its bound redirect_uri, or ``None``.
+
+        Returns ``None`` for empty input, unknown/expired state, or a provider
+        mismatch. A legitimate entry with no redirect_uri bound returns ``""``.
+        """
+        if not state or not provider:
+            return None
+        entry = self._pending.pop(state, None)
+        if entry is None:
+            return None
+        stored_provider, stored_redirect_uri, expires_at = entry
+        if datetime.now(timezone.utc) > expires_at:
+            return None
+        if not secrets.compare_digest(stored_provider, provider):
+            return None
+        return stored_redirect_uri
+
+
+# Module-level store for SSO CSRF state. Tests may replace this instance.
+_sso_state_store = InMemorySSOStateStore()
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -513,7 +561,18 @@ async def sso_authorize(
     current_user: dict = Depends(get_current_user),
 ):
     """Initiate SSO authorization."""
-    if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
+    # Fail closed: with no configured allowlist, SSO authorization is disabled
+    # rather than accepting arbitrary redirect targets.
+    if not _SSO_REDIRECT_ALLOWLIST:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "SSO authorization is disabled: set the OAUTH_REDIRECT_URIS "
+                "environment variable before enabling SSO"
+            ),
+        )
+
+    if redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="redirect_uri is not in the configured allow-list",
@@ -531,16 +590,27 @@ async def sso_authorize(
         )
 
     sso_provider.redirect_uri = redirect_uri
-    return {"authorization_url": sso_provider.get_authorization_url()}
+    state = _sso_state_store.issue(provider.value, redirect_uri)
+    authorization_url = sso_provider.get_authorization_url()
+    separator = "&" if "?" in authorization_url else "?"
+    authorization_url = f"{authorization_url}{separator}state={state}"
+    return {"authorization_url": authorization_url, "state": state}
 
 
 @router.post("/sso/callback", response_model=LoginResponse)
 async def sso_callback(request: SSOCallbackRequest):
     """Handle SSO callback"""
+    redirect_uri = _sso_state_store.consume(request.state, request.provider.value)
+    if redirect_uri is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSO state",
+        )
+
     result = _get_auth_service().authenticate_sso(
         provider=request.provider,
         code=request.code,
-        redirect_uri="https://app.aegisgraph.com/auth/callback",
+        redirect_uri=redirect_uri,
     )
 
     if not result.success:
@@ -611,12 +681,12 @@ async def request_password_reset(request: PasswordResetRequest):
 
     The response is identical whether or not the address exists, so this
     endpoint cannot be used to enumerate accounts. Request bursts are
-    throttled per address using the shared attempt budget so the reset
-    channel cannot be abused to hammer the mailer.
+    throttled per address using a dedicated password-reset attempt budget
+    so reset spam cannot lock out account login (SCOPE_ACCOUNT).
     """
     service = _get_auth_service()
     identity = request.email.lower()
-    state = service.attempt_limiter.check(identity, SCOPE_ACCOUNT)
+    state = service.attempt_limiter.check(identity, SCOPE_PASSWORD_RESET)
     if state.locked:
         retry_after = max(1, state.retry_after_seconds)
         raise HTTPException(
@@ -627,7 +697,7 @@ async def request_password_reset(request: PasswordResetRequest):
             ),
             headers={"Retry-After": str(retry_after)},
         )
-    service.attempt_limiter.record_failure(identity, SCOPE_ACCOUNT)
+    service.attempt_limiter.record_failure(identity, SCOPE_PASSWORD_RESET)
     record = service.user_store.get_by_email(request.email)
     if record is not None:
         token = service.reset_token_store.issue(record.user_id)

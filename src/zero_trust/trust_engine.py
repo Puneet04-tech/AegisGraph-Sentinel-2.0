@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from .models import TrustLevel, TrustScore, RiskFactors, EvaluationContext, DeviceStatus
 from .store import ZeroTrustStore, get_store
+from src.features.ip_blacklist import is_ip_blacklisted
 
 
 TRUST_THRESHOLDS = {
@@ -32,7 +33,14 @@ class TrustEngine:
     def evaluate_trust(self, context: EvaluationContext, cached: bool = True) -> TrustScore:
         start_time = time.time()
         if cached:
-            cached_score = self.store.get_trust_score(context.user_id, context.device_id)
+            cached_score = self.store.get_trust_score(
+                context.user_id,
+                context.device_id,
+                ip_address=context.ip_address,
+                location=context.location,
+                session_id=context.session_id,
+                session_attributes=context.session_attributes,
+            )
             if cached_score:
                 self.evaluation_count += 1
                 self.total_evaluation_time += (time.time() - start_time) * 1000
@@ -49,7 +57,15 @@ class TrustEngine:
             factors_breakdown=breakdown, recommendations=recommendations,
         )
 
-        self.store.set_trust_score(context.user_id, context.device_id, trust_score)
+        self.store.set_trust_score(
+            context.user_id,
+            context.device_id,
+            trust_score,
+            ip_address=context.ip_address,
+            location=context.location,
+            session_id=context.session_id,
+            session_attributes=context.session_attributes,
+        )
         self.store.record_evaluation(context, trust_score.to_dict())
         self.evaluation_count += 1
         self.total_evaluation_time += (time.time() - start_time) * 1000
@@ -88,6 +104,8 @@ class TrustEngine:
             factors.login_velocity = context.historical_context.get("login_velocity", 0)
         if context.ip_address:
             factors.ip_reputation = self._evaluate_ip_reputation(context.ip_address)
+            factors.vpn_detected = self._is_vpn_ip(context.ip_address)
+            factors.tor_detected = self._is_tor_exit_node(context.ip_address)
         if context.location:
             factors.location_risk = self._evaluate_location_risk(context.location)
         current_hour = datetime.now(timezone.utc).hour
@@ -189,7 +207,15 @@ class TrustEngine:
             risk += 0.2
         return min(1.0, risk)
 
+    def _is_vpn_ip(self, ip_address: str) -> bool:
+        return ip_address.startswith('100.64.')  # shared/CGNAT range associated with VPN egress
+
+    def _is_tor_exit_node(self, ip_address: str) -> bool:
+        return ip_address.startswith('185.220.101.')  # known Tor exit relay range
+
     def _check_threat_intelligence(self, context: EvaluationContext) -> float:
+        if context.ip_address and is_ip_blacklisted(context.ip_address):
+            return 1.0
         return 0.0
 
     def get_stats(self) -> Dict[str, Any]:

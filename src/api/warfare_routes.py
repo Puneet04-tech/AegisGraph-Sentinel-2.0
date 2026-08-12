@@ -4,7 +4,7 @@ API routes for Cyber-Fraud Warfare Intelligence Platform.
 Provides endpoints for threat actor analysis, campaign tracking, and strategic reporting.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 

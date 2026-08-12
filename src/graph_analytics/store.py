@@ -359,7 +359,15 @@ class GraphStore:
             return edges
 
     def bfs_traverse(self, start_id: str, max_depth: int = 5, edge_types: Optional[List[EdgeType]] = None) -> List[GraphNode]:
-        """Breadth-first search traversal."""
+        """Breadth-first search traversal.
+
+        Args:
+            start_id: Node to start traversal from.
+            max_depth: Maximum number of hops to walk.
+            edge_types: When given, only edges whose type is in this list are
+                crossed, so the traversal stays inside the filtered subgraph.
+        """
+        allowed_types = None if edge_types is None else set(edge_types)
         with self._lock:
             visited = set()
             queue = deque([(start_id, 0)])
@@ -376,8 +384,14 @@ class GraphStore:
                     result.append(node)
 
                 for neighbor_id in self._adjacency.get(node_id, set()):
-                    if neighbor_id not in visited:
-                        queue.append((neighbor_id, depth + 1))
+                    if neighbor_id in visited:
+                        continue
+                    if allowed_types is not None and not any(
+                        edge.edge_type in allowed_types
+                        for edge in self.get_edges_between(node_id, neighbor_id)
+                    ):
+                        continue
+                    queue.append((neighbor_id, depth + 1))
 
             return result
 
@@ -427,7 +441,14 @@ class GraphStore:
             return None
 
     def detect_communities(self, algorithm: AlgorithmType = AlgorithmType.LOUVAIN) -> List[CommunityDetection]:
-        """Detect communities in the graph."""
+        """Detect communities in the graph.
+
+        Communities are weakly-connected components, so connectivity is
+        symmetric regardless of edge direction: the traversal follows both
+        outgoing and incoming edges. This keeps the result independent of node
+        insertion/iteration order and prevents sinks from being split out of
+        the component they route through.
+        """
         with self._lock:
             communities = []
             visited = set()
@@ -447,7 +468,11 @@ class GraphStore:
                     visited.add(current_id)
                     community_nodes.append(current_id)
 
-                    for neighbor_id in self._adjacency.get(current_id, set()):
+                    neighbors = (
+                        self._adjacency.get(current_id, set())
+                        | self._reverse_adjacency.get(current_id, set())
+                    )
+                    for neighbor_id in neighbors:
                         if neighbor_id not in visited:
                             queue.append(neighbor_id)
 
@@ -464,15 +489,28 @@ class GraphStore:
             return communities
 
     def _calculate_density(self, node_ids: List[str]) -> float:
-        """Calculate density of a community."""
+        """Calculate density of a community (undirected view).
+
+        Communities are weakly-connected components, so every directed edge is
+        counted once from each endpoint (outgoing + incoming) and the
+        denominator is the number of undirected node pairs.
+        """
         if len(node_ids) < 2:
             return 0.0
 
-        edges = 0
+        node_set = set(node_ids)
+        directed_edges = 0
         for nid in node_ids:
-            edges += len(self._adjacency.get(nid, set()) & set(node_ids))
+            directed_edges += len(
+                (
+                    self._adjacency.get(nid, set())
+                    | self._reverse_adjacency.get(nid, set())
+                )
+                & node_set
+            )
 
-        max_edges = len(node_ids) * (len(node_ids) - 1)
+        edges = directed_edges // 2
+        max_edges = len(node_ids) * (len(node_ids) - 1) // 2
         return edges / max_edges if max_edges > 0 else 0.0
 
     def _calculate_community_risk(self, node_ids: List[str]) -> float:

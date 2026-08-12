@@ -78,9 +78,10 @@ class FraudCopilotService:
         self,
         session_id: str,
         case_id: str,
+        case_data: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Generate recommendations."""
-        return await self.engine.recommend(session_id, case_id)
+        return await self.engine.recommend(session_id, case_id, case_data)
 
     async def explain(
         self,

@@ -15,6 +15,10 @@ class CaseStatus(Enum):
     RESOLVED = "RESOLVED"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"
+    INVESTIGATING = "INVESTIGATING"
+    CONTAINED = "CONTAINED"
+    ERADICATED = "ERADICATED"
+    RECOVERED = "RECOVERED"
 
 class Priority(Enum):
     """Case priority"""

@@ -162,6 +162,7 @@ class WorkStealingCoordinator:
             pending = [t for t in self._tasks.values() if t.status == SwarmAgentStatus.WAITING]
         if not pending:
             return
+        self._apply_stealing_pass()
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(self.agents))) as pool:
             futures = {}
             for task in pending:
@@ -169,7 +170,6 @@ class WorkStealingCoordinator:
                 futures[future] = task
             for future in futures:
                 future.result()
-            self._apply_stealing_pass()
         logger.info("Swarm cycle executed %d tasks", len(pending))
 
     def _run_task_with_stealing(self, task_id: str) -> None:
@@ -179,6 +179,10 @@ class WorkStealingCoordinator:
             task.status = SwarmAgentStatus.FAILED
             task.error = "No owning agent"
             return
+        with self._lock:
+            queue = self._queues.get(agent_id)
+            if queue is not None and task in queue:
+                queue.remove(task)
         task.status = SwarmAgentStatus.RUNNING
         task.started_at = datetime.now(timezone.utc)
         descriptor = self.agents.get(agent_id)
@@ -210,9 +214,14 @@ class WorkStealingCoordinator:
                 self._completed.append(task)
 
     def _apply_stealing_pass(self) -> None:
-        """Work-stealing load balancing pass over the swarm queues."""
+        """Work-stealing load balancing pass over the pending swarm queues.
+
+        Only tasks still ``WAITING`` are eligible to be stolen; already claimed
+        (running/completed) tasks keep their ownership record intact.
+        """
         with self._lock:
             for agent_id, queue in self._queues.items():
+                queue[:] = [t for t in queue if t.status == SwarmAgentStatus.WAITING]
                 if not queue:
                     continue
                 queue.sort(key=lambda t: _PRIORITY_ORDER[t.priority])
@@ -227,6 +236,8 @@ class WorkStealingCoordinator:
                     self._assign_task_to_least_loaded(victim)
 
     def _assign_task_to_least_loaded(self, task: SwarmTask) -> None:
+        if task.status != SwarmAgentStatus.WAITING:
+            return
         target = self._least_loaded_agent_id()
         if target is None:
             return
@@ -279,6 +290,11 @@ class WorkStealingCoordinator:
             started_at=datetime.now(timezone.utc),
             agent_count=self.agent_count(),
         )
+
+        with self._lock:
+            self._completed.clear()
+            self._discoveries.clear()
+            self._findings.clear()
 
         patterns = attack_simulator.generate_patterns()
         self.store.add_patterns(patterns)

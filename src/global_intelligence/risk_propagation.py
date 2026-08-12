@@ -283,18 +283,31 @@ class RiskPropagationEngine:
         """Get entities at risk due to propagation."""
         at_risk: List[Dict[str, Any]] = []
 
-        for entity in self._store._entities.values():
+        entity_ids = list(self._store._entities.keys())
+
+        for entity_id in entity_ids:
+            entity = self._store.get_entity(entity_id)
+
             # Check if entity has elevated risk
-            if entity.risk_score >= threshold:
-                # Get propagation paths
-                paths = self.find_risk_paths(entity.entity_id, entity.entity_id, max_hops=3)
+            if entity and entity.risk_score >= threshold:
+                # Count propagation paths to every OTHER entity. Searching from
+                # an entity to itself always returns the trivial single-node
+                # path, which made propagation_count 1 regardless of how many
+                # neighbours the entity actually affects.
+                propagation_count = 0
+                for other_id in entity_ids:
+                    if other_id == entity_id:
+                        continue
+                    propagation_count += len(
+                        self.find_risk_paths(entity_id, other_id, max_hops=3)
+                    )
 
                 at_risk.append({
-                    "entity_id": entity.entity_id,
+                    "entity_id": entity_id,
                     "entity_type": entity.entity_type.value,
                     "risk_score": entity.risk_score,
                     "threat_level": entity.threat_level.value,
-                    "propagation_count": len(paths),
+                    "propagation_count": propagation_count,
                     "partner_id": entity.partner_id,
                 })
 

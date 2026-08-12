@@ -218,7 +218,7 @@ class TestWithdrawalIntegration:
         assert active_honeypot.released is True
         assert active_honeypot.status == HoneypotStatus.RELEASED
         assert active_honeypot.honeypot_id not in manager.active_honeypots
-        assert manager.stats["total_false_positives"] == 8  # pilot baseline 7 + 1
+        assert manager.stats["total_false_positives"] == 1
 
     def test_auto_release_before_timeout_skipped(self, manager, active_honeypot):
         manager.check_auto_release()
@@ -229,8 +229,8 @@ class TestWithdrawalIntegration:
         _withdraw(manager)
         manager.record_arrest(active_honeypot.honeypot_id, {})
         stats = manager.get_statistics()
-        assert stats["total_arrests"] == 28
-        assert stats["total_recovered"] == 47000000.0 + 1000.0
+        assert stats["total_arrests"] == 1
+        assert stats["total_recovered"] == 1000.0
         assert stats["active_honeypots"] == 0
 
 

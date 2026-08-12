@@ -359,7 +359,21 @@ class TestRiskGovernance:
         
         assert scorecard.scorecard_id is not None
         assert 0 <= scorecard.overall_risk_score <= 1.0
+
+    def test_generate_risk_scorecard_is_deterministic(self, risk_governance):
+        """Scorecard should not change between calls when nothing else does."""
+        first = risk_governance.generate_risk_scorecard(period="monthly")
+        second = risk_governance.generate_risk_scorecard(period="monthly")
+        
+        assert first.risk_categories == second.risk_categories
     
+    def test_track_risk_trend_uses_real_category(self, risk_governance):
+        """metric_name should select a real risk category, not be ignored."""
+        risk_governance.generate_risk_scorecard(period="monthly")
+        trend = risk_governance.track_risk_trend("fraud_risk")
+        
+        assert trend["current_value"] > 0
+
     def test_assess_entity_risk(self, risk_governance):
         """Test entity risk assessment."""
         assessment = risk_governance.assess_entity_risk(

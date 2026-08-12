@@ -17,6 +17,7 @@ try:
 except ImportError:
     st_autorefresh = None
 import base64
+import hashlib
 import html
 import json
 from config.sanitizer import sanitize_query_input
@@ -270,15 +271,26 @@ def authenticated_request(
     *,
     timeout: int = 5,
     extra_headers: dict | None = None,
+    allow_streamlit_side_effects: bool = True,
     **kwargs,
 ):
-    """Send an authenticated request and auto-handle auth failures."""
+    """Send an authenticated request and auto-handle auth failures.
+
+    When ``allow_streamlit_side_effects`` is False (background threads), 401/403
+    responses are returned without calling Streamlit UI APIs.
+    """
     headers = authenticated_headers(extra_headers)
     response = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
     if response.status_code == 401:
-        _handle_unauthorized("Your session is no longer valid. Please sign in again.")
+        if allow_streamlit_side_effects:
+            _handle_unauthorized("Your session is no longer valid. Please sign in again.")
+        else:
+            logger.warning("Unauthorized API response on background request: %s", url)
     if response.status_code == 403:
-        st.error("You do not have permission to perform that action.")
+        if allow_streamlit_side_effects:
+            st.error("You do not have permission to perform that action.")
+        else:
+            logger.warning("Forbidden API response on background request: %s", url)
     return response
 
 
@@ -330,7 +342,12 @@ def _safe_api_get(
 
 
 def _safe_api_post(
-    url: str, payload: dict, timeout: int = 5, extra_headers: dict | None = None
+    url: str,
+    payload: dict,
+    timeout: int = 5,
+    extra_headers: dict | None = None,
+    *,
+    allow_streamlit_side_effects: bool = True,
 ) -> dict | None:
     """POST *payload* to *url* and return the parsed JSON body on success.
 
@@ -339,13 +356,23 @@ def _safe_api_post(
     Streamlit banner because POST calls are typically made from background
     threads where ``st.*`` calls are not safe.
 
+    When ``allow_streamlit_side_effects`` is False, a 401 response returns an
+    error dict instead of invoking Streamlit logout/rerun helpers.
+
     Authorization headers are injected automatically via
     ``authenticated_headers()``.  Pass *extra_headers* for endpoint-specific tokens.
     """
     try:
         response = authenticated_request(
-            "POST", url, json=payload, timeout=timeout, extra_headers=extra_headers
+            "POST",
+            url,
+            json=payload,
+            timeout=timeout,
+            extra_headers=extra_headers,
+            allow_streamlit_side_effects=allow_streamlit_side_effects,
         )
+        if not allow_streamlit_side_effects and response.status_code == 401:
+            return {"error": "unauthorized", "status_code": 401}
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -362,24 +389,44 @@ def _safe_api_post(
         return None
 
 
+
+def _auth_cache_fingerprint(api_key: str | None) -> str:
+    """Return a stable, non-reversible auth token for Streamlit cache keys."""
+    if not api_key:
+        return "anonymous"
+    return hashlib.sha256(str(api_key).encode("utf-8")).hexdigest()[:32]
+
+
 @_cache_data(ttl=20)
-def _fetch_health_snapshot(api_url: str) -> dict:
+def _fetch_health_snapshot(api_url: str, auth_fingerprint: str) -> dict:
     """Return the API /health payload, or an empty dict if unreachable."""
     return _safe_api_get(f"{api_url}/health", timeout=2)
 
 
 @_cache_data(ttl=5)
-def _fetch_stats_snapshot(api_url: str) -> dict:
+def _fetch_stats_snapshot(api_url: str, auth_fingerprint: str) -> dict:
     """Return the API /stats payload, or an empty dict if unreachable."""
     return _safe_api_get(f"{api_url}/stats", timeout=5)
 
 
-def _build_live_event(api_url: str, txn: dict) -> dict | None:
+def _build_live_event(
+    api_url: str,
+    txn: dict,
+    *,
+    allow_streamlit_side_effects: bool = True,
+) -> dict | None:
     """Execute one live fraud check off the UI thread and shape the dashboard payload."""
     start_t = time.time()
-    result = _safe_api_post(f"{api_url}/api/v1/fraud/check", txn, timeout=2)
+    result = _safe_api_post(
+        f"{api_url}/api/v1/fraud/check",
+        txn,
+        timeout=2,
+        allow_streamlit_side_effects=allow_streamlit_side_effects,
+    )
     if result is None:
         return None
+    if result.get("error") == "unauthorized" or result.get("status_code") == 401:
+        return result
     latency = int((time.time() - start_t) * 1000)
     return {
         "time": datetime.now().strftime("%H:%M:%S"),
@@ -855,7 +902,7 @@ with st.sidebar:
 
     # API Status Check
     try:
-        health = _fetch_health_snapshot(API_URL)
+        health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
         if health:
             st.success(_accessible_status("✅", "API Online"))
             st.metric("Uptime", f"{int(health.get('uptime_seconds', 0))}s")
@@ -896,8 +943,8 @@ if page == "🧭 Command Center":
     if "live_event_txn" not in st.session_state:
         st.session_state.live_event_txn = None
 
-    health = _fetch_health_snapshot(API_URL)
-    stats = _fetch_stats_snapshot(API_URL)
+    health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
+    stats = _fetch_stats_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
 
     # Generate a live event if active
     if live_mode:
@@ -905,7 +952,11 @@ if page == "🧭 Command Center":
         live_event_future = st.session_state.live_event_future
         if live_event_future is not None and live_event_future.done():
             event = live_event_future.result()
-            if event is not None:
+            if (
+                event is not None
+                and event.get("error") != "unauthorized"
+                and event.get("status_code") != 401
+            ):
                 st.session_state.live_events.appendleft(event)
             st.session_state.live_event_future = None
             st.session_state.live_event_txn = None
@@ -927,7 +978,10 @@ if page == "🧭 Command Center":
             }
             st.session_state.live_event_txn = txn
             st.session_state.live_event_future = COMMAND_CENTER_IO_EXECUTOR.submit(
-                _build_live_event, API_URL, txn
+                _build_live_event,
+                API_URL,
+                txn,
+                allow_streamlit_side_effects=False,
             )
 
     # Metrics
@@ -1692,8 +1746,8 @@ elif page == "📊 Risk Analytics":
     # Local imports consolidated globally
 
     # Check API Status
-    stats = _fetch_stats_snapshot(API_URL)
-    health = _fetch_health_snapshot(API_URL)
+    stats = _fetch_stats_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
+    health = _fetch_health_snapshot(API_URL, _auth_cache_fingerprint(st.session_state.get("api_key")))
 
     # Extract metrics
     total_requests = stats.get("total_requests", 0)
