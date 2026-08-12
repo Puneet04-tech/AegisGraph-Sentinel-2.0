@@ -259,6 +259,92 @@ class TestDashboardService:
         assert hasattr(dashboard, "domain_scores")
         assert hasattr(dashboard, "trend_direction")
 
+    def test_trend_direction_mixed_datetime_and_iso_dates(self):
+        """Trend calculation must handle datetime and ISO string dates."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+        now = datetime.now(timezone.utc)
+
+        store.add_assessment({
+            "assessment_id": "assess_recent_datetime",
+            "overall_score": 92.0,
+            "assessment_date": now,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_recent_iso",
+            "overall_score": 88.0,
+            "assessment_date": (now - timedelta(days=10)).isoformat(),
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old_iso",
+            "overall_score": 60.0,
+            "assessment_date": (now - timedelta(days=90)).isoformat(),
+            "status": "COMPLETED",
+        })
+
+        service = ComplianceDashboardService(store, None, None, None)
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
+
+    def test_trend_direction_missing_dates_are_skipped(self):
+        """Assessments without a parseable date must not crash the trend."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+        now = datetime.now(timezone.utc)
+
+        store.add_assessment({
+            "assessment_id": "assess_no_date",
+            "overall_score": 90.0,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_recent",
+            "overall_score": 95.0,
+            "assessment_date": now,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old",
+            "overall_score": 70.0,
+            "assessment_date": (now - timedelta(days=60)).isoformat(),
+            "status": "COMPLETED",
+        })
+
+        service = ComplianceDashboardService(store, None, None, None)
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
+
+    def test_trend_direction_naive_datetime_is_handled(self):
+        """Naive datetimes must be treated as UTC, not crash the comparison."""
+        from src.regulatory_fabric.dashboard import ComplianceDashboardService
+        from src.regulatory_fabric.store import ComplianceStore
+
+        store = ComplianceStore()
+        now = datetime.now(timezone.utc)
+
+        store.add_assessment({
+            "assessment_id": "assess_recent_naive",
+            "overall_score": 94.0,
+            "assessment_date": now.replace(tzinfo=None),
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old_naive",
+            "overall_score": 55.0,
+            "assessment_date": (now - timedelta(days=120)).replace(tzinfo=None),
+            "status": "COMPLETED",
+        })
+
+        service = ComplianceDashboardService(store, None, None, None)
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
