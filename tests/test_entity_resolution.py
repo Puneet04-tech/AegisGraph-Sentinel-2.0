@@ -565,6 +565,53 @@ class TestClusterEngine:
         
         clusters = engine.detect_clusters_bfs(min_size=2)
         assert len(clusters) >= 0  # May or may not form a cluster
+
+    def test_detect_clusters_bfs_enforces_max_depth(self, engine):
+        """BFS must stop expanding at max_depth hops from each start node.
+
+        A 10-node chain A-B-...-J with max_depth=3 must not be merged into a
+        single ring; every cluster's members must lie within 3 hops of that
+        cluster's start node.
+        """
+        entities = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"ACC{i:02d}", risk_score=0.8)
+            for i in range(10)
+        ]
+        for entity in entities:
+            engine._store.store_entity(entity)
+
+        for a, b in zip(entities, entities[1:]):
+            engine._store.store_relationship(EntityRelationship(
+                source_id=a.id,
+                target_id=b.id,
+                relationship_type=RelationshipType.SHARED_DEVICE,
+                confidence_score=0.9,
+            ))
+
+        def hop_distance(start_id, target_id, limit):
+            queue = [(start_id, 0)]
+            seen = {start_id}
+            while queue:
+                current_id, depth = queue.pop(0)
+                if current_id == target_id:
+                    return depth
+                if depth >= limit:
+                    continue
+                for rel in engine._store.get_relationships_for_entity(current_id):
+                    connected_id = rel.target_id if rel.source_id == current_id else rel.source_id
+                    if connected_id not in seen:
+                        seen.add(connected_id)
+                        queue.append((connected_id, depth + 1))
+            return None
+
+        clusters = engine.detect_clusters_bfs(min_size=2, max_depth=3)
+        assert len(clusters) > 1
+
+        for cluster in clusters:
+            start = cluster.metadata["start_entity"]
+            for member in cluster.entity_ids:
+                distance = hop_distance(start, member, limit=3)
+                assert distance is not None and distance <= 3
     
     def test_detect_fraud_rings(self, engine):
         """Test fraud ring detection with request."""
