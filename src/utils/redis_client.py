@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 import threading
@@ -135,36 +136,99 @@ def get_async_redis_client(redis_url: Optional[str] = None) -> Optional[async_re
 
 
 def close_redis_pools() -> None:
-    """Close and clear all synchronous and asynchronous Redis connection pools."""
+    """Close and clear all synchronous and asynchronous Redis connection pools.
+
+    Disconnect failures are logged rather than discarded: a pool that refuses
+    to close is leaking sockets, and the previous ``except Exception: pass``
+    made that invisible.
+    """
     global _redis_pool
     with _redis_lock:
-        for pool in _redis_pools.values():
+        for redis_url, pool in _redis_pools.items():
             try:
                 pool.disconnect()
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to disconnect Redis pool for %s; connections may leak",
+                    redis_url,
+                    exc_info=True,
+                )
         _redis_pools.clear()
         _redis_pool = None
 
-        for async_pool in _async_redis_pools.values():
-            try:
-                res = async_pool.disconnect()
-                if inspect.isawaitable(res):
-                    res.close()
-            except Exception:
-                pass
+        for redis_url, async_pool in list(_async_redis_pools.items()):
+            _close_async_pool_from_sync(redis_url, async_pool)
         _async_redis_pools.clear()
+
+
+def _close_async_pool_from_sync(redis_url: str, async_pool) -> None:
+    """Disconnect an async pool from synchronous code.
+
+    ``AsyncConnectionPool.disconnect()`` returns a coroutine. The previous code
+    called ``.close()`` on it, which *cancels* the coroutine instead of running
+    it -- so the pool was never actually disconnected, and the resulting
+    "coroutine was never awaited" warning was swallowed by a bare except. The
+    pools looked closed while their sockets stayed open.
+    """
+    try:
+        res = async_pool.disconnect()
+    except Exception:
+        logger.warning(
+            "Failed to disconnect async Redis pool for %s; connections may leak",
+            redis_url,
+            exc_info=True,
+        )
+        return
+
+    if not inspect.isawaitable(res):
+        return
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop is running, so we can drive the coroutine to completion.
+        try:
+            asyncio.run(_await_result(res))
+        except Exception:
+            logger.warning(
+                "Failed to disconnect async Redis pool for %s; connections may leak",
+                redis_url,
+                exc_info=True,
+            )
+        return
+
+    # A loop is already running on this thread: the coroutine cannot be driven
+    # from here. Close it to avoid an un-awaited warning, and say plainly that
+    # the pool is still open.
+    close = getattr(res, "close", None)
+    if close is not None:
+        close()
+    logger.warning(
+        "close_redis_pools() called from a running event loop; the async Redis "
+        "pool for %s was NOT disconnected. Await close_async_redis_pools() "
+        "instead.",
+        redis_url,
+    )
+
+
+async def _await_result(awaitable):
+    """Await a value, for driving a coroutine from ``asyncio.run``."""
+    return await awaitable
 
 
 async def close_async_redis_pools() -> None:
     """Close all asynchronous Redis connection pools."""
     with _redis_lock:
-        pools = list(_async_redis_pools.values())
+        pools = list(_async_redis_pools.items())
         _async_redis_pools.clear()
-    for async_pool in pools:
+    for redis_url, async_pool in pools:
         try:
             res = async_pool.disconnect()
             if inspect.isawaitable(res):
                 await res
         except Exception:
-            pass
+            logger.warning(
+                "Failed to disconnect async Redis pool for %s; connections may leak",
+                redis_url,
+                exc_info=True,
+            )
