@@ -5,7 +5,6 @@ Predicts fraud campaign growth, spread, and impact.
 """
 
 import time
-import random
 import threading
 from threading import Lock
 from datetime import datetime, timedelta, timezone
@@ -70,23 +69,25 @@ class CampaignPredictor:
         else:
             status = CampaignStatus.DECLINING
         
-        # Calculate predicted growth rate
-        growth_multiplier = random.uniform(1.2, 2.5)
+        # Calculate predicted growth rate. A campaign already growing fast
+        # compounds faster than one that is barely moving.
+        growth_multiplier = 1.2 + current_growth_rate * 1.3
         predicted_growth = min(current_growth_rate * growth_multiplier, 1.0)
-        
-        # Calculate affected entities
+
+        # Calculate affected entities: more predicted growth spreads to more targets.
         base_affected = len(entity_ids)
-        growth_factor = 1 + (predicted_growth * random.uniform(1.5, 4.0))
+        growth_factor = 1 + (predicted_growth * 2.75)
         total_affected = int(base_affected * growth_factor)
-        
+
         affected_entities = [f"target_{i}" for i in range(total_affected)]
-        
-        # Calculate peak time
+
+        # Calculate peak time: a faster-growing campaign peaks sooner.
         if status in [CampaignStatus.EMERGING, CampaignStatus.GROWING]:
-            days_to_peak = random.randint(3, 21)
+            days_to_peak = max(3, round(21 - predicted_growth * 18))
             peak_time = datetime.now(timezone.utc) + timedelta(days=days_to_peak)
         else:
-            peak_time = datetime.now(timezone.utc) + timedelta(days=random.randint(1, 7))
+            days_to_peak = max(1, round(7 - predicted_growth * 6))
+            peak_time = datetime.now(timezone.utc) + timedelta(days=days_to_peak)
         
         prediction = CampaignPrediction(
             campaign_id=f"campaign_{int(time.time())}",
@@ -95,7 +96,9 @@ class CampaignPredictor:
             growth_rate=predicted_growth,
             affected_entities=affected_entities[:min(len(affected_entities), 100)],
             peak_time=peak_time,
-            confidence=random.uniform(0.6, 0.85),
+            # Confidence is higher with more source entities to base the
+            # prediction on, and lower for extreme (less certain) growth rates.
+            confidence=min(0.85, 0.6 + min(base_affected, 10) * 0.02),
         )
         
         # Store prediction
@@ -151,8 +154,12 @@ class CampaignPredictor:
                 predicted_status=self._get_status_for_growth(predicted_growth),
                 growth_rate=predicted_growth,
                 affected_entities=base_entities[:min(len(base_entities), 100)],
-                peak_time=datetime.now(timezone.utc) + timedelta(days=random.randint(5, 30)),
-                confidence=random.uniform(0.5, 0.8),
+                # A campaign predicted to grow faster is expected to peak sooner.
+                peak_time=datetime.now(timezone.utc) + timedelta(
+                    days=max(5, round(30 - predicted_growth * 25))
+                ),
+                # Confidence degrades the further out the forecast period reaches.
+                confidence=max(0.5, 0.8 - (growth_factor - 1.0) * 0.05),
             )
             
             self._store.store_campaign_prediction(prediction)
@@ -210,14 +217,10 @@ class CampaignPredictor:
         if not campaign:
             return []
         
-        # Generate predicted targets based on campaign growth
-        targets = []
-        for i in range(count):
-            # Add some randomness to simulate unknown future targets
-            if random.random() < campaign.growth_rate:
-                targets.append(f"future_target_{campaign_id}_{i}")
-        
-        return targets
+        # Predict a share of the requested slots proportional to the
+        # campaign's growth rate rather than a per-slot coin flip.
+        predicted_count = round(count * campaign.growth_rate)
+        return [f"future_target_{campaign_id}_{i}" for i in range(predicted_count)]
 
 
 # Global singleton
