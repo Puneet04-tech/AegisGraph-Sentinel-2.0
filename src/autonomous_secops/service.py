@@ -16,27 +16,22 @@ from .store import (
 )
 from .secops_engine import (
     SecurityOperationsEngine,
-    get_secops_engine,
     reset_secops_engine,
 )
 from .correlation_engine import (
     ThreatCorrelationEngine,
-    get_correlation_engine,
     reset_correlation_engine,
 )
 from .investigation_engine import (
     InvestigationEngine,
-    get_investigation_engine,
     reset_investigation_engine,
 )
 from .playbook_engine import (
     PlaybookEngine,
-    get_playbook_engine,
     reset_playbook_engine,
 )
 from .threat_hunting import (
     ThreatHuntingEngine,
-    get_threat_hunting_engine,
     reset_threat_hunting_engine,
 )
 
@@ -47,11 +42,15 @@ class AutonomousSecOpsService:
     def __init__(self, store: Optional[AutonomousSecOpsStore] = None) -> None:
         """Initialize the service."""
         self.store = store or get_secops_store()
-        self.secops = get_secops_engine()
-        self.correlation = get_correlation_engine()
-        self.investigation = get_investigation_engine()
-        self.playbook = get_playbook_engine()
-        self.hunting = get_threat_hunting_engine()
+        # Bind every engine to the injected store so writes go where reads
+        # come from. The module-level engine singletons target the global
+        # store, so using them here would make engines and the service
+        # diverge whenever a custom store is injected.
+        self.secops = SecurityOperationsEngine(store=self.store)
+        self.correlation = ThreatCorrelationEngine(store=self.store)
+        self.investigation = InvestigationEngine(store=self.store)
+        self.playbook = PlaybookEngine(store=self.store)
+        self.hunting = ThreatHuntingEngine(store=self.store)
 
     async def process_alert(
         self,
