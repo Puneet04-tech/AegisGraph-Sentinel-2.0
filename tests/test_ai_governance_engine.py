@@ -7,8 +7,6 @@ bias detection, explainability, and the aggregate governance engine
 
 from __future__ import annotations
 
-import random
-
 import pytest
 
 from src.ai_governance.governance_engine import (
@@ -51,13 +49,20 @@ class TestDriftDetection:
         assert drift.severity == "LOW"
 
     def test_identical_key_sets_produce_low_score(self, registry, model_id):
+        # Issue #3198: previously this passed single-record current/baseline
+        # lists and asserted the score landed in [0.1, 0.3] -- the exact
+        # range of the old `random.uniform(0.1, 0.3)` call, i.e. it was
+        # pinned to the bug. A single-record baseline is degenerate (see
+        # `_numeric_psi`) and not_computable on its own, so this now uses
+        # enough records for PSI to be well-defined, with current only
+        # mildly offset from baseline -- a small, real, low drift score.
         engine = DriftDetectionEngine(registry)
-        current = [{"amount": 100.0, "velocity": 3.0}]
-        baseline = [{"amount": 50.0, "velocity": 1.0}]
+        baseline = [{"amount": 40.0 + i, "velocity": 1.0 + 0.1 * i} for i in range(20)]
+        current = [{"amount": 41.0 + i, "velocity": 1.0 + 0.1 * i} for i in range(20)]
 
         drift = engine.detect_drift(model_id, current, baseline)
 
-        assert 0.1 <= drift.drift_score <= 0.3
+        assert 0.0 < drift.drift_score < 0.4
         assert drift.severity == "LOW"
         assert drift.drift_type == DriftType.DATA_DRIFT
 
@@ -107,8 +112,23 @@ class TestDriftDetection:
 # ---------------------------------------------------------------------------
 
 
+def _fair_predictions() -> list:
+    """6 records, 2 groups of 'gender', prediction == label throughout and
+    both groups have an identical 0.5 positive rate -- every metric that
+    can be computed from this input is genuinely fair."""
+    predictions = []
+    for gender in ("M", "F"):
+        for outcome in (1, 1, 0):
+            predictions.append({"prediction": outcome, "label": outcome, "gender": gender})
+    return predictions
+
+
 class TestBiasDetection:
     def test_one_report_per_metric(self, registry, model_id):
+        # `predictions` here carries neither a "prediction" field nor the
+        # "gender"/"age" protected-attribute keys, so every metric is
+        # not_computable -- this test only pins the structural contract
+        # (one report per BiasMetric), independent of computability.
         engine = BiasDetectionEngine(registry)
         reports = engine.detect_bias(
             model_id,
@@ -120,18 +140,48 @@ class TestBiasDetection:
         assert {r.metric for r in reports} == set(BiasMetric)
 
     def test_score_is_bounded_to_unit_interval(self, registry, model_id):
+        # Issue #3198: no predictions at all means no metric is computable.
+        # Previously this asserted `0.0 <= score <= 1.0` against a
+        # `random.uniform(0.0, 1.0)` result, which is trivially always
+        # true regardless of input -- exactly the bug. Not-computable
+        # metrics now report score=None/status="not_computable" rather
+        # than a fabricated in-range number.
         engine = BiasDetectionEngine(registry)
         reports = engine.detect_bias(model_id, [], ["gender"])
 
-        assert all(0.0 <= r.score <= 1.0 for r in reports)
+        assert all(r.status == "not_computable" for r in reports)
+        assert all(r.score is None for r in reports)
         assert all(r.threshold == 0.8 for r in reports)
 
+    def test_computed_score_is_bounded_to_unit_interval(self, registry, model_id):
+        engine = BiasDetectionEngine(registry)
+        reports = engine.detect_bias(model_id, _fair_predictions(), ["gender"])
+
+        computed = [r for r in reports if r.status == "computed"]
+        assert computed, "expected at least one metric to be computable on fair, labeled data"
+        assert all(0.0 <= r.score <= 1.0 for r in computed)
+        assert all(r.threshold == 0.8 for r in computed)
+
     def test_fairness_flag_matches_threshold(self, registry, model_id):
+        engine = BiasDetectionEngine(registry)
+        reports = engine.detect_bias(model_id, _fair_predictions(), ["gender"])
+
+        for report in reports:
+            if report.status == "computed":
+                assert report.is_fair == (report.score >= report.threshold)
+            else:
+                assert report.is_fair is None
+                assert report.score is None
+
+    def test_not_computable_reports_have_null_score_and_fairness(self, registry, model_id):
         engine = BiasDetectionEngine(registry)
         reports = engine.detect_bias(model_id, [], ["gender"])
 
         for report in reports:
-            assert report.is_fair == (report.score >= report.threshold)
+            assert report.status == "not_computable"
+            assert report.score is None
+            assert report.is_fair is None
+            assert report.details.get("reason")
 
     def test_reports_are_persisted(self, registry, model_id):
         engine = BiasDetectionEngine(registry)
@@ -253,14 +303,28 @@ class TestGovernanceEngine:
         assert status["requires_review"] is False
 
     def test_compliance_score_never_goes_below_zero(self, registry, model_id):
+        # Issue #3198: previously used empty `predictions` and
+        # `random.seed(0)` to coax the random-based engine into marking
+        # every metric unfair. With empty predictions now correctly
+        # reported as not_computable (excluded from the penalty rather
+        # than fabricated as "unfair"), that no longer exercises this path
+        # at all -- so this uses a genuinely, computably unfair dataset
+        # (predictions inverted relative to labels for one group) instead.
         engine = AIGovernanceEngine(registry)
         drift = engine.drift_engine.detect_drift(
             model_id, [{"a": 1.0}], [{"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}]
         )
         drift.severity = "CRITICAL"
-        # Force every bias metric unfair to accumulate penalties.
-        random.seed(0)
-        engine.bias_engine.detect_bias(model_id, [], ["gender", "age"])
+
+        unfair_predictions = [
+            {"prediction": 1, "label": 1, "age": "young", "gender": "M"} for _ in range(3)
+        ] + [
+            {"prediction": 0, "label": 1, "age": "old", "gender": "F"} for _ in range(3)
+        ]
+        engine.bias_engine.detect_bias(model_id, unfair_predictions, ["age", "gender"])
 
         status = engine.get_compliance_status(model_id)
+        assert status["bias_issues"] == len(list(BiasMetric))
+        assert status["compliance_score"] == pytest.approx(0.3)
         assert status["compliance_score"] >= 0.0
+        assert status["requires_review"] is True

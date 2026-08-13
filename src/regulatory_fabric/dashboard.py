@@ -101,7 +101,8 @@ class ComplianceDashboardService:
 
     def _calculate_domain_scores(self) -> Dict[str, float]:
         """Calculate compliance scores by domain."""
-        domain_scores = {}
+        domain_control_counts: Dict[str, int] = {}
+        domain_compliant_counts: Dict[str, int] = {}
         
         for reg in self.store.regulations.values():
             domain = reg.get("domain", "UNKNOWN")
@@ -111,14 +112,15 @@ class ComplianceDashboardService:
             if not controls:
                 continue
             
-            compliant = len([c for c in controls if c.get("status") == "COMPLIANT"])
-            score = (compliant / len(controls)) * 100
-            
-            domain_scores[domain] = domain_scores.get(domain, 0) + score
+            domain_control_counts[domain] = domain_control_counts.get(domain, 0) + len(controls)
+            domain_compliant_counts[domain] = domain_compliant_counts.get(domain, 0) + len(
+                [c for c in controls if c.get("status") == "COMPLIANT"]
+            )
         
-        # Average scores for domains with multiple regulations
-        # (Simplified - in production, would track regulation count per domain)
-        return domain_scores
+        return {
+            domain: (domain_compliant_counts[domain] / domain_control_counts[domain]) * 100
+            for domain in domain_control_counts
+        }
 
     def _get_findings_summary(self) -> Dict[str, Any]:
         """Get summary of findings."""

@@ -6,6 +6,7 @@ Controlled experiments for model comparison and traffic splitting.
 
 import random
 import math
+from statistics import NormalDist
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -161,13 +162,12 @@ class ABTestingEngine:
         
         z_score = diff / se_diff
         
-        # Determine winner based on confidence level
-        if z_score > 1.96:  # 95% confidence
+        # Determine winner based on the test's configured confidence level
+        confidence = min(max(test.confidence_level, 0.5), 0.999)
+        z_threshold = NormalDist().inv_cdf((1 + confidence) / 2)
+        if z_score > z_threshold:
             return "B" if metric_b > metric_a else "A"
-        elif z_score > 1.645:  # 90% confidence
-            return "B" if metric_b > metric_a else "A"
-        else:
-            return "INCONCLUSIVE"
+        return "INCONCLUSIVE"
     
     def get_test_summary(self, test_id: str) -> Dict[str, Any]:
         """Get A/B test summary."""

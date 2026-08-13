@@ -189,38 +189,60 @@ class TestDriftDetection:
         assert engine._calculate_drift_score([], []) == 0.0
         assert engine._calculate_drift_score([{"a": 1}], []) == 0.0
 
-    def test_drift_score_matching_keys(self, registry, monkeypatch):
+    def test_drift_score_matching_keys(self, registry):
+        # Issue #3198: this used to monkeypatch random.uniform and assert
+        # the score equalled whatever constant was injected -- i.e. it
+        # tested that the engine faithfully echoed a random number, not
+        # that it measured anything. Now exercises the real PSI
+        # computation: two datasets with matching keys and near-identical
+        # distributions register a small, real, deterministic score.
         engine = DriftDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.25)
+        baseline = [{"a": 40.0 + i, "b": 1.0 + 0.1 * i} for i in range(20)]
+        current = [{"a": 41.0 + i, "b": 1.0 + 0.1 * i} for i in range(20)]
 
-        score = engine._calculate_drift_score([{"a": 1, "b": 2}], [{"a": 3, "b": 4}])
-        assert score == 0.25
+        score = engine._calculate_drift_score(current, baseline)
 
-    def test_drift_score_differing_keys_capped(self, registry, monkeypatch):
+        assert score == pytest.approx(0.21972245773362187)
+        # Same inputs called again -> byte-identical (the regression this
+        # issue asks for; previously every call re-rolled the dice).
+        assert engine._calculate_drift_score(current, baseline) == score
+
+    def test_drift_score_differing_keys_capped(self, registry):
+        # Issue #3198: previously asserted only `0.0 < score <= 1.0`
+        # against an injected random value. A key-set mismatch is now
+        # defined as maximum drift (1.0), not a partial number computed
+        # only over the overlapping keys -- see `_analyze_drift`'s
+        # schema-mismatch handling.
         engine = DriftDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.9)
 
         score = engine._calculate_drift_score(
             [{"a": 1, "b": 2, "c": 3}], [{"a": 1, "d": 4, "e": 5, "f": 6}]
         )
-        assert 0.0 < score <= 1.0
+        assert score == 1.0
 
-    def test_severity_classification(self, registry, monkeypatch):
+    def test_severity_classification(self, registry):
+        # Issue #3198: previously monkeypatched random.uniform to force
+        # each severity bucket. Now drives the real bucket boundaries with
+        # hand-verified fixtures (a uniform 0..199 baseline shifted by a
+        # known amount), computed once against this implementation and
+        # pinned here so a regression shows up as a changed assertion.
         engine = DriftDetectionEngine(registry=registry)
         model_id = _register(registry)
+        baseline = [{"a": float(i)} for i in range(200)]
 
-        for value, expected in [(0.2, "LOW"), (0.5, "MEDIUM"), (0.7, "HIGH"), (0.9, "CRITICAL")]:
-            monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: value)
-            drift = engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
-            assert drift.severity == expected, f"value {value}"
+        for shift, expected in [(1, "LOW"), (15, "MEDIUM"), (17, "HIGH"), (19, "CRITICAL")]:
+            current = [{"a": float(i) + shift} for i in range(200)]
+            drift = engine.detect_drift(model_id, current, baseline)
+            assert drift.severity == expected, f"shift {shift}: score {drift.drift_score}"
 
-    def test_drift_history_and_latest(self, registry, monkeypatch):
+    def test_drift_history_and_latest(self, registry):
         engine = DriftDetectionEngine(registry=registry)
         model_id = _register(registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.2)
+        current = [{"a": 1.0 + i} for i in range(10)]
+        baseline = [{"a": 1.0 + i} for i in range(10)]
 
-        engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
-        engine.detect_drift(model_id, [{"a": 1}], [{"a": 2}])
+        engine.detect_drift(model_id, current, baseline)
+        engine.detect_drift(model_id, current, baseline)
 
         assert len(engine.get_drift_history(model_id)) == 2
         assert engine.get_latest_drift(model_id) == engine.get_drift_history(model_id)[-1]
@@ -233,32 +255,61 @@ class TestDriftDetection:
 # ---------------------------------------------------------------------------
 
 
-class TestBiasDetection:
-    def test_one_report_per_metric(self, registry, monkeypatch):
-        engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.95)
+def _balanced_predictions() -> list:
+    """8 records across 2 protected attributes (age, gender) x 2 groups
+    each, prediction == label in every record and every combination's
+    positive rate is exactly 0.5 -- demographic parity, disparate impact,
+    equalized odds and calibration are all perfectly fair on this input."""
+    combos = [("young", "M"), ("young", "F"), ("old", "M"), ("old", "F")]
+    predictions = []
+    for age, gender in combos:
+        predictions.append({"prediction": 1, "label": 1, "age": age, "gender": gender})
+        predictions.append({"prediction": 0, "label": 0, "age": age, "gender": gender})
+    return predictions
 
-        reports = engine.detect_bias("m1", [{"pred": 1}], ["age", "gender"])
+
+class TestBiasDetection:
+    def test_one_report_per_metric(self, registry):
+        # Issue #3198: previously monkeypatched random.uniform to force a
+        # "fair" score with no relationship to the input data. Now uses a
+        # hand-constructed, genuinely balanced dataset (see
+        # `_balanced_predictions`) so every metric is both real and fair.
+        engine = BiasDetectionEngine(registry=registry)
+
+        reports = engine.detect_bias("m1", _balanced_predictions(), ["age", "gender"])
 
         assert len(reports) == len(list(BiasMetric))
+        assert {r.metric for r in reports} == set(BiasMetric)
+        assert all(r.status == "computed" for r in reports)
         assert all(r.is_fair for r in reports)
 
-    def test_unfair_report_attributes_groups(self, registry, monkeypatch):
+    def test_unfair_report_attributes_groups(self, registry):
+        # Issue #3198: previously monkeypatched random.uniform/random.random
+        # to force an "unfair" verdict and a coin-flip choice of affected
+        # groups with no relationship to the input. Now uses a genuinely
+        # skewed dataset (age/gender fully confounded with the outcome).
         engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.5)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.random", lambda: 1.0)
+        predictions = (
+            [{"prediction": 1, "label": 1, "age": "young", "gender": "M"} for _ in range(4)]
+            + [{"prediction": 0, "label": 0, "age": "old", "gender": "F"} for _ in range(4)]
+        )
 
-        reports = engine.detect_bias("m1", [{"pred": 1}], ["age", "gender"])
+        reports = engine.detect_bias("m1", predictions, ["age", "gender"])
 
-        assert any(not r.is_fair for r in reports)
-        assert any(set(r.affected_groups) == {"age", "gender"} for r in reports)
+        unfair = [r for r in reports if r.status == "computed" and not r.is_fair]
+        assert unfair, "expected at least one metric to detect the skew"
+        for report in unfair:
+            assert report.affected_groups
+            for entry in report.affected_groups:
+                attr, _, group = entry.partition(":")
+                assert attr in ("age", "gender")
+                assert group
 
-    def test_report_retrieval(self, registry, monkeypatch):
+    def test_report_retrieval(self, registry):
         engine = BiasDetectionEngine(registry=registry)
-        monkeypatch.setattr("src.ai_governance.governance_engine.random.uniform", lambda a, b: 0.95)
 
-        engine.detect_bias("m1", [{"pred": 1}], ["age"])
-        engine.detect_bias("m1", [{"pred": 1}], ["age"])
+        engine.detect_bias("m1", _balanced_predictions(), ["age"])
+        engine.detect_bias("m1", _balanced_predictions(), ["age"])
 
         assert len(engine.get_bias_reports("m1")) == 8
         assert len(engine.get_latest_reports("m1")) == len(list(BiasMetric))
