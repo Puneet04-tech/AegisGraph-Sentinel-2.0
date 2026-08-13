@@ -97,9 +97,10 @@ class FraudCopilotService:
         session_id: str,
         case_id: str,
         report_type: str = "standard",
+        case_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate investigation report."""
-        return await self.engine.report(session_id, case_id, report_type)
+        return await self.engine.report(session_id, case_id, report_type, case_data)
 
     async def search_knowledge(
         self,
