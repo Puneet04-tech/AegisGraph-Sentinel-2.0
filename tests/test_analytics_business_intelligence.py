@@ -439,9 +439,22 @@ class TestReportAutomation:
     def test_get_report_schedule(self, report_automation):
         """Test getting report schedule."""
         schedule = report_automation.get_report_schedule()
-        
+
         assert "total_scheduled" in schedule
         assert "by_schedule" in schedule
+
+    def test_live_insights_failure_is_logged_not_silent(self, report_automation, caplog, monkeypatch):
+        """A failed live-data fetch must be logged, not swallowed silently."""
+        def _boom(limit=10):
+            raise RuntimeError("store unavailable")
+
+        monkeypatch.setattr(report_automation._store, "get_recent_insights", _boom)
+
+        with caplog.at_level("WARNING"):
+            result = report_automation._live_insights()
+
+        assert result == []
+        assert any("insights" in record.message.lower() for record in caplog.records)
 
 
 # =============================================================================
