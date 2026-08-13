@@ -16,7 +16,7 @@ before including them in explanations to prevent prompt injection attacks.
 import json
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 from ..inference.prompt_security import sanitize_transaction_data
 
