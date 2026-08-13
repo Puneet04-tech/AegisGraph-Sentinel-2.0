@@ -4,7 +4,6 @@ Compliance Analytics Module.
 Provides compliance tracking, framework management, and regulatory reporting.
 """
 
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -59,10 +58,20 @@ class ComplianceAnalyticsModule:
             ControlAssessment
         """
         logger.info(f"Assessing control {control_id} for {framework}")
-        
-        # Determine status based on test results
-        effectiveness = test_results.get("effectiveness_score", random.uniform(0.6, 1.0))
-        
+
+        # Determine status based on the actual test results, never a guess.
+        effectiveness = test_results.get("effectiveness_score")
+        if effectiveness is None:
+            checks_passed = test_results.get("checks_passed")
+            checks_total = test_results.get("checks_total")
+            if checks_passed is not None and checks_total:
+                effectiveness = checks_passed / checks_total
+            else:
+                raise ValueError(
+                    "test_results must include 'effectiveness_score' or both "
+                    "'checks_passed' and 'checks_total' to assess a control"
+                )
+
         if effectiveness >= 0.9:
             status = ComplianceStatus.COMPLIANT
         elif effectiveness >= 0.7:
