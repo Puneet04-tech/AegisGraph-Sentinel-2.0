@@ -104,9 +104,9 @@ class SessionRiskAnalyzer:
 
     def _check_login_velocity(self, user_id: str) -> Dict[str, Any]:
         now = time.time()
-        current_minute = now // 60
+        current_minute = int(now // 60)
         recent_attempts = []
-        for minute in range(int(current_minute) - 5, int(current_minute) + 1):
+        for minute in range(current_minute - 5, current_minute + 1):
             key = f"{user_id}:{minute}"
             recent_attempts.extend(self.login_attempts.get(key, []))
         cutoff = now - 300

@@ -7,6 +7,8 @@ behavioral profiles for risk assessment.
 
 from __future__ import annotations
 
+import logging
+import os
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,11 +16,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
+from utils.webhook_alerts import trigger_webhook_alert
+
 from .models import (
     AuthenticationSession,
     BehaviorProfile,
 )
 from .store import AdaptiveAuthStore, get_adaptive_auth_store
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -368,11 +374,20 @@ class BehaviorMonitor:
     for continuous risk assessment.
     """
     
-    def __init__(self, store: AdaptiveAuthStore):
+    def __init__(
+        self,
+        store: AdaptiveAuthStore,
+        webhook_url: Optional[str] = None,
+        webhook_secret: Optional[str] = None,
+        risk_threshold: float = 85.0,
+    ):
         self.store = store
         self.analyzer = BehaviorAnalyzer(store)
         self._anomaly_cache: Dict[str, BehaviorAnomaly] = {}
-    
+        self.webhook_url = webhook_url or os.getenv("SENTINEL_WEBHOOK_URL")
+        self.webhook_secret = webhook_secret or os.getenv("SENTINEL_WEBHOOK_SECRET")
+        self.risk_threshold = risk_threshold
+
     def record_action(
         self,
         session: AuthenticationSession,
@@ -389,7 +404,7 @@ class BehaviorMonitor:
             "metadata": metadata or {},
         })
         self.store.update_session(session)
-    
+
     def analyze_behavior(
         self,
         session: AuthenticationSession,
@@ -397,12 +412,58 @@ class BehaviorMonitor:
         """Analyze session behavior and detect anomalies."""
         profile = self.store.get_or_create_profile(session.user_id)
         result = self.analyzer.analyze_session_behavior(session, profile)
-        
+
         # Cache anomalies
         for anomaly in result.anomalies:
             self._anomaly_cache[anomaly.anomaly_id] = anomaly
-        
+
+        # Check risk score threshold for automated webhook alert trigger
+        scaled_score = result.anomaly_score * 100.0
+        if session.current_risk_score:
+            scaled_score = max(scaled_score, session.current_risk_score.total_score)
+
+        if scaled_score >= self.risk_threshold:
+            self._dispatch_webhook_alert(session, result, scaled_score)
+
         return result
+
+    def _dispatch_webhook_alert(
+        self,
+        session: AuthenticationSession,
+        result: AnomalyDetectionResult,
+        risk_score: float,
+    ) -> None:
+        """Safely trigger webhook alert for high-risk threat anomalies."""
+        webhook_url = self.webhook_url or os.getenv("SENTINEL_WEBHOOK_URL")
+        if not webhook_url:
+            return
+
+        try:
+            payload = {
+                "event": "high_risk_anomaly_detected",
+                "risk_score": risk_score,
+                "user_id": session.user_id,
+                "session_id": session.session_id,
+                "anomaly_count": len(result.anomalies),
+                "anomalies": [
+                    {
+                        "anomaly_id": a.anomaly_id,
+                        "anomaly_type": a.anomaly_type,
+                        "severity": a.severity,
+                        "description": a.description,
+                    }
+                    for a in result.anomalies
+                ],
+                "confidence": result.confidence,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            trigger_webhook_alert(
+                url=webhook_url,
+                payload=payload,
+                secret_key=self.webhook_secret,
+            )
+        except Exception as e:
+            logger.error(f"Failed to dispatch webhook alert in behavior monitor: {e}")
     
     def update_profile_from_session(self, session: AuthenticationSession) -> BehaviorProfile:
         """Update behavior profile based on session data."""

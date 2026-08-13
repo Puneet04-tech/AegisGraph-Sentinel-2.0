@@ -86,6 +86,7 @@ class ModelDeployment(BaseModel):
     rolled_back_at: Optional[datetime] = None
     previous_model_status: Optional[str] = None
     previous_traffic_percentage: Optional[float] = None
+    failure_reason: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

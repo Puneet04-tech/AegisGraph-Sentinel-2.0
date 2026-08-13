@@ -57,6 +57,8 @@ class PipelineExecutor:
             status=JobStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
         )
+        if source_data is not None:
+            job.input_data = source_data
         
         self._store.store_job(job)
         
@@ -258,16 +260,10 @@ class PipelineExecutor:
         if not job:
             raise ValueError(f"Job {job_id} not found")
         
-        # Create new job based on original
-        new_job = PipelineJob(
-            pipeline_id=job.pipeline_id,
-            status=JobStatus.PENDING,
-        )
-        
-        self._store.store_job(new_job)
-        
-        # Execute
-        return self.execute(job.pipeline_id)
+        # Execute the same pipeline with the same input data the original job
+        # ran against. This creates a fresh job (a new attempt) instead of a
+        # dangling PENDING job that is never picked up.
+        return self.execute(job.pipeline_id, source_data=job.input_data)
     
     def get_job_metrics(self, job_id: str) -> Optional[PipelineMetrics]:
         """Get metrics for a job."""

@@ -271,29 +271,40 @@ class InMemorySSOStateStore:
     must present the same value for the same provider, and the entry is
     consumed so it cannot be replayed. Fail closed on missing/mismatched/
     expired state.
+
+    The state also carries the exact ``redirect_uri`` used to build the
+    authorization URL, so the callback can echo it in the token exchange
+    (RFC 6749 requires the exchange URI to match the authorization URI).
     """
 
     def __init__(self, ttl_seconds: int = 600) -> None:
         self._ttl_seconds = ttl_seconds
-        # state -> (provider, expires_at)
-        self._pending: dict[str, tuple[str, datetime]] = {}
+        # state -> (provider, redirect_uri, expires_at)
+        self._pending: dict[str, tuple[str, str, datetime]] = {}
 
-    def issue(self, provider: str) -> str:
+    def issue(self, provider: str, redirect_uri: str = "") -> str:
         state = secrets.token_urlsafe(24)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds)
-        self._pending[state] = (provider, expires_at)
+        self._pending[state] = (provider, redirect_uri, expires_at)
         return state
 
-    def consume(self, state: str, provider: str) -> bool:
+    def consume(self, state: str, provider: str) -> Optional[str]:
+        """Consume a state and return its bound redirect_uri, or ``None``.
+
+        Returns ``None`` for empty input, unknown/expired state, or a provider
+        mismatch. A legitimate entry with no redirect_uri bound returns ``""``.
+        """
         if not state or not provider:
-            return False
+            return None
         entry = self._pending.pop(state, None)
         if entry is None:
-            return False
-        stored_provider, expires_at = entry
+            return None
+        stored_provider, stored_redirect_uri, expires_at = entry
         if datetime.now(timezone.utc) > expires_at:
-            return False
-        return secrets.compare_digest(stored_provider, provider)
+            return None
+        if not secrets.compare_digest(stored_provider, provider):
+            return None
+        return stored_redirect_uri
 
 
 # Module-level store for SSO CSRF state. Tests may replace this instance.
@@ -550,7 +561,18 @@ async def sso_authorize(
     current_user: dict = Depends(get_current_user),
 ):
     """Initiate SSO authorization."""
-    if _SSO_REDIRECT_ALLOWLIST and redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
+    # Fail closed: with no configured allowlist, SSO authorization is disabled
+    # rather than accepting arbitrary redirect targets.
+    if not _SSO_REDIRECT_ALLOWLIST:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "SSO authorization is disabled: set the OAUTH_REDIRECT_URIS "
+                "environment variable before enabling SSO"
+            ),
+        )
+
+    if redirect_uri not in _SSO_REDIRECT_ALLOWLIST:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="redirect_uri is not in the configured allow-list",
@@ -568,7 +590,7 @@ async def sso_authorize(
         )
 
     sso_provider.redirect_uri = redirect_uri
-    state = _sso_state_store.issue(provider.value)
+    state = _sso_state_store.issue(provider.value, redirect_uri)
     authorization_url = sso_provider.get_authorization_url()
     separator = "&" if "?" in authorization_url else "?"
     authorization_url = f"{authorization_url}{separator}state={state}"
@@ -578,7 +600,8 @@ async def sso_authorize(
 @router.post("/sso/callback", response_model=LoginResponse)
 async def sso_callback(request: SSOCallbackRequest):
     """Handle SSO callback"""
-    if not _sso_state_store.consume(request.state, request.provider.value):
+    redirect_uri = _sso_state_store.consume(request.state, request.provider.value)
+    if redirect_uri is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired SSO state",
@@ -587,7 +610,7 @@ async def sso_callback(request: SSOCallbackRequest):
     result = _get_auth_service().authenticate_sso(
         provider=request.provider,
         code=request.code,
-        redirect_uri="https://app.aegisgraph.com/auth/callback",
+        redirect_uri=redirect_uri,
     )
 
     if not result.success:

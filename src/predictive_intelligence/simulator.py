@@ -5,7 +5,6 @@ Simulates various fraud scenarios to predict outcomes and risk.
 """
 
 import time
-import random
 import threading
 from threading import Lock
 from typing import Dict, List, Optional, Any
@@ -102,16 +101,16 @@ class FraudSimulator:
         base_risk = scenario.parameters.get("base_risk", 0.5)
         compromised_rate = scenario.parameters.get("compromised_rate", 0.3)
         
-        # Calculate affected entities
-        affected = int(source_count * compromised_rate * random.uniform(1.5, 3.0))
-        affected_entities = random.sample(
-            scenario.source_entity_ids * 3,
-            min(affected, len(scenario.source_entity_ids) * 3)
-        )
-        
+        # Calculate affected entities. A higher compromised_rate spreads the
+        # attack across a larger multiple of the source entities.
+        spread_multiplier = 1.5 + compromised_rate * 1.5
+        affected = int(source_count * compromised_rate * spread_multiplier)
+        pool = scenario.source_entity_ids * 3
+        affected_entities = pool[:min(affected, len(pool))]
+
         # Calculate risk score
         risk_score = min(base_risk * (1 + compromised_rate * 0.5), 1.0)
-        
+
         # Generate outcomes
         outcomes = [
             {
@@ -124,7 +123,10 @@ class FraudSimulator:
                 "type": "unauthorized_transactions",
                 "probability": compromised_rate * 0.7,
                 "impact": "CRITICAL",
-                "estimated_loss": affected * random.uniform(1000, 10000),
+                # Loss per compromised account scales with how compromised
+                # the rate is: a higher compromise rate implies less
+                # cautious targeting and larger average transactions.
+                "estimated_loss": affected * (1000 + compromised_rate * 9000),
             },
             {
                 "type": "lateral_movement",
@@ -148,13 +150,15 @@ class FraudSimulator:
         expansion_rate = scenario.parameters.get("expansion_rate", 0.2)
         ring_size = scenario.parameters.get("ring_size", 5)
         
-        # Calculate expansion
-        new_members = int(ring_size * expansion_rate * random.uniform(1.5, 4.0))
+        # Calculate expansion. A faster-expanding ring recruits a larger
+        # multiple of its current size.
+        expansion_multiplier = 1.5 + expansion_rate * 2.5
+        new_members = int(ring_size * expansion_rate * expansion_multiplier)
         affected_entities = [f"ring_member_{i}" for i in range(new_members)]
-        
+
         # Calculate risk
         risk_score = min(0.6 + (expansion_rate * 0.3), 1.0)
-        
+
         outcomes = [
             {
                 "type": "ring_expansion",
@@ -166,7 +170,9 @@ class FraudSimulator:
                 "type": "coordinated_activity",
                 "probability": 0.8,
                 "impact": "CRITICAL",
-                "coordination_score": random.uniform(0.7, 0.95),
+                # Coordination tracks expansion rate: a ring recruiting
+                # faster is operating with tighter coordination.
+                "coordination_score": 0.7 + expansion_rate * 0.25,
             },
             {
                 "type": "resource_sharing",
@@ -188,11 +194,12 @@ class FraudSimulator:
         count = len(scenario.source_entity_ids)
         synthetic_rate = scenario.parameters.get("synthetic_rate", 0.15)
         
-        affected = int(count * synthetic_rate * random.uniform(2.0, 5.0))
+        synthetic_multiplier = 2.0 + synthetic_rate * 3.0
+        affected = int(count * synthetic_rate * synthetic_multiplier)
         affected_entities = [f"synthetic_{i}" for i in range(affected)]
-        
+
         risk_score = min(0.5 + (synthetic_rate * 0.4), 1.0)
-        
+
         outcomes = [
             {
                 "type": "fake_identities_created",
@@ -209,7 +216,7 @@ class FraudSimulator:
                 "type": "credit_fraud",
                 "probability": synthetic_rate * 0.5,
                 "impact": "HIGH",
-                "estimated_loss": affected * random.uniform(5000, 50000),
+                "estimated_loss": affected * (5000 + synthetic_rate * 45000),
             },
         ]
         
@@ -233,21 +240,22 @@ class FraudSimulator:
         outcomes = [
             {
                 "type": "funds_mixed",
-                "volume": volume * random.uniform(0.8, 1.2),
+                "volume": volume,
                 "probability": 0.85,
                 "impact": "CRITICAL",
             },
             {
                 "type": "chain_length",
                 "hops": hop_count,
-                "obfuscation_score": random.uniform(0.6, 0.9),
+                # More hops obfuscate the trail further.
+                "obfuscation_score": min(0.9, 0.6 + hop_count * 0.05),
                 "impact": "HIGH",
             },
             {
                 "type": "cash_out",
                 "probability": 0.7,
                 "impact": "HIGH",
-                "exit_risk": random.uniform(0.5, 0.8),
+                "exit_risk": min(0.8, 0.5 + hop_count * 0.05),
             },
         ]
         
@@ -264,11 +272,12 @@ class FraudSimulator:
         source_count = len(scenario.source_entity_ids)
         spread_rate = scenario.parameters.get("spread_rate", 0.25)
         
-        new_targets = int(source_count * spread_rate * random.uniform(2.0, 6.0))
+        spread_multiplier = 2.0 + spread_rate * 4.0
+        new_targets = int(source_count * spread_rate * spread_multiplier)
         affected_entities = [f"target_{i}" for i in range(new_targets)]
-        
+
         risk_score = min(0.5 + (spread_rate * 0.4), 1.0)
-        
+
         outcomes = [
             {
                 "type": "campaign_expansion",
@@ -284,7 +293,8 @@ class FraudSimulator:
             },
             {
                 "type": "campaign_peak",
-                "estimated_days": random.randint(5, 30),
+                # A faster-spreading campaign peaks sooner.
+                "estimated_days": max(5, round(30 - spread_rate * 25)),
                 "probability": 0.6,
                 "impact": "HIGH",
             },
@@ -303,11 +313,12 @@ class FraudSimulator:
         count = len(scenario.source_entity_ids)
         creation_rate = scenario.parameters.get("creation_rate", 0.2)
         
-        new_mules = int(count * creation_rate * random.uniform(1.5, 4.0))
+        creation_multiplier = 1.5 + creation_rate * 2.5
+        new_mules = int(count * creation_rate * creation_multiplier)
         affected_entities = [f"mule_{i}" for i in range(new_mules)]
-        
+
         risk_score = min(0.55 + (creation_rate * 0.35), 1.0)
-        
+
         outcomes = [
             {
                 "type": "mule_accounts_created",
@@ -317,7 +328,7 @@ class FraudSimulator:
             },
             {
                 "type": "transaction_volume",
-                "estimated_volume": new_mules * random.uniform(50000, 500000),
+                "estimated_volume": new_mules * (50000 + creation_rate * 450000),
                 "probability": 0.8,
                 "impact": "HIGH",
             },
@@ -341,7 +352,9 @@ class FraudSimulator:
         entry_points = len(scenario.source_entity_ids)
         infiltration_depth = scenario.parameters.get("infiltration_depth", 3)
         
-        compromised = int(entry_points * random.uniform(1.5, 3.0) * infiltration_depth)
+        # Deeper infiltration compromises proportionally more nodes per entry point.
+        infiltration_multiplier = min(3.0, 1.5 + infiltration_depth * 0.25)
+        compromised = int(entry_points * infiltration_multiplier * infiltration_depth)
         affected_entities = [f"node_{i}" for i in range(compromised)]
         
         risk_score = min(0.65 + (infiltration_depth * 0.1), 1.0)

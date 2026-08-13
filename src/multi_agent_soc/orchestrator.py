@@ -225,6 +225,7 @@ class AgentOrchestrator:
                 context=task_def.get("context", {}),
             )
             plan_tasks.append(task)
+            self._store.store_task(task)
             
             # Group for parallel execution
             if len(current_parallel) < parallel_threshold:
@@ -268,23 +269,48 @@ class AgentOrchestrator:
         
         plan.status = "IN_PROGRESS"
         plan.started_at = datetime.now(timezone.utc)
+        self._store.store_plan(plan)
         
         results = {"completed": [], "failed": [], "parallel": []}
         
-        # Execute parallel groups
+        # Execute parallel groups; tasks within a group run concurrently.
         for group in plan.parallel_groups:
-            group_results = []
-            for task_id in group:
+            group_results = {}
+            
+            def _run_task(task_id: str) -> Dict[str, Any]:
                 task = self._store.get_task(task_id)
                 if task:
-                    result = self._execute_task(task)
-                    group_results.append(result)
-                    results["completed"].append(task_id)
+                    return task.task_id, self._execute_task(task)
+                return task_id, {"error": f"Task {task_id} not found"}
+            
+            with ThreadPoolExecutor(max_workers=max(1, len(group))) as pool:
+                futures = {
+                    pool.submit(_run_task, task_id): task_id for task_id in group
+                }
+                for future in as_completed(futures):
+                    task_id = futures[future]
+                    try:
+                        _, result = future.result()
+                    except Exception as exc:
+                        logger.error(f"Task {task_id} failed: {exc}")
+                        task = self._store.get_task(task_id)
+                        if task:
+                            task.status = TaskStatus.FAILED
+                            task.result = {"error": str(exc)}
+                            self._store.store_task(task)
+                        result = {"error": str(exc)}
+                    
+                    group_results[task_id] = result
+                    if isinstance(result, dict) and "error" in result:
+                        results["failed"].append(task_id)
+                    else:
+                        results["completed"].append(task_id)
             
             results["parallel"].append(group_results)
         
-        plan.status = "COMPLETED"
+        plan.status = "COMPLETED" if not results["failed"] else "FAILED"
         plan.completed_at = datetime.now(timezone.utc)
+        self._store.store_plan(plan)
         
         return results
     

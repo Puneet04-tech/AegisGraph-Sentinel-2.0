@@ -101,7 +101,8 @@ class ComplianceDashboardService:
 
     def _calculate_domain_scores(self) -> Dict[str, float]:
         """Calculate compliance scores by domain."""
-        domain_scores = {}
+        domain_control_counts: Dict[str, int] = {}
+        domain_compliant_counts: Dict[str, int] = {}
         
         for reg in self.store.regulations.values():
             domain = reg.get("domain", "UNKNOWN")
@@ -111,14 +112,15 @@ class ComplianceDashboardService:
             if not controls:
                 continue
             
-            compliant = len([c for c in controls if c.get("status") == "COMPLIANT"])
-            score = (compliant / len(controls)) * 100
-            
-            domain_scores[domain] = domain_scores.get(domain, 0) + score
+            domain_control_counts[domain] = domain_control_counts.get(domain, 0) + len(controls)
+            domain_compliant_counts[domain] = domain_compliant_counts.get(domain, 0) + len(
+                [c for c in controls if c.get("status") == "COMPLIANT"]
+            )
         
-        # Average scores for domains with multiple regulations
-        # (Simplified - in production, would track regulation count per domain)
-        return domain_scores
+        return {
+            domain: (domain_compliant_counts[domain] / domain_control_counts[domain]) * 100
+            for domain in domain_control_counts
+        }
 
     def _get_findings_summary(self) -> Dict[str, Any]:
         """Get summary of findings."""
@@ -197,6 +199,26 @@ class ComplianceDashboardService:
         
         return risk_counts
 
+    def _parse_assessment_date(self, value: Any) -> Optional[datetime]:
+        """Normalize an assessment date to a tz-aware datetime.
+
+        Assessment dates may be stored as either ``datetime`` objects or ISO
+        format strings, so coerce both before any comparison.
+        """
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return None
+
     def _calculate_trend_direction(self) -> str:
         """Calculate compliance trend direction."""
         # Compare recent assessments to older ones
@@ -207,8 +229,16 @@ class ComplianceDashboardService:
         
         # Split into recent (last 30 days) and older
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-        recent = [a for a in assessments if a.get("assessment_date", "") >= cutoff.isoformat()]
-        older = [a for a in assessments if a.get("assessment_date", "") < cutoff.isoformat()]
+        recent = []
+        older = []
+        for assessment in assessments:
+            date = self._parse_assessment_date(assessment.get("assessment_date"))
+            if date is None:
+                continue
+            if date >= cutoff:
+                recent.append(assessment)
+            else:
+                older.append(assessment)
         
         if not recent or not older:
             return "STABLE"

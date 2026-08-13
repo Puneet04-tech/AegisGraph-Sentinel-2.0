@@ -4,8 +4,9 @@ Model Auditor Module.
 Model lineage tracking, drift detection, and change management.
 """
 
-import random
 import hashlib
+import json
+from statistics import mean, pstdev
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -25,7 +26,16 @@ class ModelAuditor:
         - Drift detection
         - Change management
     """
-    
+
+    #: Feature drift above this is reported as a warning.
+    FEATURE_DRIFT_THRESHOLD = 0.1
+
+    #: Performance drift above this is reported as a warning.
+    PERFORMANCE_DRIFT_THRESHOLD = 0.15
+
+    #: Keys read as the model's output when measuring performance drift.
+    SCORE_KEYS = ("score", "prediction", "prediction_value", "output_score")
+
     def __init__(self, store: Optional[ExplainableAIStore] = None):
         """Initialize the model auditor."""
         self._store = store or get_xai_store()
@@ -52,8 +62,23 @@ class ModelAuditor:
         self._store.store_audit(audit)
         return audit
     
-    def start_audit(self, audit_id: str) -> ModelAudit:
-        """Start an audit."""
+    def start_audit(
+        self,
+        audit_id: str,
+        training_data: Optional[List[Dict[str, Any]]] = None,
+        reference_data: Optional[List[Dict[str, Any]]] = None,
+        current_data: Optional[List[Dict[str, Any]]] = None,
+    ) -> ModelAudit:
+        """Start an audit.
+
+        Args:
+            audit_id: Audit to run.
+            training_data: Training records to hash for the integrity check.
+                Without it the check is recorded as skipped rather than
+                passing against a hash of nothing.
+            reference_data: Baseline sample for drift comparison.
+            current_data: Recent sample for drift comparison.
+        """
         audit = self._store.get_audit(audit_id)
         if not audit:
             raise ValueError(f"Audit {audit_id} not found")
@@ -62,11 +87,22 @@ class ModelAuditor:
         self._store.store_audit(audit)
         
         # Perform audit checks
-        self._perform_audit_checks(audit)
+        self._perform_audit_checks(
+            audit,
+            training_data=training_data,
+            reference_data=reference_data,
+            current_data=current_data,
+        )
         
         return audit
     
-    def _perform_audit_checks(self, audit: ModelAudit) -> None:
+    def _perform_audit_checks(
+        self,
+        audit: ModelAudit,
+        training_data: Optional[List[Dict[str, Any]]] = None,
+        reference_data: Optional[List[Dict[str, Any]]] = None,
+        current_data: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Perform audit checks on the model."""
         findings = []
         
@@ -77,64 +113,109 @@ class ModelAuditor:
             "description": "Model version is consistent across all deployments",
         })
         
-        # Check 2: Training data integrity
-        audit.training_data_hash = self._compute_data_hash("training_data")
-        findings.append({
-            "check": "training_data_integrity",
-            "status": "pass",
-            "description": f"Training data hash: {audit.training_data_hash}",
-        })
-        
-        # Check 3: Feature drift
-        audit.feature_drift_score = random.uniform(0.01, 0.15)
-        if audit.feature_drift_score > 0.1:
+        # Check 2: Training data integrity. The hash used to be taken over
+        # f"training_data_{random.randint(1000, 9999)}", so it never described
+        # any data and could never match between two audits of the same model
+        # -- the exact thing an integrity hash exists to establish.
+        if training_data:
+            audit.training_data_hash = self._compute_data_hash(training_data)
             findings.append({
-                "check": "feature_drift",
-                "status": "warning",
-                "description": f"Feature drift detected: {audit.feature_drift_score:.4f}",
+                "check": "training_data_integrity",
+                "status": "pass",
+                "description": f"Training data hash: {audit.training_data_hash}",
             })
         else:
+            audit.training_data_hash = None
             findings.append({
-                "check": "feature_drift",
-                "status": "pass",
-                "description": "Feature drift within acceptable range",
+                "check": "training_data_integrity",
+                "status": "skipped",
+                "description": "No training data supplied; integrity not verified",
             })
-        
-        # Check 4: Performance drift
-        audit.performance_drift_score = random.uniform(0.01, 0.2)
-        if audit.performance_drift_score > 0.15:
-            findings.append({
-                "check": "performance_drift",
-                "status": "warning",
-                "description": f"Performance drift detected: {audit.performance_drift_score:.4f}",
-            })
-        else:
-            findings.append({
-                "check": "performance_drift",
-                "status": "pass",
-                "description": "Performance drift within acceptable range",
-            })
-        
-        # Check 5: Bias check
+
+        # Checks 3 and 4: drift, measured against the reference sample when
+        # one is available. Both scores used to be random draws.
+        drift = None
+        if reference_data and current_data:
+            drift = self.detect_drift(audit.model_id, reference_data, current_data)
+            audit.feature_drift_score = drift["feature_drift_score"]
+            audit.performance_drift_score = drift["performance_drift_score"]
+
+        findings.append(self._drift_finding(
+            "feature_drift", audit.feature_drift_score,
+            self.FEATURE_DRIFT_THRESHOLD,
+        ))
+        findings.append(self._drift_finding(
+            "performance_drift", audit.performance_drift_score,
+            self.PERFORMANCE_DRIFT_THRESHOLD,
+        ))
+
+        # Check 5: bias. This module performs no bias analysis; claiming a
+        # pass is worse than recording that the check did not run.
         findings.append({
             "check": "bias_assessment",
-            "status": "pass",
-            "description": "No significant bias detected in protected attributes",
+            "status": "skipped",
+            "description": (
+                "Bias analysis is performed by ComplianceReporter.analyze_bias "
+                "and was not run as part of this audit"
+            ),
         })
-        
+
         audit.findings = findings
-        audit.status = ModelAuditStatus.APPROVED
-        audit.approved_by = "system"
-        audit.approved_at = datetime.now(timezone.utc)
         audit.completed_at = datetime.now(timezone.utc)
-        
+
+        # An audit that raised warnings or could not complete its checks is
+        # not approved. Previously every audit was stamped APPROVED by
+        # "system" regardless of what the checks found.
+        blocking = [f for f in findings if f["status"] in ("warning", "skipped")]
+        if blocking:
+            audit.status = ModelAuditStatus.IN_PROGRESS
+            logger.info(
+                "Audit %s completed with %d check(s) needing review; awaiting "
+                "approval", audit.audit_id, len(blocking),
+            )
+        else:
+            audit.status = ModelAuditStatus.APPROVED
+            audit.approved_by = "system"
+            audit.approved_at = datetime.now(timezone.utc)
+
         self._store.store_audit(audit)
-    
-    def _compute_data_hash(self, data_type: str) -> str:
-        """Compute hash of data for integrity check."""
-        # Simulate hash computation
-        data = f"{data_type}_{random.randint(1000, 9999)}"
-        return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+    def _drift_finding(
+        self,
+        check: str,
+        score: Optional[float],
+        threshold: float,
+    ) -> Dict[str, Any]:
+        """Turn a drift score into an audit finding."""
+        if score is None:
+            return {
+                "check": check,
+                "status": "skipped",
+                "description": (
+                    f"No comparable samples supplied; {check.replace('_', ' ')} "
+                    "not measured"
+                ),
+            }
+        if score > threshold:
+            return {
+                "check": check,
+                "status": "warning",
+                "description": f"{check.replace('_', ' ').capitalize()} detected: {score:.4f}",
+            }
+        return {
+            "check": check,
+            "status": "pass",
+            "description": f"{check.replace('_', ' ').capitalize()} within acceptable range",
+        }
+
+    def _compute_data_hash(self, data: Any) -> str:
+        """Hash the supplied data for an integrity check.
+
+        Serialised with sorted keys so that equal data hashes equally
+        regardless of dict ordering.
+        """
+        payload = json.dumps(data, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
     
     def approve_audit(
         self,
@@ -220,27 +301,164 @@ class ModelAuditor:
         reference_data: List[Dict[str, Any]],
         current_data: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Detect drift between reference and current data."""
+        """Detect drift between reference and current data.
+
+        Both datasets used to be ignored: the method returned
+        ``random.uniform`` scores and reported ``len(reference_data)`` beside
+        them, so identical datasets could be flagged as drifting and a model
+        could be sent for retraining on a coin flip.
+        """
         logger.info(f"Detecting drift for model {model_id}")
-        
-        # Simulate drift detection
-        feature_drift = random.uniform(0.0, 0.2)
-        performance_drift = random.uniform(0.0, 0.25)
-        
-        drift_detected = feature_drift > 0.1 or performance_drift > 0.15
-        
+
+        if not reference_data or not current_data:
+            logger.warning(
+                "Drift detection for model %s needs both a reference and a "
+                "current sample", model_id,
+            )
+            return {
+                "model_id": model_id,
+                "drift_detected": False,
+                "feature_drift_score": None,
+                "performance_drift_score": None,
+                "recommendation": "Collect comparable samples before assessing drift",
+                "details": {
+                    "reference_samples": len(reference_data),
+                    "current_samples": len(current_data),
+                    "drift_type": None,
+                    "insufficient_data": True,
+                },
+            }
+
+        feature_drift, compared_features = self._feature_drift(
+            reference_data, current_data,
+        )
+        performance_drift = self._performance_drift(reference_data, current_data)
+
+        drift_detected = (
+            (feature_drift is not None
+             and feature_drift > self.FEATURE_DRIFT_THRESHOLD)
+            or (performance_drift is not None
+                and performance_drift > self.PERFORMANCE_DRIFT_THRESHOLD)
+        )
+
         return {
             "model_id": model_id,
             "drift_detected": drift_detected,
             "feature_drift_score": feature_drift,
             "performance_drift_score": performance_drift,
-            "recommendation": "Retrain model" if drift_detected else "Continue monitoring",
+            "recommendation": (
+                "Retrain model" if drift_detected else "Continue monitoring"
+            ),
             "details": {
                 "reference_samples": len(reference_data),
                 "current_samples": len(current_data),
-                "drift_type": "concept" if performance_drift > feature_drift else "data",
+                "drift_type": self._drift_type(feature_drift, performance_drift),
+                "compared_features": compared_features,
+                "insufficient_data": False,
             },
         }
+
+    def _feature_drift(
+        self,
+        reference_data: List[Dict[str, Any]],
+        current_data: List[Dict[str, Any]],
+    ) -> tuple:
+        """Mean standardised shift across the features both samples share.
+
+        Each feature's shift is the change in its mean expressed in reference
+        standard deviations, so features on different scales are comparable.
+        Returns ``(score, feature_names)``.
+        """
+        shared = sorted(
+            self._numeric_keys(reference_data) & self._numeric_keys(current_data)
+        )
+        if not shared:
+            return None, []
+
+        shifts = []
+        for key in shared:
+            reference_values = self._values(reference_data, key)
+            current_values = self._values(current_data, key)
+            if not reference_values or not current_values:
+                continue
+
+            spread = pstdev(reference_values) if len(reference_values) > 1 else 0.0
+            if spread == 0:
+                # A constant reference feature: any change at all is a shift,
+                # scaled by the magnitude of the reference value.
+                scale = abs(mean(reference_values)) or 1.0
+            else:
+                scale = spread
+
+            shifts.append(abs(mean(current_values) - mean(reference_values)) / scale)
+
+        if not shifts:
+            return None, []
+
+        return round(min(1.0, mean(shifts)), 4), shared
+
+    def _performance_drift(
+        self,
+        reference_data: List[Dict[str, Any]],
+        current_data: List[Dict[str, Any]],
+    ) -> Optional[float]:
+        """Relative change in the recorded model output between samples.
+
+        ``None`` when neither sample records an output, rather than a guess.
+        """
+        for key in self.SCORE_KEYS:
+            reference_values = self._values(reference_data, key)
+            current_values = self._values(current_data, key)
+            if not reference_values or not current_values:
+                continue
+
+            reference_mean = mean(reference_values)
+            if reference_mean == 0:
+                return round(min(1.0, abs(mean(current_values))), 4)
+
+            return round(
+                min(1.0, abs(mean(current_values) - reference_mean) / abs(reference_mean)),
+                4,
+            )
+
+        return None
+
+    def _drift_type(
+        self,
+        feature_drift: Optional[float],
+        performance_drift: Optional[float],
+    ) -> Optional[str]:
+        """Whether the drift looks like concept drift or data drift."""
+        if performance_drift is None and feature_drift is None:
+            return None
+        if performance_drift is None:
+            return "data"
+        if feature_drift is None:
+            return "concept"
+        return "concept" if performance_drift > feature_drift else "data"
+
+    @staticmethod
+    def _numeric_keys(records: List[Dict[str, Any]]) -> set:
+        """Keys carrying numeric values in at least one record."""
+        keys = set()
+        for record in records:
+            for key, value in record.items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    keys.add(key)
+        return keys
+
+    @staticmethod
+    def _values(records: List[Dict[str, Any]], key: str) -> List[float]:
+        """Numeric values recorded under a key."""
+        values = []
+        for record in records:
+            value = record.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            values.append(float(value))
+        return values
     
     def get_model_lineage(self, model_id: str) -> Dict[str, Any]:
         """Get model lineage (ancestors and descendants)."""

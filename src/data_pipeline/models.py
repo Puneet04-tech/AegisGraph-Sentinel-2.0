@@ -120,6 +120,7 @@ class PipelineJob(BaseModel):
     records_failed: int = 0
     error_message: Optional[str] = None
     logs: List[str] = Field(default_factory=list)
+    input_data: Optional[List[Dict[str, Any]]] = Field(default=None, description="Source data the job ran against")
 
 
 class PipelineMetrics(BaseModel):

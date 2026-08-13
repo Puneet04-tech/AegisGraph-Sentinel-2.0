@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.regulatory_fabric import ComplianceStore
@@ -372,6 +375,7 @@ class OmegaPlatform:
         try:
             return store.get_compliance_score() or 85.0
         except Exception:
+            logger.warning("Failed to fetch compliance score", exc_info=True)
             return 85.0
 
     def _get_fraud_risk_score(self) -> float:
@@ -392,6 +396,7 @@ class OmegaPlatform:
         try:
             return store.get_defense_stats()
         except Exception:
+            logger.warning("Failed to fetch defense stats", exc_info=True)
             return {"active_containments": 0, "total_events": 0}
 
     def _get_threat_stats(self) -> Dict[str, Any]:
@@ -418,6 +423,7 @@ class OmegaPlatform:
                 "threat_level": threat_level,
             }
         except Exception:
+            logger.warning("Failed to fetch threat stats", exc_info=True)
             return {"total_campaigns": 0, "threat_level": "LOW"}
 
     def _generate_recommendations(
@@ -465,8 +471,8 @@ class OmegaPlatform:
                         "timestamp": event.get("timestamp"),
                     })
             except Exception:
-                pass
-        
+                logger.warning("Failed to fetch defense events", exc_info=True)
+
         # Sort by timestamp
         events = sorted(events, key=lambda x: x.get("timestamp", ""), reverse=True)
         return events[:10]

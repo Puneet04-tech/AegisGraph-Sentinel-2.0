@@ -52,6 +52,7 @@ class BehavioralBaseline(BaseModel):
     activity_type: ActivityType
     avg_frequency: float
     avg_duration: float
+    avg_volume: float = 0.0
     typical_hours: List[int] = Field(default_factory=list)
     typical_locations: List[str] = Field(default_factory=list)
     typical_devices: List[str] = Field(default_factory=list)

@@ -5,6 +5,7 @@ Provides analytical data layer, data cubes, and aggregation capabilities.
 """
 
 import random
+import hashlib
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -39,6 +40,7 @@ class DataWarehouseModule:
         """
         self._store = store or get_analytics_store()
         self._module_id = "data_warehouse"
+        self._cubes: Dict[str, DataCube] = {}
     
     def create_data_cube(
         self,
@@ -62,10 +64,11 @@ class DataWarehouseModule:
             name=name,
             dimensions=dimensions,
             measures=measures,
-            facts=random.randint(1000, 100000),
+            facts=0,
             aggregations=self._generate_aggregations(dimensions, measures),
         )
         
+        self._cubes[name] = cube
         return cube
     
     def _generate_aggregations(
@@ -83,10 +86,17 @@ class DataWarehouseModule:
                     "type": AggregationType.SUM.value,
                     "dimension": dim,
                     "measure": measure,
-                    "value": random.uniform(1000, 100000),
+                    "value": 0.0,
                 }
         
         return aggregations
+    
+    def _seeded_random(self, *parts: Any) -> random.Random:
+        """Build a deterministic RNG from query parameters, so identical
+        queries return identical results and different queries diverge."""
+        normalized = [sorted(p.items()) if isinstance(p, dict) else p for p in parts]
+        seed = int(hashlib.md5(str(normalized).encode()).hexdigest()[:8], 16)
+        return random.Random(seed)
     
     def query_cube(
         self,
@@ -114,21 +124,25 @@ class DataWarehouseModule:
         measures = measures or ["count"]
         filters = filters or {}
         
-        # Generate sample results
+        if cube_name not in self._cubes:
+            return []
+        
+        rng = self._seeded_random(cube_name, dimensions, measures, filters, aggregation)
+        
         results = []
-        for i in range(random.randint(5, 20)):
+        for i in range(rng.randint(5, 20)):
             row = {"row_id": i}
             row.update(dimensions)
             
             for measure in measures:
                 if aggregation == AggregationType.AVG:
-                    row[measure] = random.uniform(50, 200)
+                    row[measure] = rng.uniform(50, 200)
                 elif aggregation == AggregationType.SUM:
-                    row[measure] = random.uniform(1000, 50000)
+                    row[measure] = rng.uniform(1000, 50000)
                 elif aggregation == AggregationType.COUNT:
-                    row[measure] = random.randint(10, 1000)
+                    row[measure] = rng.randint(10, 1000)
                 else:
-                    row[measure] = random.uniform(0, 100)
+                    row[measure] = rng.uniform(0, 100)
             
             results.append(row)
         
@@ -150,11 +164,16 @@ class DataWarehouseModule:
         """
         logger.info(f"Rolling up cube {cube_name} by {rollup_dimensions}")
         
+        if cube_name not in self._cubes:
+            return {"rolled_dimensions": rollup_dimensions, "total_records": 0, "aggregated_values": {}}
+        
+        rng = self._seeded_random(cube_name, rollup_dimensions)
+        
         return {
             "rolled_dimensions": rollup_dimensions,
-            "total_records": random.randint(1000, 100000),
+            "total_records": rng.randint(1000, 100000),
             "aggregated_values": {
-                dim: random.uniform(1000, 50000) for dim in rollup_dimensions
+                dim: rng.uniform(1000, 50000) for dim in rollup_dimensions
             },
         }
     
@@ -176,14 +195,19 @@ class DataWarehouseModule:
         """
         logger.info(f"Drilling down cube {cube_name} on {drilldown_dimension}")
         
+        if cube_name not in self._cubes:
+            return []
+        
+        rng = self._seeded_random(cube_name, drilldown_dimension, level)
+        
         results = []
-        for i in range(random.randint(5, 15)):
+        for i in range(rng.randint(5, 15)):
             results.append({
                 "dimension": drilldown_dimension,
                 "level": level,
                 "value": f"detail_{i}",
-                "count": random.randint(10, 500),
-                "total": random.uniform(1000, 50000),
+                "count": rng.randint(10, 500),
+                "total": rng.uniform(1000, 50000),
             })
         
         return results
@@ -206,11 +230,16 @@ class DataWarehouseModule:
         """
         logger.info(f"Slicing cube {cube_name} on {dimension}={value}")
         
+        if cube_name not in self._cubes:
+            return {"sliced_dimension": dimension, "slice_value": value, "record_count": 0, "total": 0.0}
+        
+        rng = self._seeded_random(cube_name, dimension, value)
+        
         return {
             "sliced_dimension": dimension,
             "slice_value": value,
-            "record_count": random.randint(100, 5000),
-            "total": random.uniform(10000, 500000),
+            "record_count": rng.randint(100, 5000),
+            "total": rng.uniform(10000, 500000),
         }
     
     def define_metric(

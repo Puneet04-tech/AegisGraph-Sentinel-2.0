@@ -22,10 +22,10 @@ from src.saas.auth.credential_stores import (
 from src.saas.auth.password_policy import validate_password
 from src.saas.auth.service import auth_service
 from src.saas.routes.auth import get_current_user
-from src.saas.services.billing import PriceTier
 from src.saas.services.limit_enforcer import (
     enforce_tenant_limit,
     get_tenant_resource_count,
+    get_tenant_tier,
     set_tenant_resource_count,
 )
 
@@ -289,7 +289,10 @@ async def create_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required")
 
     tenant_id = _require_tenant_context(current_user)
-    enforce_tenant_limit(tenant_id, "max_users", PriceTier.COMMUNITY)
+    # Enforce against the tenant's actual subscription tier rather than
+    # hardcoding the free COMMUNITY cap, so paid tenants are not blocked at
+    # the free-tier limit.
+    enforce_tenant_limit(tenant_id, "max_users", get_tenant_tier(tenant_id))
 
     with _STORE_LOCK:
         if any(user["tenant_id"] == tenant_id and user["email"].lower() == data.email.lower() for user in _USER_STORE.values()):
@@ -469,7 +472,13 @@ async def delete_user(
     tenant_id = _require_tenant_context(current_user)
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
+        was_active = user["is_active"]
         user["is_active"] = False
+        # A removed user frees its seat, otherwise deleted users would
+        # permanently occupy capacity against the subscription limit.
+        if was_active:
+            current_count = get_tenant_resource_count(tenant_id, "max_users")
+            set_tenant_resource_count(tenant_id, "max_users", max(0, current_count - 1))
         _audit("user_deleted", current_user["user_id"], tenant_id, user_id)
     return None
 
@@ -484,7 +493,13 @@ async def deactivate_user(
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
         _require_owner_or_admin(current_user, user)
+        was_active = user["is_active"]
         user["is_active"] = False
+        # A deactivated user frees its seat, otherwise deactivated accounts
+        # would permanently occupy capacity against the subscription limit.
+        if was_active:
+            current_count = get_tenant_resource_count(tenant_id, "max_users")
+            set_tenant_resource_count(tenant_id, "max_users", max(0, current_count - 1))
         _audit("user_deactivated", current_user["user_id"], tenant_id, user_id)
     return {"success": True, "user_id": user_id, "is_active": False}
 

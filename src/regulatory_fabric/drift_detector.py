@@ -4,11 +4,15 @@ Compliance Drift Detector for Regulatory Fabric.
 Monitors for changes that could cause compliance drift.
 """
 
+import logging
+
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 import threading
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -114,16 +118,32 @@ class ComplianceDriftDetector:
         mapping_drift = self._detect_mapping_drift(baseline, current_time, mappings_snapshot)
         drift_events.extend(mapping_drift)
         
-        # Store and notify
+        # Store under the lock, then notify outside it.
+        #
+        # Handlers used to be called while `self._lock` was held. It is a
+        # plain (non-reentrant) Lock, so any handler that touched the detector
+        # -- registering another handler, or running another detection pass --
+        # deadlocked the process permanently. A slow handler also blocked
+        # every other thread out of the detector for its whole duration.
         with self._lock:
-            for event in drift_events:
-                self._drift_events.append(event)
-                for handler in self._drift_handlers:
-                    try:
-                        handler(event)
-                    except Exception:
-                        pass
-        
+            self._drift_events.extend(drift_events)
+            handlers = list(self._drift_handlers)
+
+        for event in drift_events:
+            for handler in handlers:
+                try:
+                    handler(event)
+                except Exception:
+                    # A failing handler used to be discarded silently, so a
+                    # broken consumer stopped receiving compliance drift
+                    # events with nothing in the logs to say so.
+                    logger.warning(
+                        "Drift handler %r failed for event %s",
+                        getattr(handler, "__name__", handler),
+                        getattr(event, "event_id", event),
+                        exc_info=True,
+                    )
+
         return drift_events
 
     def _detect_control_drift(self, baseline: BaselineSnapshot, current_time: datetime, controls_snapshot: Dict[str, Any]) -> List[DriftEvent]:
