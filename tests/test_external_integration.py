@@ -58,8 +58,19 @@ def connector_framework(store):
 
 @pytest.fixture
 def webhook_manager(store):
-    """Create a webhook manager."""
-    return WebhookManager(store=store)
+    """Create a webhook manager that does not reach the network.
+
+    Webhook delivery now performs a real HTTP POST, so these tests inject a
+    transport instead of letting them resolve webhook.test.com.
+    """
+    def offline_transport(url, **kwargs):
+        class _Response:
+            status_code = 200
+            text = "ok"
+
+        return _Response()
+
+    return WebhookManager(store=store, transport=offline_transport)
 
 
 # =============================================================================
