@@ -118,6 +118,7 @@ class DefenseGridController:
             affected_entities = []
         
         start_time = datetime.now(timezone.utc)
+        timestamp_str = start_time.isoformat()
         
         # Log defense event
         event = {
@@ -128,9 +129,8 @@ class DefenseGridController:
             "description": f"Threat detected: {threat_type}",
             "affected_entities": [{"entity_id": e, "type": "unknown"} for e in affected_entities],
             "related_threat_id": threat_id,
-            "timestamp": start_time,
+            "timestamp": timestamp_str,
         }
-        self.store.add_defense_event(event)
         
         response = {
             "threat_id": threat_id,
@@ -138,7 +138,7 @@ class DefenseGridController:
             "severity": severity,
             "affected_entities": affected_entities,
             "response_id": str(uuid.uuid4()),
-            "detection_time": start_time,
+            "detection_time": timestamp_str,
         }
         
         # Determine response based on severity
@@ -152,7 +152,7 @@ class DefenseGridController:
             # Monitor and log
             response["actions"] = [{"type": "MONITOR", "status": "TRIGGERED"}]
         
-        response["response_start_time"] = datetime.now(timezone.utc)
+        response["response_start_time"] = datetime.now(timezone.utc).isoformat()
         
         # Store response
         self.store.add_threat_response(response)
@@ -160,9 +160,10 @@ class DefenseGridController:
         response_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
         response["response_time_ms"] = response_time
         
-        # Update event with actions
+        # Update event with actions and timing before persistence
         event["actions_taken"] = [a.get("type") for a in response.get("actions", [])]
         event["response_time_ms"] = response_time
+        self.store.add_defense_event(event)
         
         self._notify_subscribers({
             "type": "THREAT_RESPONSE",

@@ -160,6 +160,45 @@ class TestDefenseController:
         assert "response_id" in result
         assert "actions" in result
 
+    def test_process_threat_persists_complete_event(self):
+        """Persisted defense event must contain actions_taken and response_time_ms."""
+        threat_data = {
+            "type": "RANSOMWARE_DETECTION",
+            "severity": "CRITICAL",
+            "source": "SENSOR",
+            "affected_entities": ["server_001"],
+        }
+        self.controller.process_threat(threat_data)
+
+        events = self.store.list_defense_events()
+        assert len(events) >= 1
+        persisted_event = events[0]
+        assert "actions_taken" in persisted_event
+        assert len(persisted_event["actions_taken"]) > 0
+        assert "response_time_ms" in persisted_event
+        assert isinstance(persisted_event["response_time_ms"], (int, float))
+        assert persisted_event["response_time_ms"] >= 0
+
+    def test_process_threat_event_timestamp_serializable(self):
+        """Persisted defense event timestamp must be JSON-serializable."""
+        import json
+        threat_data = {
+            "type": "EXFILTRATION_ALERT",
+            "severity": "MEDIUM",
+            "source": "NETWORK_MONITOR",
+            "affected_entities": ["endpoint_002"],
+        }
+        self.controller.process_threat(threat_data)
+
+        events = self.store.list_defense_events()
+        assert len(events) >= 1
+        persisted_event = events[0]
+        assert isinstance(persisted_event["timestamp"], str)
+
+        # Must serialize to JSON without raising TypeError
+        serialized = json.dumps(persisted_event)
+        assert isinstance(serialized, str)
+
     def test_initiate_containment(self):
         """Test initiating containment."""
         result = self.controller._initiate_containment(
