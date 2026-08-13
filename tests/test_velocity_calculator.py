@@ -378,6 +378,48 @@ class TestAcceleration:
         ]
         assert calculator.compute_acceleration(txs) == 0.0
 
+    def test_unsorted_input_sequence_sorted_before_acceleration(self, calculator):
+        unsorted_txs = [
+            make_tx("C", "D", 25, 40.0, "t3"),
+            make_tx("A", "B", 100, 10.0, "t1"),
+            make_tx("B", "C", 50, 20.0, "t2"),
+        ]
+        sorted_txs = [
+            make_tx("A", "B", 100, 10.0, "t1"),
+            make_tx("B", "C", 50, 20.0, "t2"),
+            make_tx("C", "D", 25, 40.0, "t3"),
+        ]
+        acc_unsorted = calculator.compute_acceleration(unsorted_txs)
+        acc_sorted = calculator.compute_acceleration(sorted_txs)
+        assert acc_unsorted == pytest.approx(acc_sorted)
+
+    def test_even_length_transaction_sequence_no_overlap(self, calculator):
+        # 4 transactions: index 2 should not be shared in first_half
+        txs = [
+            make_tx("A", "B", 100, 10.0, "t1"),
+            make_tx("B", "C", 100, 20.0, "t2"),
+            make_tx("C", "D", 500, 30.0, "t3"),
+            make_tx("D", "E", 100, 40.0, "t4"),
+        ]
+        # v1: first 2 txs [10, 20] -> total_amount=200, time=10 -> v1=20.0
+        # v2: last 2 txs [30, 40] -> total_amount=600, time=10 -> v2=60.0
+        # t1=10, t2=10 -> total_time=20
+        # acceleration = (60 - 20) / 20 = 2.0
+        acc = calculator.compute_acceleration(txs)
+        assert acc == pytest.approx(2.0)
+
+    def test_odd_length_transaction_sequence_bounds(self, calculator):
+        txs = [
+            make_tx("A", "B", 100, 10.0, "t1"),
+            make_tx("B", "C", 100, 20.0, "t2"),
+            make_tx("C", "D", 200, 30.0, "t3"),
+            make_tx("D", "E", 200, 40.0, "t4"),
+            make_tx("E", "F", 300, 50.0, "t5"),
+        ]
+        acc = calculator.compute_acceleration(txs)
+        assert isinstance(acc, float)
+        assert not math.isnan(acc)
+
 
 class TestComputeAllFeatures:
     """Aggregate feature computation and risk score."""
