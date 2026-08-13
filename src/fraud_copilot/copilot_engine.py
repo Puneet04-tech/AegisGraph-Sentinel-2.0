@@ -19,13 +19,12 @@ from .models import (
     InvestigationInsight,
     KnowledgeDocument,
     MessageRole,
-    Recommendation,
-    RecommendationType,
     ReportSection,
     ThreatExplanation,
     ConversationMessage,
 )
 from .store import FraudCopilotStore, get_copilot_store
+from .recommendation_engine import get_recommendation_engine
 
 
 class CopilotEngine:
@@ -34,6 +33,7 @@ class CopilotEngine:
     def __init__(self, store: Optional[FraudCopilotStore] = None) -> None:
         """Initialize the engine."""
         self.store = store or get_copilot_store()
+        self.recommendations = get_recommendation_engine()
 
     async def create_session(
         self,
@@ -209,14 +209,15 @@ class CopilotEngine:
         if "risk_score" in case_data:
             summary_text += f"Risk Score: {case_data['risk_score']}. "
         
-        summary_text += "Key findings include transaction anomalies and pattern irregularities requiring further investigation."
+        key_findings = self._derive_findings(case_data)
+        summary_text += " ".join(key_findings)
         
         summary = CaseSummary(
             summary_id=str(uuid.uuid4()),
             case_id=case_id,
             summary_text=summary_text,
-            key_findings=["Transaction anomaly detected", "Pattern irregularity identified"],
-            risk_factors=["High transaction velocity", "Unusual account behavior"],
+            key_findings=key_findings,
+            risk_factors=self._derive_risk_factors(case_data),
             recommended_actions=["Review transaction history", "Verify account ownership"],
         )
         
@@ -227,45 +228,39 @@ class CopilotEngine:
             "summary_text": summary.summary_text,
             "key_findings": summary.key_findings,
         }
+    
+    def _derive_findings(self, case_data: Dict[str, Any]) -> List[str]:
+        """Derive key findings from case data."""
+        findings = []
+        if case_data.get("linked_entities", 0) > 3:
+            findings.append(f"Case linked to {case_data['linked_entities']} other entities")
+        if case_data.get("risk_score", 0.5) > 0.7:
+            findings.append("Automated risk assessment flagged this case as high risk")
+        if not findings:
+            findings.append("No significant anomalies flagged by automated checks")
+        return findings
+    
+    def _derive_risk_factors(self, case_data: Dict[str, Any]) -> List[str]:
+        """Derive risk factors from case data."""
+        factors = []
+        if case_data.get("risk_score", 0.5) > 0.7:
+            factors.append("Risk score above high-risk threshold")
+        if case_data.get("linked_entities", 0) > 3:
+            factors.append("Multiple linked entities suggest coordinated activity")
+        if not factors:
+            factors.append("Risk score within normal range")
+        return factors
 
     async def recommend(
         self,
         session_id: str,
         case_id: str,
+        case_data: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Generate recommendations for a case."""
-        recommendations = [
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.INVESTIGATION,
-                title="Conduct Deep Transaction Analysis",
-                description="Review all recent transactions for the involved accounts",
-                priority=1,
-                confidence=0.85,
-            ),
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.ESCALATION,
-                title="Escalate to Senior Analyst",
-                description="Given the complexity, escalate to senior fraud analyst",
-                priority=2,
-                confidence=0.78,
-            ),
-            Recommendation(
-                recommendation_id=str(uuid.uuid4()),
-                case_id=case_id,
-                recommendation_type=RecommendationType.ENHANCED_MONITORING,
-                title="Enable Enhanced Monitoring",
-                description="Set up real-time alerts for suspicious activity",
-                priority=3,
-                confidence=0.82,
-            ),
-        ]
-        
-        for rec in recommendations:
-            self.store.store_recommendation(case_id, rec)
+        recommendations = await self.recommendations.generate_recommendations(
+            case_id, case_data or {}
+        )
         
         return [
             {
@@ -320,8 +315,18 @@ class CopilotEngine:
         session_id: str,
         case_id: str,
         report_type: str = "standard",
+        case_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate investigation report."""
+        case_data = case_data or {}
+        findings = self._derive_findings(case_data)
+        recommendations = await self.recommendations.generate_recommendations(case_id, case_data)
+        rec_titles = [r.title for r in recommendations]
+        recommendations_text = (
+            "Recommended actions: " + "; ".join(rec_titles)
+            if rec_titles else "No specific actions recommended."
+        )
+        
         sections = [
             ReportSection(
                 section_id=str(uuid.uuid4()),
@@ -336,12 +341,12 @@ class CopilotEngine:
             ReportSection(
                 section_id=str(uuid.uuid4()),
                 title="Findings",
-                content="Key findings include transaction anomalies and pattern irregularities.",
+                content=" ".join(findings),
             ),
             ReportSection(
                 section_id=str(uuid.uuid4()),
                 title="Recommendations",
-                content="Recommended actions include deep transaction analysis and enhanced monitoring.",
+                content=recommendations_text,
             ),
         ]
         
@@ -351,7 +356,7 @@ class CopilotEngine:
             title=f"Investigation Report - Case {case_id}",
             sections=sections,
             executive_summary="Fraud investigation completed with recommended actions.",
-            recommendations=["Review transactions", "Enable monitoring", "Consider escalation"],
+            recommendations=rec_titles,
         )
         
         self.store.store_report(report)

@@ -276,6 +276,29 @@ class TestEvidenceLedger:
             f"{block.block_number}{block.timestamp.isoformat()}{block.previous_hash}{block.merkle_root}{block.nonce}"
         )
 
+    def test_mine_block_fallback_is_reproducible_not_random(self, ledger):
+        """When mining exhausts its attempts, the sealed hash must still be
+        reproducible from the block's own recorded fields, not from an
+        unrecorded random nonce."""
+        block = BlockchainBlock(
+            block_number=0,
+            previous_hash="0" * 64,
+            merkle_root="root",
+        )
+
+        # Force exhaustion with an unreachable difficulty and a tiny attempt budget.
+        original_max = ledger.MAX_MINING_ATTEMPTS
+        ledger.MAX_MINING_ATTEMPTS = 5
+        try:
+            result = ledger._mine_block(block, difficulty=64)
+        finally:
+            ledger.MAX_MINING_ATTEMPTS = original_max
+
+        assert block.nonce == 5
+        assert result == ledger._compute_hash(
+            f"{block.block_number}{block.timestamp.isoformat()}{block.previous_hash}{block.merkle_root}{block.nonce}"
+        )
+
     def test_verify_integrity_missing_evidence(self, ledger):
         result = ledger.verify_evidence_integrity("missing")
         assert result["error"] == "Evidence not found"

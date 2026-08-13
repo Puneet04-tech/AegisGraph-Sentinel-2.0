@@ -158,6 +158,11 @@ class GovernanceStore:
         if not self._scorecards:
             return None
         return max(self._scorecards.values(), key=lambda s: s.created_at)
+
+    def get_scorecards_since(self, cutoff: datetime) -> List[RiskScorecard]:
+        """Get scorecards created at or after cutoff, oldest first."""
+        matches = [s for s in self._scorecards.values() if s.created_at >= cutoff]
+        return sorted(matches, key=lambda s: s.created_at)
     
     def store_framework(self, framework: ComplianceFramework) -> ComplianceFramework:
         """Store compliance framework."""
@@ -184,7 +189,11 @@ class GovernanceStore:
     def get_assessment(self, assessment_id: str) -> Optional[ControlAssessment]:
         """Get assessment by ID."""
         return self._assessments.get(assessment_id)
-    
+
+    def get_all_assessments(self) -> List[ControlAssessment]:
+        """Get all control assessments."""
+        return list(self._assessments.values())
+
     def store_finding(self, finding: AuditFinding) -> AuditFinding:
         """Store audit finding."""
         with self._lock:
@@ -251,6 +260,14 @@ class GovernanceStore:
     def get_open_violations(self) -> List[PolicyViolation]:
         """Get all open violations."""
         return [v for v in self._violations.values() if v.status == "OPEN"]
+
+    def get_all_violations(self) -> List[PolicyViolation]:
+        """Get all violations, open or closed.
+
+        Trend analysis needs closed violations too -- counting only the open
+        ones understates any period in which violations were remediated.
+        """
+        return list(self._violations.values())
     
     def store_threshold(self, threshold: RiskThreshold) -> RiskThreshold:
         """Store risk threshold."""

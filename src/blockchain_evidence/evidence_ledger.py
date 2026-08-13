@@ -5,7 +5,6 @@ Immutable evidence recording with blockchain verification.
 """
 
 import hashlib
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
@@ -29,7 +28,9 @@ class EvidenceLedger:
         - Blockchain integration
         - Integrity verification
     """
-    
+
+    MAX_MINING_ATTEMPTS = 1000000
+
     def __init__(self, store: Optional[BlockchainEvidenceStore] = None):
         """Initialize the evidence ledger."""
         self._store = store or get_blockchain_store()
@@ -126,18 +127,34 @@ class EvidenceLedger:
         return self._compute_merkle_root(new_hashes)
     
     def _mine_block(self, block: BlockchainBlock, difficulty: int = 4) -> str:
-        """Simple proof-of-work mining."""
+        """Simple proof-of-work mining.
+
+        On the (statistically negligible) chance no nonce under
+        MAX_MINING_ATTEMPTS meets the difficulty target, the block is
+        still sealed deterministically with the nonce that produced it
+        recorded -- a random, unrecorded nonce would make the returned
+        hash permanently unreproducible, since re-hashing the block's
+        own fields could never match it again.
+        """
         prefix = "0" * difficulty
-        
-        for nonce in range(1000000):
+
+        for nonce in range(self.MAX_MINING_ATTEMPTS):
             block_string = f"{block.block_number}{block.timestamp.isoformat()}{block.previous_hash}{block.merkle_root}{nonce}"
             hash_result = self._compute_hash(block_string)
-            
+
             if hash_result.startswith(prefix):
                 block.nonce = nonce
                 return hash_result
-        
-        return self._compute_hash(f"{block.merkle_root}{random.randint(0, 999999)}")
+
+        logger.warning(
+            f"Block {block.block_number} did not meet difficulty {difficulty} "
+            f"within {self.MAX_MINING_ATTEMPTS} attempts; sealing without proof-of-work"
+        )
+        block.nonce = self.MAX_MINING_ATTEMPTS
+        return self._compute_hash(
+            f"{block.block_number}{block.timestamp.isoformat()}{block.previous_hash}"
+            f"{block.merkle_root}{block.nonce}"
+        )
     
     def _log_audit(self, evidence_id: str, action: str, user_id: str, details: Dict[str, Any]) -> None:
         """Log audit entry."""

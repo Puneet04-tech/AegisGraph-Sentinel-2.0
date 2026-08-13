@@ -17,6 +17,38 @@ import networkx as nx
 import pandas as pd
 
 
+def normalize_utc_timestamp(ts_input: object) -> float:
+    """Strict ISO 8601 UTC timestamp parser and normalizer.
+
+    Converts ISO strings, datetime objects, or Unix float timestamps to strict UTC epoch float seconds.
+    Rejects un-parseable or malformed date strings with a ValueError.
+    """
+    if isinstance(ts_input, (int, float)):
+        return float(ts_input)
+    if isinstance(ts_input, datetime):
+        if ts_input.tzinfo is None:
+            dt = ts_input.replace(tzinfo=timezone.utc)
+        else:
+            dt = ts_input.astimezone(timezone.utc)
+        return dt.timestamp()
+    if isinstance(ts_input, str):
+        s = ts_input.strip()
+        if not s:
+            raise ValueError("Empty timestamp string")
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.timestamp()
+        except Exception as err:
+            raise ValueError(f"Invalid ISO 8601 timestamp format: '{ts_input}'") from err
+    raise ValueError(f"Unsupported timestamp type: {type(ts_input)}")
+
+
 @dataclass
 class Transaction:
     """Single transaction record"""
@@ -25,6 +57,7 @@ class Transaction:
     amount: float
     timestamp: float
     txn_id: str
+
 
 
 class VelocityCalculator:

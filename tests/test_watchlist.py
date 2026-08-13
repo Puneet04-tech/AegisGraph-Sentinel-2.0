@@ -26,9 +26,16 @@ def test_screen_no_match():
 
 def test_screen_potential_match():
     service = WatchlistService()
-    result = service.screen("Known Bad Actor", "ent-002")
+    result = service.screen("Bad Actor", "ent-002")
     assert result is not None
-    assert result["match_result"] != "NO_MATCH"
+    assert result["match_result"] == "POTENTIAL_MATCH"
+
+def test_screen_confirmed_match():
+    service = WatchlistService()
+    result = service.screen("Known Bad Actor", "ent-004")
+    assert result is not None
+    assert result["match_result"] == "CONFIRMED_MATCH"
+    assert result["confidence"] == 1.0
 
 def test_get_dashboard():
     service = WatchlistService()

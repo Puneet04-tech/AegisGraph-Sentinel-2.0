@@ -35,7 +35,13 @@ class EntityResolutionEngine:
             self._resolution_cache[cache_key] = canonical_id
             return canonical_id
         
-        return str(uuid4())
+        # No canonical identity exists yet: establish one and persist it so
+        # subsequent resolves of the same entity return a stable ID instead
+        # of a fresh UUID per call.
+        canonical_id = str(uuid4())
+        self._canonical_ids[identifier] = canonical_id
+        self._resolution_cache[cache_key] = canonical_id
+        return canonical_id
     
     def _find_canonical(
         self,
@@ -46,6 +52,12 @@ class EntityResolutionEngine:
         """Find canonical ID for an entity."""
         if identifier in self._canonical_ids:
             return self._canonical_ids[identifier]
+        
+        # Aliases registered via link_alias are cached under the bare alias
+        # identifier; resolve them to their canonical id as well.
+        alias_id = self._resolution_cache.get(identifier)
+        if alias_id:
+            return alias_id
         
         return None
     

@@ -158,6 +158,53 @@ class TestDataSource:
         
         assert "tables" in schema or "endpoints" in schema
     
+    def test_connection_uses_injected_tester_not_random(self, store):
+        """test_connection must reflect the real connectivity result, not a coin flip."""
+        connector = DataSourceConnector(
+            store=store,
+            tester=lambda source: {"success": True, "latency_ms": 12.5, "message": "ok"},
+        )
+        source = connector.create_source(
+            name="Deterministic Source",
+            source_type=SourceType.API,
+            connection_config={"url": "https://example.invalid"},
+        )
+
+        for _ in range(20):
+            result = connector.test_connection(source.source_id)
+            assert result["success"] is True
+            assert result["latency_ms"] == 12.5
+
+    def test_connection_reports_failure_from_tester(self, store):
+        """A failing real connectivity check must be reported as a failure."""
+        connector = DataSourceConnector(
+            store=store,
+            tester=lambda source: {"success": False, "message": "refused"},
+        )
+        source = connector.create_source(
+            name="Broken Source",
+            source_type=SourceType.API,
+            connection_config={"url": "https://example.invalid"},
+        )
+
+        result = connector.test_connection(source.source_id)
+
+        assert result["success"] is False
+        assert result["message"] == "refused"
+
+    def test_connection_missing_config_fails_closed(self, store):
+        """Without connection details the default tester must not guess success."""
+        connector = DataSourceConnector(store=store)
+        source = connector.create_source(
+            name="No Config Source",
+            source_type=SourceType.API,
+            connection_config={},
+        )
+
+        result = connector.test_connection(source.source_id)
+
+        assert result["success"] is False
+
     def test_extract_data(self, data_sources):
         """Test data extraction."""
         source = data_sources.create_source(
@@ -165,7 +212,7 @@ class TestDataSource:
             source_type=SourceType.API,
             connection_config={},
         )
-        
+
         data = data_sources.extract_data(source.source_id)
         
         assert isinstance(data, list)

@@ -4,7 +4,8 @@ Audit Intelligence Module.
 Provides audit management, finding tracking, and compliance audit support.
 """
 
-import random
+from collections import Counter
+from statistics import mean
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -28,7 +29,21 @@ class AuditIntelligenceModule:
         - Remediation tracking
         - Audit reporting
     """
-    
+
+    #: Risk impact assigned to a finding from its severity. Fixed points on
+    #: the severity ladder: two findings of the same severity must carry the
+    #: same impact, which a random draw per call cannot guarantee.
+    RISK_IMPACT_BY_SEVERITY: Dict[str, float] = {
+        "CRITICAL": 0.9,
+        "HIGH": 0.7,
+        "MEDIUM": 0.5,
+        "LOW": 0.3,
+        "INFO": 0.15,
+    }
+
+    #: Policies listed in the "top violated" breakdown of a trend report.
+    TOP_POLICY_COUNT = 3
+
     def __init__(self, store: Optional[GovernanceStore] = None):
         """Initialize the audit intelligence module.
         
@@ -46,9 +61,10 @@ class AuditIntelligenceModule:
         category: str,
         affected_controls: List[str] = None,
         affected_entities: List[str] = None,
+        financial_impact: Optional[float] = None,
     ) -> AuditFinding:
         """Create an audit finding.
-        
+
         Args:
             title: Finding title
             description: Finding description
@@ -56,24 +72,22 @@ class AuditIntelligenceModule:
             category: Finding category
             affected_controls: Affected control IDs
             affected_entities: Affected entity IDs
-            
+            financial_impact: Measured or estimated financial exposure, if the
+                caller has one. Left unset when it is not known -- there is no
+                basis in this module for inventing a figure.
+
         Returns:
             AuditFinding
         """
         logger.info(f"Creating audit finding: {title}")
-        
+
         affected_controls = affected_controls or []
         affected_entities = affected_entities or []
-        
-        # Estimate risk impact based on severity
-        risk_impact_map = {
-            AuditFindingSeverity.CRITICAL: random.uniform(0.8, 1.0),
-            AuditFindingSeverity.HIGH: random.uniform(0.6, 0.8),
-            AuditFindingSeverity.MEDIUM: random.uniform(0.4, 0.6),
-            AuditFindingSeverity.LOW: random.uniform(0.2, 0.4),
-            AuditFindingSeverity.INFO: random.uniform(0.1, 0.2),
-        }
-        
+
+        # Risk impact is a fixed point on the severity ladder. It used to be a
+        # random draw per call, so two identical CRITICAL findings could be
+        # scored 0.81 and 0.99, and a finding's impact changed nothing about
+        # the finding.
         finding = AuditFinding(
             finding_title=title,
             description=description,
@@ -81,8 +95,8 @@ class AuditIntelligenceModule:
             category=category,
             affected_controls=affected_controls,
             affected_entities=affected_entities,
-            risk_impact=risk_impact_map.get(severity, 0.5),
-            financial_impact=random.uniform(0, 100000) if severity in [AuditFindingSeverity.CRITICAL, AuditFindingSeverity.HIGH] else None,
+            risk_impact=self._risk_impact(severity),
+            financial_impact=financial_impact,
             remediation_steps=self._generate_remediation_steps(severity, category),
             due_date=datetime.now(timezone.utc) + timedelta(days=self._get_due_days(severity)),
         )
@@ -136,10 +150,52 @@ class AuditIntelligenceModule:
             "critical_findings": len(critical_findings),
             "by_severity": by_severity,
             "by_category": by_category,
-            "avg_age_days": random.uniform(10, 30),
-            "on_track_percentage": random.uniform(70, 90),
+            "avg_age_days": self._average_age_days(all_findings),
+            "on_track_percentage": self._on_track_percentage(open_findings),
         }
-    
+
+    def _risk_impact(self, severity: AuditFindingSeverity) -> float:
+        """Risk impact for a severity."""
+        name = getattr(severity, "value", severity)
+        return self.RISK_IMPACT_BY_SEVERITY.get(str(name).upper(), 0.5)
+
+    def _average_age_days(self, findings: List[AuditFinding]) -> Optional[float]:
+        """Mean age of findings, measured to closure or to now if still open."""
+        if not findings:
+            return None
+
+        now = datetime.now(timezone.utc)
+        ages = []
+        for finding in findings:
+            end = self._as_utc(finding.closed_date) if finding.closed_date else now
+            ages.append((end - self._as_utc(finding.created_at)).total_seconds() / 86400)
+
+        return round(mean(ages), 2)
+
+    def _on_track_percentage(self, open_findings: List[AuditFinding]) -> Optional[float]:
+        """Share of open findings that are not past their due date.
+
+        Findings with no due date cannot be overdue and are counted as on
+        track. With nothing open the figure is undefined, not 100%.
+        """
+        if not open_findings:
+            return None
+
+        now = datetime.now(timezone.utc)
+        on_track = sum(
+            1 for f in open_findings
+            if f.due_date is None or self._as_utc(f.due_date) >= now
+        )
+        return round(100 * on_track / len(open_findings), 2)
+
+    @staticmethod
+    def _as_utc(moment: datetime) -> datetime:
+        """Treat naive timestamps as UTC so comparisons never raise."""
+        if moment.tzinfo is None:
+            return moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc)
+
+
     def track_policy_violation(
         self,
         policy_id: str,
@@ -185,22 +241,95 @@ class AuditIntelligenceModule:
         Returns:
             Violation trend data
         """
-        violations = self._store.get_open_violations()
-        
+        # Trends need closed violations too: counting only the open ones
+        # understates any window in which violations were remediated. The
+        # `days` argument was also ignored entirely before.
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(days=days)
+        all_violations = self._store.get_all_violations()
+
+        in_window = [
+            v for v in all_violations
+            if self._as_utc(v.detected_at) >= window_start
+        ]
+        open_in_window = [v for v in in_window if v.status == "OPEN"]
+
+        # Counted from the violations on record, not from a fixed list of
+        # policy names with invented counts attached.
+        policy_counts = Counter(v.policy_name for v in in_window)
+
         return {
-            "total_violations": len(violations),
-            "critical_violations": sum(1 for v in violations if v.severity == AuditFindingSeverity.CRITICAL),
-            "high_violations": sum(1 for v in violations if v.severity == AuditFindingSeverity.HIGH),
+            "period_days": days,
+            "total_violations": len(in_window),
+            "open_violations": len(open_in_window),
+            "critical_violations": sum(
+                1 for v in in_window if v.severity == AuditFindingSeverity.CRITICAL
+            ),
+            "high_violations": sum(
+                1 for v in in_window if v.severity == AuditFindingSeverity.HIGH
+            ),
             "trends": {
-                "7_day_change": random.uniform(-0.2, 0.3),
-                "30_day_change": random.uniform(-0.3, 0.4),
+                "7_day_change": self._violation_change(all_violations, now, 7),
+                "30_day_change": self._violation_change(all_violations, now, 30),
             },
             "top_violated_policies": [
-                {"policy": "Access Control Policy", "count": random.randint(5, 15)},
-                {"policy": "Data Protection Policy", "count": random.randint(3, 10)},
-                {"policy": "Authentication Policy", "count": random.randint(2, 8)},
+                {"policy": policy, "count": count}
+                for policy, count in policy_counts.most_common(self.TOP_POLICY_COUNT)
             ],
         }
+
+    def _audit_activity(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> Dict[str, int]:
+        """Count audit activity from control assessments in the period.
+
+        An assessment that has been tested is a completed audit; one on record
+        but not yet tested is in progress. The counts are consistent by
+        construction: completed + in progress == total.
+        """
+        start = self._as_utc(period_start)
+        end = self._as_utc(period_end)
+
+        assessments = self._store.get_all_assessments()
+        completed = [
+            a for a in assessments
+            if a.last_tested and start <= self._as_utc(a.last_tested) <= end
+        ]
+        in_progress = [a for a in assessments if a.last_tested is None]
+
+        return {
+            "total_audits": len(completed) + len(in_progress),
+            "audits_completed": len(completed),
+            "audits_in_progress": len(in_progress),
+        }
+
+    def _violation_change(
+        self,
+        violations: List[PolicyViolation],
+        now: datetime,
+        days: int,
+    ) -> Optional[float]:
+        """Fractional change in violation volume against the prior window.
+
+        Returns ``None`` when the preceding window holds nothing to compare
+        against, rather than reporting a change that was never measured.
+        """
+        recent_start = now - timedelta(days=days)
+        prior_start = now - timedelta(days=days * 2)
+
+        recent = sum(
+            1 for v in violations if self._as_utc(v.detected_at) >= recent_start
+        )
+        prior = sum(
+            1 for v in violations
+            if prior_start <= self._as_utc(v.detected_at) < recent_start
+        )
+
+        if not prior:
+            return None
+        return round((recent - prior) / prior, 3)
     
     def generate_audit_report(
         self,
@@ -229,9 +358,10 @@ class AuditIntelligenceModule:
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             },
             "executive_summary": {
-                "total_audits": random.randint(5, 20),
-                "audits_completed": random.randint(3, 15),
-                "audits_in_progress": random.randint(1, 5),
+                # Counted from the control assessments on record. These three
+                # figures were random integers, so an audit report could claim
+                # more completed audits than it claimed audits.
+                **self._audit_activity(period_start, period_end),
                 "total_findings": finding_summary["total_findings"],
                 "open_findings": finding_summary["open_findings"],
                 "critical_findings": finding_summary["critical_findings"],

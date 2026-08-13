@@ -92,37 +92,70 @@ class ExecutiveDashboardModule:
         return dashboard
     
     def get_risk_kpis(self) -> Dict[str, Any]:
-        """Get risk KPIs for executive view."""
-        return {
-            "total_risk_exposure": random.uniform(1000000, 5000000),
-            "risk_score": random.uniform(0.3, 0.7),
-            "risk_level": random.choice(["LOW", "MEDIUM", "HIGH"]),
-            "trend": random.choice(["increasing", "stable", "decreasing"]),
-            "change_percent": random.uniform(-0.15, 0.15),
-            "top_risk_categories": [
-                {"category": "Fraud", "score": random.uniform(0.5, 0.9)},
-                {"category": "Cyber", "score": random.uniform(0.4, 0.8)},
-                {"category": "Compliance", "score": random.uniform(0.3, 0.7)},
-            ],
-            "risk_distribution": {
-                "critical": random.randint(0, 5),
-                "high": random.randint(5, 20),
-                "medium": random.randint(20, 50),
-                "low": random.randint(50, 100),
-            },
+        """Get risk KPIs for executive view, derived from the latest stored scorecard."""
+        scorecard = self._store.get_latest_scorecard()
+        if not scorecard:
+            return {
+                "total_risk_exposure": None,
+                "risk_score": None,
+                "risk_level": None,
+                "trend": None,
+                "change_percent": None,
+                "top_risk_categories": [],
+                "risk_distribution": {},
+                "note": "No risk scorecard has been recorded yet",
+            }
+
+        top_categories = sorted(
+            (
+                {"category": category, "score": score}
+                for category, score in scorecard.risk_categories.items()
+            ),
+            key=lambda item: item["score"],
+            reverse=True,
+        )[:3]
+
+        open_findings = self._store.get_open_findings()
+        risk_distribution = {
+            "critical": sum(1 for f in open_findings if f.severity.value == "CRITICAL"),
+            "high": sum(1 for f in open_findings if f.severity.value == "HIGH"),
+            "medium": sum(1 for f in open_findings if f.severity.value == "MEDIUM"),
+            "low": sum(1 for f in open_findings if f.severity.value in ("LOW", "INFO")),
         }
-    
-    def get_compliance_kpis(self) -> Dict[str, Any]:
-        """Get compliance KPIs for executive view."""
+
         return {
-            "overall_compliance": random.uniform(85, 98),
-            "frameworks_count": 3,
-            "compliant_frameworks": random.randint(2, 3),
-            "controls_effective": random.uniform(85, 95),
-            "open_findings": random.randint(5, 20),
-            "critical_findings": random.randint(0, 3),
-            "audit_completion_rate": random.uniform(90, 100),
-            "policy_violations": random.randint(0, 10),
+            "total_risk_exposure": sum(f.financial_impact or 0 for f in open_findings),
+            "risk_score": scorecard.overall_risk_score,
+            "risk_level": scorecard.risk_level.value,
+            "trend": scorecard.risk_trend,
+            "top_risk_categories": top_categories,
+            "risk_distribution": risk_distribution,
+        }
+
+    def get_compliance_kpis(self) -> Dict[str, Any]:
+        """Get compliance KPIs for executive view, derived from stored frameworks and findings."""
+        frameworks = self._store.get_all_frameworks()
+        open_findings = self._store.get_open_findings()
+        critical_findings = self._store.get_critical_findings()
+        open_violations = self._store.get_open_violations()
+
+        overall_compliance = (
+            sum(f.compliance_percentage for f in frameworks) / len(frameworks)
+            if frameworks else None
+        )
+        effective_controls = [c for f in frameworks for c in f.controls if c.get("status") == "EFFECTIVE"]
+        total_controls = sum(len(f.controls) for f in frameworks)
+
+        return {
+            "overall_compliance": overall_compliance,
+            "frameworks_count": len(frameworks),
+            "compliant_frameworks": sum(1 for f in frameworks if f.status.value == "COMPLIANT"),
+            "controls_effective": (
+                100.0 * len(effective_controls) / total_controls if total_controls else None
+            ),
+            "open_findings": len(open_findings),
+            "critical_findings": len(critical_findings),
+            "policy_violations": len(open_violations),
         }
     
     def get_performance_kpis(self) -> Dict[str, Any]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -34,6 +35,8 @@ from ..policy import (
     max_recovery_attempts_guardrail,
     resource_throttled_guardrail,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -209,14 +212,22 @@ class RuntimeState:
             if not self.started and self.dispatcher.started:
                 violations.append("Runtime is not started but dispatcher is started")
         
-        # Invariant 3: If shutting_down, no new tasks should be registered
+        # Invariant 3: If shutting_down, no new tasks should be registered.
+        # This is a warning rather than a hard violation, as tasks may be in
+        # cleanup -- but it was previously dropped on the floor by a bare
+        # `pass`, so the condition the check exists to surface never reached
+        # a caller.
+        warnings = []
         if self.shutting_down and self.tasks.active_count > 0:
-            # This is a warning, not a hard violation, as tasks may be in cleanup
-            pass
-        
+            warnings.append(
+                f"Runtime is shutting down with {self.tasks.active_count} "
+                "active task(s) still registered"
+            )
+
         return {
             "valid": len(violations) == 0,
             "violations": violations,
+            "warnings": warnings,
         }
 
     def record_lifecycle_event(self, event_type: str, **metadata: Any) -> None:
@@ -258,7 +269,20 @@ class RuntimeState:
                     },
                 )
             except Exception:
-                pass
+                # A dependency validation failure that cannot be written to
+                # the audit log is now reported through the application log
+                # instead. Previously both records were lost together: the
+                # audit write was discarded silently and nothing else recorded
+                # that a runtime dependency had failed validation.
+                logger.error(
+                    "Failed to write audit event '%s' for service '%s' "
+                    "(reason: %s); the validation failure is recorded here "
+                    "instead",
+                    event_type,
+                    result.service_name,
+                    result.reason,
+                    exc_info=True,
+                )
         return results
 
     def get_metrics(self) -> Dict[str, Any]:

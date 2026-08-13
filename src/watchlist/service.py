@@ -61,13 +61,19 @@ class WatchlistService:
         confidence = 0.0
         
         # Simple matching logic
+        entity_lower = entity_name.lower()
         for entry in self.watchlists.values():
-            if entity_name.lower() in entry.name.lower() or \
-               entry.name.lower() in entity_name.lower():
+            name_lower = entry.name.lower()
+            if entity_lower == name_lower:
+                matched_entry_id = entry.entry_id
+                confidence = 1.0
+            elif entity_lower in name_lower or name_lower in entity_lower:
                 matched_entry_id = entry.entry_id
                 confidence = 0.9
-                match_result = MatchResult.POTENTIAL_MATCH if confidence < 0.95 else MatchResult.CONFIRMED_MATCH
-                break
+            else:
+                continue
+            match_result = MatchResult.POTENTIAL_MATCH if confidence < 0.95 else MatchResult.CONFIRMED_MATCH
+            break
         
         result = ScreeningResult(
             result_id=str(uuid4())[:8],

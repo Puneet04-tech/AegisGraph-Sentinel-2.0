@@ -4,7 +4,7 @@ Tests for Financial Crime Command Center.
 
 import asyncio
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from src.financial_crime_command import (
     Alert,
@@ -13,6 +13,7 @@ from src.financial_crime_command import (
     CrimeCase,
     CrimeType,
     ThreatLevel,
+    ThreatIndicator,
     FinancialCrimeStore,
     get_financial_crime_store,
     reset_financial_crime_store,
@@ -281,6 +282,30 @@ class TestThreatFusionEngine:
         
         summary = engine.get_threat_summary()
         assert summary["total_threats"] == 1
+
+    def test_fuse_threats_orders_clusters_by_severity(self):
+        """Cluster results should be ordered by severity, most severe first."""
+        engine = ThreatFusionEngine()
+        now = datetime.now(timezone.utc)
+        
+        # space the two groups 3 hours apart so they form separate clusters
+        # instead of merging via the time-proximity relatedness check
+        for indicator_type, confidence, hours_ago in [("low_type", 0.2, 0), ("severe_type", 0.95, 3)]:
+            ts = now - timedelta(hours=hours_ago)
+            for value in ("a", "b"):
+                engine.store.store_threat(ThreatIndicator(
+                    indicator_id=f"{indicator_type}-{value}",
+                    indicator_type=indicator_type,
+                    value=value,
+                    confidence=confidence,
+                    source="test",
+                    first_seen=ts,
+                    last_seen=ts,
+                ))
+        
+        result = asyncio.run(engine.fuse_threats())
+        
+        assert [c.threat_level for c in result.threat_clusters] == [ThreatLevel.SEVERE, ThreatLevel.LOW]
 
 
 class TestFinancialCrimeCommandCenter:

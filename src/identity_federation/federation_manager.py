@@ -157,8 +157,13 @@ class FederationManager:
             expected_state = pending.get("state", "")
             expected_nonce = pending.get("nonce")
             
+            # The IdP redirect carries only code/state, so the provider is
+            # recovered from the pending auth recorded when the flow began
+            # unless the caller names one explicitly.
+            resolved_provider_id = kwargs.get("provider_id") or pending.get("provider_id", "")
+            
             return self._oidc.exchange_code(
-                provider_id=provider_id,
+                provider_id=resolved_provider_id,
                 code=code,
                 expected_state=expected_state,
                 provided_state=state,
@@ -172,9 +177,11 @@ class FederationManager:
             return self._oauth.authorize(
                 client_id=kwargs.get("client_id", ""),
                 redirect_uri=kwargs.get("redirect_uri", ""),
-                response_type="code",
+                response_type=kwargs.get("response_type", "code"),
                 scope=kwargs.get("scope", "openid profile email"),
                 state=state,
+                code_challenge=kwargs.get("code_challenge"),
+                code_challenge_method=kwargs.get("code_challenge_method"),
             )
         
         return AuthenticationResponse(

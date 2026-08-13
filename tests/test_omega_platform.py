@@ -95,6 +95,22 @@ class TestOmegaPlatform:
         assert omega._initialized is True
         assert omega._status == OmegaStatus.OPERATIONAL or omega._status == OmegaStatus.DEGRADED
 
+    def test_get_compliance_score_failure_is_logged_not_silent(self, caplog):
+        """A failed compliance store call must be logged, not swallowed silently."""
+        omega = get_omega_platform()
+
+        class _BoomStore:
+            def get_compliance_score(self):
+                raise RuntimeError("store unavailable")
+
+        omega._stores["compliance"] = _BoomStore()
+
+        with caplog.at_level("WARNING"):
+            score = omega._get_compliance_score()
+
+        assert score == 85.0
+        assert any("compliance score" in record.message.lower() for record in caplog.records)
+
 
 class TestOmegaStatus:
     """Tests for OmegaStatus enum."""

@@ -153,6 +153,31 @@ def test_redis_connection_pool_uses_configured_parameters(monkeypatch):
     assert client is not None
 
 
+def test_build_pool_kwargs_fails_fast_when_unconfigured():
+    settings = SimpleNamespace(database=_make_database_settings())
+    kwargs = redis_client._build_pool_kwargs(settings)
+
+    assert kwargs["socket_timeout"] == 1.0
+    assert kwargs["socket_connect_timeout"] == 1.0
+    assert kwargs["retry_on_timeout"] is False
+    assert kwargs["retry"].get_retries() == 0
+    assert kwargs["retry_on_error"] == []
+
+
+def test_build_pool_kwargs_respects_explicit_timeouts_and_retry_on_timeout():
+    settings = SimpleNamespace(database=_make_database_settings(
+        redis_socket_timeout=3.0,
+        redis_socket_connect_timeout=2.0,
+        redis_retry_on_timeout=True,
+    ))
+    kwargs = redis_client._build_pool_kwargs(settings)
+
+    assert kwargs["socket_timeout"] == 3.0
+    assert kwargs["socket_connect_timeout"] == 2.0
+    assert kwargs["retry_on_timeout"] is True
+    assert "retry" not in kwargs
+
+
 def test_redis_connection_pool_reuses_singleton(monkeypatch):
     redis_client.close_redis_pools()
     pool1 = MagicMock()

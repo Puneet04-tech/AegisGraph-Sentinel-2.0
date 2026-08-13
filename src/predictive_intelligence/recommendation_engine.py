@@ -4,8 +4,8 @@ Prevention Recommendation Engine.
 Generates proactive prevention recommendations based on predictive analysis.
 """
 
-import random
 import threading
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Dict, List, Optional, Any
 import logging
@@ -266,7 +266,7 @@ class RecommendationEngine:
         recommendation = self._store.get_recommendation(recommendation_id)
         if recommendation:
             recommendation.metadata["acknowledged"] = True
-            recommendation.metadata["acknowledged_at"] = str(random.randint(1, 999999))
+            recommendation.metadata["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
             self._store.store_recommendation(recommendation)
             return True
         return False

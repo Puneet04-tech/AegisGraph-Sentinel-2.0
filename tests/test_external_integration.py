@@ -38,14 +38,39 @@ def store():
 
 @pytest.fixture
 def connector_framework(store):
-    """Create a connector framework."""
-    return ConnectorFramework(store=store)
+    """Create a connector framework that does not reach the network.
+
+    Connecting, health checks and requests now perform real HTTP, so these
+    tests inject a transport instead of resolving api.test.com.
+    """
+    def offline_transport(method, url, **kwargs):
+        class _Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {}
+
+        return _Response()
+
+    return ConnectorFramework(store=store, transport=offline_transport)
 
 
 @pytest.fixture
 def webhook_manager(store):
-    """Create a webhook manager."""
-    return WebhookManager(store=store)
+    """Create a webhook manager that does not reach the network.
+
+    Webhook delivery now performs a real HTTP POST, so these tests inject a
+    transport instead of letting them resolve webhook.test.com.
+    """
+    def offline_transport(url, **kwargs):
+        class _Response:
+            status_code = 200
+            text = "ok"
+
+        return _Response()
+
+    return WebhookManager(store=store, transport=offline_transport)
 
 
 # =============================================================================
