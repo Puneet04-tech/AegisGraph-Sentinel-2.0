@@ -4,6 +4,7 @@ Risk Governance Module.
 Provides enterprise risk management, risk scoring, and governance oversight.
 """
 
+from statistics import mean, pstdev
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -28,7 +29,48 @@ class RiskGovernanceModule:
         - Risk trend analysis
         - Governance oversight
     """
-    
+
+    #: Risk categories reported on a scorecard, and the substrings matched
+    #: against a finding's or violation's category to attribute it.
+    RISK_CATEGORIES: Dict[str, tuple] = {
+        "fraud_risk": ("fraud", "aml", "financial_crime"),
+        "cyber_risk": ("cyber", "security", "intrusion", "malware"),
+        # No bare "policy" keyword here: a PolicyViolation's name almost
+        # always contains it, which would attribute every violation to
+        # compliance risk on top of its real category.
+        "compliance_risk": ("compliance", "regulatory", "privacy", "gdpr"),
+        "operational_risk": ("operational", "process", "availability", "vendor"),
+        "reputational_risk": ("reputation", "brand", "conduct", "customer"),
+    }
+
+    #: Severity weights used when an open item contributes to a category
+    #: score. Mirrors the AuditFindingSeverity ladder.
+    SEVERITY_WEIGHTS: Dict[str, float] = {
+        "CRITICAL": 1.0,
+        "HIGH": 0.75,
+        "MEDIUM": 0.5,
+        "LOW": 0.25,
+        "INFO": 0.1,
+    }
+
+    #: Number of open items in one category at which volume pressure alone is
+    #: treated as saturated. Above this, more items do not raise the score.
+    VOLUME_SATURATION = 10
+
+    #: Share of a category score that comes from the severity of its open
+    #: items; the remainder comes from how many there are.
+    SEVERITY_WEIGHT = 0.7
+
+    #: Change in overall score between consecutive scorecards that counts as a
+    #: real move rather than noise.
+    TREND_DELTA = 0.05
+
+    #: Percentage change over the comparison window that counts as a trend.
+    TREND_PERCENT = 5.0
+
+    #: Recorded metrics scanned when reconstructing a metric's history.
+    HISTORY_SCAN_LIMIT = 5000
+
     def __init__(self, store: Optional[GovernanceStore] = None):
         """Initialize the risk governance module.
         
@@ -51,21 +93,28 @@ class RiskGovernanceModule:
             RiskScorecard
         """
         logger.info(f"Generating risk scorecard for {period}")
-        
-        # Calculate category risk scores
-        risk_categories = self._compute_risk_categories()
+
+        # Score each category from the open findings and policy violations
+        # attributed to it. Previously every category score, the overall trend
+        # and every risk indicator came from ``random``, so a scorecard
+        # presented to executives reflected nothing in the store.
+        previous = self._store.get_latest_scorecard()
+        risk_categories = self._score_categories()
+
         overall_score = sum(risk_categories.values()) / len(risk_categories)
         risk_level = self._calculate_risk_level(overall_score)
-        risk_trend = self._compute_risk_trend(overall_score)
-        
+
         scorecard = RiskScorecard(
             period=period,
             overall_risk_score=round(overall_score, 3),
             risk_level=risk_level,
             risk_categories=risk_categories,
-            risk_trend=risk_trend,
-            key_risks=self._generate_key_risks(risk_categories, risk_trend),
-            risk_indicators=self._generate_risk_indicators(risk_categories),
+            risk_trend=self._compare_scores(
+                overall_score,
+                previous.overall_risk_score if previous else None,
+            ),
+            key_risks=self._generate_key_risks(risk_categories, previous),
+            risk_indicators=self._generate_risk_indicators(),
             mitigation_actions=self._generate_mitigation_actions(risk_categories),
             next_review_date=datetime.now(timezone.utc) + timedelta(days=30),
         )
@@ -173,30 +222,91 @@ class RiskGovernanceModule:
             Trend analysis
         """
         logger.info(f"Tracking trend for {metric_name}")
-        
+
+        # Read the metric's recorded history rather than inventing three points
+        # and computing percentage changes between them, which is what this
+        # did before -- the "trend" it reported was noise.
+        history = [
+            m for m in self._store.get_recent_metrics(self.HISTORY_SCAN_LIMIT)
+            if m.name == metric_name
+        ]
+
+        if not history:
+            logger.warning("No recorded history for metric '%s'", metric_name)
+            return {
+                "metric": metric_name,
+                "current_value": None,
+                "previous_7d": None,
+                "previous_30d": None,
+                "change_7d_percent": None,
+                "change_30d_percent": None,
+                "trend": "insufficient_history",
+                "volatility": None,
+                "observations": 0,
+            }
+
+        # get_recent_metrics returns newest first.
         now = datetime.now(timezone.utc)
-        latest = self._store.get_latest_scorecard()
-        current = latest.risk_categories.get(metric_name, 0.0) if latest else 0.0
-        
-        recent_week = self._store.get_scorecards_since(now - timedelta(days=7))
-        recent_period = self._store.get_scorecards_since(now - timedelta(days=period_days))
-        previous_7d = recent_week[0].risk_categories.get(metric_name, current) if recent_week else current
-        previous_30d = recent_period[0].risk_categories.get(metric_name, current) if recent_period else current
-        
-        change_7d = ((current - previous_7d) / previous_7d * 100) if previous_7d else 0.0
-        change_30d = ((current - previous_30d) / previous_30d * 100) if previous_30d else 0.0
-        
+        current = history[0].value
+        previous_7d = self._baseline(history, now, 7)
+        previous_30d = self._baseline(history, now, period_days)
+
+        change_7d = self._percent_change(current, previous_7d)
+        change_30d = self._percent_change(current, previous_30d)
+
+        values = [m.value for m in history]
+
         return {
             "metric": metric_name,
             "current_value": round(current, 3),
-            "previous_7d": round(previous_7d, 3),
-            "previous_30d": round(previous_30d, 3),
-            "change_7d_percent": round(change_7d, 2),
-            "change_30d_percent": round(change_30d, 2),
-            "trend": "increasing" if change_30d > 5 else "decreasing" if change_30d < -5 else "stable",
-            "volatility": round(abs(change_7d - change_30d) / 100, 3),
+            "previous_7d": round(previous_7d, 3) if previous_7d is not None else None,
+            "previous_30d": round(previous_30d, 3) if previous_30d is not None else None,
+            "change_7d_percent": round(change_7d, 2) if change_7d is not None else None,
+            "change_30d_percent": round(change_30d, 2) if change_30d is not None else None,
+            "trend": self._describe_change(change_30d),
+            "volatility": round(pstdev(values), 3) if len(values) > 1 else 0.0,
+            "observations": len(history),
         }
-    
+
+    def _baseline(
+        self,
+        history: List[GovernanceMetric],
+        now: datetime,
+        days: int,
+    ) -> Optional[float]:
+        """Mean of the observations recorded within the last ``days``."""
+        cutoff = now - timedelta(days=days)
+        window = [
+            m.value for m in history
+            if self._as_utc(m.timestamp) >= cutoff
+        ]
+        return mean(window) if window else None
+
+    @staticmethod
+    def _as_utc(moment: datetime) -> datetime:
+        """Treat naive timestamps as UTC so window comparisons never raise."""
+        if moment.tzinfo is None:
+            return moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc)
+
+    @staticmethod
+    def _percent_change(current: float, baseline: Optional[float]) -> Optional[float]:
+        """Percentage change, guarding the divide-by-zero the old code had."""
+        if baseline is None or baseline == 0:
+            return None
+        return ((current - baseline) / baseline) * 100
+
+    def _describe_change(self, change_percent: Optional[float]) -> str:
+        """Label a percentage change, or admit there is nothing to compare."""
+        if change_percent is None:
+            return "insufficient_history"
+        if change_percent > self.TREND_PERCENT:
+            return "increasing"
+        if change_percent < -self.TREND_PERCENT:
+            return "decreasing"
+        return "stable"
+
+
     def create_risk_threshold(
         self,
         metric_name: str,
@@ -256,57 +366,132 @@ class RiskGovernanceModule:
             return RiskLevel.LOW
         else:
             return RiskLevel.MINIMAL
+    
+    def _score_categories(self) -> Dict[str, float]:
+        """Score each risk category from open governance items.
 
-    def _compute_risk_categories(self) -> Dict[str, float]:
-        """Derive risk category scores from open findings and compliance data."""
+        A category's score blends the severity of its open findings and policy
+        violations with how many there are. A category with nothing open scores
+        zero -- absence of recorded risk, not an invented baseline.
+        """
         findings = self._store.get_open_findings()
-        critical = len(self._store.get_critical_findings())
-        frameworks = self._store.get_all_frameworks()
-        compliance_gap = (
-            1 - sum(f.compliance_percentage for f in frameworks) / len(frameworks) / 100
-            if frameworks else 0.3
-        )
-        finding_pressure = min(1.0, len(findings) / 20 + critical / 5)
-            
-        return {
-            "fraud_risk": round(min(1.0, 0.2 + finding_pressure), 3),
-            "cyber_risk": round(min(1.0, 0.2 + critical * 0.1), 3),
-            "compliance_risk": round(min(1.0, compliance_gap), 3),
-            "operational_risk": round(min(1.0, 0.15 + finding_pressure * 0.6), 3),
-            "reputational_risk": round(min(1.0, 0.15 + critical * 0.08), 3),
-        }
-        
-    def _compute_risk_trend(self, overall_score: float) -> str:
-        """Compare against the last stored scorecard to determine trend."""
-        previous = self._store.get_latest_scorecard()
-        if previous is None or abs(overall_score - previous.overall_risk_score) < 0.02:
-            return "stable"
-        return "increasing" if overall_score > previous.overall_risk_score else "decreasing"
+        violations = self._store.get_open_violations()
 
-    def _generate_key_risks(self, categories: Dict[str, float], risk_trend: str) -> List[Dict[str, Any]]:
-        """Generate key risks from categories."""
+        scores = {}
+        for category, keywords in self.RISK_CATEGORIES.items():
+            severities = [
+                self._severity_weight(f.severity)
+                for f in findings if self._matches(f.category, keywords)
+            ]
+            # A finding's own risk_impact is a direct assessment; prefer it.
+            impacts = [
+                max(0.0, min(1.0, f.risk_impact))
+                for f in findings if self._matches(f.category, keywords)
+            ]
+            severities.extend(
+                self._severity_weight(v.severity)
+                for v in violations if self._matches(v.policy_name, keywords)
+            )
+
+            if not severities:
+                scores[category] = 0.0
+                continue
+
+            intensity = mean(impacts) if impacts else mean(severities)
+            volume = min(1.0, len(severities) / self.VOLUME_SATURATION)
+            score = (
+                self.SEVERITY_WEIGHT * max(intensity, mean(severities))
+                + (1 - self.SEVERITY_WEIGHT) * volume
+            )
+            scores[category] = round(min(1.0, score), 3)
+
+        return scores
+
+    @staticmethod
+    def _matches(label: Optional[str], keywords: tuple) -> bool:
+        """Whether a finding/policy label belongs to a risk category."""
+        text = (label or "").lower()
+        return any(keyword in text for keyword in keywords)
+
+    def _severity_weight(self, severity: Any) -> float:
+        """Numeric weight for a severity enum or string."""
+        name = getattr(severity, "value", severity)
+        return self.SEVERITY_WEIGHTS.get(str(name).upper(), 0.5)
+
+    def _compare_scores(
+        self,
+        current: float,
+        previous: Optional[float],
+    ) -> str:
+        """Describe the move between two scores.
+
+        Without a prior scorecard there is no trend to report; saying so beats
+        picking one of the three labels at random.
+        """
+        if previous is None:
+            return "insufficient_history"
+        if current - previous > self.TREND_DELTA:
+            return "increasing"
+        if previous - current > self.TREND_DELTA:
+            return "decreasing"
+        return "stable"
+
+    def _generate_key_risks(
+        self,
+        categories: Dict[str, float],
+        previous: Optional[RiskScorecard] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generate key risks from categories.
+
+        Only categories carrying recorded risk are reported; a category that
+        scored zero is not a "key risk".
+        """
         risks = []
-        for category, score in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]:
+        ranked = sorted(categories.items(), key=lambda x: x[1], reverse=True)
+
+        for category, score in ranked[:3]:
+            if score <= 0:
+                continue
+            prior = (previous.risk_categories or {}).get(category) if previous else None
             risks.append({
                 "risk_category": category,
                 "risk_score": round(score, 3),
                 "risk_level": self._calculate_risk_level(score).value,
-                "trend": risk_trend,
+                "trend": self._compare_scores(score, prior),
                 "recommended_action": self._get_risk_action(category),
             })
         return risks
-    
-    def _generate_risk_indicators(self, categories: Dict[str, float]) -> Dict[str, Any]:
-        """Generate risk indicators from current risk data."""
-        findings = self._store.get_open_findings()
-        return {
-            "fraud_attempts_detected": int(categories["fraud_risk"] * 100),
-            "high_risk_entities": len([f for f in findings if f.risk_impact >= 0.7]),
-            "suspicious_transactions": int(categories["fraud_risk"] * 200),
-            "emerging_threats": int(categories["cyber_risk"] * 20),
-            "compliance_gaps": len(self._store.get_open_violations()),
+
+    def _generate_risk_indicators(self) -> Dict[str, Any]:
+        """Count risk indicators from the governance store.
+
+        The previous indicator set (fraud attempts, suspicious transactions)
+        was invented and had no source in this store at all. These are the
+        indicators governance data can actually support.
+        """
+        open_findings = self._store.get_open_findings()
+        open_violations = self._store.get_open_violations()
+
+        # An entity is high risk if any open finding or violation names it.
+        high_risk_entities = {
+            entity for f in open_findings for entity in f.affected_entities
         }
-    
+        high_risk_entities.update(v.entity_id for v in open_violations)
+
+        frameworks = self._store.get_all_frameworks()
+
+        return {
+            "open_findings": len(open_findings),
+            "critical_findings": len(self._store.get_critical_findings()),
+            "open_policy_violations": len(open_violations),
+            "high_risk_entities": len(high_risk_entities),
+            "compliance_gaps": sum(f.open_findings for f in frameworks),
+            "frameworks_below_full_compliance": sum(
+                1 for f in frameworks if f.compliance_percentage < 100
+            ),
+        }
+
+
     def _generate_mitigation_actions(self, categories: Dict[str, float]) -> List[str]:
         """Generate mitigation actions based on risk categories."""
         actions = []
