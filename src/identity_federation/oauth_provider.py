@@ -418,8 +418,9 @@ class OAuthProvider:
                         error_description="Invalid code verifier",
                     )
             
-            # Mark code as used
-            auth_code["used"] = True
+        # Mark the code as used on every successful exchange, whether or not
+        # PKCE was used. Authorization codes are single-use (RFC 6749 §4.1.2).
+        auth_code["used"] = True
 
         validated_scope, scope_error = self._validate_requested_scopes(
             client, auth_code.get("scope")

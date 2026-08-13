@@ -53,6 +53,26 @@ class TestAuthCodeSingleUse:
         assert second.success is False
         assert second.error == "invalid_grant"
 
+    def test_non_pkce_exchange_marks_code_used(self):
+        oauth = OAuthProvider(IdentityFederationStore(), "https://aegisgraph.example.com")
+        oauth.register_client(
+            client_id="client-1",
+            client_secret="secret-1",
+            redirect_uris=["https://app.example.com/callback"],
+        )
+        code = _issuer_code(oauth)
+
+        response = oauth.token(
+            grant_type="authorization_code",
+            code=code,
+            redirect_uri="https://app.example.com/callback",
+            client_id="client-1",
+            client_secret="secret-1",
+        )
+
+        assert response.success is True
+        assert oauth._auth_codes[code]["used"] is True
+
     def test_concurrent_exchange_redeems_exactly_once(self):
         oauth = OAuthProvider(IdentityFederationStore(), "https://aegisgraph.example.com")
         oauth.register_client(
