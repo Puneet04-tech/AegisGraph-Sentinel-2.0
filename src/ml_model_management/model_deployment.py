@@ -4,8 +4,7 @@ Model Deployment Module.
 Model deployment management, rollbacks, and monitoring.
 """
 
-import random
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timezone
 import logging
 
@@ -19,19 +18,47 @@ from .store import MLModelStore, get_ml_store
 logger = logging.getLogger(__name__)
 
 
+def _default_deployer(deployment: ModelDeployment, model: Optional[Any]) -> Optional[str]:
+    """Validate deployment preconditions deterministically.
+
+    Returns None when the deployment may proceed, or a failure reason
+    string when it must not.
+    """
+    if model is None:
+        return f"model {deployment.model_id} does not exist"
+    if model.status == ModelStatus.ARCHIVED:
+        return f"model {deployment.model_id} is archived and cannot be deployed"
+    if not (0.0 <= deployment.traffic_percentage <= 100.0):
+        return f"traffic_percentage {deployment.traffic_percentage} is out of range [0, 100]"
+    return None
+
+
 class ModelDeploymentManager:
     """Model Deployment Manager for deployment lifecycle.
-    
+
     Provides:
         - Deployment creation
         - Deployment execution
         - Rollback capabilities
         - Deployment monitoring
     """
-    
-    def __init__(self, store: Optional[MLModelStore] = None):
-        """Initialize the deployment manager."""
+
+    def __init__(
+        self,
+        store: Optional[MLModelStore] = None,
+        deployer: Optional[Callable[[ModelDeployment, Optional[Any]], Optional[str]]] = None,
+    ):
+        """Initialize the deployment manager.
+
+        Args:
+            store: Backing model/deployment store.
+            deployer: Callable invoked with (deployment, model) that returns
+                None to allow the deployment to proceed or a failure reason
+                string to reject it. Defaults to deterministic precondition
+                checks (model exists, not archived, valid traffic range).
+        """
         self._store = store or get_ml_store()
+        self._deployer = deployer or _default_deployer
         self._module_id = "model_deployment"
     
     def create_deployment(
@@ -80,20 +107,21 @@ class ModelDeploymentManager:
         deployment.status = DeploymentStatus.DEPLOYING
         self._store.store_deployment(deployment)
         
-        # Simulate deployment (in reality, this would trigger actual deployment)
-        success = random.random() > 0.05  # 95% success rate
-        
-        if success:
+        failure_reason = self._deployer(deployment, model)
+
+        if failure_reason is None:
             deployment.status = DeploymentStatus.DEPLOYED
             deployment.deployed_at = datetime.now(timezone.utc)
-            
+
             # Update model status
             if model:
                 model.status = ModelStatus.PRODUCTION if promote else ModelStatus.CANARY
                 self._store.store_model(model)
         else:
+            logger.warning(f"Deployment {deployment_id} failed: {failure_reason}")
             deployment.status = DeploymentStatus.FAILED
-        
+            deployment.failure_reason = failure_reason
+
         self._store.store_deployment(deployment)
         return deployment
     
