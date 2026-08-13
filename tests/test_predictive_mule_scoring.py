@@ -149,3 +149,39 @@ def test_phone_age_days_scores_from_real_value(scorer):
     assert _phone_risk(scorer, phone_age_days=15) == 60.0
     assert _phone_risk(scorer, phone_age_days=45) == 35.0
     assert _phone_risk(scorer, phone_age_days=120) == 10.0
+
+
+def _speed_risk(scorer, form_completion_time_seconds):
+    result = scorer.score_account_opening(
+        name="test",
+        age=25,
+        profession="engineer",
+        stated_address="Mumbai",
+        email="user@acme-corp.example",
+        phone="9876543210",
+        document_type="Aadhaar",
+        facial_match=0.95,
+        document_quality_score=0.95,
+        ip_address="10.0.0.1",
+        device_id="DEV1",
+        device_age_days=100,
+        browser_fingerprint="fp",
+        initial_deposit=5000.0,
+        account_type="savings",
+        referral=None,
+        existing_customer_connections=5,
+        form_completion_time_seconds=form_completion_time_seconds,
+    )
+    return result["speed_risk"]
+
+
+def test_form_completion_time_seconds_scores_from_real_value(scorer):
+    # Mirrors the API layer, which only ever knows the elapsed duration.
+    assert _speed_risk(scorer, 2) == 80.0
+    assert _speed_risk(scorer, 150) == 60.0
+    assert _speed_risk(scorer, 600) == 15.0
+    assert _speed_risk(scorer, 1500) == 40.0
+
+
+def test_form_completion_time_seconds_omitted_keeps_default_behavior(scorer):
+    assert _speed_risk(scorer, None) == 80.0

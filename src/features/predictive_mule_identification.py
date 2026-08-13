@@ -113,7 +113,21 @@ class PredictiveMuleScorer:
 
         normalized = referral_code.strip().lower()
         return normalized or None
-    
+
+    def _resolve_form_times(self, kwargs: dict) -> tuple:
+        """Derive form_start_time from form_completion_time_seconds when explicit
+        start/submit timestamps are not provided, so callers like the API layer
+        (which only knows the elapsed duration) still produce a real form_duration."""
+        submit_time = kwargs.get('form_submit_time', datetime.now(timezone.utc))
+        if 'form_start_time' in kwargs:
+            return kwargs['form_start_time'], submit_time
+
+        completion_seconds = kwargs.get('form_completion_time_seconds')
+        if completion_seconds is not None:
+            return submit_time - timedelta(seconds=completion_seconds), submit_time
+
+        return submit_time, submit_time
+
     def score_account_opening(
         self,
         account_data: Optional[AccountOpeningData] = None,
@@ -130,10 +144,11 @@ class PredictiveMuleScorer:
             Dictionary with risk scores and indicators
         """
         if account_data is None:
+            form_start_time, form_submit_time = self._resolve_form_times(kwargs)
             account_data = AccountOpeningData(
                 opening_timestamp=kwargs.get('opening_timestamp', datetime.now(timezone.utc)),
-                form_start_time=kwargs.get('form_start_time', datetime.now(timezone.utc)),
-                form_submit_time=kwargs.get('form_submit_time', datetime.now(timezone.utc)),
+                form_start_time=form_start_time,
+                form_submit_time=form_submit_time,
                 name=kwargs.get('name',''),
                 age=kwargs.get('age',0),
                 profession=kwargs.get('profession',''),
