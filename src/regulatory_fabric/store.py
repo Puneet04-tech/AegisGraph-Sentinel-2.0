@@ -87,8 +87,13 @@ class ComplianceStore:
         for mapping in mapping_ids:
             ctrl = self.controls.get(mapping.get("control_id"))
             if ctrl:
-                ctrl["mapping"] = mapping
-                controls.append(ctrl)
+                # Return a shallow copy with the mapping attached so the
+                # persisted control is never mutated. Mutating the stored
+                # dict meant the last regulation looked up overwrote the
+                # control's mapping, undercounting cross-regulation coverage.
+                ctrl_copy = dict(ctrl)
+                ctrl_copy["mapping"] = mapping
+                controls.append(ctrl_copy)
         return controls
 
     def add_assessment(self, assessment: Dict[str, Any]) -> str:
