@@ -4,7 +4,6 @@ Risk Governance Module.
 Provides enterprise risk management, risk scoring, and governance oversight.
 """
 
-import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone, timedelta
 import logging
@@ -54,25 +53,19 @@ class RiskGovernanceModule:
         logger.info(f"Generating risk scorecard for {period}")
         
         # Calculate category risk scores
-        risk_categories = {
-            "fraud_risk": random.uniform(0.4, 0.8),
-            "cyber_risk": random.uniform(0.3, 0.7),
-            "compliance_risk": random.uniform(0.2, 0.6),
-            "operational_risk": random.uniform(0.1, 0.5),
-            "reputational_risk": random.uniform(0.2, 0.6),
-        }
-        
+        risk_categories = self._compute_risk_categories()
         overall_score = sum(risk_categories.values()) / len(risk_categories)
         risk_level = self._calculate_risk_level(overall_score)
+        risk_trend = self._compute_risk_trend(overall_score)
         
         scorecard = RiskScorecard(
             period=period,
             overall_risk_score=round(overall_score, 3),
             risk_level=risk_level,
             risk_categories=risk_categories,
-            risk_trend=random.choice(["increasing", "stable", "decreasing"]),
-            key_risks=self._generate_key_risks(risk_categories),
-            risk_indicators=self._generate_risk_indicators(),
+            risk_trend=risk_trend,
+            key_risks=self._generate_key_risks(risk_categories, risk_trend),
+            risk_indicators=self._generate_risk_indicators(risk_categories),
             mitigation_actions=self._generate_mitigation_actions(risk_categories),
             next_review_date=datetime.now(timezone.utc) + timedelta(days=30),
         )
@@ -181,12 +174,17 @@ class RiskGovernanceModule:
         """
         logger.info(f"Tracking trend for {metric_name}")
         
-        current = random.uniform(0.3, 0.8)
-        previous_7d = random.uniform(0.3, 0.8)
-        previous_30d = random.uniform(0.3, 0.8)
+        now = datetime.now(timezone.utc)
+        latest = self._store.get_latest_scorecard()
+        current = latest.risk_categories.get(metric_name, 0.0) if latest else 0.0
         
-        change_7d = ((current - previous_7d) / previous_7d) * 100
-        change_30d = ((current - previous_30d) / previous_30d) * 100
+        recent_week = self._store.get_scorecards_since(now - timedelta(days=7))
+        recent_period = self._store.get_scorecards_since(now - timedelta(days=period_days))
+        previous_7d = recent_week[0].risk_categories.get(metric_name, current) if recent_week else current
+        previous_30d = recent_period[0].risk_categories.get(metric_name, current) if recent_period else current
+        
+        change_7d = ((current - previous_7d) / previous_7d * 100) if previous_7d else 0.0
+        change_30d = ((current - previous_30d) / previous_30d * 100) if previous_30d else 0.0
         
         return {
             "metric": metric_name,
@@ -196,7 +194,7 @@ class RiskGovernanceModule:
             "change_7d_percent": round(change_7d, 2),
             "change_30d_percent": round(change_30d, 2),
             "trend": "increasing" if change_30d > 5 else "decreasing" if change_30d < -5 else "stable",
-            "volatility": random.uniform(0.1, 0.4),
+            "volatility": round(abs(change_7d - change_30d) / 100, 3),
         }
     
     def create_risk_threshold(
@@ -258,8 +256,34 @@ class RiskGovernanceModule:
             return RiskLevel.LOW
         else:
             return RiskLevel.MINIMAL
-    
-    def _generate_key_risks(self, categories: Dict[str, float]) -> List[Dict[str, Any]]:
+
+    def _compute_risk_categories(self) -> Dict[str, float]:
+        """Derive risk category scores from open findings and compliance data."""
+        findings = self._store.get_open_findings()
+        critical = len(self._store.get_critical_findings())
+        frameworks = self._store.get_all_frameworks()
+        compliance_gap = (
+            1 - sum(f.compliance_percentage for f in frameworks) / len(frameworks) / 100
+            if frameworks else 0.3
+        )
+        finding_pressure = min(1.0, len(findings) / 20 + critical / 5)
+            
+        return {
+            "fraud_risk": round(min(1.0, 0.2 + finding_pressure), 3),
+            "cyber_risk": round(min(1.0, 0.2 + critical * 0.1), 3),
+            "compliance_risk": round(min(1.0, compliance_gap), 3),
+            "operational_risk": round(min(1.0, 0.15 + finding_pressure * 0.6), 3),
+            "reputational_risk": round(min(1.0, 0.15 + critical * 0.08), 3),
+        }
+        
+    def _compute_risk_trend(self, overall_score: float) -> str:
+        """Compare against the last stored scorecard to determine trend."""
+        previous = self._store.get_latest_scorecard()
+        if previous is None or abs(overall_score - previous.overall_risk_score) < 0.02:
+            return "stable"
+        return "increasing" if overall_score > previous.overall_risk_score else "decreasing"
+
+    def _generate_key_risks(self, categories: Dict[str, float], risk_trend: str) -> List[Dict[str, Any]]:
         """Generate key risks from categories."""
         risks = []
         for category, score in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]:
@@ -267,19 +291,20 @@ class RiskGovernanceModule:
                 "risk_category": category,
                 "risk_score": round(score, 3),
                 "risk_level": self._calculate_risk_level(score).value,
-                "trend": random.choice(["increasing", "stable", "decreasing"]),
+                "trend": risk_trend,
                 "recommended_action": self._get_risk_action(category),
             })
         return risks
     
-    def _generate_risk_indicators(self) -> Dict[str, Any]:
-        """Generate risk indicators."""
+    def _generate_risk_indicators(self, categories: Dict[str, float]) -> Dict[str, Any]:
+        """Generate risk indicators from current risk data."""
+        findings = self._store.get_open_findings()
         return {
-            "fraud_attempts_detected": random.randint(50, 200),
-            "high_risk_entities": random.randint(10, 50),
-            "suspicious_transactions": random.randint(100, 500),
-            "emerging_threats": random.randint(5, 20),
-            "compliance_gaps": random.randint(0, 10),
+            "fraud_attempts_detected": int(categories["fraud_risk"] * 100),
+            "high_risk_entities": len([f for f in findings if f.risk_impact >= 0.7]),
+            "suspicious_transactions": int(categories["fraud_risk"] * 200),
+            "emerging_threats": int(categories["cyber_risk"] * 20),
+            "compliance_gaps": len(self._store.get_open_violations()),
         }
     
     def _generate_mitigation_actions(self, categories: Dict[str, float]) -> List[str]:

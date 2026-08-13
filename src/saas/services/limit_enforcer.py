@@ -4,6 +4,11 @@ from src.saas.services.billing import billing_service, UsageMeteringService, Pri
 # In-memory resource tracker for tenants (simulating DB query counts)
 _tenant_resource_counts = {}
 
+# In-memory subscription tier registry for tenants (simulating the tenant
+# record's ``subscription_tier`` field). Tenants without an explicit tier are
+# treated as the free COMMUNITY plan.
+_tenant_tiers = {}
+
 def get_tenant_resource_count(tenant_id: str, resource_type: str) -> int:
     return _tenant_resource_counts.get(tenant_id, {}).get(resource_type, 0)
 
@@ -12,7 +17,15 @@ def set_tenant_resource_count(tenant_id: str, resource_type: str, count: int) ->
         _tenant_resource_counts[tenant_id] = {}
     _tenant_resource_counts[tenant_id][resource_type] = count
 
-def enforce_tenant_limit(tenant_id: str, resource_type: str, plan_tier: PriceTier = PriceTier.COMMUNITY) -> None:
+def get_tenant_tier(tenant_id: str) -> PriceTier:
+    """Resolve the tenant's actual subscription tier (COMMUNITY by default)."""
+    return _tenant_tiers.get(tenant_id, PriceTier.COMMUNITY)
+
+def set_tenant_tier(tenant_id: str, tier: PriceTier) -> None:
+    """Record a tenant's subscription tier so limit checks use the real plan."""
+    _tenant_tiers[tenant_id] = tier
+
+def enforce_tenant_limit(tenant_id: str, resource_type: str, plan_tier: PriceTier) -> None:
     """Validate active resource count against subscription tier limits.
 
     Raises:

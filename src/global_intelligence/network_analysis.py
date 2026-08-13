@@ -185,11 +185,12 @@ class NetworkAnalysisEngine:
         # Create community detections
         for community_id, member_ids in community_groups.items():
             if len(member_ids) >= self._config.min_community_size:
+                metrics = self._calculate_community_metrics(member_ids)
                 community = CommunityDetection(
                     community_id=str(uuid.uuid4()),
                     member_ids=member_ids,
-                    community_type=self._classify_community(member_ids),
-                    metrics=self._calculate_community_metrics(member_ids),
+                    community_type=self._classify_community(metrics["avg_risk"]),
+                    metrics=metrics,
                     discovered_at=datetime.now(timezone.utc),
                 )
                 communities.append(community)
@@ -507,9 +508,18 @@ class NetworkAnalysisEngine:
 
         return communities
 
-    def _classify_community(self, member_ids: List[str]) -> str:
-        """Classify the type of community."""
-        return "fraud_ring"
+    def _classify_community(self, avg_risk: float) -> str:
+        """Classify the type of community from its members' average risk score.
+
+        Mirrors the same tiering style as ``_calculate_risk_level``-type
+        thresholds elsewhere: a community is only called a fraud ring once
+        its actual member risk supports that label.
+        """
+        if avg_risk >= 0.7:
+            return "fraud_ring"
+        elif avg_risk >= 0.4:
+            return "suspicious_cluster"
+        return "low_risk_cluster"
 
     def _calculate_community_metrics(
         self,

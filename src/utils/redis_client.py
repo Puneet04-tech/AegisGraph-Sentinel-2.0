@@ -5,12 +5,19 @@ from typing import Dict, Optional
 
 import redis
 import redis.asyncio as async_redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from src.config.settings import get_settings
 
 from ..runtime.failure_policy import should_fail_fast
 
 logger = logging.getLogger(__name__)
+
+# Bounds so an unreachable backend fails fast instead of stalling requests on
+# the OS TCP defaults plus redis-py's built-in retry/backoff sequence.
+_DEFAULT_REDIS_SOCKET_TIMEOUT = 1.0
+_DEFAULT_REDIS_SOCKET_CONNECT_TIMEOUT = 1.0
 
 _redis_pools: Dict[str, redis.ConnectionPool] = {}
 _async_redis_pools: Dict[str, async_redis.ConnectionPool] = {}
@@ -23,17 +30,29 @@ def _build_pool_kwargs(settings) -> dict:
     kwargs = {
         "decode_responses": True,
         "max_connections": database.redis_max_connections,
+        "socket_timeout": (
+            database.redis_socket_timeout
+            if database.redis_socket_timeout is not None
+            else _DEFAULT_REDIS_SOCKET_TIMEOUT
+        ),
+        "socket_connect_timeout": (
+            database.redis_socket_connect_timeout
+            if database.redis_socket_connect_timeout is not None
+            else _DEFAULT_REDIS_SOCKET_CONNECT_TIMEOUT
+        ),
     }
-    if database.redis_socket_timeout is not None:
-        kwargs["socket_timeout"] = database.redis_socket_timeout
-    if database.redis_socket_connect_timeout is not None:
-        kwargs["socket_connect_timeout"] = database.redis_socket_connect_timeout
     if database.redis_retry_on_timeout is not None:
         kwargs["retry_on_timeout"] = database.redis_retry_on_timeout
     if database.redis_health_check_interval is not None:
         kwargs["health_check_interval"] = database.redis_health_check_interval
     if database.redis_socket_keepalive is not None:
         kwargs["socket_keepalive"] = database.redis_socket_keepalive
+    if not database.redis_retry_on_timeout:
+        # redis-py retries connection errors by default (three attempts with an
+        # exponential backoff). Disable the retry sequence so a single bounded
+        # attempt raises immediately and callers can fail open quickly.
+        kwargs["retry"] = Retry(NoBackoff(), 0)
+        kwargs["retry_on_error"] = []
     return kwargs
 
 

@@ -29,13 +29,38 @@ import threading
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import uuid
 import secrets
 import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Current time as a timezone-aware UTC datetime.
+
+    Escrow release timing is money-handling: a honeypot holds a victim's funds
+    until `auto_release_time`. Reading the clock with a naive `datetime.now()`
+    ties that deadline to whatever local zone the process happens to run in, so
+    the same honeypot releases at a different absolute instant depending on the
+    host, and shifts by an hour across a DST transition.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(value: datetime) -> datetime:
+    """Interpret a naive datetime as UTC, leaving aware values untouched.
+
+    Records persisted before this change carry naive datetimes, and callers may
+    supply either form. Mixing the two raises `TypeError` on comparison or
+    subtraction, which in `check_auto_release` would leave escrowed funds held
+    indefinitely, so every boundary coerces to aware here.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class HoneypotStatus(Enum):
@@ -111,6 +136,8 @@ class HoneypotEscrowManager:
         self.auto_release_hours = auto_release_hours
         self.escrow_prefix = escrow_prefix
         self._lock = threading.RLock()
+        self._async_lock = None  # Lazy initialized asyncio.Lock
+        self._cleanup_task = None
         
         # Active honeypots
         self.active_honeypots: Dict[str, HoneypotTransaction] = {}
@@ -121,22 +148,103 @@ class HoneypotEscrowManager:
         # Historical honeypots
         self.honeypot_history: deque = deque(maxlen=10000)
         
-        # Statistics (from pilot study - HDFC Mumbai, 6 months)
+        # Live runtime statistics. A fresh deployment must not inherit the
+        # pilot-study baseline (HDFC Mumbai, 6 months); those figures are kept
+        # separately as a reference and are never merged into live statistics.
         self.stats = {
-            'total_activated': 38,  # Pilot study baseline
-            'total_arrests': 27,  # 87% arrest rate
+            'total_activated': 0,
+            'total_arrests': 0,
+            'total_networks_dismantled': 0,
+            'total_recovered': 0.0,
+            'total_false_positives': 0,
+            'average_response_time_minutes': 0.0,
+        }
+        # Pilot-study reference figures (HDFC Mumbai, 6 months), exposed for
+        # informational purposes only and never merged into live stats.
+        self.pilot_study_reference = {
+            'total_activated': 38,
+            'total_arrests': 27,
             'total_networks_dismantled': 18,
-            'total_recovered': 47000000.0,  # ₹4.7 crore
-            'total_false_positives': 7,  # 18% false positive rate
-            'average_response_time_minutes': 12.0,  # 12-min avg response time
+            'total_recovered': 47000000.0,
+            'total_false_positives': 7,
+            'average_response_time_minutes': 12.0,
         }
         
         # Daily statistics for realtime monitoring
         self.daily_stats = {
-            'date': datetime.now().date(),
+            'date': _utcnow().date(),
             'arrests': 0,
             'recovered': 0.0,
         }
+
+    def _get_async_lock(self):
+        import asyncio
+        if self._async_lock is None:
+            try:
+                self._async_lock = asyncio.Lock()
+            except RuntimeError:
+                pass
+        return self._async_lock
+
+    async def activate_honeypot_async(
+        self,
+        transaction_id: str,
+        source_account: str,
+        target_account: str,
+        amount: float,
+        currency: str,
+        risk_score: float,
+        fraud_indicators: List[str],
+    ) -> HoneypotTransaction:
+        """Asyncio-safe honeypot activation wrapper."""
+        import asyncio
+        lock = self._get_async_lock()
+        if lock is not None:
+            async with lock:
+                return self.activate_honeypot(
+                    transaction_id=transaction_id,
+                    source_account=source_account,
+                    target_account=target_account,
+                    amount=amount,
+                    currency=currency,
+                    risk_score=risk_score,
+                    fraud_indicators=fraud_indicators,
+                )
+        return self.activate_honeypot(
+            transaction_id=transaction_id,
+            source_account=source_account,
+            target_account=target_account,
+            amount=amount,
+            currency=currency,
+            risk_score=risk_score,
+            fraud_indicators=fraud_indicators,
+        )
+
+    async def cleanup_expired_honeypots_async(self):
+        """Asynchronously cleans up expired honeypots past TTL safety threshold."""
+        import asyncio
+        lock = self._get_async_lock()
+        if lock is not None:
+            async with lock:
+                self.check_auto_release()
+        else:
+            self.check_auto_release()
+
+    def start_ttl_cleanup_task(self, interval_seconds: float = 60.0):
+        """Starts automated background TTL cleanup task."""
+        import asyncio
+        if self._cleanup_task is None or self._cleanup_task.done():
+            async def _cleanup_loop():
+                while True:
+                    await asyncio.sleep(interval_seconds)
+                    await self.cleanup_expired_honeypots_async()
+
+            try:
+                loop = asyncio.get_running_loop()
+                self._cleanup_task = loop.create_task(_cleanup_loop())
+            except RuntimeError:
+                pass
+
     
     def should_activate_honeypot(
         self,
@@ -195,7 +303,7 @@ class HoneypotEscrowManager:
         honeypot_id = f"HP_{secrets.token_hex(6).upper()}"
         escrow_account = f"{self.escrow_prefix}{secrets.token_hex(8).upper()}"
         
-        activation_time = datetime.now()
+        activation_time = _utcnow()
         auto_release_time = activation_time + timedelta(hours=self.auto_release_hours)
         
         honeypot = HoneypotTransaction(
@@ -234,7 +342,10 @@ class HoneypotEscrowManager:
                 "currency": currency,
                 "amount": amount,
                 "risk_score": round(risk_score, 4),
-                "auto_release_time": auto_release_time.strftime("%H:%M:%S"),
+                # Full ISO-8601 with offset rather than a bare wall-clock time:
+                # "14:30:00" is ambiguous in an operations log that may be read
+                # from a different zone than the one that wrote it.
+                "auto_release_time": auto_release_time.isoformat(),
             },
         )
         
@@ -269,7 +380,7 @@ class HoneypotEscrowManager:
         
         # Record attempt
         attempt = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': _utcnow().isoformat(),
             'type': withdrawal_type,
             'amount': amount,
             'location': location,
@@ -385,8 +496,10 @@ class HoneypotEscrowManager:
             arrest_time = arrest_details.get('arrest_time')
             if arrest_time:
                 try:
-                    withdrawal_time = datetime.fromisoformat(first_withdrawal['timestamp'])
-                    arrest_time_dt = datetime.fromisoformat(arrest_time)
+                    withdrawal_time = _ensure_aware(
+                        datetime.fromisoformat(first_withdrawal['timestamp'])
+                    )
+                    arrest_time_dt = _ensure_aware(datetime.fromisoformat(arrest_time))
                     response_minutes = (arrest_time_dt - withdrawal_time).total_seconds() / 60
                 except (ValueError, TypeError):
                     logger.warning(
@@ -397,10 +510,15 @@ class HoneypotEscrowManager:
 
                 if response_minutes is not None:
                     with self._lock:
-                        # Update average response time
+                        # Update average response time. The first real arrest
+                        # seeds the average rather than being diluted by a
+                        # fictional baseline.
                         total_arrests = self.stats['total_arrests']
                         old_avg = self.stats['average_response_time_minutes']
-                        new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
+                        if total_arrests <= 1:
+                            new_avg = response_minutes
+                        else:
+                            new_avg = ((old_avg * (total_arrests - 1)) + response_minutes) / total_arrests
                         self.stats['average_response_time_minutes'] = new_avg
         
         logger.info(
@@ -424,12 +542,12 @@ class HoneypotEscrowManager:
         Check and auto-release honeypots past their timeout
         Called periodically by background task
         """
-        now = datetime.now()
+        now = _utcnow()
         with self._lock:
             to_release = [
                 hp_id
                 for hp_id, hp in list(self.active_honeypots.items())
-                if now >= hp.auto_release_time and not hp.released
+                if now >= _ensure_aware(hp.auto_release_time) and not hp.released
             ]
 
         for hp_id in to_release:
@@ -460,14 +578,19 @@ class HoneypotEscrowManager:
         # Find connected accounts (depth=2)
         network_members = set([mule_account])
         
-        # Add predecessors (who sent to mule)
+        # Bounded breadth-first expansion: walk both predecessor and successor
+        # edges for two levels so second-order members of the fraud network
+        # (e.g. mule -> intermediary -> cash-out) are discovered too.
         if transaction_graph.has_node(mule_account):
-            predecessors = list(transaction_graph.predecessors(mule_account))
-            network_members.update(predecessors)
-            
-            # Add successors (who received from mule)
-            successors = list(transaction_graph.successors(mule_account))
-            network_members.update(successors)
+            frontier = set([mule_account])
+            for _ in range(2):  # depth-2
+                next_frontier = set()
+                for node in frontier:
+                    next_frontier.update(transaction_graph.predecessors(node))
+                    next_frontier.update(transaction_graph.successors(node))
+                new_members = next_frontier - network_members
+                network_members.update(new_members)
+                frontier = new_members
         
             with self._lock:
                 honeypot.network_members = list(network_members)
@@ -500,7 +623,7 @@ class HoneypotEscrowManager:
         """Generate police alert for withdrawal attempt"""
         alert = {
             'alert_id': f"ALERT_{secrets.token_hex(4).upper()}",
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': _utcnow().isoformat(),
             'priority': 'CRITICAL',
             'honeypot_id': honeypot.honeypot_id,
             'mule_account': honeypot.target_account,
@@ -542,7 +665,7 @@ class HoneypotEscrowManager:
     
     def _check_daily_reset(self):
         """Reset daily statistics if 24 hours have elapsed."""
-        today = datetime.now().date()
+        today = _utcnow().date()
         if self.daily_stats['date'] != today:
             self.daily_stats['date'] = today
             self.daily_stats['arrests'] = 0
@@ -582,7 +705,9 @@ class HoneypotEscrowManager:
         with self._lock:
             honeypots = list(self.active_honeypots.values())
         for hp in honeypots:
-            time_remaining_secs = max(0, (hp.auto_release_time - datetime.now()).total_seconds())
+            time_remaining_secs = max(
+                0, (_ensure_aware(hp.auto_release_time) - _utcnow()).total_seconds()
+            )
             
             # Determine location from last withdrawal attempt
             last_location = None

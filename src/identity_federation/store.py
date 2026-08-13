@@ -47,7 +47,7 @@ class IdentityFederationStore:
         # Federation Sessions - O(1) lookup with LRU-style management
         self._sessions: dict[str, FederationSession] = {}
         self._sessions_by_user: dict[str, list[str]] = defaultdict(list)
-        self._session_ttl = session_ttl
+        self._session_ttl_seconds = session_ttl
         
         # Role Mappings
         self._role_mappings: dict[str, RoleMapping] = {}

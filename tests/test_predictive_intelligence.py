@@ -12,7 +12,7 @@ Comprehensive tests for:
 
 import pytest
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from src.predictive_intelligence import (
@@ -338,7 +338,21 @@ class TestFraudSimulator:
         assert result.risk_score > 0
         assert len(result.predicted_outcomes) > 0
         assert result.confidence > 0
-    
+
+    def test_simulate_account_takeover_is_deterministic(self, simulator, scenario_builder):
+        """The same scenario must produce the same simulated outcome every time."""
+        scenario = scenario_builder.build_scenario(
+            simulation_type=SimulationType.ACCOUNT_TAKEOVER,
+            source_entity_ids=["entity_1", "entity_2", "entity_3"],
+            parameters={"base_risk": 0.5, "compromised_rate": 0.3},
+        )
+
+        results = [simulator._simulate_account_takeover(scenario) for _ in range(20)]
+
+        assert len({r.risk_score for r in results}) == 1
+        assert len({tuple(r.affected_entities) for r in results}) == 1
+        assert len({r.predicted_outcomes[1]["estimated_loss"] for r in results}) == 1
+
     def test_simulate_fraud_ring_expansion(self, simulator, scenario_builder):
         """Test fraud ring expansion simulation."""
         scenario = scenario_builder.build_scenario(
@@ -483,27 +497,39 @@ class TestRiskForecaster:
         assert result.forecast_period == ForecastPeriod.DAYS_30
     
     def test_predict_risk_trend_increasing(self, forecaster):
-        """Test risk trend prediction - increasing."""
-        with patch('random.random', return_value=0.85):  # 85% chance of INCREASING
-            trend = forecaster.predict_risk_trend(
-                entity_id="entity_1",
-                current_risk=0.5,
-            )
-        
+        """Test risk trend prediction - increasing.
+
+        The trend is now fitted to the entity's recorded risk history rather
+        than chosen by `random.random()`, so this seeds a rising series instead
+        of patching the RNG to steer the outcome.
+        """
+        base = datetime.now(timezone.utc) - timedelta(hours=5)
+        for hour, risk in enumerate([0.1, 0.2, 0.3, 0.4, 0.5]):
+            forecaster.record_observation("entity_1", risk, base + timedelta(hours=hour))
+
+        trend = forecaster.predict_risk_trend(
+            entity_id="entity_1",
+            current_risk=0.5,
+        )
+
         assert trend.entity_id == "entity_1"
         assert trend.current_risk == 0.5
+        assert trend.risk_trend == "INCREASING"
         assert trend.predicted_risk >= trend.current_risk
-        assert trend.risk_trend in ["INCREASING", "STABLE", "DECREASING"]
-    
+
     def test_predict_risk_trend_decreasing(self, forecaster):
         """Test risk trend prediction - decreasing."""
-        with patch('random.random', return_value=0.15):  # 15% chance of DECREASING
-            trend = forecaster.predict_risk_trend(
-                entity_id="entity_1",
-                current_risk=0.8,
-            )
-        
-        assert trend.risk_trend in ["INCREASING", "STABLE", "DECREASING"]
+        base = datetime.now(timezone.utc) - timedelta(hours=5)
+        for hour, risk in enumerate([0.9, 0.8, 0.7, 0.6, 0.5]):
+            forecaster.record_observation("entity_1", risk, base + timedelta(hours=hour))
+
+        trend = forecaster.predict_risk_trend(
+            entity_id="entity_1",
+            current_risk=0.5,
+        )
+
+        assert trend.risk_trend == "DECREASING"
+        assert trend.predicted_risk <= trend.current_risk
     
     def test_get_high_risk_forecasts(self, forecaster):
         """Test getting high-risk forecasts."""
@@ -593,7 +619,12 @@ class TestAttackPathPredictor:
         )
         
         assert prediction.source_entity_id == "entity_1"
-        assert len(prediction.predicted_path) == 4  # source + 3 hops
+        # Hops are now real graph neighbours, so the path is bounded by the
+        # requested depth rather than always padded out to it with invented
+        # identifiers. With no graph data the path is the source alone.
+        assert 1 <= len(prediction.predicted_path) <= 4
+        assert prediction.predicted_path[0] == "entity_1"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
         assert prediction.probability > 0
         assert prediction.estimated_damage > 0
     
@@ -606,9 +637,12 @@ class TestAttackPathPredictor:
             depth=2,
         )
         
-        assert len(prediction.predicted_path) == 4  # 2 known + 2 new
+        # The known prefix is always preserved; the extension is only as long
+        # as the graph can actually supply.
+        assert 2 <= len(prediction.predicted_path) <= 4
         assert prediction.predicted_path[0] == "entity_1"
         assert prediction.predicted_path[1] == "entity_2"
+        assert not any(hop.startswith("hop_") for hop in prediction.predicted_path)
     
     def test_predict_network_expansion(self, attack_predictor):
         """Test network expansion prediction."""
@@ -737,7 +771,24 @@ class TestRecommendationEngine:
         assert recommendation.entity_id == "entity_1"
         assert recommendation.priority == RecommendationPriority.CRITICAL
         assert recommendation.recommendation_type == RecommendationType.ACCOUNT_FREEZE
-    
+
+    def test_acknowledge_recommendation_records_real_timestamp(self, recommendation_engine):
+        """acknowledged_at should be a real ISO timestamp, not a random number."""
+        from datetime import datetime
+
+        recommendation = recommendation_engine.generate_recommendation(
+            entity_id="entity_1",
+            risk_score=0.92,
+        )
+
+        result = recommendation_engine.acknowledge_recommendation(recommendation.recommendation_id)
+
+        assert result is True
+        stored = recommendation_engine.get_entity_recommendations("entity_1")[0]
+        assert stored.metadata["acknowledged"] is True
+        # Must parse as a real timestamp, not str(random.randint(...))
+        datetime.fromisoformat(stored.metadata["acknowledged_at"])
+
     def test_generate_recommendation_high(self, recommendation_engine):
         """Test generating high priority recommendation."""
         recommendation = recommendation_engine.generate_recommendation(

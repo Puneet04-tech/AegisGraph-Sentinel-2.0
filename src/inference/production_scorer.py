@@ -28,6 +28,12 @@ from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
 from datetime import datetime, timezone, tzinfo
 import json
 
+from .uncertainty import (
+    UNCERTAINTY_HIGH,
+    MCDropoutEstimator,
+    apply_uncertainty_routing,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +53,9 @@ class FraudScore:
     model_version: str
     inference_time_ms: float
     graph_size: int  # Number of nodes in subgraph
-    
+    #: MC-Dropout predictive spread; None unless uncertainty estimation is on
+    uncertainty: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the fraud score to a dictionary."""
         return asdict(self)
@@ -122,6 +130,9 @@ class ProductionRiskScorer:
         device_calculator: Optional[DeviceRiskCalculator] = None,
         velocity_calculator: Optional[VelocityRiskCalculator] = None,
         temporal_reference_zone: Optional[tzinfo] = None,
+        estimate_uncertainty: bool = False,
+        mc_dropout_samples: int = 30,
+        uncertain_threshold: float = UNCERTAINTY_HIGH,
     ):
         """
         Args:
@@ -134,6 +145,12 @@ class ProductionRiskScorer:
             velocity_calculator: Velocity scorer; defaults to the shared one
             temporal_reference_zone: Timezone the fraud-window hours are
                 evaluated in; defaults to UTC so results are host-independent
+            estimate_uncertainty: Run MC-Dropout sampling alongside the
+                point estimate. Costs mc_dropout_samples extra forward
+                passes per transaction, so it is off by default
+            mc_dropout_samples: Stochastic passes per transaction
+            uncertain_threshold: Predictive std above which an automated
+                BLOCK/ALLOW is downgraded to REVIEW
         """
         self.model = model
         self.model.eval()
@@ -141,6 +158,16 @@ class ProductionRiskScorer:
         self.device = device
         self.model_version = model_version
         self.enable_heuristic_fallback = enable_heuristic_fallback
+        self.estimate_uncertainty = estimate_uncertainty
+        self.uncertainty_estimator = (
+            MCDropoutEstimator(
+                model,
+                n_samples=mc_dropout_samples,
+                uncertain_threshold=uncertain_threshold,
+            )
+            if estimate_uncertainty
+            else None
+        )
         
         self._executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 1)
 
@@ -241,7 +268,16 @@ class ProductionRiskScorer:
                     raise ValueError('Model did not return a risk score')
 
                 risk_score = float(risk_tensor.item())
-            
+
+            model_inputs = {
+                'x': x,
+                'edge_index': edge_index,
+                'node_type': node_type,
+                'edge_type': edge_type,
+                'edge_attr': edge_attr,
+            }
+            uncertainty = self._estimate_uncertainty(model_inputs)
+
             # Get influential neighbors via attention
             influential_neighbors = self._get_influential_neighbors(
                 transaction['source_account'],
@@ -276,9 +312,10 @@ class ProductionRiskScorer:
                 0.05 * breakdown['device_risk']
             )
             
-            # Decision
+            # Decision, downgraded to REVIEW when the model is unsure
             decision, confidence = self._make_decision(final_score)
-            
+            decision = apply_uncertainty_routing(decision, uncertainty)
+
             # Explanation
             explanation = self._generate_explanation(
                 transaction, final_score, breakdown, influential_neighbors
@@ -299,6 +336,7 @@ class ProductionRiskScorer:
                 high_risk_nodes=high_risk_nodes,
                 attention_summary=attention_summary,
                 model_version=self.model_version,
+                uncertainty=uncertainty.to_dict() if uncertainty else None,
                 inference_time_ms=inference_time,
                 graph_size=subgraph['num_nodes'],
             )
@@ -393,6 +431,33 @@ class ProductionRiskScorer:
                 break
             yield batch
     
+    def _estimate_uncertainty(self, model_inputs: Dict):
+        """
+        Sample the model's predictive distribution for this subgraph.
+
+        Returns None when uncertainty estimation is disabled, or when
+        sampling fails — an uncertainty estimate is supplementary, and
+        losing it must never fail an otherwise valid score.
+        """
+        if self.uncertainty_estimator is None:
+            return None
+
+        def forward_once() -> float:
+            outputs = self.model(model_inputs)
+            if isinstance(outputs, dict):
+                risk_tensor = outputs.get('risk', outputs.get('logits'))
+            else:
+                risk_tensor = outputs
+            if risk_tensor is None:
+                raise ValueError('Model did not return a risk score')
+            return float(risk_tensor.item())
+
+        try:
+            return self.uncertainty_estimator.estimate(forward_once)
+        except Exception as exc:
+            logger.warning("MC-Dropout uncertainty estimation failed: %s", exc)
+            return None
+
     def _make_decision(self, risk_score: float) -> Tuple[str, float]:
         """
         Make fraud decision based on risk score.
@@ -950,3 +1015,44 @@ def create_mock_graph_constructor():
         temporal_dim=16,
         temporal_decay_lambda=0.01,
     )
+
+
+class VelocityPSIDriftMonitor:
+    """Population Stability Index (PSI) Drift Monitor for Velocity Features.
+
+    Tracks velocity feature distributions over sliding time windows across timezones
+    to detect feature drift and miscalibration.
+    """
+
+    def __init__(self, num_bins: int = 5):
+        self.num_bins = num_bins
+        # Baseline reference distribution (uniform/calibrated)
+        self.baseline_dist = np.full(num_bins, 1.0 / num_bins)
+
+    def calculate_psi(self, current_scores: List[float]) -> float:
+        """Calculates Population Stability Index (PSI) between baseline and current distribution.
+
+        PSI < 0.10: No significant drift
+        0.10 <= PSI < 0.25: Moderate drift
+        PSI >= 0.25: Significant drift / miscalibration alert
+        """
+        if not current_scores:
+            return 0.0
+
+        hist, _ = np.histogram(current_scores, bins=self.num_bins, range=(0.0, 1.0))
+        total = sum(hist)
+        if total == 0:
+            return 0.0
+
+        target_dist = np.maximum(hist / float(total), 1e-4)
+        expected_dist = np.maximum(self.baseline_dist, 1e-4)
+
+        psi = np.sum((target_dist - expected_dist) * np.log(target_dist / expected_dist))
+        return float(max(0.0, round(psi, 4)))
+
+
+def validate_and_normalize_timestamp(raw_timestamp: object) -> float:
+    """Validates raw timestamp input and normalizes it to strict UTC float epoch seconds."""
+    from src.features.velocity_calculator import normalize_utc_timestamp
+    return normalize_utc_timestamp(raw_timestamp)
+

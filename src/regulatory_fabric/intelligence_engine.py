@@ -4,11 +4,15 @@ Regulation Intelligence Engine for Regulatory Fabric.
 Monitors regulatory sources, tracks changes, and provides intelligent analysis.
 """
 
+import logging
+
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 import threading
 import hashlib
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -87,12 +91,27 @@ class RegulationIntelligenceEngine:
             self._subscribers.append(callback)
 
     def _notify_subscribers(self, alert: IntelligenceAlert) -> None:
-        """Notify all subscribers of a new alert."""
-        for callback in self._subscribers:
+        """Notify all subscribers of a new alert.
+
+        The subscriber list is snapshotted under the lock -- ``subscribe``
+        appends from other threads -- and a failing subscriber is logged
+        rather than discarded by ``except Exception: pass``, which let a
+        broken consumer stop receiving regulatory intelligence alerts
+        silently.
+        """
+        with self._lock:
+            subscribers = list(self._subscribers)
+
+        for callback in subscribers:
             try:
                 callback(alert)
             except Exception:
-                pass
+                logger.warning(
+                    "Regulatory intelligence subscriber %r failed for alert %s",
+                    getattr(callback, "__name__", callback),
+                    getattr(alert, "alert_id", alert),
+                    exc_info=True,
+                )
 
     def check_regulatory_updates(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Check for new regulatory updates from registered sources.

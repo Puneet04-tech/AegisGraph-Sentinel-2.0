@@ -8,7 +8,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 import threading
-import random
 
 
 @dataclass
@@ -191,26 +190,46 @@ class ControlValidationService:
         return score, findings
 
     def _perform_control_test(self, control: Dict) -> Dict[str, Any]:
-        """Perform automated testing of a control.
-        
-        In production, this would integrate with actual testing systems.
-        
+        """Perform automated testing of a control from its own recorded state.
+
+        A control passes automated testing when it has a documented
+        implementation and was tested within its required frequency;
+        anything else is reported as a failure with the specific reason,
+        rather than guessed.
+
         Args:
             control: Control to test
-            
+
         Returns:
             Test result
         """
-        # Simulate test - in production, actual testing logic would be here
-        test_passed = random.random() > 0.1  # 90% pass rate simulation
-        
-        if test_passed:
-            return {"passed": True, "message": "Control test passed"}
-        else:
+        impl = control.get("implementation", "")
+        if not impl or len(impl) < 50:
             return {
                 "passed": False,
-                "message": f"Control {control.get('control_id')} test failed",
+                "message": f"Control {control.get('control_id')} test failed: "
+                            "implementation is incomplete or missing",
             }
+
+        last_tested = control.get("last_tested")
+        if not last_tested:
+            return {
+                "passed": False,
+                "message": f"Control {control.get('control_id')} test failed: never tested",
+            }
+        if isinstance(last_tested, str):
+            last_tested = datetime.fromisoformat(last_tested)
+        days_since = (datetime.now(timezone.utc) - last_tested).days
+        test_frequency_days = control.get("test_frequency_days", 90)
+        if days_since > test_frequency_days:
+            return {
+                "passed": False,
+                "message": f"Control {control.get('control_id')} test failed: "
+                            f"not retested within {test_frequency_days} days "
+                            f"(last tested {days_since} days ago)",
+            }
+
+        return {"passed": True, "message": "Control test passed"}
 
     def _update_control_status(self, control_id: str, status: str, score: float) -> None:
         """Update control status based on validation.

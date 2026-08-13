@@ -15,7 +15,7 @@ different regions agree.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone, tzinfo
+from datetime import date, datetime, timezone, timedelta, tzinfo
 from typing import Optional
 
 # Epoch seconds do not reach 1e11 until the year 5138, so a magnitude at or
@@ -105,7 +105,11 @@ def _from_epoch(seconds: float) -> Optional[datetime]:
         return None
 
     try:
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        # Arithmetic instead of ``datetime.fromtimestamp``: Windows cannot
+        # represent pre-1970 negative epochs via ``fromtimestamp`` and raises
+        # ``OSError: [Errno 22]``, so deriving the instant from the epoch
+        # directly keeps pre-1970 values working on every platform.
+        return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds)
     except (OverflowError, OSError, ValueError):
         return None
 

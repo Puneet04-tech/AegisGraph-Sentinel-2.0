@@ -181,3 +181,91 @@ async def test_multiple_rapid_reconnects():
         assert ws.closed is True
     assert sockets[-1].closed is False
 
+
+@pytest.mark.anyio
+async def test_stale_cleanup_does_not_evict_reconnected_client_during_close():
+    """Verify that stale cleanup passing a socket reference does not delete a reconnected client."""
+    manager = WebSocketManager(heartbeat_timeout=0.1)
+
+    class ControlledCloseMockWebSocket(MockWebSocket):
+        def __init__(self):
+            super().__init__()
+            self.close_started = asyncio.Event()
+            self.close_resume = asyncio.Event()
+
+        async def close(self, code=1000, reason=""):
+            self.closed = True
+            self.close_code = code
+            if not self.close_started.is_set():
+                self.close_started.set()
+                await self.close_resume.wait()
+
+    ws_old = ControlledCloseMockWebSocket()
+    await manager.connect(ws_old, "client_race")
+
+    # Manually backdate the heartbeat to force stale status
+    manager.active_connections["client_race"].last_heartbeat -= 1.0
+
+    # Launch stale cleanup in the background
+    cleanup_task = asyncio.create_task(manager.cleanup_stale_connections())
+
+    # Wait until stale cleanup enters ws_old.close()
+    await ws_old.close_started.wait()
+
+    # Reconnect the client while stale cleanup is suspended in ws_old.close()
+    ws_new = MockWebSocket()
+    reconnect_success = await manager.connect(ws_new, "client_race")
+    assert reconnect_success is True
+    assert manager.active_connections["client_race"].websocket is ws_new
+
+    # Resume ws_old.close() to let cleanup_stale_connections finish
+    ws_old.close_resume.set()
+    await cleanup_task
+
+    # The reconnected websocket must still be active and not deleted
+    assert "client_race" in manager.active_connections
+    assert manager.active_connections["client_race"].websocket is ws_new
+    assert ws_new.closed is False
+    assert ws_old.closed is True
+    assert ws_old.close_code == 1000
+
+
+@pytest.mark.anyio
+async def test_stale_cleanup_ignores_client_reconnected_before_close_loop():
+    """Verify stale cleanup skips clients that reconnected before close iteration."""
+    manager = WebSocketManager(heartbeat_timeout=0.1)
+
+    ws_old = MockWebSocket()
+    await manager.connect(ws_old, "client_early")
+
+    # Backdate heartbeat
+    manager.active_connections["client_early"].last_heartbeat -= 1.0
+
+    # Reconnect happens before cleanup_stale_connections runs
+    ws_new = MockWebSocket()
+    await manager.connect(ws_new, "client_early")
+
+    await manager.cleanup_stale_connections()
+
+    # New socket remains active
+    assert "client_early" in manager.active_connections
+    assert manager.active_connections["client_early"].websocket is ws_new
+    assert ws_new.closed is False
+
+
+@pytest.mark.anyio
+async def test_stale_cleanup_removes_unreconnected_stale_client_normally():
+    """Verify standard stale connection cleanup without reconnect removes client."""
+    manager = WebSocketManager(heartbeat_timeout=0.1)
+
+    ws_stale = MockWebSocket()
+    await manager.connect(ws_stale, "client_normal")
+
+    manager.active_connections["client_normal"].last_heartbeat -= 1.0
+
+    await manager.cleanup_stale_connections()
+
+    assert "client_normal" not in manager.active_connections
+    assert ws_stale.closed is True
+
+

@@ -175,18 +175,30 @@ class LineageService:
             return chain
 
     def _calculate_chain_integrity(self, chain: ProvenanceChain) -> float:
-        """Calculate the integrity score of a provenance chain."""
+        """Calculate the integrity score of a provenance chain.
+
+        The score is the fraction of declared parent links that resolve to a
+        record actually present in the chain. A missing parent (e.g. a record
+        that was purged) or a depth-limited traversal therefore lowers the
+        score instead of being silently treated as a complete chain.
+        """
         if not chain.records:
             return 0.0
 
-        # Check for gaps in the chain
-        expected_count = chain.total_depth + 1
-        actual_count = len(chain.records)
+        chain_record_ids = {record.record_id for record in chain.records}
 
-        if actual_count >= expected_count:
+        declared_links = 0
+        resolved_links = 0
+        for record in chain.records:
+            for parent_id in record.provenance_chain:
+                declared_links += 1
+                if parent_id in chain_record_ids:
+                    resolved_links += 1
+
+        if declared_links == 0:
             return 1.0
 
-        return actual_count / expected_count if expected_count > 0 else 1.0
+        return resolved_links / declared_links
 
     def build_dependency_graph(
         self,

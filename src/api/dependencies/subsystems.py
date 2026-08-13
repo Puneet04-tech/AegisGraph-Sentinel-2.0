@@ -112,6 +112,13 @@ async def get_blockchain_manager():
     return service
 
 
+def get_blockchain_connection_pool():
+    """Return the async Hyperledger Fabric connection pool instance."""
+    from src.features.blockchain_evidence import get_async_fabric_pool
+    return get_async_fabric_pool()
+
+
+
 async def get_lateral_movement_detector():
     """Return the live LateralMovementDetector, or None if unavailable."""
     from src.api.main import state

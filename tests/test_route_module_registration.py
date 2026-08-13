@@ -1,6 +1,6 @@
 """Tracks which src/api route modules are mounted on the application.
 
-Twelve route modules under src/api are not imported by src/api/main.py, so the
+Eleven route modules under src/api are not imported by src/api/main.py, so the
 endpoints they define are unreachable. Issues #1495 and #1497 through #1508
 tracked exactly these files and were closed as completed while the modules
 stayed unmounted, which is possible because nothing failed when they did.
@@ -23,17 +23,17 @@ MAIN = API_DIR / "main.py"
 # either by mounting the module or by deleting it.
 #
 # Auth state at the time of writing, which matters because mounting one is a
-# single line and three of them would serve unauthenticated traffic:
-#   no per-route auth : compliance (14), defense (14), omega (7)
+# single line and two of them would serve unauthenticated traffic:
+#   no per-route auth : compliance (14), defense (14)
 #   verify_api_key    : digital_twin (12), metaverse (15), nexus (11),
 #                       research (10), simulation (9), supergraph (14)
-#   require_role      : governance (15), knowledge (11)
+#   require_role      : governance (15), knowledge (11), omega (7)
 #   empty stub        : sso (0 routes)
 #
-# compliance, defense and omega additionally fail to import. They use
+# compliance and defense additionally fail to import. They use
 # "from ..security import require_api_key", which resolves to src.security
 # rather than src.api.security, so mounting one raises ImportError before it can
-# serve anything. Those three are also the ones with no per-route auth, so the
+# serve anything. Those two are also the ones with no per-route auth, so the
 # import should not be corrected without adding the missing dependencies.
 KNOWN_UNMOUNTED = {
     # Bulk ingestion remains an internal worker only; PR #2266 unmounts its
@@ -47,7 +47,6 @@ KNOWN_UNMOUNTED = {
     "knowledge_routes.py",
     "metaverse_routes.py",
     "nexus_routes.py",
-    "omega_routes.py",
     "research_routes.py",
     "simulation_routes.py",
     "sso_routes.py",

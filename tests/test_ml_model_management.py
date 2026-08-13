@@ -266,6 +266,66 @@ class TestDeploymentManager:
         with pytest.raises(ValueError):
             deployment_manager.promote(deployment.deployment_id)
 
+    def test_deploy_is_deterministic_not_random(self, deployment_manager, model_registry, store):
+        """Deploying the same valid deployment repeatedly always succeeds."""
+        model = model_registry.register_model(
+            name="Deterministic Deploy",
+            version="1.0.0",
+            model_type=ModelType.FRAUD_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+
+        for _ in range(50):
+            deployment = deployment_manager.create_deployment(
+                model_id=model.model_id,
+                environment="production",
+            )
+            result = deployment_manager.deploy(deployment.deployment_id)
+            assert result.status == DeploymentStatus.DEPLOYED
+            assert result.failure_reason is None
+
+    def test_deploy_rejects_archived_model(self, deployment_manager, model_registry, store):
+        """Deploying an archived model fails deterministically instead of a coin flip."""
+        model = model_registry.register_model(
+            name="Archived Model",
+            version="1.0.0",
+            model_type=ModelType.FRAUD_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+        model.status = ModelStatus.ARCHIVED
+        store.store_model(model)
+
+        deployment = deployment_manager.create_deployment(
+            model_id=model.model_id,
+            environment="production",
+        )
+        result = deployment_manager.deploy(deployment.deployment_id)
+
+        assert result.status == DeploymentStatus.FAILED
+        assert "archived" in result.failure_reason
+
+    def test_deploy_rejects_out_of_range_traffic(self, deployment_manager, model_registry, store):
+        """Deploying with an invalid traffic percentage fails deterministically."""
+        model = model_registry.register_model(
+            name="Bad Traffic Model",
+            version="1.0.0",
+            model_type=ModelType.FRAUD_DETECTION,
+            description="Test",
+            framework="sklearn",
+        )
+
+        deployment = deployment_manager.create_deployment(
+            model_id=model.model_id,
+            environment="production",
+            traffic_percentage=150.0,
+        )
+        result = deployment_manager.deploy(deployment.deployment_id)
+
+        assert result.status == DeploymentStatus.FAILED
+        assert "out of range" in result.failure_reason
+
     def test_rollback_restores_previous_state(self, deployment_manager, model_registry, store):
         """Test rollback restores model status and traffic allocation."""
         model = model_registry.register_model(
@@ -409,6 +469,27 @@ class TestABTesting:
         
         assert completed.status == ABTestStatus.COMPLETED
         assert completed.winner in ["A", "B", "TIE", "INCONCLUSIVE"]
+    
+    def test_winner_respects_confidence_level(self, ab_testing):
+        """A stricter confidence_level should require stronger evidence to declare a winner."""
+        strict = ab_testing.create_test(
+            name="Strict", description="Test", model_a_id="a", model_b_id="b",
+            sample_size=2000, confidence_level=0.99,
+        )
+        lenient = ab_testing.create_test(
+            name="Lenient", description="Test", model_a_id="a", model_b_id="b",
+            sample_size=2000, confidence_level=0.80,
+        )
+        for test in (strict, lenient):
+            ab_testing.start_test(test.test_id)
+            ab_testing.log_metric(test.test_id, "A", "accuracy", 0.80)
+            ab_testing.log_metric(test.test_id, "B", "accuracy", 0.83)
+        
+        strict_result = ab_testing.complete_test(strict.test_id)
+        lenient_result = ab_testing.complete_test(lenient.test_id)
+        
+        assert strict_result.winner == "INCONCLUSIVE"
+        assert lenient_result.winner == "B"
 
 
 # =============================================================================

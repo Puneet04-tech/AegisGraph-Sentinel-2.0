@@ -4,9 +4,9 @@ Business Intelligence Dashboard Module.
 Provides BI dashboards, charts, and visualization capabilities.
 """
 
-import random
-from typing import Dict, List, Optional, Any
-from datetime import datetime, timezone
+from collections import Counter
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timedelta, timezone
 import logging
 
 from .models import (
@@ -27,7 +27,19 @@ class BIDashboardModule:
         - Real-time data visualization
         - Dashboard sharing
     """
-    
+
+    #: Days covered by each supported time range string.
+    TIME_RANGE_DAYS = {"7d": 7, "30d": 30, "90d": 90, "12m": 365}
+
+    #: Window used when a caller passes an unrecognised time range.
+    DEFAULT_RANGE_DAYS = 30
+
+    #: Maximum observations plotted on a series.
+    MAX_POINTS = 1000
+
+    #: Maximum slices shown on a share-of-total chart.
+    MAX_SLICES = 10
+
     def __init__(self, store: Optional[AnalyticsStore] = None):
         """Initialize the BI dashboard module.
         
@@ -177,65 +189,123 @@ class BIDashboardModule:
         if not chart:
             return {"error": "Chart not found"}
         
-        # Generate sample data based on chart type
-        if chart.chart_type == "line":
-            data = self._generate_line_data(chart)
-        elif chart.chart_type == "bar":
-            data = self._generate_bar_data(chart)
-        elif chart.chart_type == "pie":
-            data = self._generate_pie_data(chart)
+        # Every chart used to be filled with random numbers, and the label
+        # list was a fixed string list of a different length again -- a "7d"
+        # line chart got 30 random points against 7 weekday labels, so no
+        # point on any chart lined up with the axis beneath it.
+        start, end = self._window(time_range)
+
+        if chart.chart_type == "pie":
+            labels, values = self._share_by_dimension(chart, start, end)
+            data = values
+        elif chart.chart_type in ("line", "bar"):
+            labels, data = self._time_series(chart, start, end)
         else:
-            data = self._generate_generic_data(chart)
-        
+            labels, values = self._share_by_dimension(chart, start, end)
+            data = [
+                {"label": label, "value": value}
+                for label, value in zip(labels, values)
+            ]
+
         return {
             "chart_id": chart_id,
             "chart_type": chart.chart_type,
             "x_axis": chart.x_axis,
             "y_axis": chart.y_axis,
             "data": data,
-            "labels": self._generate_labels(chart, time_range),
+            "labels": labels,
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "insufficient_data": not labels,
         }
     
-    def _generate_line_data(self, chart: BIChart) -> List[List[float]]:
-        """Generate line chart data."""
-        series_count = len(chart.series) if chart.series else 1
-        points = 30
-        
-        data = []
-        for _ in range(series_count):
-            series = [random.uniform(20, 100) for _ in range(points)]
-            data.append(series)
-        
-        return data
-    
-    def _generate_bar_data(self, chart: BIChart) -> List[float]:
-        """Generate bar chart data."""
-        return [random.uniform(50, 200) for _ in range(12)]
-    
-    def _generate_pie_data(self, chart: BIChart) -> List[float]:
-        """Generate pie chart data."""
-        values = [random.uniform(10, 40) for _ in range(5)]
-        total = sum(values)
-        return [v / total * 100 for v in values]
-    
-    def _generate_generic_data(self, chart: BIChart) -> List[Dict[str, Any]]:
-        """Generate generic chart data."""
-        return [
-            {"label": f"Item {i}", "value": random.uniform(10, 100)}
-            for i in range(10)
+    def _window(self, time_range: str) -> Tuple[datetime, datetime]:
+        """Resolve a time range string to a concrete window."""
+        end = datetime.now(timezone.utc)
+        days = self.TIME_RANGE_DAYS.get(time_range, self.DEFAULT_RANGE_DAYS)
+        return end - timedelta(days=days), end
+
+    def _time_series(
+        self,
+        chart: BIChart,
+        start: datetime,
+        end: datetime,
+    ) -> Tuple[List[str], List[List[float]]]:
+        """Recorded values per series, with labels that match them.
+
+        Each entry in ``chart.series`` names a metric; a chart with no series
+        list falls back to its ``data_source``. Labels are the observation
+        timestamps of the first series, so labels and points always have the
+        same length.
+        """
+        metric_ids = chart.series or [chart.data_source]
+
+        observations = [
+            self._observations(metric_id, start, end)
+            for metric_id in metric_ids
         ]
-    
-    def _generate_labels(self, chart: BIChart, time_range: str) -> List[str]:
-        """Generate axis labels."""
-        if time_range == "7d":
-            return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        elif time_range == "30d":
-            return [f"Day {i+1}" for i in range(30)]
-        elif time_range == "12m":
-            return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        else:
-            return [f"Q{i}" for i in range(4)]
+        observations = [series for series in observations if series]
+
+        if not observations:
+            logger.warning(
+                "No recorded values for chart '%s' between %s and %s",
+                chart.name, start, end,
+            )
+            return [], []
+
+        labels = [timestamp.isoformat() for timestamp, _ in observations[0]]
+        data = [[value for _, value in series] for series in observations]
+        return labels, data
+
+    def _share_by_dimension(
+        self,
+        chart: BIChart,
+        start: datetime,
+        end: datetime,
+    ) -> Tuple[List[str], List[float]]:
+        """Percentage share per value of the chart's x-axis dimension.
+
+        Shares are computed from the recorded values' dimensions and sum to
+        100. Previously five random values were normalised to 100%, which
+        looked like a real breakdown of nothing.
+        """
+        values = self._store.get_metric_values(
+            chart.data_source, start_time=start, end_time=end,
+        )
+
+        totals: Counter = Counter()
+        for value in values:
+            key = value.dimensions.get(chart.x_axis)
+            if key is None:
+                continue
+            totals[key] += value.value
+
+        grand_total = sum(totals.values())
+        if not grand_total:
+            logger.warning(
+                "No values carrying dimension '%s' for chart '%s'",
+                chart.x_axis, chart.name,
+            )
+            return [], []
+
+        ranked = totals.most_common(self.MAX_SLICES)
+        return (
+            [label for label, _ in ranked],
+            [round(100 * total / grand_total, 2) for _, total in ranked],
+        )
+
+    def _observations(
+        self,
+        metric_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> List[Tuple[datetime, float]]:
+        """Recorded values for a metric in the window, oldest first."""
+        values = self._store.get_metric_values(
+            metric_id, start_time=start, end_time=end, limit=self.MAX_POINTS,
+        )
+        return [(v.timestamp, v.value) for v in reversed(values)]
+
     
     def get_dashboard_data(
         self,
@@ -274,10 +344,11 @@ class BIDashboardModule:
                 kpi_data.append({
                     "kpi_id": kpi.kpi_id,
                     "name": kpi.name,
-                    "current_value": kpi.current_value or random.uniform(50, 150),
+                    # `or` also replaced a genuine recorded value of 0.0.
+                    "current_value": kpi.current_value,
                     "target_value": kpi.target_value,
                     "status": kpi.status,
-                    "change_percent": kpi.change_percent or random.uniform(-10, 10),
+                    "change_percent": kpi.change_percent,
                 })
         
         return {

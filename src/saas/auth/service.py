@@ -786,7 +786,10 @@ class AuthService:
             return AuthResult(success=False, error="SSO authentication failed")
 
         # Find or create user
-        user_id, _ = self._find_or_create_sso_user(provider, user_info)
+        try:
+            user_id, _ = self._find_or_create_sso_user(provider, user_info)
+        except AuthenticationError as exc:
+            return AuthResult(success=False, error=str(exc))
 
         record = self.user_store.get_by_id(user_id)
         if record is None:
