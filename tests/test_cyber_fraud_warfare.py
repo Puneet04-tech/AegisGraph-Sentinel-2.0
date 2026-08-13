@@ -193,6 +193,30 @@ class TestAttributionEngine:
         assert result is not None
         assert hasattr(result, "confidence")
 
+    def test_check_rule_conditions_missing_list_attribute_returns_false(self):
+        """Missing campaign attribute with list condition must return False, not raise TypeError."""
+        campaign = {"name": "No Sectors Campaign"}
+        conditions = {"target_sectors": ["BANKING", "FINANCE"]}
+        assert self.engine._check_rule_conditions(conditions, campaign) is False
+
+    def test_check_rule_conditions_matching_list_attribute(self):
+        """Matching campaign list attribute returns True."""
+        campaign = {"target_sectors": ["BANKING", "HEALTHCARE"]}
+        conditions = {"target_sectors": ["BANKING"]}
+        assert self.engine._check_rule_conditions(conditions, campaign) is True
+
+    def test_check_rule_conditions_non_matching_list_attribute(self):
+        """Non-matching campaign list attribute returns False."""
+        campaign = {"target_sectors": ["RETAIL"]}
+        conditions = {"target_sectors": ["BANKING"]}
+        assert self.engine._check_rule_conditions(conditions, campaign) is False
+
+    def test_check_rule_conditions_missing_scalar_attribute(self):
+        """Missing scalar campaign attribute returns False."""
+        campaign = {}
+        conditions = {"status": "ACTIVE"}
+        assert self.engine._check_rule_conditions(conditions, campaign) is False
+
 
 class TestStrategicDashboard:
     """Tests for StrategicThreatDashboard."""
