@@ -188,11 +188,14 @@ async def evaluate_model(
     verify_api_key(x_api_key)
     engine = get_research_engine()
     
-    evaluation_id = engine.evaluation_service.evaluate_model(
-        model_id=request.model_id,
-        model_version=request.model_version,
-        test_results=request.test_results,
-    )
+    try:
+        evaluation_id = engine.evaluation_service.evaluate_model(
+            model_id=request.model_id,
+            model_version=request.model_version,
+            test_results=request.test_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
     return {
         "evaluation_id": evaluation_id,
