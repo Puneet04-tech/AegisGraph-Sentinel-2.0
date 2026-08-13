@@ -771,7 +771,24 @@ class TestRecommendationEngine:
         assert recommendation.entity_id == "entity_1"
         assert recommendation.priority == RecommendationPriority.CRITICAL
         assert recommendation.recommendation_type == RecommendationType.ACCOUNT_FREEZE
-    
+
+    def test_acknowledge_recommendation_records_real_timestamp(self, recommendation_engine):
+        """acknowledged_at should be a real ISO timestamp, not a random number."""
+        from datetime import datetime
+
+        recommendation = recommendation_engine.generate_recommendation(
+            entity_id="entity_1",
+            risk_score=0.92,
+        )
+
+        result = recommendation_engine.acknowledge_recommendation(recommendation.recommendation_id)
+
+        assert result is True
+        stored = recommendation_engine.get_entity_recommendations("entity_1")[0]
+        assert stored.metadata["acknowledged"] is True
+        # Must parse as a real timestamp, not str(random.randint(...))
+        datetime.fromisoformat(stored.metadata["acknowledged_at"])
+
     def test_generate_recommendation_high(self, recommendation_engine):
         """Test generating high priority recommendation."""
         recommendation = recommendation_engine.generate_recommendation(
