@@ -101,16 +101,27 @@ class ModelDrift:
 
 @dataclass
 class BiasReport:
-    """Bias detection report."""
+    """Bias detection report.
+
+    ``score``/``is_fair`` are ``None`` and ``status`` is ``"not_computable"``
+    when the metric could not be honestly measured (e.g. fewer than two
+    protected groups had usable data, or ground-truth labels were required
+    but absent) -- a report never falls back to a fabricated number that
+    would look indistinguishable from a real fairness measurement.
+    ``details`` carries the reason plus any per-metric context (groups
+    considered, label coverage, skipped attributes, ...).
+    """
     report_id: str
     model_id: str
     metric: BiasMetric
-    score: float
+    score: Optional[float]
     threshold: float
-    is_fair: bool
+    is_fair: Optional[bool]
     affected_groups: List[str] = field(default_factory=list)
+    status: str = "computed"
+    details: Dict[str, Any] = field(default_factory=dict)
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "report_id": self.report_id,
@@ -120,6 +131,8 @@ class BiasReport:
             "threshold": self.threshold,
             "is_fair": self.is_fair,
             "affected_groups": self.affected_groups,
+            "status": self.status,
+            "details": self.details,
             "generated_at": self.generated_at.isoformat(),
         }
 
