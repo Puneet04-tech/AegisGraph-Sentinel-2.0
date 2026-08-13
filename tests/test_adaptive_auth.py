@@ -41,7 +41,7 @@ from src.adaptive_auth.risk_engine import RiskEngine, RiskSignalEvaluator, get_r
 from src.adaptive_auth.behavior_monitor import BehaviorMonitor, BehaviorAnalyzer, get_behavior_monitor, reset_monitor
 from src.adaptive_auth.session_evaluator import SessionEvaluator, TrustEvaluator, get_session_evaluator, reset_evaluator
 from src.adaptive_auth.stepup_auth import StepUpAuthService, get_stepup_auth_service, reset_service as reset_stepup_service
-from src.adaptive_auth.policy_engine import PolicyEngine, PolicyEvaluator, get_policy_engine
+from src.adaptive_auth.policy_engine import PolicyEngine, PolicyEvaluator, PolicyDecision, get_policy_engine
 from src.adaptive_auth.audit import AuditService, get_audit_service, reset_audit_service
 from src.adaptive_auth.service import AdaptiveAuthService, get_adaptive_auth_service, reset_service
 
@@ -612,6 +612,23 @@ class TestPolicyEngine:
         
         policies = engine.get_policies()
         assert len(policies) == initial_count + 1
+
+    def test_combine_decisions_picks_most_severe_action(self):
+        """A DENY decision must outrank a co-triggered REVIEW, not lose to it alphabetically."""
+        engine = get_policy_engine()
+        deny = PolicyDecision(
+            policy_id="p-deny", policy_name="hard-block", action=PolicyAction.DENY,
+            allowed=False, requires_step_up=False, denied_reason="hard block",
+        )
+        review = PolicyDecision(
+            policy_id="p-review", policy_name="soft-flag", action=PolicyAction.REVIEW,
+            allowed=False, requires_step_up=False, denied_reason="flagged for review",
+        )
+
+        decision = engine._combine_decisions("/api/v1/x", "access", [deny, review])
+
+        assert decision.final_action == PolicyAction.DENY
+        assert decision.denied_reason == "hard block"
 
 
 class TestAuditService:
