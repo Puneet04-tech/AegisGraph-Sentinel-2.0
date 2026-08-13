@@ -191,6 +191,40 @@ class TestKeystrokeDynamicsAnalyzer:
         assert "total_events" in result
         assert "stress_score" in result
 
+    def test_out_of_order_events_sorted_chronologically(self):
+        analyzer = KeystrokeDynamicsAnalyzer()
+        out_of_order_events = [
+            KeystrokeEvent("b", 1.5, 1.6),
+            KeystrokeEvent("a", 1.0, 1.1),
+            KeystrokeEvent("c", 2.0, 2.1),
+        ]
+        seq_unordered = KeystrokeSequence(events=out_of_order_events, session_start=1.0, session_end=2.1)
+        features = analyzer.extract_features(seq_unordered)
+        assert features["flight_time_mean"] > 0.0
+        assert features["rhythm_consistency"] >= 0.0
+
+    def test_event_pairing_preserved_after_sorting(self):
+        analyzer = KeystrokeDynamicsAnalyzer()
+        out_of_order_events = [
+            KeystrokeEvent("b", 1.5, 1.8),  # hold_time = 0.3
+            KeystrokeEvent("a", 1.0, 1.1),  # hold_time = 0.1
+        ]
+        seq = KeystrokeSequence(events=out_of_order_events, session_start=1.0, session_end=1.8)
+        features = analyzer.extract_features(seq)
+        # Mean hold time: (0.3 + 0.1)/2 = 0.2s = 200ms
+        assert features["hold_time_mean"] == pytest.approx(200.0)
+
+    def test_stress_score_remains_strictly_bounded(self):
+        analyzer = KeystrokeDynamicsAnalyzer()
+        out_of_order_events = [
+            KeystrokeEvent("b", 1.5, 1.6),
+            KeystrokeEvent("a", 1.0, 1.1),
+        ]
+        seq = KeystrokeSequence(events=out_of_order_events, session_start=1.0, session_end=1.6)
+        features = analyzer.extract_features(seq)
+        stress = analyzer.detect_stress(features)
+        assert 0.0 <= stress["stress_score"] <= 1.0
+
 
 class TestSafeFloat:
     def test_returns_value_for_finite(self):
