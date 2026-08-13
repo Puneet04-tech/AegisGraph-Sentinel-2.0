@@ -612,6 +612,88 @@ class TestClusterEngine:
             for member in cluster.entity_ids:
                 distance = hop_distance(start, member, limit=3)
                 assert distance is not None and distance <= 3
+
+
+    def test_linear_graph_exact_depth_boundary(self, engine):
+        """Linear graph A-B-C-D-E-F with start=A, max_depth=2 includes only A, B, C."""
+        entities = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"CHAIN_{i}", risk_score=0.8)
+            for i in range(6)
+        ]
+        for e in entities:
+            engine._store.store_entity(e)
+
+        for a, b in zip(entities, entities[1:]):
+            engine._store.store_relationship(
+                EntityRelationship(source_id=a.id, target_id=b.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+            )
+
+        start_id = entities[0].id
+        clusters = engine.detect_clusters_bfs(start_entity_id=start_id, min_size=2, max_depth=2)
+
+        assert len(clusters) == 1
+        cluster = clusters[0]
+        expected_ids = {entities[0].id, entities[1].id, entities[2].id}
+        assert cluster.entity_ids == expected_ids
+        assert entities[3].id not in cluster.entity_ids
+
+    def test_dense_star_graph_no_arbitrary_truncation(self, engine):
+        """Star graph with 150 nodes at depth 1 with max_depth=1 includes all 151 entities."""
+        center = Entity(entity_type=EntityType.ACCOUNT, value="STAR_CENTER", risk_score=0.9)
+        engine._store.store_entity(center)
+
+        spokes = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"STAR_SPOKE_{i}", risk_score=0.5)
+            for i in range(150)
+        ]
+        for s in spokes:
+            engine._store.store_entity(s)
+            engine._store.store_relationship(
+                EntityRelationship(source_id=center.id, target_id=s.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+            )
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=center.id, min_size=2, max_depth=1)
+
+        assert len(clusters) == 1
+        assert len(clusters[0].entity_ids) == 151
+
+    def test_max_depth_zero(self, engine):
+        """max_depth=0 with min_size=1 includes only the starting entity."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="DEPTH0_1", risk_score=0.8)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="DEPTH0_2", risk_score=0.8)
+        engine._store.store_entity(e1)
+        engine._store.store_entity(e2)
+        engine._store.store_relationship(
+            EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+        )
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=1, max_depth=0)
+        assert len(clusters) == 1
+        assert clusters[0].entity_ids == {e1.id}
+
+    def test_negative_max_depth(self, engine):
+        """Negative max_depth returns an empty list."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="NEG_1", risk_score=0.8)
+        engine._store.store_entity(e1)
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=1, max_depth=-1)
+        assert clusters == []
+
+    def test_cyclic_graph_depth_enforcement(self, engine):
+        """Cyclic graph A-B-C-A with max_depth=1 from A includes A, B, C safely."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_A", risk_score=0.8)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_B", risk_score=0.8)
+        e3 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_C", risk_score=0.8)
+        for e in [e1, e2, e3]:
+            engine._store.store_entity(e)
+
+        engine._store.store_relationship(EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+        engine._store.store_relationship(EntityRelationship(source_id=e2.id, target_id=e3.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+        engine._store.store_relationship(EntityRelationship(source_id=e3.id, target_id=e1.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=2, max_depth=1)
+        assert len(clusters) == 1
+        assert clusters[0].entity_ids == {e1.id, e2.id, e3.id}
     
     def test_detect_fraud_rings(self, engine):
         """Test fraud ring detection with request."""

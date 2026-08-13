@@ -222,6 +222,9 @@ class ClusterEngine:
 
         start_time = time.time()
 
+        if max_depth < 0:
+            return []
+
         visited: Set[str] = set()
         clusters: List[FraudCluster] = []
 
@@ -238,13 +241,11 @@ class ClusterEngine:
 
             # BFS traversal to find connected component
             component = set()
+            component_visited = {start_id}
             queue = [(start_id, 0)]
 
             while queue:
                 current_id, current_depth = queue.pop(0)
-
-                if current_id in visited:
-                    continue
 
                 visited.add(current_id)
                 component.add(current_id)
@@ -262,9 +263,8 @@ class ClusterEngine:
 
                     connected_id = rel.target_id if rel.source_id == current_id else rel.source_id
 
-                    # Defensive cluster-size guard only: skip without truncating
-                    # the component or dropping the rest of the queue.
-                    if connected_id not in visited and len(component) < 100:
+                    if connected_id not in component_visited:
+                        component_visited.add(connected_id)
                         queue.append((connected_id, current_depth + 1))
 
             if len(component) >= min_size:
