@@ -22,7 +22,7 @@ class WorkflowEngine:
                 workflow_id="wf-standard",
                 name="Standard Case Workflow",
                 description="Standard workflow for case management",
-                states=["NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_APPROVAL", "RESOLVED", "CLOSED"],
+                states=["NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_APPROVAL", "ESCALATED", "RESOLVED", "CLOSED"],
                 transitions={
                     "NEW": ["ASSIGNED"],
                     "ASSIGNED": ["IN_PROGRESS", "ESCALATED"],
@@ -38,7 +38,7 @@ class WorkflowEngine:
                 workflow_id="wf-incident",
                 name="Incident Response Workflow",
                 description="Fast-track workflow for incidents",
-                states=["NEW", "INVESTIGATING", "CONTAINED", "ERADICATED", "RECOVERED", "CLOSED"],
+                states=["NEW", "INVESTIGATING", "CONTAINED", "ERADICATED", "RECOVERED", "ESCALATED", "CLOSED"],
                 transitions={
                     "NEW": ["INVESTIGATING"],
                     "INVESTIGATING": ["CONTAINED", "ESCALATED"],
@@ -161,9 +161,15 @@ class WorkflowEngine:
         return assignment
     
     def escalate_case(self, case_id: str, to_assignee: str, reason: str) -> Optional[Escalation]:
-        """Escalate a case"""
+        """Escalate a case through the workflow state machine."""
         case = self.cases.get(case_id)
         if not case:
+            return None
+        
+        # Route through the state machine: ESCALATED must be a declared,
+        # reachable state from the case's current state. Bypassing this
+        # validation used to write an undeclared ESCALATED state directly.
+        if not self.can_transition(case.workflow_id, case.current_state, "ESCALATED"):
             return None
         
         escalation = Escalation(

@@ -155,6 +155,7 @@ class TestIncidentWorkflow:
 
 class TestEscalation:
     def test_escalate_case_creates_record(self, engine, standard_case):
+        engine.transition_case(standard_case.case_id, "ASSIGNED")
         escalation = engine.escalate_case(standard_case.case_id, "manager", "risk")
 
         assert escalation.case_id == standard_case.case_id
@@ -167,6 +168,28 @@ class TestEscalation:
 
     def test_escalate_case_unknown_returns_none(self, engine):
         assert engine.escalate_case("missing", "manager", "risk") is None
+
+    def test_escalate_requires_valid_state_machine_transition(self, engine, standard_case):
+        # A NEW case cannot escalate in wf-standard (NEW only leads to
+        # ASSIGNED); the state machine must reject the bypass.
+        escalation = engine.escalate_case(standard_case.case_id, "manager", "risk")
+
+        assert escalation is None
+        assert standard_case.current_state == "NEW"
+        assert standard_case.status == CaseStatus.NEW
+        assert standard_case.escalated_to is None
+
+    def test_escalate_works_from_incident_investigating(self, engine, incident_case):
+        engine.transition_case(incident_case.case_id, "INVESTIGATING")
+        escalation = engine.escalate_case(incident_case.case_id, "manager", "breach")
+
+        assert escalation is not None
+        assert incident_case.current_state == "ESCALATED"
+        assert incident_case.status == CaseStatus.ESCALATED
+
+    def test_escalated_is_a_declared_state_in_default_workflows(self, engine):
+        assert "ESCALATED" in engine.workflows["wf-standard"].states
+        assert "ESCALATED" in engine.workflows["wf-incident"].states
 
 
 # ---------------------------------------------------------------------------
