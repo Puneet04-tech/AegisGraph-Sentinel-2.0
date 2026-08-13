@@ -155,9 +155,16 @@ def check_rate_limit(
     """Check a distributed token bucket and fail open if Redis is unavailable."""
     settings = get_settings()
     configured_limit, configured_window = _parse_rate_limit(settings.api.rate_limit)
-    limit = int(limit or configured_limit)
-    burst = int(burst or settings.api.rate_limit_burst or limit)
-    window_seconds = int(window_seconds or settings.api.rate_limit_window_seconds or configured_window)
+    limit = int(limit) if limit is not None else configured_limit
+    burst = int(burst) if burst is not None else (settings.api.rate_limit_burst if settings.api.rate_limit_burst is not None else limit)
+    window_seconds = int(window_seconds) if window_seconds is not None else (settings.api.rate_limit_window_seconds if settings.api.rate_limit_window_seconds is not None else configured_window)
+
+    if limit <= 0 or burst <= 0:
+        return RateLimitDecision(
+            allowed=False,
+            retry_after_seconds=max(1, window_seconds),
+            remaining_tokens=0.0,
+        )
 
     capacity = max(1, burst)
     refill_rate = max(1e-9, float(limit) / float(window_seconds))

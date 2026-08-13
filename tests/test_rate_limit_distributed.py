@@ -133,3 +133,20 @@ def test_default_rate_limit_middleware_registered_without_slowapi():
     """
     registered = {m.cls for m in app.user_middleware}
     assert DefaultRateLimitMiddleware in registered
+
+
+def test_check_rate_limit_zero_limit_rejects(monkeypatch, fake_settings):
+    monkeypatch.setattr(rate_limit_mod, "get_settings", lambda: fake_settings)
+    decision = rate_limit_mod.check_rate_limit("revoked-key", limit=0)
+    assert decision.allowed is False
+    assert decision.remaining_tokens == 0.0
+    assert decision.retry_after_seconds >= 1
+
+
+def test_check_rate_limit_zero_burst_rejects(monkeypatch, fake_settings):
+    monkeypatch.setattr(rate_limit_mod, "get_settings", lambda: fake_settings)
+    decision = rate_limit_mod.check_rate_limit("zero-burst-key", burst=0)
+    assert decision.allowed is False
+    assert decision.remaining_tokens == 0.0
+    assert decision.retry_after_seconds >= 1
+
