@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 import numpy as np
 import networkx as nx
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from collections import Counter
 import math
 
