@@ -211,6 +211,117 @@ class TestEventBus:
         assert correlation["event_count"] == 2
         assert correlation["relationship"] == "same_source"
 
+    def test_concurrent_publishing(self, event_bus):
+        """Test multi-threaded concurrent event publishing."""
+        import threading
+        errors = []
+
+        def worker(thread_idx):
+            try:
+                for i in range(30):
+                    event_bus.publish_event(
+                        event_type=f"concurrent_event_{thread_idx}",
+                        source=f"thread_{thread_idx}",
+                        payload={"seq": i},
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        history = event_bus.get_event_history(limit=1000)
+        assert len(history) <= 1000
+
+    def test_concurrent_subscribe_and_publish(self, event_bus):
+        """Test concurrent handler registration/removal alongside publishing."""
+        import threading
+        errors = []
+        stop_flag = False
+
+        def publisher():
+            while not stop_flag:
+                try:
+                    event_bus.publish_event("stream_event", "src", {"v": 1})
+                except Exception as exc:
+                    errors.append(exc)
+
+        def subscriber_mutation(idx):
+            handler = lambda event, sub_id: None
+            for _ in range(20):
+                try:
+                    event_bus.add_subscriber_handler("stream_event", handler)
+                    event_bus.remove_subscriber_handler("stream_event", handler)
+                except Exception as exc:
+                    errors.append(exc)
+
+        pub_thread = threading.Thread(target=publisher)
+        pub_thread.start()
+
+        mut_threads = [threading.Thread(target=subscriber_mutation, args=(i,)) for i in range(5)]
+        for t in mut_threads:
+            t.start()
+        for t in mut_threads:
+            t.join()
+
+        stop_flag = True
+        pub_thread.join()
+
+        assert len(errors) == 0
+
+    def test_concurrent_history_reads(self, event_bus):
+        """Test concurrent history reads during publishing."""
+        import threading
+        errors = []
+
+        def writer():
+            for i in range(50):
+                event_bus.publish_event("history_event", "writer", {"i": i})
+
+        def reader():
+            for _ in range(20):
+                try:
+                    h = event_bus.get_event_history(limit=50)
+                    assert isinstance(h, list)
+                except Exception as exc:
+                    errors.append(exc)
+
+        w_thread = threading.Thread(target=writer)
+        r_threads = [threading.Thread(target=reader) for _ in range(5)]
+
+        w_thread.start()
+        for r in r_threads:
+            r.start()
+
+        w_thread.join()
+        for r in r_threads:
+            r.join()
+
+        assert len(errors) == 0
+
+    def test_reentrant_callback_publishing(self, event_bus):
+        """Test callback publishing another event without deadlocking."""
+        received = []
+
+        def cascading_handler(event, sub_id):
+            received.append(event.event_type)
+            if event.event_type == "initial_event":
+                event_bus.publish_event("cascaded_event", "handler", {"nested": True})
+
+        event_bus.subscribe("initial_event", "sub_1")
+        event_bus.subscribe("cascaded_event", "sub_2")
+        event_bus.add_subscriber_handler("initial_event", cascading_handler)
+        event_bus.add_subscriber_handler("cascaded_event", cascading_handler)
+
+        event_bus.publish_event("initial_event", "test", {})
+
+        assert "initial_event" in received
+        assert "cascaded_event" in received
+
 
 # =============================================================================
 # Stream Analytics Tests
