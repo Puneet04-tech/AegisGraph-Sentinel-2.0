@@ -145,6 +145,18 @@ class TestCopilotEngine:
         assert "summary_id" in result
         assert "summary_text" in result
 
+    def test_summarize_varies_with_case_data(self):
+        """Key findings should reflect case data, not be identical for every case."""
+        session_result = asyncio.run(self.engine.create_session("user-1"))
+        session_id = session_result["session_id"]
+        
+        low_risk = asyncio.run(self.engine.summarize(session_id, "case-low", {"risk_score": 0.2}))
+        high_risk = asyncio.run(self.engine.summarize(
+            session_id, "case-high", {"risk_score": 0.9, "linked_entities": 5}
+        ))
+        
+        assert low_risk["key_findings"] != high_risk["key_findings"]
+
     def test_recommend(self):
         """Test recommendations."""
         session_result = asyncio.run(self.engine.create_session("user-1"))
@@ -180,6 +192,21 @@ class TestCopilotEngine:
         result = asyncio.run(self.engine.report(session_id, "case-1"))
         assert "report_id" in result
         assert "sections" in result
+
+    def test_report_varies_with_case_data(self):
+        """Report content should reflect case data, not be identical for every case."""
+        session_result = asyncio.run(self.engine.create_session("user-1"))
+        session_id = session_result["session_id"]
+        
+        low_risk = asyncio.run(self.engine.report(session_id, "case-low", case_data={"risk_score": 0.2}))
+        high_risk = asyncio.run(self.engine.report(
+            session_id, "case-high", case_data={"risk_score": 0.9, "linked_entities": 5}
+        ))
+        
+        low_report = self.engine.store.get_report(low_risk["report_id"])
+        high_report = self.engine.store.get_report(high_risk["report_id"])
+        
+        assert low_report.recommendations != high_report.recommendations
 
     def test_get_history(self):
         """Test getting conversation history."""
