@@ -110,7 +110,20 @@ class ComplianceStore:
             results = [a for a in results if a.get("regulation_id") == regulation_id]
         if status:
             results = [a for a in results if a.get("status") == status]
-        return sorted(results, key=lambda x: x.get("assessment_date", ""), reverse=True)
+        return sorted(results, key=lambda x: self._date_sort_key(x.get("assessment_date")), reverse=True)
+
+    @staticmethod
+    def _date_sort_key(value: Any) -> str:
+        """Normalize an assessment date to a comparable string key.
+
+        Assessment dates may be stored as either ``datetime`` objects or ISO
+        format strings; sorting mixed types directly raises ``TypeError``.
+        """
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, str):
+            return value
+        return ""
 
     def add_evidence(self, evidence: Dict[str, Any]) -> str:
         """Add new evidence."""

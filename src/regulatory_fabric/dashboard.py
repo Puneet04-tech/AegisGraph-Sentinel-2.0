@@ -199,6 +199,26 @@ class ComplianceDashboardService:
         
         return risk_counts
 
+    def _parse_assessment_date(self, value: Any) -> Optional[datetime]:
+        """Normalize an assessment date to a tz-aware datetime.
+
+        Assessment dates may be stored as either ``datetime`` objects or ISO
+        format strings, so coerce both before any comparison.
+        """
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return None
+
     def _calculate_trend_direction(self) -> str:
         """Calculate compliance trend direction."""
         # Compare recent assessments to older ones
@@ -209,8 +229,16 @@ class ComplianceDashboardService:
         
         # Split into recent (last 30 days) and older
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-        recent = [a for a in assessments if a.get("assessment_date", "") >= cutoff.isoformat()]
-        older = [a for a in assessments if a.get("assessment_date", "") < cutoff.isoformat()]
+        recent = []
+        older = []
+        for assessment in assessments:
+            date = self._parse_assessment_date(assessment.get("assessment_date"))
+            if date is None:
+                continue
+            if date >= cutoff:
+                recent.append(assessment)
+            else:
+                older.append(assessment)
         
         if not recent or not older:
             return "STABLE"

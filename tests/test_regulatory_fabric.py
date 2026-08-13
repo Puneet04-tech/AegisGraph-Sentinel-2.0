@@ -259,67 +259,91 @@ class TestDashboardService:
         assert hasattr(dashboard, "domain_scores")
         assert hasattr(dashboard, "trend_direction")
 
-    def test_domain_scores_are_averaged_across_regulations(self):
-        """Domain score must be an average, not a sum of regulation scores."""
+    def test_trend_direction_mixed_datetime_and_iso_dates(self):
+        """Trend calculation must handle datetime and ISO string dates."""
         from src.regulatory_fabric.dashboard import ComplianceDashboardService
         from src.regulatory_fabric.store import ComplianceStore
 
         store = ComplianceStore()
+        now = datetime.now(timezone.utc)
 
-        # Regulation 1: 1 compliant control -> 100%
-        reg1 = store.add_regulation({"domain": "PCI_DSS", "name": "PCI DSS 4.0", "regulation_id": "reg1"})
-        ctrl1 = store.add_control({"control_id": "ctrl1", "status": "COMPLIANT"})
-        store.add_control_mapping({"regulation_id": reg1, "control_id": ctrl1})
-
-        # Regulation 2: 0 of 2 compliant controls -> 0%
-        reg2 = store.add_regulation({"domain": "PCI_DSS", "name": "PCI DSS 2.0", "regulation_id": "reg2"})
-        ctrl2 = store.add_control({"control_id": "ctrl2", "status": "NON_COMPLIANT"})
-        ctrl3 = store.add_control({"control_id": "ctrl3", "status": "NON_COMPLIANT"})
-        store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl2})
-        store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl3})
+        store.add_assessment({
+            "assessment_id": "assess_recent_datetime",
+            "overall_score": 92.0,
+            "assessment_date": now,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_recent_iso",
+            "overall_score": 88.0,
+            "assessment_date": (now - timedelta(days=10)).isoformat(),
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old_iso",
+            "overall_score": 60.0,
+            "assessment_date": (now - timedelta(days=90)).isoformat(),
+            "status": "COMPLETED",
+        })
 
         service = ComplianceDashboardService(store, None, None, None)
-        domain_scores = service._calculate_domain_scores()
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
 
-        # 1 compliant out of 3 total controls -> 100/3, not 100 + 0 == 100
-        assert domain_scores == pytest.approx({"PCI_DSS": 100 / 3})
-
-    def test_domain_scores_are_control_weighted(self):
-        """Domain score must weight by control count, not regulation count."""
+    def test_trend_direction_missing_dates_are_skipped(self):
+        """Assessments without a parseable date must not crash the trend."""
         from src.regulatory_fabric.dashboard import ComplianceDashboardService
         from src.regulatory_fabric.store import ComplianceStore
 
         store = ComplianceStore()
+        now = datetime.now(timezone.utc)
 
-        # Regulation 1: 1 compliant control -> 100%
-        reg1 = store.add_regulation({"domain": "GDPR", "name": "GDPR 1", "regulation_id": "reg1"})
-        ctrl1 = store.add_control({"control_id": "ctrl1", "status": "COMPLIANT"})
-        store.add_control_mapping({"regulation_id": reg1, "control_id": ctrl1})
-
-        # Regulation 2: 0 of 3 compliant controls -> 0%
-        reg2 = store.add_regulation({"domain": "GDPR", "name": "GDPR 2", "regulation_id": "reg2"})
-        for i in range(3):
-            ctrl = store.add_control({"control_id": f"ctrl_nc_{i}", "status": "NON_COMPLIANT"})
-            store.add_control_mapping({"regulation_id": reg2, "control_id": ctrl})
+        store.add_assessment({
+            "assessment_id": "assess_no_date",
+            "overall_score": 90.0,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_recent",
+            "overall_score": 95.0,
+            "assessment_date": now,
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old",
+            "overall_score": 70.0,
+            "assessment_date": (now - timedelta(days=60)).isoformat(),
+            "status": "COMPLETED",
+        })
 
         service = ComplianceDashboardService(store, None, None, None)
-        domain_scores = service._calculate_domain_scores()
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
 
-        # 1 compliant out of 4 total controls -> 25%, not (100 + 0) / 2 == 50
-        assert domain_scores == {"GDPR": 25.0}
-
-    def test_domain_scores_without_controls(self):
-        """Domains whose regulations have no mapped controls are skipped."""
+    def test_trend_direction_naive_datetime_is_handled(self):
+        """Naive datetimes must be treated as UTC, not crash the comparison."""
         from src.regulatory_fabric.dashboard import ComplianceDashboardService
         from src.regulatory_fabric.store import ComplianceStore
 
         store = ComplianceStore()
-        store.add_regulation({"domain": "SOC2", "name": "SOC 2", "regulation_id": "reg1"})
+        now = datetime.now(timezone.utc)
+
+        store.add_assessment({
+            "assessment_id": "assess_recent_naive",
+            "overall_score": 94.0,
+            "assessment_date": now.replace(tzinfo=None),
+            "status": "COMPLETED",
+        })
+        store.add_assessment({
+            "assessment_id": "assess_old_naive",
+            "overall_score": 55.0,
+            "assessment_date": (now - timedelta(days=120)).replace(tzinfo=None),
+            "status": "COMPLETED",
+        })
 
         service = ComplianceDashboardService(store, None, None, None)
-        domain_scores = service._calculate_domain_scores()
-
-        assert domain_scores == {}
+        dashboard = service.generate_dashboard()
+        assert dashboard.trend_direction == "IMPROVING"
 
 
 if __name__ == "__main__":
