@@ -219,8 +219,10 @@ class CampaignAttributionEngine:
         """
         for key, expected in conditions.items():
             actual = campaign.get(key)
+            if actual is None:
+                return False
             if isinstance(expected, list):
-                if not any(e in actual for e in expected):
+                if not isinstance(actual, (list, tuple, set, str)) or not any(e in actual for e in expected):
                     return False
             elif actual != expected:
                 return False
