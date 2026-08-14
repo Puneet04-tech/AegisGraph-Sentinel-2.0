@@ -255,7 +255,7 @@ class VelocityCalculator:
         
         # Velocity = distance / time
         velocity = total_distance / total_time
-        avg_hop_time = total_time / len(valid_transactions)
+        avg_hop_time = total_time / (len(valid_transactions) - 1) if len(valid_transactions) > 1 else 0.0
         
         return {
             'chain_velocity': velocity,
@@ -349,13 +349,18 @@ class VelocityCalculator:
         Returns:
             Acceleration value
         """
-        if len(transactions) < 3:
+        normalized = self._normalize_transactions(transactions)
+        if len(normalized) < 3:
             return 0.0
         
-        # Split into two halves
-        mid = len(transactions) // 2
-        first_half = transactions[:mid+1]
-        second_half = transactions[mid:]
+        # Split into two halves without overlapping elements on even-length inputs
+        mid = len(normalized) // 2
+        if len(normalized) % 2 == 0:
+            first_half = normalized[:mid]
+            second_half = normalized[mid:]
+        else:
+            first_half = normalized[:mid+1]
+            second_half = normalized[mid:]
         
         # Compute velocity for each half
         v1 = self._compute_simple_velocity(first_half)
