@@ -460,5 +460,94 @@ class TestIssue8Acceptance:
             assert "transaction_id" in str(e)
 
 
+class TestMultiNodePendingTransactionPool:
+    """Regression tests for Issue #3656: multi-node pending transaction pool duplication."""
+
+    def _sample_tx(self, evidence_id="ev-001"):
+        return {
+            "evidence_id": evidence_id,
+            "transaction_hash": "hash_" + evidence_id,
+            "risk_score": 0.8,
+            "decision": "BLOCK",
+            "confidence": 0.9,
+        }
+
+    def test_multi_node_block_acceptance_purges_pending(self):
+        from src.features.blockchain_evidence import BlockchainNode
+
+        node_a = BlockchainNode(node_id="NodeA", organization="Org1")
+        node_b = BlockchainNode(node_id="NodeB", organization="Org2")
+
+        tx1_a = dict(self._sample_tx("ev-001"))
+        tx1_b = dict(self._sample_tx("ev-001"))
+
+        hash_a = node_a.add_transaction(tx1_a)
+        hash_b = node_b.add_transaction(tx1_b)
+        assert hash_a == hash_b
+
+        # Node A creates block containing tx1
+        block1 = node_a.create_block()
+        assert block1 is not None
+        assert len(node_a.pending_transactions) == 0
+
+        # Node B receives and accepts block1 from Node A
+        accepted = node_b.add_block(block1)
+        assert accepted is True
+        # Node B pending pool must no longer contain tx1
+        assert len(node_b.pending_transactions) == 0
+
+        # Node B creates block; should be None since pending pool is empty
+        block2_b = node_b.create_block()
+        assert block2_b is None
+
+    def test_unrelated_pending_transactions_preserved(self):
+        from src.features.blockchain_evidence import BlockchainNode
+
+        node_a = BlockchainNode(node_id="NodeA", organization="Org1")
+        node_b = BlockchainNode(node_id="NodeB", organization="Org2")
+
+        tx1 = self._sample_tx("ev-001")
+        tx2 = self._sample_tx("ev-002")
+        tx3 = self._sample_tx("ev-003")
+
+        node_a.add_transaction(dict(tx1))
+
+        hash1 = node_b.add_transaction(dict(tx1))
+        hash2 = node_b.add_transaction(dict(tx2))
+        hash3 = node_b.add_transaction(dict(tx3))
+
+        assert len(node_b.pending_transactions) == 3
+
+        # Node A mines block containing tx1
+        block_a = node_a.create_block()
+        assert node_b.add_block(block_a) is True
+
+        # Node B pending pool should now only contain tx2 and tx3 in order
+        remaining_hashes = [tx["tx_hash"] for tx in node_b.pending_transactions]
+        assert remaining_hashes == [hash2, hash3]
+
+    def test_invalid_block_does_not_purge_pending(self):
+        from src.features.blockchain_evidence import BlockchainNode
+
+        node_b = BlockchainNode(node_id="NodeB", organization="Org2")
+        tx1 = self._sample_tx("ev-001")
+        node_b.add_transaction(dict(tx1))
+
+        # Create invalid block with bad previous_hash
+        invalid_block = {
+            "block_number": 1,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "transactions": [dict(tx1, tx_hash="some_hash")],
+            "previous_hash": "bad_hash_123",
+            "hash": "invalid_block_hash",
+            "validator": "NodeA",
+        }
+
+        accepted = node_b.add_block(invalid_block)
+        assert accepted is False
+        # Pending pool must remain untouched
+        assert len(node_b.pending_transactions) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

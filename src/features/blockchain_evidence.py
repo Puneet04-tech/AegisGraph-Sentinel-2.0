@@ -298,6 +298,19 @@ class BlockchainNode:
             return False
         
         self.chain.append(block)
+
+        # Remove committed transactions from local pending pool
+        committed_hashes = {
+            tx["tx_hash"]
+            for tx in block.get("transactions", [])
+            if isinstance(tx, dict) and "tx_hash" in tx
+        }
+        if committed_hashes:
+            self.pending_transactions = [
+                tx for tx in self.pending_transactions
+                if tx.get("tx_hash") not in committed_hashes
+            ]
+
         return True
     
     def _verify_block(self, block: Dict) -> bool:
