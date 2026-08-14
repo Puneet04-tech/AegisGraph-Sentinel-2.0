@@ -15,7 +15,26 @@ from .models import (
     KnowledgeGraph,
     KnowledgeRecommendation,
 )
-__all__ = ['KnowledgeEngine', 'KnowledgeGraphManager', 'KnowledgeRetrievalEngine', 'get_knowledge_engine']
+__all__ = ['KnowledgeEngine', 'KnowledgeGraphManager', 'KnowledgeRetrievalEngine', 'get_knowledge_engine', 'is_within_clearance']
+
+
+# A clearance has access to its own tier and every less sensitive one below
+# it, mirroring ROLE_INHERITANCE in src/api/security.py.
+ACCESS_LEVEL_CLEARANCE = {
+    AccessLevel.TOP_SECRET: {
+        AccessLevel.PUBLIC, AccessLevel.RESTRICTED, AccessLevel.CONFIDENTIAL, AccessLevel.TOP_SECRET,
+    },
+    AccessLevel.CONFIDENTIAL: {AccessLevel.PUBLIC, AccessLevel.RESTRICTED, AccessLevel.CONFIDENTIAL},
+    AccessLevel.RESTRICTED: {AccessLevel.PUBLIC, AccessLevel.RESTRICTED},
+    AccessLevel.PUBLIC: {AccessLevel.PUBLIC},
+}
+
+
+def is_within_clearance(entry: KnowledgeEntry, clearance: Optional[AccessLevel]) -> bool:
+    """Whether clearance permits viewing entry. No clearance means unrestricted."""
+    if clearance is None:
+        return True
+    return entry.access_level in ACCESS_LEVEL_CLEARANCE.get(clearance, {AccessLevel.PUBLIC})
 
 
 
@@ -86,9 +105,12 @@ class KnowledgeEngine:
         self.entries[entry_id] = entry
         return entry_id
     
-    def get_entry(self, entry_id: str) -> Optional[KnowledgeEntry]:
-        """Get a knowledge entry by ID."""
-        return self.entries.get(entry_id)
+    def get_entry(self, entry_id: str, clearance: Optional[AccessLevel] = None) -> Optional[KnowledgeEntry]:
+        """Get a knowledge entry by ID. Entries above clearance are treated as not found."""
+        entry = self.entries.get(entry_id)
+        if entry and not is_within_clearance(entry, clearance):
+            return None
+        return entry
     
     def update_entry(
         self,
@@ -119,11 +141,15 @@ class KnowledgeEngine:
         tags: Optional[List[str]] = None,
         access_level: Optional[AccessLevel] = None,
         limit: int = 10,
+        clearance: Optional[AccessLevel] = None,
     ) -> List[KnowledgeEntry]:
-        """Search knowledge entries."""
+        """Search knowledge entries. Results above clearance are excluded."""
         results = []
         
         for entry in self.entries.values():
+            if not is_within_clearance(entry, clearance):
+                continue
+
             if access_level and entry.access_level != access_level:
                 continue
             
@@ -162,8 +188,8 @@ class KnowledgeEngine:
         
         return True
     
-    def get_related(self, entry_id: str) -> List[KnowledgeEntry]:
-        """Get related knowledge entries."""
+    def get_related(self, entry_id: str, clearance: Optional[AccessLevel] = None) -> List[KnowledgeEntry]:
+        """Get related knowledge entries. Entries above clearance are excluded."""
         entry = self.entries.get(entry_id)
         if not entry:
             return []
@@ -171,7 +197,7 @@ class KnowledgeEngine:
         return [
             self.entries[eid]
             for eid in entry.related_entries
-            if eid in self.entries
+            if eid in self.entries and is_within_clearance(self.entries[eid], clearance)
         ]
 
 
