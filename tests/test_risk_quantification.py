@@ -231,6 +231,29 @@ class TestRiskService:
         )
         assert scenario.total_financial_impact >= 0
 
+    def test_quantify_risk_sets_financial_impact_expected(self):
+        """Test that quantify_risk() computes financial_impact_expected."""
+        risk = self.service.quantify_risk(
+            name="Data Breach",
+            description="Test",
+            category=RiskCategory.CYBER,
+            likelihood=0.9,
+            impact=0.9,
+            exposure_value=10_000_000,
+        )
+        assert risk.financial_impact_expected == risk.annualized_loss_expectancy
+        assert risk.financial_impact_expected > 0
+
+        scenario = self.service.analyze_scenario(
+            name="Scenario",
+            description="Test",
+            risk_ids=[risk.risk_id],
+        )
+        assert scenario.total_financial_impact == risk.financial_impact_expected
+
+        metrics = self.service.get_metrics()
+        assert metrics.total_financial_exposure == risk.financial_impact_expected
+
     def test_recommend_investment(self):
         """Test recommending an investment."""
         rec = self.service.recommend_investment(

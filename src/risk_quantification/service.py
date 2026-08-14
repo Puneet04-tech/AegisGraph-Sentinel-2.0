@@ -37,6 +37,7 @@ class RiskService:
         risk_score = likelihood * impact
         risk_level = self._calculate_risk_level(risk_score)
         ale = risk_score * kwargs.get("exposure_value", 1000000)
+        financial_impact_expected = kwargs.pop("financial_impact_expected", ale)
 
         risk = RiskQuantification(
             name=name,
@@ -47,6 +48,7 @@ class RiskService:
             risk_score=risk_score,
             risk_level=risk_level,
             annualized_loss_expectancy=ale,
+            financial_impact_expected=financial_impact_expected,
             **kwargs,
         )
         self._store.store_risk(risk)
