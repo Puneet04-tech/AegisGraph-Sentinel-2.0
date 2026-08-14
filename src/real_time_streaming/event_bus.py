@@ -35,6 +35,7 @@ class EventBus:
         """Initialize the event bus."""
         self._store = store or get_stream_store()
         self._module_id = "event_bus"
+        self._lock = Lock()
         self._subscribers: Dict[str, List[Callable]] = {}
         self._event_history: List[StreamEvent] = []
     
@@ -56,9 +57,10 @@ class EventBus:
         )
         
         # Store in history
-        self._event_history.append(event)
-        if len(self._event_history) > 1000:
-            self._event_history = self._event_history[-1000:]
+        with self._lock:
+            self._event_history.append(event)
+            if len(self._event_history) > 1000:
+                self._event_history = self._event_history[-1000:]
         
         # Notify subscribers
         self._notify_subscribers(event)
@@ -89,19 +91,33 @@ class EventBus:
         handler: Callable,
     ) -> None:
         """Add a subscriber handler for an event type."""
-        if event_type not in self._subscribers:
-            self._subscribers[event_type] = []
-        self._subscribers[event_type].append(handler)
+        with self._lock:
+            if event_type not in self._subscribers:
+                self._subscribers[event_type] = []
+            if handler not in self._subscribers[event_type]:
+                self._subscribers[event_type].append(handler)
+    
+    def remove_subscriber_handler(
+        self,
+        event_type: str,
+        handler: Callable,
+    ) -> None:
+        """Remove a subscriber handler for an event type."""
+        with self._lock:
+            if event_type in self._subscribers and handler in self._subscribers[event_type]:
+                self._subscribers[event_type].remove(handler)
     
     def _notify_subscribers(self, event: StreamEvent) -> None:
         """Notify subscribers of an event."""
         # Get matching subscriptions
         subscriptions = self._store.get_subscriptions(event.event_type)
         
+        with self._lock:
+            handlers = list(self._subscribers.get(event.event_type, []))
+        
         for subscription in subscriptions:
             # Check filter criteria
             if self._matches_filter(event, subscription.filter_criteria):
-                handlers = self._subscribers.get(event.event_type, [])
                 for handler in handlers:
                     try:
                         handler(event, subscription.subscriber_id)
@@ -180,7 +196,8 @@ class EventBus:
         limit: int = 100,
     ) -> List[StreamEvent]:
         """Get event history."""
-        events = self._event_history
+        with self._lock:
+            events = list(self._event_history)
         
         if event_type:
             events = [e for e in events if e.event_type == event_type]
@@ -192,8 +209,11 @@ class EventBus:
         event_ids: List[str],
     ) -> Dict[str, Any]:
         """Correlate multiple events."""
+        with self._lock:
+            history_snapshot = list(self._event_history)
+            
         events = [
-            e for e in self._event_history
+            e for e in history_snapshot
             if e.event_id in event_ids
         ]
         
