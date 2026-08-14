@@ -10,6 +10,11 @@ from typing import Any
 
 _PII_KEYS = {"email", "phone", "card", "card_number", "ssn", "pan"}
 
+# ITU-T E.164 calling codes are 1-3 digits; bounds country-code restoration
+# so numbers with no separator (e.g. "+919876543210") don't fall through to
+# restoring every digit and unmasking the whole number.
+_MAX_COUNTRY_CODE_DIGITS = 3
+
 
 def mask_email(email: str) -> str:
     """Mask the local part of an email, keeping the first character and domain.
@@ -50,7 +55,7 @@ def _restore_country_code(original: str, masked: str) -> str:
         return masked
     result = list(masked)
     for i, char in enumerate(original[1:], start=1):
-        if not char.isdigit():
+        if not char.isdigit() or i > _MAX_COUNTRY_CODE_DIGITS:
             break
         if i < len(result):
             result[i] = char
