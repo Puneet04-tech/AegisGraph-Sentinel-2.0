@@ -150,3 +150,11 @@ def test_check_rate_limit_zero_burst_rejects(monkeypatch, fake_settings):
     assert decision.remaining_tokens == 0.0
     assert decision.retry_after_seconds >= 1
 
+
+def test_check_rate_limit_none_uses_default(monkeypatch, fake_settings):
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(rate_limit_mod, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(rate_limit_mod, "get_redis_client", lambda redis_url=None: fake_redis)
+    decision = rate_limit_mod.check_rate_limit("normal-key", limit=None)
+    assert decision.allowed is True
+
