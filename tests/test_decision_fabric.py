@@ -119,6 +119,36 @@ class TestDecisionEngine:
         
         assert decision is not None
         assert decision.decision_type == DecisionType.FRAUD_APPROVAL
+
+    def test_evaluate_block_rule_wins_over_higher_priority_non_block_rule(self):
+        """A matching BLOCK rule must decide the outcome even when a
+        higher-priority rule without BLOCK/ESCALATE also matches."""
+        self.engine.policy_engine.add_rule(PolicyRule(
+            rule_id="flag-only",
+            name="Elevated Amount Flag",
+            description="",
+            decision_type=DecisionType.TRANSACTION_APPROVAL,
+            conditions=[{"field": "amount", "operator": ">", "value": 5000}],
+            actions=["FLAG"],
+            priority=200,
+        ))
+        self.engine.policy_engine.add_rule(PolicyRule(
+            rule_id="fraud-block",
+            name="Confirmed Fraud Block",
+            description="",
+            decision_type=DecisionType.TRANSACTION_APPROVAL,
+            conditions=[{"field": "confirmed_fraud", "operator": "==", "value": True}],
+            actions=["BLOCK"],
+            priority=5,
+        ))
+        
+        decision = self.engine.evaluate(
+            decision_type=DecisionType.TRANSACTION_APPROVAL,
+            context={"amount": 15000, "confirmed_fraud": True, "risk_score": 0.95},
+        )
+        
+        assert decision.outcome == "BLOCKED"
+        assert decision.status == DecisionStatus.REJECTED
     
     def test_get_decision(self):
         """Test getting a decision."""
