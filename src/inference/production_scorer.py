@@ -28,6 +28,7 @@ from .velocity_risk import VelocityRiskCalculator, get_velocity_calculator
 from datetime import datetime, timezone, tzinfo
 import json
 
+from .optimization import cap_subgraph_edges, quantize_model_dynamic
 from .uncertainty import (
     UNCERTAINTY_HIGH,
     MCDropoutEstimator,
@@ -133,6 +134,8 @@ class ProductionRiskScorer:
         estimate_uncertainty: bool = False,
         mc_dropout_samples: int = 30,
         uncertain_threshold: float = UNCERTAINTY_HIGH,
+        quantize: bool = False,
+        max_subgraph_edges: Optional[int] = None,
     ):
         """
         Args:
@@ -151,9 +154,24 @@ class ProductionRiskScorer:
             mc_dropout_samples: Stochastic passes per transaction
             uncertain_threshold: Predictive std above which an automated
                 BLOCK/ALLOW is downgraded to REVIEW
+            quantize: Apply INT8 dynamic quantization to the model's
+                Linear layers. Trades a small amount of numerical
+                precision for lower latency; off by default so scoring
+                behaviour is unchanged unless explicitly opted into
+            max_subgraph_edges: Edge budget per transaction. Bounds the
+                message-passing work a single hub account can trigger,
+                which is what drives p99 latency
         """
         self.model = model
         self.model.eval()
+
+        if quantize:
+            self.model, n_quantized = quantize_model_dynamic(self.model)
+            self.quantized_layers = n_quantized
+        else:
+            self.quantized_layers = 0
+
+        self.max_subgraph_edges = max_subgraph_edges
         self.graph_constructor = graph_constructor
         self.device = device
         self.model_version = model_version
@@ -227,7 +245,12 @@ class ProductionRiskScorer:
                 )
                 if _subgraph_cache is not None:
                     _subgraph_cache.set(cache_key, subgraph)
-            
+
+            # Bound message-passing work before any tensor work happens,
+            # so a hub account cannot set the tail latency for everyone.
+            if isinstance(subgraph, dict):
+                subgraph = cap_subgraph_edges(subgraph, self.max_subgraph_edges)
+
             # Clone tensors to prevent thread data races when executing concurrent workers
             if isinstance(subgraph, dict):
                 subgraph = {
