@@ -110,17 +110,31 @@ class StreamProcessor:
         metric_name: str,
         aggregation_type: str,
     ) -> StreamAggregation:
-        """Compute stream aggregation."""
+        """Compute stream aggregation over the specified window's time bounds.
+
+        Raises:
+            ValueError: If window_id does not correspond to a registered window.
+        """
         logger.info(f"Computing {aggregation_type} for {metric_name} on {stream_name}")
-        
-        events = self._store.get_stream_events(stream_name, limit=1000)
-        
+
+        window = self._store.get_window(window_id)
+        if window is None:
+            raise ValueError(f"Window '{window_id}' not found in store")
+
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(seconds=window.size_seconds)
+        window_end = now
+
+        events = self._store.get_stream_events_in_range(
+            stream_name, window_start, window_end
+        )
+
         if not events:
             value = 0.0
         else:
             values = [e.payload.get(metric_name, 0) for e in events]
             values = [v for v in values if isinstance(v, (int, float))]
-            
+
             if aggregation_type == "SUM":
                 value = sum(values)
             elif aggregation_type == "AVG":
@@ -133,10 +147,7 @@ class StreamProcessor:
                 value = max(values) if values else 0
             else:
                 value = sum(values) / len(values) if values else 0
-        
-        now = datetime.now(timezone.utc)
-        window_start = now - timedelta(seconds=self._store.get_window(window_id).size_seconds if self._store.get_window(window_id) else 60)
-        
+
         aggregation = StreamAggregation(
             stream_name=stream_name,
             window_id=window_id,
@@ -144,9 +155,9 @@ class StreamProcessor:
             aggregation_type=aggregation_type,
             value=value,
             window_start=window_start,
-            window_end=now,
+            window_end=window_end,
         )
-        
+
         self._store.store_aggregation(aggregation)
         return aggregation
     

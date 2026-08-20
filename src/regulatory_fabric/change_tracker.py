@@ -4,12 +4,16 @@ Regulatory Change Tracker for Regulatory Fabric.
 Tracks regulatory changes and manages update processing.
 """
 
+import logging
+
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 import threading
 import hashlib
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -75,17 +79,27 @@ class RegulatoryChangeTracker:
             action_items=update.get("recommended_actions", []),
         )
         
+        # The handler list is snapshotted here rather than iterated later,
+        # because register_change_handler appends from other threads.
         with self._lock:
             self._alerts.append(alert)
             self._processing_queue.append(update_id)
-        
-        # Notify handlers
-        for handler in self._change_handlers:
+            handlers = list(self._change_handlers)
+
+        for handler in handlers:
             try:
                 handler(alert)
             except Exception:
-                pass
-        
+                # Discarding this silently meant a downstream consumer could
+                # stop receiving regulatory change alerts without anyone
+                # noticing -- the alerts are the point of the tracker.
+                logger.warning(
+                    "Regulatory change handler %r failed for update %s",
+                    getattr(handler, "__name__", handler),
+                    update_id,
+                    exc_info=True,
+                )
+
         return update_id
 
     def register_change_handler(self, handler: callable) -> None:

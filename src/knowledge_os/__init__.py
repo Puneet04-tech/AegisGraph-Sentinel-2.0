@@ -16,6 +16,7 @@ from .knowledge_engine import (
     KnowledgeGraphManager,
     KnowledgeRetrievalEngine,
     get_knowledge_engine,
+    is_within_clearance,
 )
 
 
@@ -31,4 +32,5 @@ __all__ = [
     "KnowledgeGraphManager",
     "KnowledgeRetrievalEngine",
     "get_knowledge_engine",
+    "is_within_clearance",
 ]

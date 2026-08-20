@@ -1,7 +1,7 @@
 """Advanced Forensics & Investigation Store"""
 from __future__ import annotations
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from .models import Investigation, Evidence, ForensicReport, ChainOfCustody
 
 
@@ -38,6 +38,20 @@ class ForensicsStore:
 
     def get_report(self, report_id: str) -> Optional[ForensicReport]:
         return self._reports.get(report_id)
+
+    def store_custody(self, c: ChainOfCustody) -> ChainOfCustody:
+        with self._lock:
+            self._custody[c.custody_id] = c
+        return c
+
+    def get_custody(self, custody_id: str) -> Optional[ChainOfCustody]:
+        return self._custody.get(custody_id)
+
+    def get_custody_for_evidence(self, evidence_id: str) -> List[ChainOfCustody]:
+        """Return the custody trail for an evidence item, oldest first."""
+        with self._lock:
+            trail = [c for c in self._custody.values() if c.evidence_id == evidence_id]
+        return sorted(trail, key=lambda c: c.timestamp)
 
     def get_metrics(self) -> Dict[str, Any]:
         return {

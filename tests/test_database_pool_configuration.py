@@ -153,20 +153,74 @@ def test_redis_connection_pool_uses_configured_parameters(monkeypatch):
     assert client is not None
 
 
+def test_build_pool_kwargs_fails_fast_when_unconfigured():
+    settings = SimpleNamespace(database=_make_database_settings())
+    kwargs = redis_client._build_pool_kwargs(settings)
+
+    assert kwargs["socket_timeout"] == 1.0
+    assert kwargs["socket_connect_timeout"] == 1.0
+    assert kwargs["retry_on_timeout"] is False
+    assert kwargs["retry"].get_retries() == 0
+    assert kwargs["retry_on_error"] == []
+
+
+def test_build_pool_kwargs_respects_explicit_timeouts_and_retry_on_timeout():
+    settings = SimpleNamespace(database=_make_database_settings(
+        redis_socket_timeout=3.0,
+        redis_socket_connect_timeout=2.0,
+        redis_retry_on_timeout=True,
+    ))
+    kwargs = redis_client._build_pool_kwargs(settings)
+
+    assert kwargs["socket_timeout"] == 3.0
+    assert kwargs["socket_connect_timeout"] == 2.0
+    assert kwargs["retry_on_timeout"] is True
+    assert "retry" not in kwargs
+
+
 def test_redis_connection_pool_reuses_singleton(monkeypatch):
-    redis_client._redis_pool = None
-    pool = MagicMock()
+    redis_client.close_redis_pools()
+    pool1 = MagicMock()
+    pool2 = MagicMock()
     mock_redis_instance = MagicMock()
     mock_settings = SimpleNamespace(database=_make_database_settings())
 
-    with patch("src.utils.redis_client.get_settings", return_value=mock_settings), patch(
-        "src.utils.redis_client.redis.ConnectionPool.from_url", return_value=pool
-    ) as mock_pool, patch("src.utils.redis_client.redis.Redis", return_value=mock_redis_instance):
-        redis_client.get_redis_client("redis://example.invalid/0")
-        redis_client.get_redis_client("redis://another.example.invalid/1")
+    def fake_from_url(url, **kwargs):
+        return pool1 if "example.invalid/0" in url else pool2
 
-    mock_pool.assert_called_once()
-    assert redis_client._redis_pool is pool
+    with patch("src.utils.redis_client.get_settings", return_value=mock_settings), patch(
+        "src.utils.redis_client.redis.ConnectionPool.from_url", side_effect=fake_from_url
+    ) as mock_pool, patch("src.utils.redis_client.redis.Redis", return_value=mock_redis_instance):
+        c1 = redis_client.get_redis_client("redis://example.invalid/0")
+        c2 = redis_client.get_redis_client("redis://example.invalid/0")
+        c3 = redis_client.get_redis_client("redis://another.example.invalid/1")
+
+    assert mock_pool.call_count == 2
+    assert c1 is not None and c2 is not None and c3 is not None
+
+
+def test_redis_connection_pool_registry_per_url():
+    redis_client.close_redis_pools()
+    c1 = redis_client.get_redis_client("redis://localhost:6379/0")
+    c2 = redis_client.get_redis_client("redis://localhost:6379/1")
+
+    assert c1 is not None
+    assert c2 is not None
+    assert c1.connection_pool != c2.connection_pool
+    assert "0" in str(c1.connection_pool.connection_kwargs.get("db", 0))
+    assert "1" in str(c2.connection_pool.connection_kwargs.get("db", 1))
+    redis_client.close_redis_pools()
+
+
+def test_async_redis_client_and_teardown():
+    redis_client.close_redis_pools()
+    async_client = redis_client.get_async_redis_client("redis://localhost:6379/0")
+    assert async_client is not None
+    assert "redis://localhost:6379/0" in redis_client._async_redis_pools
+
+    redis_client.close_redis_pools()
+    assert len(redis_client._redis_pools) == 0
+    assert len(redis_client._async_redis_pools) == 0
 
 
 def test_redis_graph_cache_uses_configured_pool_options():

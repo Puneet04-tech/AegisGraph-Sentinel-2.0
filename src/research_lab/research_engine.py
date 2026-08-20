@@ -5,7 +5,6 @@ AI-powered security research laboratory.
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-import random
 
 from .models import (
     ResearchExperiment,
@@ -165,12 +164,19 @@ class ModelEvaluationService:
     ) -> str:
         """Evaluate a model."""
         evaluation_id = str(uuid4())
-        
+
+        required = ("accuracy", "precision", "recall", "f1")
+        missing = [key for key in required if key not in test_results]
+        if missing:
+            raise ValueError(
+                f"test_results is missing required metric(s) to evaluate a model: {missing}"
+            )
+
         metrics = {
-            "accuracy": test_results.get("accuracy", random.uniform(0.7, 0.95)),
-            "precision": test_results.get("precision", random.uniform(0.6, 0.95)),
-            "recall": test_results.get("recall", random.uniform(0.6, 0.95)),
-            "f1_score": test_results.get("f1", random.uniform(0.6, 0.95)),
+            "accuracy": test_results["accuracy"],
+            "precision": test_results["precision"],
+            "recall": test_results["recall"],
+            "f1_score": test_results["f1"],
         }
         
         performance_score = sum(metrics.values()) / len(metrics)
@@ -292,20 +298,35 @@ class ResearchEngine:
         experiment_id: str,
         parameters: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Run an experiment with parameters."""
+        """Run an experiment with parameters.
+
+        This engine does not train models itself: the caller must supply
+        the actual training outcome under parameters["training_results"]
+        (accuracy/loss from a real training run). Fabricating those
+        numbers here would let an experiment "succeed" independent of
+        whether any training happened.
+        """
         experiment = self.experiment_manager.get_experiment(experiment_id)
         if not experiment:
             raise ValueError(f"Experiment {experiment_id} not found")
-        
+
+        training_results = parameters.get("training_results")
+        required = ("training_accuracy", "validation_accuracy", "training_loss")
+        if not training_results or any(key not in training_results for key in required):
+            raise ValueError(
+                "parameters['training_results'] must include real "
+                f"{required} from an actual training run"
+            )
+
         self.experiment_manager.start_experiment(experiment_id)
-        
+
         results = {
-            "training_accuracy": random.uniform(0.85, 0.98),
-            "validation_accuracy": random.uniform(0.80, 0.95),
-            "training_loss": random.uniform(0.01, 0.1),
+            "training_accuracy": training_results["training_accuracy"],
+            "validation_accuracy": training_results["validation_accuracy"],
+            "training_loss": training_results["training_loss"],
             "epochs_completed": parameters.get("epochs", 10),
         }
-        
+
         self.experiment_manager.complete_experiment(experiment_id, results)
         
         for benchmark_type in [BenchmarkType.ACCURACY, BenchmarkType.PRECISION, BenchmarkType.F1_SCORE]:

@@ -71,6 +71,9 @@ class AccountOpeningData:
     referral_code: Optional[str]
     existing_customer_connections: int
 
+    # Optional telecom-provided SIM age; omit/None means unknown (neutral score)
+    phone_age_days: Optional[int] = None
+
 
 class PredictiveMuleScorer:
     """
@@ -110,7 +113,21 @@ class PredictiveMuleScorer:
 
         normalized = referral_code.strip().lower()
         return normalized or None
-    
+
+    def _resolve_form_times(self, kwargs: dict) -> tuple:
+        """Derive form_start_time from form_completion_time_seconds when explicit
+        start/submit timestamps are not provided, so callers like the API layer
+        (which only knows the elapsed duration) still produce a real form_duration."""
+        submit_time = kwargs.get('form_submit_time', datetime.now(timezone.utc))
+        if 'form_start_time' in kwargs:
+            return kwargs['form_start_time'], submit_time
+
+        completion_seconds = kwargs.get('form_completion_time_seconds')
+        if completion_seconds is not None:
+            return submit_time - timedelta(seconds=completion_seconds), submit_time
+
+        return submit_time, submit_time
+
     def score_account_opening(
         self,
         account_data: Optional[AccountOpeningData] = None,
@@ -127,10 +144,11 @@ class PredictiveMuleScorer:
             Dictionary with risk scores and indicators
         """
         if account_data is None:
+            form_start_time, form_submit_time = self._resolve_form_times(kwargs)
             account_data = AccountOpeningData(
                 opening_timestamp=kwargs.get('opening_timestamp', datetime.now(timezone.utc)),
-                form_start_time=kwargs.get('form_start_time', datetime.now(timezone.utc)),
-                form_submit_time=kwargs.get('form_submit_time', datetime.now(timezone.utc)),
+                form_start_time=form_start_time,
+                form_submit_time=form_submit_time,
                 name=kwargs.get('name',''),
                 age=kwargs.get('age',0),
                 profession=kwargs.get('profession',''),
@@ -149,6 +167,7 @@ class PredictiveMuleScorer:
                 account_type=kwargs.get('account_type',''),
                 referral_code=self._normalize_referral_code(kwargs.get('referral')),
                 existing_customer_connections=kwargs.get('existing_customer_connections',0),
+                phone_age_days=kwargs.get('phone_age_days'),
             )
         # Update temporal cache
         self._update_cache(account_data)
@@ -372,6 +391,7 @@ class PredictiveMuleScorer:
         Temporary services = high risk
         """
         email = account_data.email.lower()
+        domain = email.rsplit('@', 1)[-1].strip().strip('.')
         
         # Temporary email domains
         temp_domains = [
@@ -379,12 +399,17 @@ class PredictiveMuleScorer:
             'tempmail.com', 'throwaway.email', 'maildrop.cc',
         ]
         
-        if any(domain in email for domain in temp_domains):
+        def matches(candidate: str) -> bool:
+            """Exact domain match including subdomains, e.g. mail.guerrillamail.com.
+            Rejects lookalikes such as notmailinator.com or gmail.com.attacker.io."""
+            return domain == candidate or domain.endswith('.' + candidate)
+        
+        if any(matches(d) for d in temp_domains):
             return 90.0
         
         # Free email but ok
         free_domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com']
-        if any(domain in email for domain in free_domains):
+        if any(matches(d) for d in free_domains):
             return 20.0
         
         # Corporate/custom domain
@@ -392,22 +417,29 @@ class PredictiveMuleScorer:
     
     def _score_phone_age(self, account_data: AccountOpeningData, features: Dict) -> float:
         """
-        Score phone age
-        New SIM cards (<30 days) = suspicious
+        Score phone age from a real telecom-provided phone_age_days value.
+
+        Returns neutral 0.0 when phone_age_days is missing so hash simulation
+        cannot invent risk from the phone number alone.
         """
-        # In real implementation, check with telecom provider
-        # Here we use a simple hash-based simulation
-        phone_hash = int(hashlib.sha256(account_data.phone_number.encode()).hexdigest(), 16)
-        simulated_age = phone_hash % 365  # 0-365 days
-        
-        if simulated_age < 7:
+        phone_age_days = getattr(account_data, "phone_age_days", None)
+        if phone_age_days is None:
+            return 0.0
+
+        try:
+            age_days = int(phone_age_days)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if age_days < 0:
+            return 0.0
+        if age_days < 7:
             return 85.0
-        elif simulated_age < 30:
+        if age_days < 30:
             return 60.0
-        elif simulated_age < 90:
+        if age_days < 90:
             return 35.0
-        else:
-            return 10.0
+        return 10.0
     
     def _score_profession(self, account_data: AccountOpeningData, features: Dict) -> float:
         """

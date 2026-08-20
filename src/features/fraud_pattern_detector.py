@@ -33,6 +33,11 @@ from ..scoring import ScoreCalculator
 logger = logging.getLogger(__name__)
 
 
+# Maximum consecutive-transfer gap (hours) for transfers to be considered a
+# rapid chain.  Mirrors the previously hardcoded 1-hour window.
+RAPID_TRANSFER_WINDOW_HOURS: float = 1.0
+
+
 class FraudPatternDetector:
     """Detects known fraud patterns in transaction graphs"""
     
@@ -400,8 +405,6 @@ class FraudPatternDetector:
             if ts is not None:
                 normalized_txns.append((ts, txn))
 
-        sorted_txns = [txn for _, txn in sorted(normalized_txns, key=lambda item: item[0])]
-
         transactions_by_source = defaultdict(list)
         for ts, txn in normalized_txns:
             source = self._txn_value(txn, 'source_account')
@@ -410,23 +413,53 @@ class FraudPatternDetector:
 
         # Look for rapid sequences using per-account time order
         for source, source_txns in transactions_by_source.items():
-            if len(source_txns) >= 3:
-                source_txns.sort(key=lambda item: item[0])
-                ts1 = source_txns[0][0]
-                ts2 = source_txns[1][0]
-                time_diff = (ts2 - ts1).total_seconds() / 3600  # hours
+            if len(source_txns) < 3:
+                continue
 
-                if time_diff < 1:
-                    chain_score = min(len(source_txns) / 10.0, 1.0)
-                    chains.append({
-                        'type': 'TEMPORAL_FRAUD_CHAIN',
-                        'account': source,
-                        'num_rapid_transfers': len(source_txns) - 1,
-                        'timespan_hours': time_diff,
-                        'risk_score': chain_score,
-                    })
+            source_txns.sort(key=lambda item: item[0])
+
+            # Split the account's timeline into bursts where every consecutive
+            # gap is below the rapid-transfer window.  A chain is only reported
+            # for bursts of at least min_chain_length transfers, and the
+            # reported timespan covers the whole burst rather than the first
+            # gap alone (which caused false positives for slow-tailed chains
+            # and false negatives when a burst started after a long pause).
+            run_start = 0
+            for i in range(len(source_txns) - 1):
+                gap_hours = (source_txns[i + 1][0] - source_txns[i][0]).total_seconds() / 3600
+                if gap_hours >= RAPID_TRANSFER_WINDOW_HOURS:
+                    self._append_temporal_chain(
+                        source_txns[run_start:i + 1], source, reference_time, chains
+                    )
+                    run_start = i + 1
+
+            self._append_temporal_chain(
+                source_txns[run_start:], source, reference_time, chains
+            )
         
         return chains
+
+    def _append_temporal_chain(
+        self,
+        burst: List[tuple],
+        source: str,
+        reference_time: datetime,
+        chains: List[Dict],
+    ) -> None:
+        """Append a temporal fraud chain for a rapid-transfer burst if it is long enough."""
+        if len(burst) < max(self.min_chain_length, 3):
+            return
+
+        timespan_hours = (burst[-1][0] - burst[0][0]).total_seconds() / 3600
+        chain_score = min(len(burst) / 10.0, 1.0)
+        chains.append({
+            'type': 'TEMPORAL_FRAUD_CHAIN',
+            'account': source,
+            'num_rapid_transfers': len(burst) - 1,
+            'timespan_hours': timespan_hours,
+            'risk_score': chain_score,
+            'detected_at': reference_time,
+        })
     
     # Helper methods
     
@@ -739,15 +772,31 @@ class FraudPatternDetector:
                 k: v / max_volume for k, v in incoming_volumes.items()
             }
             
+            # Compute the volume threshold from the configured percentile of
+            # incoming volumes. Accounts below it are not super-mules even when
+            # their PageRank is high.
+            volume_threshold = 0.0
+            if normalized_volumes:
+                volume_threshold = float(
+                    np.percentile(
+                        list(normalized_volumes.values()),
+                        volume_threshold_percentile * 100,
+                    )
+                )
+            
             # Find super-mules: high PageRank + high volume
             for account, pr_score in normalized_pr.items():
                 in_degree = graph.in_degree(account)
+                volume = normalized_volumes.get(account, 0.0)
                 
                 # Filter out single-transfer false positives
-                # A true super-mule must have multiple incoming transfers
-                if pr_score >= pagerank_threshold and in_degree > 1:
-                    volume = normalized_volumes.get(account, 0.0)
-                    
+                # A true super-mule must have multiple incoming transfers and
+                # sit at or above the configured volume percentile
+                if (
+                    pr_score >= pagerank_threshold
+                    and in_degree > 1
+                    and volume >= volume_threshold
+                ):
                     # Score: weighted combination of PageRank and volume
                     super_mule_score = (0.6 * pr_score) + (0.4 * volume)
                     

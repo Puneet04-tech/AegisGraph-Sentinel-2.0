@@ -21,6 +21,17 @@ from .models import (
 from .store import DRPStore, get_drp_store
 
 
+_BRAND_KEYWORDS: Dict[str, List[str]] = {
+    "paypal": ["paypal", "paypa1"],
+    "apple": ["apple", "app1e"],
+    "microsoft": ["microsoft", "micros0ft"],
+    "google": ["google", "g00gle"],
+    "amazon": ["amazon", "amaz0n"],
+    "facebook": ["facebook", "faceb00k"],
+    "netflix": ["netflix", "netf1ix"],
+}
+
+
 class PhishingDetectionEngine:
     """Engine for phishing detection."""
 
@@ -97,23 +108,24 @@ class PhishingDetectionEngine:
         if any(p in url.lower() for p in suspicious_paths):
             indicators["suspicious_path"] = True
         
+        indicators["brand_misspelling"] = self._has_brand_misspelling(url)
+        
         return indicators
+
+    def _has_brand_misspelling(self, url: str) -> bool:
+        """Detect misspelled (leetspeak/substituted) brand variants in a URL."""
+        url_lower = url.lower()
+        for brand, keywords in _BRAND_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword != brand and keyword in url_lower:
+                    return True
+        return False
 
     def _identify_target_brand(self, url: str) -> Optional[str]:
         """Identify the target brand from URL."""
         url_lower = url.lower()
         
-        brand_keywords = {
-            "paypal": ["paypal", "paypa1", "paypa1"],
-            "apple": ["apple", "app1e"],
-            "microsoft": ["microsoft", "micros0ft", "micros0ft"],
-            "google": ["google", "g00gle"],
-            "amazon": ["amazon", "amaz0n"],
-            "facebook": ["facebook", "faceb00k"],
-            "netflix": ["netflix", "netf1ix"],
-        }
-        
-        for brand, keywords in brand_keywords.items():
+        for brand, keywords in _BRAND_KEYWORDS.items():
             if any(kw in url_lower for kw in keywords):
                 return brand
         

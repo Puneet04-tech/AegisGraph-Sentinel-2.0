@@ -1,6 +1,7 @@
 """Workflow Engine"""
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from .models import Workflow, Case, CaseStatus, Priority, SLALevel, SLA, Escalation, Assignment
 
 class WorkflowEngine:
@@ -21,7 +22,7 @@ class WorkflowEngine:
                 workflow_id="wf-standard",
                 name="Standard Case Workflow",
                 description="Standard workflow for case management",
-                states=["NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_APPROVAL", "RESOLVED", "CLOSED"],
+                states=["NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_APPROVAL", "ESCALATED", "RESOLVED", "CLOSED"],
                 transitions={
                     "NEW": ["ASSIGNED"],
                     "ASSIGNED": ["IN_PROGRESS", "ESCALATED"],
@@ -37,7 +38,7 @@ class WorkflowEngine:
                 workflow_id="wf-incident",
                 name="Incident Response Workflow",
                 description="Fast-track workflow for incidents",
-                states=["NEW", "INVESTIGATING", "CONTAINED", "ERADICATED", "RECOVERED", "CLOSED"],
+                states=["NEW", "INVESTIGATING", "CONTAINED", "ERADICATED", "RECOVERED", "ESCALATED", "CLOSED"],
                 transitions={
                     "NEW": ["INVESTIGATING"],
                     "INVESTIGATING": ["CONTAINED", "ESCALATED"],
@@ -50,6 +51,8 @@ class WorkflowEngine:
                 initial_state="NEW"
             )
         ]
+
+
         for wf in workflows:
             self.workflows[wf.workflow_id] = wf
     
@@ -158,9 +161,15 @@ class WorkflowEngine:
         return assignment
     
     def escalate_case(self, case_id: str, to_assignee: str, reason: str) -> Optional[Escalation]:
-        """Escalate a case"""
+        """Escalate a case through the workflow state machine."""
         case = self.cases.get(case_id)
         if not case:
+            return None
+        
+        # Route through the state machine: ESCALATED must be a declared,
+        # reachable state from the case's current state. Bypassing this
+        # validation used to write an undeclared ESCALATED state directly.
+        if not self.can_transition(case.workflow_id, case.current_state, "ESCALATED"):
             return None
         
         escalation = Escalation(
@@ -174,7 +183,10 @@ class WorkflowEngine:
         
         case.escalated_to = to_assignee
         case.status = CaseStatus.ESCALATED
+        case.current_state = "ESCALATED"
         case.updated_at = datetime.now(timezone.utc)
+
+
         
         return escalation
     
@@ -215,7 +227,11 @@ class WorkflowEngine:
         return [s for s in self.slas.values() if s.breached]
     
     def get_dashboard(self) -> Dict[str, Any]:
-        """Get workflow dashboard"""
+        """Get workflow dashboard data.
+
+        Returns:
+            A dictionary containing workflow dashboard statistics.
+        """
         status_counts: Dict[str, int] = {}
         priority_counts: Dict[str, int] = {}
         
@@ -231,6 +247,3 @@ class WorkflowEngine:
             "cases_by_status": status_counts,
             "cases_by_priority": priority_counts
         }
-
-
-from uuid import uuid4

@@ -17,6 +17,38 @@ import networkx as nx
 import pandas as pd
 
 
+def normalize_utc_timestamp(ts_input: object) -> float:
+    """Strict ISO 8601 UTC timestamp parser and normalizer.
+
+    Converts ISO strings, datetime objects, or Unix float timestamps to strict UTC epoch float seconds.
+    Rejects un-parseable or malformed date strings with a ValueError.
+    """
+    if isinstance(ts_input, (int, float)):
+        return float(ts_input)
+    if isinstance(ts_input, datetime):
+        if ts_input.tzinfo is None:
+            dt = ts_input.replace(tzinfo=timezone.utc)
+        else:
+            dt = ts_input.astimezone(timezone.utc)
+        return dt.timestamp()
+    if isinstance(ts_input, str):
+        s = ts_input.strip()
+        if not s:
+            raise ValueError("Empty timestamp string")
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.timestamp()
+        except Exception as err:
+            raise ValueError(f"Invalid ISO 8601 timestamp format: '{ts_input}'") from err
+    raise ValueError(f"Unsupported timestamp type: {type(ts_input)}")
+
+
 @dataclass
 class Transaction:
     """Single transaction record"""
@@ -25,6 +57,7 @@ class Transaction:
     amount: float
     timestamp: float
     txn_id: str
+
 
 
 class VelocityCalculator:
@@ -40,15 +73,18 @@ class VelocityCalculator:
     Args:
         time_window: Time window for velocity calculation (seconds)
         burst_window: Time window for burst detection (seconds)
+        max_hop_delay: Maximum allowed time gap between consecutive hops (seconds)
     """
     
     def __init__(
         self,
         time_window: float = 3600.0,  # 1 hour
         burst_window: float = 300.0,   # 5 minutes
+        max_hop_delay: float = 3600.0,  # 1 hour max between hops
     ):
         self.time_window = time_window
         self.burst_window = burst_window
+        self.max_hop_delay = max_hop_delay
 
     def calculate_kinetic_energy(self, transactions) -> float:
         """Compatibility wrapper for legacy callers."""
@@ -62,7 +98,7 @@ class VelocityCalculator:
                 return 0.0
             total_time = normalized[-1].timestamp - normalized[0].timestamp
             if total_time == 0:
-                return float('inf')
+                return 0.0
             return float((len(normalized) - 1) / total_time)
 
         chain_features = self.compute_chain_velocity(normalized, graph)
@@ -103,6 +139,34 @@ class VelocityCalculator:
         
         return energy
     
+    def prune_stale_edges(self, graph: nx.Graph, cutoff_timestamp: float) -> nx.Graph:
+        """Remove edges older than cutoff_timestamp from the graph.
+        
+        Args:
+            graph: NetworkX graph with 'timestamp' edge attributes
+            cutoff_timestamp: Remove edges with timestamp < this value
+            
+        Returns:
+            Pruned graph (modified in place)
+        """
+        edges_to_remove = []
+        if graph.is_multigraph():
+            for u, v, k, data in graph.edges(data=True, keys=True):
+                if data.get('timestamp', float('inf')) < cutoff_timestamp:
+                    edges_to_remove.append((u, v, k))
+        else:
+            for u, v, data in graph.edges(data=True):
+                if data.get('timestamp', float('inf')) < cutoff_timestamp:
+                    edges_to_remove.append((u, v))
+
+        graph.remove_edges_from(edges_to_remove)
+
+        # Remove isolated nodes left after edge removal
+        isolated = list(nx.isolates(graph))
+        graph.remove_nodes_from(isolated)
+
+        return graph
+
     def compute_chain_velocity(
         self,
         transactions: List[Transaction],
@@ -111,7 +175,10 @@ class VelocityCalculator:
         """
         Compute velocity through transaction chain
         
-        Measures how quickly funds traverse the social network
+        Measures how quickly funds traverse the social network.
+        Only considers transaction hops with monotonically increasing
+        timestamps within max_hop_delay to avoid false positives from
+        stale historical paths.
         
         Args:
             transactions: Transaction sequence
@@ -127,14 +194,43 @@ class VelocityCalculator:
                 'total_time': 0.0,
                 'avg_hop_time': 0.0,
             }
-        
-        # Compute network distances with a per-source SSSP cache so repeated
-        # adjacent pairs do not retraverse the graph.
+
+        # Prune stale edges from graph based on time_window
+        if transactions:
+            latest_ts = max(t.timestamp for t in transactions)
+            cutoff = latest_ts - self.time_window
+            self.prune_stale_edges(graph, cutoff)
+
+        # Filter to valid temporal chain: monotonically increasing timestamps
+        # with max_hop_delay between consecutive hops.
+        # When a gap exceeds max_hop_delay, start a new chain segment from that point.
+        # Use the longest valid segment.
+        segments: List[List[Transaction]] = [[transactions[0]]]
+        for i in range(1, len(transactions)):
+            hop_delay = transactions[i].timestamp - transactions[i - 1].timestamp
+            if hop_delay >= 0 and hop_delay <= self.max_hop_delay:
+                segments[-1].append(transactions[i])
+            else:
+                # Start a new segment
+                segments.append([transactions[i]])
+
+        # Use the longest valid segment
+        valid_transactions = max(segments, key=len)
+
+        if len(valid_transactions) < 2:
+            return {
+                'chain_velocity': 0.0,
+                'total_distance': 0,
+                'total_time': 0.0,
+                'avg_hop_time': 0.0,
+            }
+
+        # Compute network distances with a per-source SSSP cache
         shortest_path_cache: Dict[str, Dict[str, int]] = {}
         total_distance = 0
-        for i in range(len(transactions) - 1):
-            source = transactions[i].source
-            target = transactions[i+1].target
+        for i in range(len(valid_transactions) - 1):
+            source = valid_transactions[i].source
+            target = valid_transactions[i+1].target
             
             if source not in shortest_path_cache:
                 try:
@@ -144,10 +240,10 @@ class VelocityCalculator:
 
             distance = shortest_path_cache[source].get(target)
             if distance is None:
-                distance = len(transactions)  # Use chain length as proxy
+                distance = len(valid_transactions)  # Use chain length as proxy
             total_distance += distance
         
-        total_time = transactions[-1].timestamp - transactions[0].timestamp
+        total_time = valid_transactions[-1].timestamp - valid_transactions[0].timestamp
         
         if total_time <= 0:
             return {
@@ -159,7 +255,7 @@ class VelocityCalculator:
         
         # Velocity = distance / time
         velocity = total_distance / total_time
-        avg_hop_time = total_time / len(transactions)
+        avg_hop_time = total_time / (len(valid_transactions) - 1) if len(valid_transactions) > 1 else 0.0
         
         return {
             'chain_velocity': velocity,
@@ -191,16 +287,19 @@ class VelocityCalculator:
             baseline = self._normalize_transactions(current_time)
             return self._burst_score_from_windows(recent, baseline)
 
-        # Get transactions in burst window
+        # Get transactions in burst window.
+        # Only elapsed times in [0, burst_window] count as recent; a bare
+        # `<= burst_window` also admits transactions from arbitrarily far in
+        # the past (and the future), inflating burst_count and burst_amount.
         recent = [
             t for t in normalized
-            if current_time - t.timestamp <= self.burst_window
+            if 0 <= current_time - t.timestamp <= self.burst_window
         ]
 
         # Get transactions in longer window for comparison
         baseline = [
             t for t in normalized
-            if current_time - t.timestamp <= self.time_window
+            if 0 <= current_time - t.timestamp <= self.time_window
         ]
         
         # Count transactions
@@ -250,13 +349,18 @@ class VelocityCalculator:
         Returns:
             Acceleration value
         """
-        if len(transactions) < 3:
+        normalized = self._normalize_transactions(transactions)
+        if len(normalized) < 3:
             return 0.0
         
-        # Split into two halves
-        mid = len(transactions) // 2
-        first_half = transactions[:mid+1]
-        second_half = transactions[mid:]
+        # Split into two halves without overlapping elements on even-length inputs
+        mid = len(normalized) // 2
+        if len(normalized) % 2 == 0:
+            first_half = normalized[:mid]
+            second_half = normalized[mid:]
+        else:
+            first_half = normalized[:mid+1]
+            second_half = normalized[mid:]
         
         # Compute velocity for each half
         v1 = self._compute_simple_velocity(first_half)

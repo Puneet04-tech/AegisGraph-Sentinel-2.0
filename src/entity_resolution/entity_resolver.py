@@ -79,7 +79,7 @@ class EntityResolver:
         RelationshipType.MULE_ACCOUNT: 0.95,
     }
 
-    def __init__(self, store: Optional[EntityStore] = None):
+    def __init__(self, store: Optional[EntityStore] = None) -> None:
         """Initialize the entity resolver.
 
         Args:
@@ -515,12 +515,18 @@ class EntityResolver:
         # Calculate average confidence and fetch entities
         result = []
         for other_id, info in similar.items():
-            # Calculate average confidence
+            # Calculate average confidence across the edges to each shared connection.
+            # other_id is not directly linked to entity_id by construction, so the
+            # confidence must be read from the relationship between other_id and each
+            # shared intermediate conn_id, not from a (nonexistent) direct edge.
             confs = []
             for conn_id in info["shared_connections"]:
                 rels = self._store.get_relationships_for_entity(other_id)
                 for rel in rels:
-                    if rel.source_id == entity_id or rel.target_id == entity_id:
+                    if (
+                        (rel.source_id == conn_id and rel.target_id == other_id)
+                        or (rel.source_id == other_id and rel.target_id == conn_id)
+                    ):
                         confs.append(rel.confidence_score)
                         break
 

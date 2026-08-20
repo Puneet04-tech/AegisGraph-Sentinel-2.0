@@ -367,6 +367,31 @@ class TestEntityResolver:
         similar = resolver.find_similar_entities("ACC001")
         assert len(similar) >= 2  # ACC002 and ACC003 share device
 
+    def test_find_similar_entities_avg_confidence_reflects_shared_connections(self, resolver):
+        """Similar entities are ranked by the mean confidence of shared connections.
+
+        Previously avg_confidence was computed against entity_id even though the
+        similar entity is only reachable through the shared intermediate, so it
+        stayed 0.0 for every result and the ranking was meaningless.
+        """
+        # ACC002 shares a single device with ACC001 (device links have 0.90 confidence).
+        resolver.link_device("ACC001", "DEV001")
+        resolver.link_device("ACC002", "DEV001")
+        # ACC003 shares a device (0.90) AND an IP address (0.80) with ACC001,
+        # so its mean shared-connection confidence is (0.90 + 0.80) / 2 = 0.85.
+        resolver.link_device("ACC001", "DEV002")
+        resolver.link_device("ACC003", "DEV002")
+        resolver.link_ip_address("ACC001", "10.0.0.1")
+        resolver.link_ip_address("ACC003", "10.0.0.1")
+
+        similar = resolver.find_similar_entities("ACC001")
+        ids = [e.id for e in similar]
+
+        assert "ACC002" in ids
+        assert "ACC003" in ids
+        # ACC002 (0.90) must rank above ACC003 (mean 0.85).
+        assert ids.index("ACC002") < ids.index("ACC003")
+
 
 # ============================================================================
 # KNOWLEDGE GRAPH TESTS
@@ -457,6 +482,44 @@ class TestKnowledgeGraph:
         stats = graph.get_graph_stats()
         assert stats["current_entities"] >= 1
 
+    def test_shortest_path_respects_max_depth(self, graph):
+        """Test shortest path honors the max_depth bound."""
+        entities = [Entity(entity_type=EntityType.ACCOUNT, value=f"ACC{i:03d}") for i in range(4)]
+        for e in entities:
+            graph.add_node(e)
+        for src, dst in zip(entities[:-1], entities[1:]):
+            graph.add_edge(EntityRelationship(
+                source_id=src.id,
+                target_id=dst.id,
+                relationship_type=RelationshipType.TRANSFER_TO,
+            ))
+
+        full_path = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=10)
+        assert full_path == [entities[0].id, entities[1].id, entities[2].id, entities[3].id]
+
+        bounded = graph.find_shortest_path(entities[0].id, entities[3].id, max_depth=2)
+        assert bounded == []
+
+    def test_shortest_path_respects_relationship_direction(self, graph):
+        """Test shortest path only follows stored relationship direction."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="ACC001")
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="ACC002")
+        graph.add_node(e1)
+        graph.add_node(e2)
+
+        # Edge is stored only as e2 -> e1, so e1 -> e2 must have no path.
+        graph.add_edge(EntityRelationship(
+            source_id=e2.id,
+            target_id=e1.id,
+            relationship_type=RelationshipType.TRANSFER_TO,
+        ))
+
+        forward = graph.find_shortest_path(e2.id, e1.id, max_depth=5)
+        assert forward == [e2.id, e1.id]
+
+        reverse = graph.find_shortest_path(e1.id, e2.id, max_depth=5)
+        assert reverse == []
+
 
 # ============================================================================
 # CLUSTER ENGINE TESTS
@@ -502,6 +565,135 @@ class TestClusterEngine:
         
         clusters = engine.detect_clusters_bfs(min_size=2)
         assert len(clusters) >= 0  # May or may not form a cluster
+
+    def test_detect_clusters_bfs_enforces_max_depth(self, engine):
+        """BFS must stop expanding at max_depth hops from each start node.
+
+        A 10-node chain A-B-...-J with max_depth=3 must not be merged into a
+        single ring; every cluster's members must lie within 3 hops of that
+        cluster's start node.
+        """
+        entities = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"ACC{i:02d}", risk_score=0.8)
+            for i in range(10)
+        ]
+        for entity in entities:
+            engine._store.store_entity(entity)
+
+        for a, b in zip(entities, entities[1:]):
+            engine._store.store_relationship(EntityRelationship(
+                source_id=a.id,
+                target_id=b.id,
+                relationship_type=RelationshipType.SHARED_DEVICE,
+                confidence_score=0.9,
+            ))
+
+        def hop_distance(start_id, target_id, limit):
+            queue = [(start_id, 0)]
+            seen = {start_id}
+            while queue:
+                current_id, depth = queue.pop(0)
+                if current_id == target_id:
+                    return depth
+                if depth >= limit:
+                    continue
+                for rel in engine._store.get_relationships_for_entity(current_id):
+                    connected_id = rel.target_id if rel.source_id == current_id else rel.source_id
+                    if connected_id not in seen:
+                        seen.add(connected_id)
+                        queue.append((connected_id, depth + 1))
+            return None
+
+        clusters = engine.detect_clusters_bfs(min_size=2, max_depth=3)
+        assert len(clusters) > 1
+
+        for cluster in clusters:
+            start = cluster.metadata["start_entity"]
+            for member in cluster.entity_ids:
+                distance = hop_distance(start, member, limit=3)
+                assert distance is not None and distance <= 3
+
+
+    def test_linear_graph_exact_depth_boundary(self, engine):
+        """Linear graph A-B-C-D-E-F with start=A, max_depth=2 includes only A, B, C."""
+        entities = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"CHAIN_{i}", risk_score=0.8)
+            for i in range(6)
+        ]
+        for e in entities:
+            engine._store.store_entity(e)
+
+        for a, b in zip(entities, entities[1:]):
+            engine._store.store_relationship(
+                EntityRelationship(source_id=a.id, target_id=b.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+            )
+
+        start_id = entities[0].id
+        clusters = engine.detect_clusters_bfs(start_entity_id=start_id, min_size=2, max_depth=2)
+
+        assert len(clusters) == 1
+        cluster = clusters[0]
+        expected_ids = {entities[0].id, entities[1].id, entities[2].id}
+        assert cluster.entity_ids == expected_ids
+        assert entities[3].id not in cluster.entity_ids
+
+    def test_dense_star_graph_no_arbitrary_truncation(self, engine):
+        """Star graph with 150 nodes at depth 1 with max_depth=1 includes all 151 entities."""
+        center = Entity(entity_type=EntityType.ACCOUNT, value="STAR_CENTER", risk_score=0.9)
+        engine._store.store_entity(center)
+
+        spokes = [
+            Entity(entity_type=EntityType.ACCOUNT, value=f"STAR_SPOKE_{i}", risk_score=0.5)
+            for i in range(150)
+        ]
+        for s in spokes:
+            engine._store.store_entity(s)
+            engine._store.store_relationship(
+                EntityRelationship(source_id=center.id, target_id=s.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+            )
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=center.id, min_size=2, max_depth=1)
+
+        assert len(clusters) == 1
+        assert len(clusters[0].entity_ids) == 151
+
+    def test_max_depth_zero(self, engine):
+        """max_depth=0 with min_size=1 includes only the starting entity."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="DEPTH0_1", risk_score=0.8)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="DEPTH0_2", risk_score=0.8)
+        engine._store.store_entity(e1)
+        engine._store.store_entity(e2)
+        engine._store.store_relationship(
+            EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9)
+        )
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=1, max_depth=0)
+        assert len(clusters) == 1
+        assert clusters[0].entity_ids == {e1.id}
+
+    def test_negative_max_depth(self, engine):
+        """Negative max_depth returns an empty list."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="NEG_1", risk_score=0.8)
+        engine._store.store_entity(e1)
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=1, max_depth=-1)
+        assert clusters == []
+
+    def test_cyclic_graph_depth_enforcement(self, engine):
+        """Cyclic graph A-B-C-A with max_depth=1 from A includes A, B, C safely."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_A", risk_score=0.8)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_B", risk_score=0.8)
+        e3 = Entity(entity_type=EntityType.ACCOUNT, value="CYCLE_C", risk_score=0.8)
+        for e in [e1, e2, e3]:
+            engine._store.store_entity(e)
+
+        engine._store.store_relationship(EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+        engine._store.store_relationship(EntityRelationship(source_id=e2.id, target_id=e3.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+        engine._store.store_relationship(EntityRelationship(source_id=e3.id, target_id=e1.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=0.9))
+
+        clusters = engine.detect_clusters_bfs(start_entity_id=e1.id, min_size=2, max_depth=1)
+        assert len(clusters) == 1
+        assert clusters[0].entity_ids == {e1.id, e2.id, e3.id}
     
     def test_detect_fraud_rings(self, engine):
         """Test fraud ring detection with request."""
@@ -592,6 +784,23 @@ class TestRiskPropagator:
         result = propagator.propagate_risk(e1.id)
         assert result.source_entity_id == e1.id
         assert result.original_risk_score == 0.95
+
+    def test_update_entity_risk_no_double_counting(self, propagator):
+        """Test that update_entity_risk propagates the updated risk score without double-counting delta."""
+        e1 = Entity(entity_type=EntityType.ACCOUNT, value="ACC_REGR_1", risk_score=0.5)
+        e2 = Entity(entity_type=EntityType.ACCOUNT, value="ACC_REGR_2", risk_score=0.1)
+        propagator._store.store_entity(e1)
+        propagator._store.store_entity(e2)
+        propagator._store.store_relationship(
+            EntityRelationship(source_id=e1.id, target_id=e2.id, relationship_type=RelationshipType.SHARED_DEVICE, confidence_score=1.0)
+        )
+
+        propagator.update_entity_risk(e1.id, 0.9)
+        result = propagator.propagate_risk(e1.id)
+
+        # original_risk_score should equal 0.9, NOT 1.3 (0.9 + 0.4 double counting)
+        assert result.original_risk_score == 0.9
+
     
     def test_propagate_risk_bidirectional(self, propagator):
         """Test bidirectional risk propagation."""

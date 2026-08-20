@@ -24,6 +24,7 @@ from .models import (
     ThreatExplanation,
     ConversationMessage,
 )
+from src.audit.bounded_log import BoundedAuditLog, next_event_id
 
 
 class FraudCopilotStore:
@@ -38,7 +39,9 @@ class FraudCopilotStore:
         self._insights: Dict[str, List[InvestigationInsight]] = {}
         self._knowledge: Dict[str, KnowledgeDocument] = {}
         self._reports: Dict[str, GeneratedReport] = {}
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
         self._lock = threading.RLock()
 
     def create_session(
@@ -172,7 +175,7 @@ class FraudCopilotStore:
     ) -> None:
         """Log an audit event."""
         event = AuditEvent(
-            event_id=f"audit-{len(self._audit_log) + 1}",
+            event_id=next_event_id(),
             timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             action=action,
@@ -185,7 +188,7 @@ class FraudCopilotStore:
 
     def get_audit_log(self, limit: int = 100) -> List[AuditEvent]:
         """Get audit log entries."""
-        return self._audit_log[-limit:]
+        return self._audit_log.tail(limit)
 
     def clear(self) -> None:
         """Clear all data."""

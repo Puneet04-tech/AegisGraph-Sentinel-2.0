@@ -65,7 +65,9 @@ class PerformanceTracker:
     
     def get_latency_stats(self, component: str) -> Dict[str, Any]:
         """Get latency statistics for component."""
-        metrics = self._store.get_metrics(component=component, metric_name="latency_ms", limit=1000)
+        metrics = self._store.get_metrics(
+            component=component, metric_name="latency_ms", limit=None
+        )
         
         if not metrics:
             return {"error": "No metrics found"}
@@ -86,36 +88,47 @@ class PerformanceTracker:
     
     def get_throughput_stats(self, component: str) -> Dict[str, Any]:
         """Get throughput statistics."""
-        now = datetime.now(timezone.utc)
-        hour_ago = now - timedelta(hours=1)
-        
-        metrics = self._store.get_metrics(component=component, metric_name="requests", limit=1000)
-        recent_metrics = [m for m in metrics if m.timestamp > hour_ago]
-        
-        if not recent_metrics:
+        hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        # Bound the query by time at the store level so the window is complete
+        # regardless of record volume (previously the newest-1000 cap made the
+        # reported throughput a function of metric count).
+        metrics = self._store.get_metrics(
+            component=component, metric_name="requests", since=hour_ago, limit=None
+        )
+
+        if not metrics:
             return {
                 "component": component,
                 "requests_last_hour": 0,
                 "avg_per_second": 0,
             }
-        
-        total_requests = sum(m.value for m in recent_metrics)
-        
+
+        total_requests = sum(m.value for m in metrics)
+
         return {
             "component": component,
             "requests_last_hour": int(total_requests),
             "avg_per_second": total_requests / 3600,
         }
-    
+
     def get_error_rate(self, component: str) -> Dict[str, Any]:
         """Get error rate for component."""
-        metrics = self._store.get_metrics(component=component, limit=1000)
-        
-        total_requests = sum(1 for m in metrics if m.metric_name == "requests")
-        errors = sum(m.value for m in metrics if m.metric_name == "errors")
-        
+        # Fetch complete per-metric-name pools so requests and errors are
+        # matched over the same full set instead of competing for slots in a
+        # truncated newest-1000 list.
+        requests = self._store.get_metrics(
+            component=component, metric_name="requests", limit=None
+        )
+        error_metrics = self._store.get_metrics(
+            component=component, metric_name="errors", limit=None
+        )
+
+        total_requests = sum(m.value for m in requests)
+        errors = sum(m.value for m in error_metrics)
+
         error_rate = (errors / total_requests * 100) if total_requests > 0 else 0
-        
+
         return {
             "component": component,
             "total_requests": total_requests,

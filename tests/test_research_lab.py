@@ -139,7 +139,7 @@ class TestModelEvaluationService:
         eval_id = self.service.evaluate_model(
             model_id="model-1",
             model_version="1.0",
-            test_results={"accuracy": 0.95},
+            test_results={"accuracy": 0.95, "precision": 0.9, "recall": 0.9, "f1": 0.9},
         )
         
         assert eval_id is not None
@@ -150,11 +150,17 @@ class TestModelEvaluationService:
     
     def test_get_evaluations_by_model(self):
         """Test getting evaluations by model."""
-        self.service.evaluate_model("model-x", "1.0", {})
-        self.service.evaluate_model("model-x", "2.0", {})
-        
+        metrics = {"accuracy": 0.9, "precision": 0.8, "recall": 0.8, "f1": 0.8}
+        self.service.evaluate_model("model-x", "1.0", metrics)
+        self.service.evaluate_model("model-x", "2.0", metrics)
+
         evals = self.service.get_evaluations_by_model("model-x")
         assert len(evals) >= 2
+
+    def test_evaluate_model_requires_real_metrics(self):
+        """Evaluating with no test results must fail closed, not fabricate scores."""
+        with pytest.raises(ValueError):
+            self.service.evaluate_model("model-x", "1.0", {})
 
 
 class TestResearchDatasetManager:
@@ -213,12 +219,30 @@ class TestResearchEngine:
         
         results = self.engine.run_experiment(
             experiment_id=exp_id,
-            parameters={"epochs": 10},
+            parameters={
+                "epochs": 10,
+                "training_results": {
+                    "training_accuracy": 0.9,
+                    "validation_accuracy": 0.85,
+                    "training_loss": 0.05,
+                },
+            },
         )
-        
-        assert "training_accuracy" in results
-        assert "validation_accuracy" in results
-    
+
+        assert results["training_accuracy"] == 0.9
+        assert results["validation_accuracy"] == 0.85
+
+    def test_run_experiment_requires_real_training_results(self):
+        """Running an experiment with no training_results must fail closed."""
+        exp_id = self.engine.create_research(
+            name="No Results Test",
+            description="Test",
+            model_type=ModelType.GRAPH_ANALYZER,
+        )
+
+        with pytest.raises(ValueError):
+            self.engine.run_experiment(exp_id, {"epochs": 10})
+
     def test_get_research_results(self):
         """Test getting research results."""
         exp_id = self.engine.create_research(
@@ -226,11 +250,17 @@ class TestResearchEngine:
             description="Test",
             model_type=ModelType.FRAUD_DETECTOR,
         )
-        
-        self.engine.run_experiment(exp_id, {})
-        
+
+        self.engine.run_experiment(exp_id, {
+            "training_results": {
+                "training_accuracy": 0.9,
+                "validation_accuracy": 0.85,
+                "training_loss": 0.05,
+            },
+        })
+
         results = self.engine.get_research_results(exp_id)
-        
+
         assert "experiment" in results
         assert "benchmarks" in results
 

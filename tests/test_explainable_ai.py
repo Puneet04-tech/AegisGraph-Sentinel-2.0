@@ -117,7 +117,22 @@ class TestSHAPExplainer:
         assert explanation.explanation_id is not None
         assert explanation.explanation_type == ExplanationType.SHAP
         assert explanation.confidence > 0
-    
+
+    def test_explain_is_deterministic(self, shap_explainer):
+        """Same decision explained twice should return the same result."""
+        kwargs = dict(
+            model_id="model_1",
+            model_version="v1.0",
+            input_features={"feature1": 0.5, "feature2": 0.3, "feature3": 0.2},
+            base_value=0.1,
+            prediction_value=0.8,
+        )
+        first = shap_explainer.explain(decision_id="decision_1", **kwargs)
+        second = shap_explainer.explain(decision_id="decision_2", **kwargs)
+        
+        assert [f.importance for f in first.features] == [f.importance for f in second.features]
+        assert first.confidence == second.confidence
+
     def test_get_global_importance(self, shap_explainer):
         """Test getting global feature importance."""
         # First create some explanations
@@ -172,7 +187,21 @@ class TestLIMEExplainer:
         assert explanation.explanation_id is not None
         assert explanation.explanation_type == ExplanationType.LIME
         assert explanation.summary is not None
-    
+
+    def test_explain_is_deterministic(self, lime_explainer):
+        """Same decision explained twice should return the same result."""
+        kwargs = dict(
+            model_id="model_1",
+            model_version="v1.0",
+            input_features={"feature1": 0.5, "feature2": 0.3},
+            prediction_value=0.6,
+        )
+        first = lime_explainer.explain(decision_id="lime_decision_1", **kwargs)
+        second = lime_explainer.explain(decision_id="lime_decision_2", **kwargs)
+        
+        assert [f.importance for f in first.features] == [f.importance for f in second.features]
+        assert first.confidence == second.confidence
+
     def test_get_local_explanation(self, lime_explainer):
         """Test getting local explanation details."""
         explanation = lime_explainer.explain(

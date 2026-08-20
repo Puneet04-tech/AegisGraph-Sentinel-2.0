@@ -1,5 +1,4 @@
 import logging
-import os
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -12,22 +11,16 @@ from ..utils.encryption import get_encryption_handler
 
 logger = logging.getLogger(__name__)
 
-# Attempt to import the real model architecture, fallback to a mock for pipeline testing
+# The real model architecture is required. A silent mock fallback would
+# produce random logits with no gradient flow into model parameters and
+# persist a never-trained artifact, so abort loudly instead.
 try:
     from ..models.htgnn import AegisHTGNN
-except ImportError:
-    import torch.nn as nn
-    class AegisHTGNN(nn.Module):
-        """Mock model to verify the training pipeline execution"""
-        def __init__(self, hidden_channels=64, out_channels=1):
-            super().__init__()
-            # Dummy linear layer to simulate GNN transformations
-            self.lin = nn.Linear(10, out_channels) 
-            
-        def forward(self, x_dict, edge_index_dict):
-            # Mock forward pass returning logits for account nodes
-            num_accounts = x_dict['account'].size(0)
-            return torch.randn((num_accounts, 1), requires_grad=True).to(x_dict['account'].device)
+except ImportError as exc:
+    raise ImportError(
+        "HTGNN model module 'src.models.htgnn' is required for training; "
+        "refusing to fall back to a random-noise mock."
+    ) from exc
 
 def train_epoch(model, loader, optimizer, device, max_grad_norm=1.0, scaler=None):
     """
@@ -49,6 +42,10 @@ def train_epoch(model, loader, optimizer, device, max_grad_norm=1.0, scaler=None
     correct = 0
     total_samples = 0
     batch_count = 0
+
+    # Snapshot the parameters so we can verify the optimizer actually updates them.
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    params_before = [p.detach().clone() for p in trainable]
 
     # Wrap the loader in a progress bar
     pbar = tqdm(loader, desc="Training Batches", leave=False)
@@ -78,7 +75,17 @@ def train_epoch(model, loader, optimizer, device, max_grad_norm=1.0, scaler=None
         else:
             loss.backward()
 
-        # 5. Gradient Clipping (CRITICAL for stabilizing Graph Neural Networks)
+        # 5. Training-sanity assertion: no gradient means the loss did not
+        #    depend on the model (e.g. a mock returning random noise). Fail
+        #    loudly rather than silently saving a never-trained artifact.
+        if not any(p.grad is not None for p in trainable):
+            raise RuntimeError(
+                "No parameter received a gradient after the backward pass; "
+                "aborting training because the loss is disconnected from the "
+                "model weights."
+            )
+
+        # 6. Gradient Clipping (CRITICAL for stabilizing Graph Neural Networks)
         # Prevents exploding gradients on large graphs
         # max_norm=1.0 is effective for most GNN architectures
         if scaler is not None:
@@ -103,6 +110,19 @@ def train_epoch(model, loader, optimizer, device, max_grad_norm=1.0, scaler=None
 
     avg_loss = total_loss / total_samples if total_samples > 0 else 0
     avg_acc = correct / total_samples if total_samples > 0 else 0
+
+    # Training-sanity assertion: the optimizer must have actually moved at
+    # least one parameter, otherwise the run never trained and the artifact
+    # would just be random initial weights.
+    params_after = [p.detach() for p in trainable]
+    if not any(
+        not torch.equal(before, after)
+        for before, after in zip(params_before, params_after)
+    ):
+        raise RuntimeError(
+            "No model parameter changed during the epoch; aborting training "
+            "because the optimizer made no progress (weights stayed identical)."
+        )
 
     return avg_loss, avg_acc
 

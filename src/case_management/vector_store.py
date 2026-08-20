@@ -48,13 +48,86 @@ class VectorStore:
         
         # OrderedDict for LRU eviction: case_id -> (embedding, metadata)
         self._embeddings: OrderedDict[str, Tuple[np.ndarray, Dict]] = OrderedDict()
-        
+
+        # Parallel matrix of L2-normalised copies, so a query is one BLAS
+        # matrix-vector product instead of a Python loop over every entry.
+        # Rows are pre-normalised because a stored vector's norm never changes
+        # after insertion, so recomputing it per query was pure waste.
+        # One row of headroom: add() inserts before evicting, so the store
+        # transiently holds maxsize + 1 entries.
+        capacity = max(1, maxsize) + 1
+        self._matrix = np.zeros((capacity, embedding_dim), dtype=np.float32)
+        self._row_of: Dict[str, int] = {}
+        self._id_at: List[Optional[str]] = [None] * capacity
+        self._free_rows: List[int] = []
+        self._next_row = 0
+
         # Stats
         self._stats = {
             "total_added": 0,
             "total_queries": 0,
             "total_evicted": 0,
         }
+
+    def _claim_row(self, case_id: str) -> int:
+        """Return the matrix row for a case, allocating one if needed."""
+        existing = self._row_of.get(case_id)
+        if existing is not None:
+            return existing
+
+        if self._free_rows:
+            row = self._free_rows.pop()
+        elif self._next_row < self._matrix.shape[0]:
+            row = self._next_row
+            self._next_row += 1
+        else:
+            # Should not be reachable while eviction keeps size <= maxsize,
+            # but growing beats silently dropping the embedding.
+            row = self._matrix.shape[0]
+            self._matrix = np.vstack(
+                [self._matrix, np.zeros((1, self.embedding_dim), dtype=np.float32)]
+            )
+            self._id_at.append(None)
+            self._next_row = row + 1
+
+        self._row_of[case_id] = row
+        self._id_at[row] = case_id
+        return row
+
+    def _release_row(self, case_id: str) -> None:
+        """Return a case's matrix row to the free list."""
+        row = self._row_of.pop(case_id, None)
+        if row is None:
+            return
+        self._id_at[row] = None
+        # Zeroed so a stale vector can never score against a later query even
+        # if the row is somehow read before being rewritten.
+        self._matrix[row].fill(0.0)
+        self._free_rows.append(row)
+
+    @staticmethod
+    def _normalise(embedding: np.ndarray) -> np.ndarray:
+        """Return a unit-length float32 copy, or zeros for a degenerate vector."""
+        vector = np.asarray(embedding, dtype=np.float32)
+        # Non-finite values would poison every subsequent dot product.
+        if not np.all(np.isfinite(vector)):
+            vector = np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0)
+        norm = float(np.linalg.norm(vector))
+        if norm == 0.0:
+            return np.zeros(vector.shape, dtype=np.float32)
+        return vector / norm
+
+    def _active_rows(self) -> np.ndarray:
+        """Row indices currently holding a live embedding, in insertion order.
+
+        Insertion order is preserved so equal-scoring results tie-break exactly
+        as they did when the query walked the OrderedDict directly.
+        """
+        return np.fromiter(
+            (self._row_of[case_id] for case_id in self._embeddings),
+            dtype=np.int64,
+            count=len(self._embeddings),
+        )
     
     def add(
         self,
@@ -84,13 +157,17 @@ class VectorStore:
             if case_id in self._embeddings:
                 self._embeddings.move_to_end(case_id)
             
-            # Store
-            self._embeddings[case_id] = (embedding, metadata or {})
+            # Store a copy of the metadata so caller-owned dicts and the
+            # store never alias the same object. Without this, update_metadata
+            # on one case mutates every case sharing that dict.
+            self._embeddings[case_id] = (embedding, dict(metadata) if metadata else {})
+            self._matrix[self._claim_row(case_id)] = self._normalise(embedding)
             self._stats["total_added"] += 1
-            
+
             # LRU eviction: remove oldest if exceeds maxsize
             if len(self._embeddings) > self.maxsize:
                 oldest_id, _ = self._embeddings.popitem(last=False)
+                self._release_row(oldest_id)
                 self._stats["total_evicted"] += 1
     
     def add_batch(
@@ -119,7 +196,10 @@ class VectorStore:
                 f"embeddings batch size ({len(embeddings)})"
             )
         
-        metadatas = metadatas or [{}] * len(case_ids)
+        # Distinct dict per case; [{}] * n would alias every entry to the
+        # same object (add() defensively copies, but the default should not
+        # rely on that masking the aliasing).
+        metadatas = metadatas or [{} for _ in case_ids]
         
         for case_id, embedding, metadata in zip(case_ids, embeddings, metadatas):
             self.add(case_id, embedding, metadata)
@@ -153,30 +233,63 @@ class VectorStore:
         with self._lock:
             if not self._embeddings:
                 return []
-            
+
             threshold = threshold if threshold is not None else self.similarity_threshold
-            
-            # Compute cosine similarity with all stored embeddings
-            similarities = []
-            for case_id, (stored_emb, metadata) in self._embeddings.items():
-                sim = self._cosine_similarity(embedding, stored_emb)
-                
-                if sim >= threshold:
-                    similarities.append(
-                        SearchResult(
-                            case_id=case_id,
-                            similarity_score=float(sim),
-                            metadata=metadata.copy(),
-                        )
-                    )
-            
-            # Sort by similarity (highest first)
-            similarities.sort(key=lambda x: x.similarity_score, reverse=True)
-            
-            # Update stats
             self._stats["total_queries"] += 1
-            
-            return similarities[:k]
+
+            scores = self._score_all(embedding)
+            return self._top_k(scores, k, threshold)
+
+    def _score_all(self, embedding: np.ndarray) -> np.ndarray:
+        """Cosine similarity against every live embedding, in insertion order.
+
+        One matrix-vector product replaces the per-entry Python loop; both
+        operands are unit vectors, so the dot product *is* the cosine.
+        """
+        query = self._normalise(embedding)
+        rows = self._active_rows()
+        if rows.size == 0:
+            return np.empty(0, dtype=np.float32)
+
+        scores = self._matrix[rows] @ query
+        # Matches the clamping the per-pair helper applied, absorbing the
+        # floating-point drift that can push a self-match fractionally past 1.
+        return np.clip(scores, 0.0, 1.0)
+
+    def _top_k(self, scores: np.ndarray, k: int, threshold: float) -> List[SearchResult]:
+        """Select the k highest-scoring results at or above the threshold."""
+        if scores.size == 0 or k <= 0:
+            return []
+
+        case_ids = list(self._embeddings.keys())
+        candidates = np.flatnonzero(scores >= threshold)
+        if candidates.size == 0:
+            return []
+
+        if candidates.size > k:
+            # argpartition finds the top k without ordering the rest, which is
+            # what makes this cheaper than sorting every match.
+            top = candidates[np.argpartition(-scores[candidates], k - 1)[:k]]
+        else:
+            top = candidates
+
+        # Ascending index order first, so that the descending sort by score is
+        # stable and equal scores keep the insertion ordering the loop had.
+        top = np.sort(top)
+        order = np.argsort(-scores[top], kind="stable")
+
+        results = []
+        for position in top[order]:
+            case_id = case_ids[position]
+            _, metadata = self._embeddings[case_id]
+            results.append(
+                SearchResult(
+                    case_id=case_id,
+                    similarity_score=float(scores[position]),
+                    metadata=metadata.copy(),
+                )
+            )
+        return results
     
     def query_batch(
         self,
@@ -195,10 +308,26 @@ class VectorStore:
         Returns:
             List of result lists, one per query embedding
         """
-        results = []
-        for embedding in embeddings:
-            results.append(self.query(embedding, k=k, threshold=threshold))
-        return results
+        if embeddings.ndim != 2 or embeddings.shape[1] != self.embedding_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch. Expected [batch, {self.embedding_dim}], "
+                f"got {tuple(embeddings.shape)}"
+            )
+
+        with self._lock:
+            if not self._embeddings or embeddings.shape[0] == 0:
+                return [[] for _ in range(embeddings.shape[0])]
+
+            threshold = threshold if threshold is not None else self.similarity_threshold
+            self._stats["total_queries"] += embeddings.shape[0]
+
+            rows = self._active_rows()
+            queries = np.stack([self._normalise(vector) for vector in embeddings])
+            # A single [batch, dim] x [dim, size] product for the whole batch,
+            # rather than one scan of the store per query vector.
+            scores = np.clip(queries @ self._matrix[rows].T, 0.0, 1.0)
+
+            return [self._top_k(row_scores, k, threshold) for row_scores in scores]
     
     def get(self, case_id: str) -> Optional[Tuple[np.ndarray, Dict]]:
         """
@@ -230,6 +359,7 @@ class VectorStore:
         with self._lock:
             if case_id in self._embeddings:
                 del self._embeddings[case_id]
+                self._release_row(case_id)
                 return True
             return False
     
@@ -247,8 +377,10 @@ class VectorStore:
         with self._lock:
             if case_id in self._embeddings:
                 embedding, existing_metadata = self._embeddings[case_id]
-                existing_metadata.update(metadata)
-                self._embeddings[case_id] = (embedding, existing_metadata)
+                # Build a fresh dict instead of mutating in place so the
+                # caller's input and any aliased metadata stay untouched.
+                merged = {**existing_metadata, **metadata}
+                self._embeddings[case_id] = (embedding, merged)
                 return True
             return False
     
@@ -261,6 +393,11 @@ class VectorStore:
         """Clear all embeddings from store."""
         with self._lock:
             self._embeddings.clear()
+            self._row_of.clear()
+            self._free_rows.clear()
+            self._id_at = [None] * self._matrix.shape[0]
+            self._next_row = 0
+            self._matrix.fill(0.0)
     
     def get_stats(self) -> Dict:
         """Return store statistics."""

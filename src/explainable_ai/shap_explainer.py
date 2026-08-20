@@ -4,7 +4,6 @@ SHAP Explainer Module.
 SHAP (SHapley Additive exPlanations) implementation for model explanations.
 """
 
-import random
 import math
 from typing import Callable, Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -50,6 +49,10 @@ class SHAPExplainer:
         """
         self._store = store or get_xai_store()
         self._module_id = "shap_explainer"
+        # Kept for attribution as well as counterfactuals: with a model in
+        # hand, contributions can be measured by ablation instead of split by
+        # a heuristic.
+        self._predict_fn = predict_fn
         self._counterfactual_generator = (
             CounterfactualGenerator(
                 predict_fn,
@@ -100,9 +103,17 @@ class SHAPExplainer:
         
         self._store.store_explanation(explanation)
         
-        # Generate counterfactual explanation
-        self._generate_counterfactual(decision_id, input_features, prediction_value)
-        
+        # Generate counterfactual explanation. A model that cannot be probed
+        # must not cost the caller their explanation, which is already stored
+        # by this point.
+        try:
+            self._generate_counterfactual(decision_id, input_features, prediction_value)
+        except Exception:
+            logger.warning(
+                "Counterfactual generation failed for decision %s; the "
+                "explanation itself is unaffected", decision_id, exc_info=True,
+            )
+
         return explanation
     
     def _compute_shap_values(
@@ -111,37 +122,96 @@ class SHAPExplainer:
         base_value: float,
         prediction_value: float,
     ) -> List[FeatureImportance]:
-        """Compute SHAP-like values using approximation."""
-        feature_importances = []
-        
+        """Compute SHAP-like values using approximation.
+
+        The defining property of a SHAP attribution is additivity: the
+        contributions must sum to ``prediction_value - base_value``. That is
+        preserved here, but the split between features is no longer arbitrary.
+
+        Previously each contribution was ``remaining_diff * weight *
+        random.uniform(0.8, 1.2)`` with the last feature absorbing whatever
+        was left over. Additivity held only because of that mop-up, the split
+        was driven by a random draw, and per-feature ``confidence`` was itself
+        ``random.uniform(0.85, 0.99)`` -- which then fed the explanation's
+        overall confidence.
+        """
         total_diff = prediction_value - base_value
-        
-        # Sort features by value for marginal contribution approximation
-        sorted_features = sorted(features.items(), key=lambda x: abs(x[1]), reverse=True)
-        
-        remaining_diff = total_diff
-        for i, (feature, value) in enumerate(sorted_features):
-            # Approximate marginal contribution
-            weight = 1.0 / (i + 1)  # Earlier features get higher weight
-            
-            # Add some randomness to simulate actual SHAP computation
-            contribution = remaining_diff * weight * random.uniform(0.8, 1.2)
-            
-            # Ensure we don't overshoot
-            if i == len(sorted_features) - 1:
-                contribution = remaining_diff
-            
-            remaining_diff -= contribution
-            
-            importance = FeatureImportance(
+
+        if not features:
+            return []
+
+        raw = self._raw_contributions(features, prediction_value)
+
+        # Rescale so the contributions sum exactly to the gap between the base
+        # value and the prediction (the efficiency axiom).
+        raw_total = sum(raw.values())
+        if raw_total:
+            scaled = {f: v * total_diff / raw_total for f, v in raw.items()}
+        else:
+            # The model is flat, or every feature is zero: split evenly rather
+            # than attributing the whole gap to one arbitrary feature.
+            share = total_diff / len(features)
+            scaled = {f: share for f in features}
+
+        magnitude = sum(abs(v) for v in scaled.values())
+
+        feature_importances = []
+        for feature, contribution in scaled.items():
+            feature_importances.append(FeatureImportance(
                 feature=feature,
                 importance=contribution,
-                direction="positive" if contribution > 0 else "negative",
-                confidence=random.uniform(0.85, 0.99),
-            )
-            feature_importances.append(importance)
-        
+                direction=(
+                    "positive" if contribution > 0
+                    else "negative" if contribution < 0
+                    else "neutral"
+                ),
+                # How concentrated this attribution is, rather than a random
+                # number. A feature carrying most of the explanation is one we
+                # are more confident about.
+                confidence=(
+                    abs(contribution) / magnitude if magnitude else 0.0
+                ),
+            ))
+
         return feature_importances
+
+    def _raw_contributions(
+        self,
+        features: Dict[str, float],
+        prediction_value: float,
+    ) -> Dict[str, float]:
+        """Unnormalised per-feature contributions.
+
+        With a model available these are measured by ablation: how far the
+        prediction moves when the feature is dropped to the base value. Without
+        one, contributions fall back to each feature's share of the total
+        magnitude -- deterministic, and stated as an approximation.
+        """
+        if self._predict_fn is None:
+            return {feature: abs(value) for feature, value in features.items()}
+
+        contributions = {}
+        for feature in features:
+            ablated = dict(features)
+            ablated[feature] = 0.0
+
+            try:
+                without = float(self._predict_fn(ablated))
+            except Exception:
+                logger.warning(
+                    "predict_fn failed while ablating feature '%s'",
+                    feature, exc_info=True,
+                )
+                contributions[feature] = 0.0
+                continue
+
+            contributions[feature] = prediction_value - without
+
+        if not any(contributions.values()):
+            # Ablation moved nothing; fall back rather than divide by zero.
+            return {feature: abs(value) for feature, value in features.items()}
+
+        return contributions
     
     def _calculate_confidence(self, features: List[FeatureImportance]) -> float:
         """Calculate explanation confidence."""
@@ -239,11 +309,14 @@ class SHAPExplainer:
         explanations = self._store.get_model_explanations(model_id, limit=num_samples)
         
         if not explanations:
-            # Return default importance
-            return [
-                FeatureImportance(feature=f"feature_{i}", importance=random.uniform(0.1, 0.3))
-                for i in range(5)
-            ]
+            # This used to invent five features named feature_0..feature_4
+            # with random importances. Those names do not exist in any model,
+            # and a caller had no way to tell them from real ones.
+            logger.warning(
+                "No stored explanations for model %s; global importance is "
+                "unavailable", model_id,
+            )
+            return []
         
         # Aggregate feature importance
         feature_totals: Dict[str, List[float]] = {}

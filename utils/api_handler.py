@@ -238,9 +238,28 @@ def validate_api_response(response: Dict, required_fields: list) -> bool:
     if not isinstance(response, dict):
         raise APIError(f"API response is not a dictionary: {type(response)}")
 
+    # Accept a single field name given as a string and tolerate None/empty.
+    if required_fields is None:
+        required_fields = []
+    elif isinstance(required_fields, str):
+        required_fields = [required_fields]
+
     missing_fields = [f for f in required_fields if f not in response]
     if missing_fields:
         raise APIError(f"API response missing required fields: {missing_fields}")
 
     logger.debug("API response validation passed")
     return True
+
+# --- GENERATED: sanitize_header ---
+import re
+_CRLF_RE = re.compile(r"[\r\n]")
+
+def sanitize_header_value(value):
+    """Raise ValueError if value contains CRLF to prevent injection."""
+    if not isinstance(value, str):
+        value = str(value)
+    if _CRLF_RE.search(value):
+        raise ValueError("CRLF characters not allowed in header values")
+    return value
+# --- END GENERATED ---

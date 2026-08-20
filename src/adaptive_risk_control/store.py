@@ -21,6 +21,7 @@ from .models import (
     LearningFeedback,
     AuditRecord,
 )
+from src.audit.bounded_log import BoundedAuditLog
 
 
 class LRUCache(OrderedDict):
@@ -84,7 +85,9 @@ class AdaptiveRiskStore:
         self._fraud_attempts: Dict[str, List] = {}
         self._policies: Dict[str, AdaptivePolicy] = {}
         self._control_rules: Dict[str, ControlRule] = {}
-        self._audit_records: List = []
+        # deque eviction is O(1); the manual `= self._audit_records[-N:]` trim this
+        # replaces copied the whole retained list on every append past the cap.
+        self._audit_records = BoundedAuditLog(capacity=50000)
         self._threat_indicators: Dict[str, List] = {}
         self._learning_feedback: List = []
 
@@ -300,8 +303,6 @@ class AdaptiveRiskStore:
         """Store audit record."""
         with self._lock:
             self._audit_records.append(record)
-            if len(self._audit_records) > 50000:
-                self._audit_records = self._audit_records[-50000:]
 
     def get_audit_records(
         self,

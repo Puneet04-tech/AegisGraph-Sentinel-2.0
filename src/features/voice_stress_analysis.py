@@ -219,8 +219,12 @@ class VoiceStressAnalyzer:
         f0_delta = features.f0_mean - baseline_f0
         f0_stress = min(max(f0_delta / 40.0, 0) * 100, 100)
         
-        # 2. Jitter (>1% indicates vocal tension)
-        jitter_stress = min(features.jitter * 100, 100)
+        # 2. Jitter (>1% indicates vocal tension).
+        # _compute_jitter returns a fraction (0.005 == 0.5%), so normalize
+        # against the 1% tension threshold exactly like shimmer does with
+        # its 15% reference. Multiplying by 100 treated the fraction as a
+        # percentage, keeping jitter_stress near zero for real values.
+        jitter_stress = min(features.jitter / 0.01 * 100, 100)
         
         # 3. Shimmer (irregular loudness)
         shimmer_stress = min(features.shimmer / 0.15 * 100, 100)

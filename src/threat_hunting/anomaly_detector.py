@@ -11,6 +11,12 @@ from .store import ThreatHuntingStore, get_store
 
 
 class AnomalyDetector:
+    """Detects anomalous activity based on entity behavior signals.
+
+    Evaluates login failures, device status, sensitive operations, and IP subnets
+    to produce ThreatIndicator records stored in the hunting store.
+    """
+
     def __init__(self, store: Optional[ThreatHuntingStore] = None):
         self.store = store or get_store()
 
@@ -23,6 +29,22 @@ class AnomalyDetector:
         failed_attempts: int,
         attributes: Optional[Dict[str, Any]] = None,
     ) -> List[ThreatIndicator]:
+        """Detect anomalous activity for a given entity.
+
+        Evaluates device status, authentication failure rates, sensitive operations,
+        and IP address characteristics to generate threat indicators.
+
+        Args:
+            entity_id: Unique identifier of the entity being evaluated.
+            operation: Name of the operation being performed.
+            ip_address: Source IP address of the request.
+            device_status: Current status of the device (e.g., BLOCKED, STOLEN).
+            failed_attempts: Number of consecutive authentication failures.
+            attributes: Optional additional context attributes.
+
+        Returns:
+            A list of ThreatIndicator objects representing detected anomalies.
+        """
         attributes = attributes or {}
         detected_indicators: List[ThreatIndicator] = []
 

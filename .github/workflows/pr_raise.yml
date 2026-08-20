@@ -1,0 +1,53 @@
+name: Comment on PR
+
+on:
+  pull_request_target:
+  
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Add Comment to PR
+        uses: actions/github-script@v7
+        
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          script: |
+            // Initialize required context parameters from the incoming pull request payload
+            const prNumber = context.payload.pull_request.number;
+            const contributor = context.payload.pull_request.user.login;
+            const repoName = context.repo.repo;
+            const repositoryOwner = context.repo.owner;
+
+            // Construct a comprehensive and welcoming markdown message body for the contributor
+            const commentBody = `### 🌟 Welcome to **${repoName}**!
+
+            Thank you for submitting your pull request, @${contributor}! 🙌 We truly appreciate your time, effort, and dedication to improving our platform.
+                                  
+            ---
+                                  
+            #### 📌 Next Steps & Guidelines:
+            - **Review Process:** Our Project administrators will review your changes as soon as possible.
+            - **Feedback:** If there are any specific modifications, edge cases, or code improvements needed, we will provide detailed feedback directly in this pull request thread.
+            - **Continuous Integration:** Ensure that all automated pipeline checks and status workflows pass successfully.
+                                  
+            ---
+                                  
+            Thank you once again for your valuable contribution to **${repositoryOwner}/${repoName}**! Let's build something amazing together. Happy coding! 🚀`;
+
+            // Execute GitHub REST API call to post the formatted comment onto the target pull request
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: commentBody
+            });
+
+            

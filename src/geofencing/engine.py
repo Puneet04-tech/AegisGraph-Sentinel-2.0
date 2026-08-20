@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
 from .models import AssetLocation, GeoPoint, Geofence, GeofenceEvent
+from src.audit.bounded_log import BoundedAuditLog
 
 
 def _point_in_polygon(point: GeoPoint, polygon: List[GeoPoint]) -> bool:
@@ -30,7 +31,9 @@ class GeofencingEngine:
     def __init__(self, alert_callback: Optional[Callable[[GeofenceEvent], None]] = None) -> None:
         self._fences: Dict[str, Geofence] = {}
         self._asset_inside: Dict[str, Dict[str, bool]] = {}  # asset_id -> fence_id -> inside
-        self._events: List[GeofenceEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._events = BoundedAuditLog()
         self._alert_callback = alert_callback
 
     # ------------------------------------------------------------------
@@ -85,25 +88,27 @@ class GeofencingEngine:
                 self._asset_inside.setdefault(aid, {})[fence_id] = now_inside
                 continue
 
-            # State changed: determine event type and check alert flags.
+            # State changed: construct the event and check alert flags.
             event_type = "entry" if now_inside else "exit"
             should_alert = (event_type == "exit" and fence.alert_on_exit) or (
                 event_type == "entry" and fence.alert_on_entry
             )
 
-            if should_alert:
-                event = GeofenceEvent(
-                    asset_id=aid,
-                    fence_id=fence_id,
-                    fence_name=fence.name,
-                    event_type=event_type,
-                    position=location.position,
-                    timestamp=location.timestamp,
-                )
-                self._events.append(event)
-                new_events.append(event)
-                if self._alert_callback:
-                    self._alert_callback(event)
+            event = GeofenceEvent(
+                asset_id=aid,
+                fence_id=fence_id,
+                fence_name=fence.name,
+                event_type=event_type,
+                position=location.position,
+                timestamp=location.timestamp,
+                alert_raised=should_alert,
+            )
+            # Every boundary crossing is recorded regardless of alert flags so
+            # the audit history is complete; only alert delivery is gated.
+            self._events.append(event)
+            new_events.append(event)
+            if should_alert and self._alert_callback:
+                self._alert_callback(event)
 
             self._asset_inside.setdefault(aid, {})[fence_id] = now_inside
 
@@ -122,7 +127,7 @@ class GeofencingEngine:
         fence_id: Optional[str] = None,
         event_type: Optional[str] = None,
     ) -> List[GeofenceEvent]:
-        events = self._events
+        events = self._events.all()
         if asset_id:
             events = [e for e in events if e.asset_id == asset_id]
         if fence_id:

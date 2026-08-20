@@ -294,6 +294,44 @@ class TestAutonomousSecOpsService:
         
         assert "matches_count" in result
 
+    def test_all_engines_share_the_injected_store(self):
+        """Engines must write to the injected store, not the global singleton."""
+        injected = AutonomousSecOpsStore()
+        service = AutonomousSecOpsService(store=injected)
+
+        for engine in (
+            service.secops,
+            service.correlation,
+            service.investigation,
+            service.playbook,
+            service.hunting,
+        ):
+            assert engine.store is injected
+
+        assert service.store is injected
+
+    def test_processed_alert_is_readable_from_injected_store(self):
+        """A custom store must observe alerts written by the service engines."""
+        injected = AutonomousSecOpsStore()
+        service = AutonomousSecOpsService(store=injected)
+
+        result = asyncio.run(service.process_alert(
+            title="Injected Store Alert",
+            description="Writes must land in the injected store",
+            severity="medium",
+            source="siem",
+        ))
+
+        assert injected.get_alert(result["alert_id"]) is not None
+
+    def test_default_service_uses_global_store(self):
+        """Without an injected store the service falls back to the global store."""
+        reset_secops_store()
+        service = AutonomousSecOpsService()
+
+        assert service.store is get_secops_store()
+        assert service.secops.store is get_secops_store()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

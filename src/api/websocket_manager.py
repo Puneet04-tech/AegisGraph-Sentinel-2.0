@@ -93,15 +93,16 @@ class WebSocketManager:
 
         async with self._lock:
             old = self.active_connections.get(client_id)
-            if old is not None:
-                try:
-                    await old.websocket.close(code=1000, reason="Replaced by new connection")
-                except Exception as exc:
-                    logger.debug("Failed to close old WebSocket connection for client %s: %s", client_id, exc)
-
             self.active_connections[client_id] = ConnectionState(websocket)
 
+        if old is not None:
+            try:
+                await old.websocket.close(code=1000, reason="Replaced by new connection")
+            except Exception as exc:
+                logger.debug("Failed to close old WebSocket connection for client %s: %s", client_id, exc)
+
         return True
+
 
     async def disconnect(self, client_id: str, websocket: Optional[WebSocket] = None) -> None:
         """Remove a disconnected client from active connections.
@@ -139,26 +140,26 @@ class WebSocketManager:
         now = time.time()
 
         async with self._lock:
-            stale_clients = [
-                client_id
+            stale_targets = [
+                (client_id, state.websocket)
                 for client_id, state in self.active_connections.items()
                 if now - state.last_heartbeat > self.heartbeat_timeout
             ]
 
-        for client_id in stale_clients:
+        for client_id, websocket in stale_targets:
             logger.warning("Closing stale connection for client %s", client_id)
             async with self._lock:
                 state = self.active_connections.get(client_id)
 
-            if state is None:
+            if state is None or state.websocket is not websocket:
                 continue
 
             try:
-                await state.websocket.close(code=1000, reason="Heartbeat timeout")
+                await websocket.close(code=1000, reason="Heartbeat timeout")
             except Exception as e:
                 logger.error("Error closing stale connection for %s: %s", client_id, e)
 
-            await self.disconnect(client_id)
+            await self.disconnect(client_id, websocket)
 
     async def broadcast(self, message: dict) -> None:
         """Broadcast a message to all connected clients without blocking."""

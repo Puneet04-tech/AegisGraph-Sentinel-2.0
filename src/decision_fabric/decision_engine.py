@@ -176,11 +176,10 @@ class DecisionEngine:
         status = DecisionStatus.APPROVED
         
         if matching_rules:
-            top_rule = matching_rules[0]
-            if "BLOCK" in top_rule.actions:
+            if any("BLOCK" in rule.actions for rule in matching_rules):
                 outcome = "BLOCKED"
                 status = DecisionStatus.REJECTED
-            elif "ESCALATE" in top_rule.actions:
+            elif any("ESCALATE" in rule.actions for rule in matching_rules):
                 outcome = "ESCALATED"
                 status = DecisionStatus.ESCALATED
         

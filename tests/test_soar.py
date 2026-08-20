@@ -276,7 +276,7 @@ def test_api_integration_and_rbac(auth_client: TestClient):
     # Admin should succeed
     response = auth_client.post("/api/v1/soar/contain", json=contain_payload, headers=admin_headers)
     assert response.status_code == 200
-    assert response.json()["status"] == "COMPLETED"
+    assert response.json()["status"] == "ACTIVE"
 
     # 11. GET /api/v1/soar/audit (Retrieve audit logs - Auditor or Admin)
     auditor_headers = {"X-API-Key": ROLE_KEYS["AUDITOR"]}

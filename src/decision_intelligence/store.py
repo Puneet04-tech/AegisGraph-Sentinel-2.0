@@ -5,7 +5,7 @@ Autonomous Security Decision Engine Store - Thread-safe storage
 from __future__ import annotations
 
 from threading import Lock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import (
     SecurityRecommendation,
@@ -124,7 +124,7 @@ class DecisionStore:
     def get_governance_decisions(self) -> List[GovernanceDecision]:
         return list(self._governance_decisions.values())
 
-    def get_metrics(self) -> Dict[str, any]:
+    def get_metrics(self) -> Dict[str, Any]:
         recommendations = list(self._recommendations.values())
         type_counts: Dict[str, int] = {}
         priority_counts: Dict[str, int] = {}

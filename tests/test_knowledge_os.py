@@ -101,6 +101,42 @@ class TestKnowledgeEngine:
         related = self.engine.get_related(id1)
         assert len(related) >= 1
 
+    def test_get_entry_above_clearance_is_hidden(self):
+        """Test that an entry above the caller's clearance is treated as not found."""
+        entry_id = self.engine.store_entry(
+            "Classified Entry", "Secret content", KnowledgeType.THREAT_INTEL,
+            access_level=AccessLevel.TOP_SECRET,
+        )
+        
+        assert self.engine.get_entry(entry_id, clearance=AccessLevel.RESTRICTED) is None
+        assert self.engine.get_entry(entry_id, clearance=AccessLevel.TOP_SECRET) is not None
+        assert self.engine.get_entry(entry_id) is not None
+    
+    def test_search_excludes_entries_above_clearance(self):
+        """Test that search results are filtered by clearance."""
+        self.engine.store_entry(
+            "Classified Search Target", "Secret content", KnowledgeType.THREAT_INTEL,
+            access_level=AccessLevel.TOP_SECRET,
+        )
+        
+        results = self.engine.search("Classified Search Target", clearance=AccessLevel.RESTRICTED)
+        assert len(results) == 0
+        
+        results = self.engine.search("Classified Search Target", clearance=AccessLevel.TOP_SECRET)
+        assert len(results) == 1
+    
+    def test_get_related_excludes_entries_above_clearance(self):
+        """Test that related entries above clearance are excluded."""
+        id1 = self.engine.store_entry("Clearance Related 1", "Content", KnowledgeType.FRAUD_PATTERN)
+        id2 = self.engine.store_entry(
+            "Clearance Related 2", "Content", KnowledgeType.THREAT_INTEL,
+            access_level=AccessLevel.TOP_SECRET,
+        )
+        self.engine.add_relationship(id1, id2)
+        
+        assert self.engine.get_related(id1, clearance=AccessLevel.RESTRICTED) == []
+        assert len(self.engine.get_related(id1, clearance=AccessLevel.TOP_SECRET)) == 1
+
 
 class TestKnowledgeGraphManager:
     """Tests for KnowledgeGraphManager."""
@@ -213,6 +249,41 @@ class TestModels:
         assert AccessLevel.PUBLIC.value == "PUBLIC"
         assert AccessLevel.TOP_SECRET.value == "TOP_SECRET"
         assert len(AccessLevel) > 0
+
+
+class TestClearanceByRole:
+    """Tests for the Role -> AccessLevel clearance mapping used by the routes."""
+    
+    def test_every_role_has_a_clearance(self):
+        """Test that no role is left unmapped."""
+        from src.api.security import Role
+        from src.api.knowledge_routes import CLEARANCE_BY_ROLE
+        
+        for role in Role:
+            assert role in CLEARANCE_BY_ROLE
+    
+    def test_super_admin_can_see_top_secret(self):
+        """Test that SUPER_ADMIN's clearance covers the most sensitive tier."""
+        from src.api.security import Role
+        from src.api.knowledge_routes import CLEARANCE_BY_ROLE
+        
+        assert CLEARANCE_BY_ROLE[Role.SUPER_ADMIN] == AccessLevel.TOP_SECRET
+    
+    def test_analyst_cannot_see_confidential(self):
+        """Test that the baseline ANALYST role does not reach CONFIDENTIAL entries."""
+        from src.api.security import Role
+        from src.api.knowledge_routes import CLEARANCE_BY_ROLE
+        from src.knowledge_os import is_within_clearance
+        
+        entry = KnowledgeEntry(
+            entry_id="test-confidential",
+            title="Confidential Entry",
+            content="Content",
+            knowledge_type=KnowledgeType.THREAT_INTEL,
+            access_level=AccessLevel.CONFIDENTIAL,
+        )
+        assert not is_within_clearance(entry, CLEARANCE_BY_ROLE[Role.ANALYST])
+        assert is_within_clearance(entry, CLEARANCE_BY_ROLE[Role.ADMIN])
 
 
 if __name__ == "__main__":

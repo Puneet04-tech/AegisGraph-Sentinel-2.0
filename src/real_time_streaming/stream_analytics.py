@@ -4,7 +4,6 @@ Stream Analytics Module.
 Real-time analytics over streams, pattern detection, and anomaly detection.
 """
 
-import random
 import math
 import threading
 from threading import Lock
@@ -32,6 +31,9 @@ class StreamAnalytics:
         - Trend analysis
     """
     
+    #: Most recent events sampled when averaging latency.
+    LATENCY_SAMPLE = 100
+
     def __init__(self, store: Optional[StreamStore] = None):
         """Initialize the stream analytics."""
         self._store = store or get_stream_store()
@@ -156,13 +158,29 @@ class StreamAnalytics:
         
         # Calculate metrics
         total_events = self._store.get_stream_count(stream_name)
-        
-        # Simulate events per second
-        events_per_second = random.uniform(10, 1000)
-        
-        # Calculate average latency
-        latencies = [e.payload.get("latency_ms", random.uniform(1, 100)) for e in events[-100:]]
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0
+
+        # Throughput measured from the events' own timestamps. This was
+        # random.uniform(10, 1000), so a completely idle stream reported
+        # hundreds of events per second.
+        events_per_second = self._throughput(events)
+
+        # Only events that actually record a latency contribute. The default
+        # used to be random.uniform(1, 100) per event, which silently blended
+        # invented latencies into the average alongside real ones -- a stream
+        # recording no latency at all still reported about 50ms.
+        latencies = [
+            float(event.payload["latency_ms"])
+            for event in events[-self.LATENCY_SAMPLE:]
+            if isinstance(event.payload.get("latency_ms"), (int, float))
+            and not isinstance(event.payload.get("latency_ms"), bool)
+        ]
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+
+        if not latencies and events:
+            logger.warning(
+                "No events on stream '%s' record latency_ms; average latency "
+                "is reported as 0", stream_name,
+            )
         
         # Queue depth
         queue_depth = len(events)
@@ -182,6 +200,31 @@ class StreamAnalytics:
         self._store.store_metrics(metrics)
         return metrics
     
+    def _throughput(self, events) -> float:
+        """Events per second, measured across the events' timestamps.
+
+        Returns 0.0 when there is nothing to measure -- fewer than two events,
+        or every event sharing a timestamp -- rather than a plausible rate.
+        """
+        if len(events) < 2:
+            return 0.0
+
+        timestamps = sorted(self._as_utc(event.timestamp) for event in events)
+        span_seconds = (timestamps[-1] - timestamps[0]).total_seconds()
+
+        if span_seconds <= 0:
+            return 0.0
+
+        # n events span n-1 intervals.
+        return round((len(timestamps) - 1) / span_seconds, 4)
+
+    @staticmethod
+    def _as_utc(moment):
+        """Treat naive timestamps as UTC so subtraction never raises."""
+        if moment.tzinfo is None:
+            return moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc)
+
     def get_stream_trends(self, stream_name: str, period_seconds: int = 300) -> Dict[str, Any]:
         """Analyze stream trends."""
         logger.info(f"Analyzing trends for {stream_name}")

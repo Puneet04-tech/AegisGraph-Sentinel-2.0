@@ -88,13 +88,28 @@ class FederationManager:
             )
         
         elif provider_type in ["oidc", "azure_ad", "okta", "auth0", "google", "keycloak"]:
-            return self._oidc.initiate_login(
+            response = self._oidc.initiate_login(
                 provider_id=request.provider_id,
                 return_url=request.return_url,
                 prompt=request.oidc_prompt,
                 max_age=request.oidc_max_age,
                 acr_values=request.oidc_acr_values,
             )
+
+            # Record the pending OIDC authentication so the callback can
+            # verify the state parameter (CSRF protection) and the nonce the
+            # provider echoes back in the ID token (replay protection).
+            if response.success and response.metadata:
+                state = response.metadata.get("state")
+                if state:
+                    self._pending_auths[state] = {
+                        "state": state,
+                        "nonce": response.metadata.get("nonce"),
+                        "provider_id": request.provider_id,
+                        "return_url": request.return_url,
+                    }
+
+            return response
         
         elif provider_type == "oauth2":
             return AuthenticationResponse(
@@ -140,12 +155,19 @@ class FederationManager:
             # Get pending auth for state validation
             pending = self._pending_auths.pop(state, {})
             expected_state = pending.get("state", "")
+            expected_nonce = pending.get("nonce")
+            
+            # The IdP redirect carries only code/state, so the provider is
+            # recovered from the pending auth recorded when the flow began
+            # unless the caller names one explicitly.
+            resolved_provider_id = kwargs.get("provider_id") or pending.get("provider_id", "")
             
             return self._oidc.exchange_code(
-                provider_id=provider_id,
+                provider_id=resolved_provider_id,
                 code=code,
                 expected_state=expected_state,
                 provided_state=state,
+                expected_nonce=expected_nonce,
             )
         
         elif protocol == "oauth":
@@ -155,9 +177,11 @@ class FederationManager:
             return self._oauth.authorize(
                 client_id=kwargs.get("client_id", ""),
                 redirect_uri=kwargs.get("redirect_uri", ""),
-                response_type="code",
+                response_type=kwargs.get("response_type", "code"),
                 scope=kwargs.get("scope", "openid profile email"),
                 state=state,
+                code_challenge=kwargs.get("code_challenge"),
+                code_challenge_method=kwargs.get("code_challenge_method"),
             )
         
         return AuthenticationResponse(

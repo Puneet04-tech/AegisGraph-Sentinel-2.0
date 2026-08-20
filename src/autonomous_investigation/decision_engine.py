@@ -28,7 +28,7 @@ class DecisionIntelligenceEngine:
     - Alternative decision generation
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._decision_rules = self._initialize_rules()
 
     def _initialize_rules(self) -> Dict[str, Any]:

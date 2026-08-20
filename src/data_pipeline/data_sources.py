@@ -4,8 +4,9 @@ Data Sources Module.
 Data source connectors and management.
 """
 
-import random
-from typing import Dict, List, Optional, Any, Iterator
+import socket
+import time
+from typing import Dict, List, Optional, Any, Iterator, Callable
 from datetime import datetime, timezone
 import logging
 
@@ -18,19 +19,72 @@ from .store import PipelineStore, get_pipeline_store
 logger = logging.getLogger(__name__)
 
 
+def _default_tester(source: DataSource) -> Dict[str, Any]:
+    """Actually attempt to reach a data source instead of guessing.
+
+    Returns a result dict with at least "success"; callers may add
+    "latency_ms" and "message".
+    """
+    config = source.connection_config or {}
+
+    if source.source_type in (SourceType.DATABASE, SourceType.STREAM):
+        host = config.get("host")
+        port = config.get("port")
+        if not host or not port:
+            return {"success": False, "message": "Missing host/port in connection_config"}
+        start = time.monotonic()
+        try:
+            with socket.create_connection((host, int(port)), timeout=5):
+                pass
+        except OSError as exc:
+            return {"success": False, "message": f"Connection failed: {exc}"}
+        latency_ms = (time.monotonic() - start) * 1000
+        return {"success": True, "latency_ms": latency_ms, "message": "Connected successfully"}
+
+    if source.source_type == SourceType.API:
+        url = config.get("url")
+        if not url:
+            return {"success": False, "message": "Missing url in connection_config"}
+        try:
+            import urllib.request
+            start = time.monotonic()
+            with urllib.request.urlopen(url, timeout=5) as response:
+                status = response.status
+            latency_ms = (time.monotonic() - start) * 1000
+            if 200 <= status < 400:
+                return {"success": True, "latency_ms": latency_ms, "message": "Connected successfully"}
+            return {"success": False, "message": f"Unexpected status code {status}"}
+        except Exception as exc:
+            return {"success": False, "message": f"Connection failed: {exc}"}
+
+    return {"success": False, "message": f"No connection test available for {source.source_type.value}"}
+
+
 class DataSourceConnector:
     """Data Source Connector for managing data sources.
-    
+
     Provides:
         - Source creation
         - Schema discovery
         - Data extraction
         - Incremental loading
     """
-    
-    def __init__(self, store: Optional[PipelineStore] = None):
-        """Initialize the data source connector."""
+
+    def __init__(
+        self,
+        store: Optional[PipelineStore] = None,
+        tester: Optional[Callable[[DataSource], Dict[str, Any]]] = None,
+    ):
+        """Initialize the data source connector.
+
+        Args:
+            store: Backing pipeline store.
+            tester: Callable invoked with a DataSource that performs the
+                real connectivity check. Defaults to attempting a real
+                socket/HTTP connection based on connection_config.
+        """
         self._store = store or get_pipeline_store()
+        self._tester = tester or _default_tester
         self._module_id = "data_sources"
     
     def create_source(
@@ -150,15 +204,12 @@ class DataSourceConnector:
             return {"success": False, "error": "Source not found"}
         
         logger.info(f"Testing connection to {source.name}")
-        
-        # Simulate connection test
-        success = random.random() > 0.1  # 90% success rate
-        
-        return {
-            "success": success,
-            "latency_ms": random.uniform(10, 100) if success else 0,
-            "message": "Connected successfully" if success else "Connection failed",
-        }
+
+        result = self._tester(source)
+        result.setdefault("latency_ms", 0)
+        if not result.get("success"):
+            logger.warning(f"Connection test failed for {source.name}: {result.get('message')}")
+        return result
 
 
 # Global singleton

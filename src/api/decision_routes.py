@@ -37,7 +37,7 @@ class AuditRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -170,7 +170,7 @@ async def get_audit_log(
 
 
 @router.get("/governance/stats", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
-async def get_governance_stats():
+async def get_governance_stats() -> Dict[str, Any]:
     """Get governance statistics."""
     engine = get_decision_engine()
     

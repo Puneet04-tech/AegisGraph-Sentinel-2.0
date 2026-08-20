@@ -6,20 +6,26 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from src.api.middleware.multi_tenancy import get_current_tenant
+from src.saas.auth.credential_stores import (
+    InMemoryEmailVerificationTokenStore,
+    LoggingNotificationSender,
+)
+from src.saas.auth.password_policy import validate_password
 from src.saas.auth.service import auth_service
 from src.saas.routes.auth import get_current_user
-from src.saas.services.billing import PriceTier
 from src.saas.services.limit_enforcer import (
     enforce_tenant_limit,
     get_tenant_resource_count,
+    get_tenant_tier,
     set_tenant_resource_count,
 )
 
@@ -43,9 +49,23 @@ _USER_FIELDS = (
     "created_at",
 )
 
+_SORTABLE_FIELDS = frozenset(
+    {"created_at", "email", "full_name", "role", "last_login"}
+)
+
+# Retention cap: the audit trail is now readable through the activity endpoint,
+# so it must not grow for the life of the process.
+_AUDIT_LOG_CAPACITY = 10_000
+
 _USER_STORE: Dict[str, Dict[str, Any]] = {}
-_AUDIT_LOG: List[Dict[str, Any]] = []
+_AUDIT_LOG: Deque[Dict[str, Any]] = deque(maxlen=_AUDIT_LOG_CAPACITY)
 _STORE_LOCK = threading.RLock()
+
+# Verification tokens are issued on registration and consumed once. Raw tokens
+# are never stored -- only their hashes -- following the same pattern the
+# password-reset flow already uses.
+_verification_tokens = InMemoryEmailVerificationTokenStore()
+_notification_sender = LoggingNotificationSender()
 
 
 class UserCreate(BaseModel):
@@ -94,6 +114,16 @@ class UserCreate(BaseModel):
             raise ValueError("invalid role")
         return normalized
 
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        # Applied here as well as on password change and reset confirm, so a
+        # weak password cannot enter through whichever entry point is used.
+        result = validate_password(value)
+        if not result.valid:
+            raise ValueError(result.message)
+        return value
+
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
@@ -131,6 +161,15 @@ class UserUpdate(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("avatar_url must be an absolute http(s) URL")
         return value
+
+
+class UserListResponse(BaseModel):
+    """Paginated page of users within the caller's tenant."""
+    items: List["UserResponse"]
+    total: int = Field(description="Total matching users before pagination")
+    page: int
+    page_size: int
+    has_more: bool
 
 
 class UserResponse(BaseModel):
@@ -173,6 +212,50 @@ def _audit(action: str, actor_id: str, tenant_id: str, target_user_id: str) -> N
     )
 
 
+def _matches_filters(
+    user: Dict[str, Any],
+    needle: Optional[str],
+    role: Optional[str],
+    is_active: Optional[bool],
+    email_verified: Optional[bool],
+    mfa_enabled: Optional[bool],
+) -> bool:
+    """Apply the listing filters to one record."""
+    if role is not None and str(user.get("role", "")).strip().lower() != role:
+        return False
+    for field, wanted in (
+        ("is_active", is_active),
+        ("email_verified", email_verified),
+        ("mfa_enabled", mfa_enabled),
+    ):
+        if wanted is not None and bool(user.get(field)) is not wanted:
+            return False
+
+    if needle is None:
+        return True
+
+    # Optional fields may be None, so each is coerced before matching.
+    haystack = " ".join(
+        str(user.get(field) or "").lower()
+        for field in ("email", "username", "full_name")
+    )
+    return needle in haystack
+
+
+def _sort_key(user: Dict[str, Any], field: str) -> Any:
+    """Build a comparable sort key, keeping None values orderable.
+
+    Records missing an optional field sort last rather than raising on a
+    None-to-value comparison.
+    """
+    value = user.get(field)
+    if value is None:
+        return (1, "")
+    if isinstance(value, datetime):
+        return (0, value.timestamp())
+    return (0, str(value).lower())
+
+
 def _public_user(user: Dict[str, Any]) -> UserResponse:
     return UserResponse(**{field: user.get(field) for field in _USER_FIELDS})
 
@@ -206,7 +289,10 @@ async def create_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required")
 
     tenant_id = _require_tenant_context(current_user)
-    enforce_tenant_limit(tenant_id, "max_users", PriceTier.COMMUNITY)
+    # Enforce against the tenant's actual subscription tier rather than
+    # hardcoding the free COMMUNITY cap, so paid tenants are not blocked at
+    # the free-tier limit.
+    enforce_tenant_limit(tenant_id, "max_users", get_tenant_tier(tenant_id))
 
     with _STORE_LOCK:
         if any(user["tenant_id"] == tenant_id and user["email"].lower() == data.email.lower() for user in _USER_STORE.values()):
@@ -235,7 +321,89 @@ async def create_user(
         set_tenant_resource_count(tenant_id, "max_users", current_count + 1)
         _audit("user_created", current_user["user_id"], tenant_id, user_id)
 
+    # Issued outside the store lock: delivery must not hold up other writers.
+    token = _verification_tokens.issue(user_id, record["email"])
+    _notification_sender.send_email_verification(record["email"], token)
+
     return _public_user(record)
+
+
+# Registered before /{user_id} so the literal path is matched first rather than
+# being captured as a user id.
+@router.get("/", response_model=UserListResponse)
+async def list_users(
+    page: int = Query(default=1, ge=1, description="1-based page number"),
+    page_size: int = Query(default=25, ge=1, le=100, description="Users per page"),
+    search: Optional[str] = Query(
+        default=None,
+        max_length=200,
+        description="Case-insensitive substring match on email, username or full name",
+    ),
+    role: Optional[str] = Query(default=None, max_length=32),
+    is_active: Optional[bool] = Query(default=None),
+    email_verified: Optional[bool] = Query(default=None),
+    mfa_enabled: Optional[bool] = Query(default=None),
+    sort_by: str = Query(default="created_at", description="Field to sort on"),
+    sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    """List users in the caller's organisation.
+
+    Administrators see the whole tenant; anyone else sees only their own
+    record, so the endpoint stays useful to both without leaking a directory.
+    """
+    tenant_id = _require_tenant_context(current_user)
+
+    if sort_by not in _SORTABLE_FIELDS:
+        # An allow-list rather than interpolating caller input into the sort.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sort_by must be one of: {', '.join(sorted(_SORTABLE_FIELDS))}",
+        )
+
+    normalized_role = role.strip().lower() if role else None
+    needle = search.strip().lower() if search and search.strip() else None
+
+    with _STORE_LOCK:
+        candidates = [
+            user for user in _USER_STORE.values() if user["tenant_id"] == tenant_id
+        ]
+
+        if not _is_admin(current_user):
+            candidates = [
+                user for user in candidates
+                if user["id"] == current_user.get("user_id")
+            ]
+
+        matches = [
+            user for user in candidates
+            if _matches_filters(
+                user,
+                needle=needle,
+                role=normalized_role,
+                is_active=is_active,
+                email_verified=email_verified,
+                mfa_enabled=mfa_enabled,
+            )
+        ]
+
+        # Tiebreak on id so a record with an equal sort value cannot drift
+        # between pages and be shown twice or skipped.
+        matches.sort(key=lambda user: (_sort_key(user, sort_by), user["id"]))
+        if sort_order == "desc":
+            matches.reverse()
+
+        total = len(matches)
+        start = (page - 1) * page_size
+        page_items = matches[start:start + page_size]
+
+        return UserListResponse(
+            items=[_public_user(user) for user in page_items],
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=start + len(page_items) < total,
+        )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -269,12 +437,25 @@ async def update_user(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already exists")
 
         updates = data.model_dump(exclude_unset=True)
+        email_changed = False
         if "email" in updates and updates["email"] is not None:
-            user["email"] = updates["email"].lower()
+            new_email = updates["email"].lower()
+            email_changed = new_email != user["email"]
+            user["email"] = new_email
+            if email_changed:
+                # The new address has not been proven, and any token issued for
+                # the old one must not verify it.
+                user["email_verified"] = False
         for field in ("full_name", "username", "phone", "avatar_url", "preferences"):
             if field in updates:
                 user[field] = updates[field]
         _audit("user_updated", current_user["user_id"], tenant_id, user_id)
+        new_email = user["email"]
+
+    if email_changed:
+        _verification_tokens.invalidate_for_user(user_id)
+        token = _verification_tokens.issue(user_id, new_email)
+        _notification_sender.send_email_verification(new_email, token)
 
     return _public_user(user)
 
@@ -291,7 +472,13 @@ async def delete_user(
     tenant_id = _require_tenant_context(current_user)
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
+        was_active = user["is_active"]
         user["is_active"] = False
+        # A removed user frees its seat, otherwise deleted users would
+        # permanently occupy capacity against the subscription limit.
+        if was_active:
+            current_count = get_tenant_resource_count(tenant_id, "max_users")
+            set_tenant_resource_count(tenant_id, "max_users", max(0, current_count - 1))
         _audit("user_deleted", current_user["user_id"], tenant_id, user_id)
     return None
 
@@ -306,7 +493,13 @@ async def deactivate_user(
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
         _require_owner_or_admin(current_user, user)
+        was_active = user["is_active"]
         user["is_active"] = False
+        # A deactivated user frees its seat, otherwise deactivated accounts
+        # would permanently occupy capacity against the subscription limit.
+        if was_active:
+            current_count = get_tenant_resource_count(tenant_id, "max_users")
+            set_tenant_resource_count(tenant_id, "max_users", max(0, current_count - 1))
         _audit("user_deactivated", current_user["user_id"], tenant_id, user_id)
     return {"success": True, "user_id": user_id, "is_active": False}
 
@@ -337,10 +530,28 @@ async def verify_user_email(
     with _STORE_LOCK:
         user = _get_user_record(user_id, tenant_id)
         _require_owner_or_admin(current_user, user)
-        if not token or len(token) < 8:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid verification token")
+        already_verified = bool(user.get("email_verified"))
+        email = user["email"]
+
+    # Verifying an address that is already verified succeeds without burning a
+    # second token, so a double-clicked link is not an error.
+    if already_verified:
+        return {"success": True, "email_verified": True}
+
+    # Unknown, expired, already-consumed, wrong-user and wrong-address tokens
+    # all fail identically, so the response cannot be used to probe which
+    # tokens exist.
+    if not _verification_tokens.consume(token, user_id, email):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid or expired verification token",
+        )
+
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
         user["email_verified"] = True
         _audit("email_verified", current_user["user_id"], tenant_id, user_id)
+
     return {"success": True, "email_verified": True}
 
 
@@ -351,30 +562,68 @@ async def resend_verification_email(
 ):
     """Resend email verification."""
     tenant_id = _require_tenant_context(current_user)
-    user = _get_user_record(user_id, tenant_id)
-    _require_owner_or_admin(current_user, user)
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
+        _require_owner_or_admin(current_user, user)
+        already_verified = bool(user.get("email_verified"))
+        email = user["email"]
+
+    if already_verified:
+        return {"success": True, "message": "Email is already verified"}
+
+    # Throttled so the endpoint cannot be driven as a mail relay aimed at
+    # somebody else's inbox.
+    wait_seconds = _verification_tokens.seconds_until_resend_allowed(user_id)
+    if wait_seconds > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Verification email requested too recently",
+            headers={"Retry-After": str(wait_seconds)},
+        )
+
+    # issue() invalidates any outstanding token, so the previous link stops
+    # working the moment a new one is sent.
+    token = _verification_tokens.issue(user_id, email)
+    _notification_sender.send_email_verification(email, token)
+    _audit("verification_resent", current_user["user_id"], tenant_id, user_id)
+
     return {"success": True, "message": "Verification email sent"}
 
 
 @router.get("/{user_id}/activity")
 async def get_user_activity(
     user_id: str,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
     current_user: dict = Depends(get_current_user),
 ):
-    """Get user activity log."""
+    """Get user activity log.
+
+    Served from the audit entries this module already records. It previously
+    returned a single hardcoded record with an invented IP and device string,
+    presenting fabricated login metadata as though it were real, and ignored
+    its ``limit`` entirely.
+    """
     tenant_id = _require_tenant_context(current_user)
-    user = _get_user_record(user_id, tenant_id)
-    _require_owner_or_admin(current_user, user)
+    with _STORE_LOCK:
+        user = _get_user_record(user_id, tenant_id)
+        _require_owner_or_admin(current_user, user)
+
+        # Newest first, scoped to both the target user and the caller's tenant.
+        matching = [
+            entry for entry in reversed(_AUDIT_LOG)
+            if entry["target_user_id"] == user_id and entry["tenant_id"] == tenant_id
+        ]
+
     return {
         "activities": [
             {
-                "id": "act_1",
-                "action": "login",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "ip_address": "192.168.1.1",
-                "device": "Chrome on Windows",
+                "id": f"act_{index}",
+                "action": entry["action"],
+                "actor_id": entry["actor_id"],
+                "timestamp": entry["timestamp"],
             }
+            for index, entry in enumerate(matching[:limit], start=1)
         ],
-        "total": 1,
+        # The count is of everything recorded, not just the page returned.
+        "total": len(matching),
     }

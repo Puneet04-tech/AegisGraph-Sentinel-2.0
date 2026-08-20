@@ -91,13 +91,10 @@ class AlertCorrelationEngine:
             if other.alert_id == alert.alert_id or other.deduplicated:
                 continue
             
-            # Check title similarity
+            # Check title similarity and indicator overlap.
+            # Guard against appending the same alert twice when both checks match.
             similarity = self._calculate_similarity(alert.title, other.title)
-            if similarity >= threshold:
-                duplicates.append(other)
-            
-            # Check indicator overlap
-            if set(alert.indicators) & set(other.indicators):
+            if similarity >= threshold or set(alert.indicators) & set(other.indicators):
                 duplicates.append(other)
         
         return duplicates
@@ -193,14 +190,23 @@ class AlertCorrelationEngine:
     
     def _matches_conditions(self, alert: Alert, conditions: Dict[str, Any]) -> bool:
         """Check if alert matches conditions"""
+        if not conditions:
+            return False
         for key, value in conditions.items():
-            if key == "source" and alert.source == value:
-                return True
-            if key == "severity" and alert.severity.name == value:
-                return True
-            if key == "tag" and value in alert.tags:
-                return True
-        return False
+            if key == "source":
+                if alert.source != value:
+                    return False
+            elif key == "severity":
+                if alert.severity.name != value:
+                    return False
+            elif key == "tag":
+                if value not in alert.tags:
+                    return False
+            else:
+                return False
+        return True
+
+
     
     def link_to_incident(self, alert_id: str, incident_id: str) -> bool:
         """Link alert to an incident"""
@@ -211,7 +217,11 @@ class AlertCorrelationEngine:
         return False
     
     def get_dashboard(self) -> Dict[str, Any]:
-        """Get alert dashboard"""
+        """Get alert correlation dashboard statistics.
+
+        Returns:
+            A dictionary with alert counts by status, severity, and source.
+        """
         status_counts: Dict[str, int] = {}
         severity_counts: Dict[str, int] = {}
         source_counts: Dict[str, int] = {}

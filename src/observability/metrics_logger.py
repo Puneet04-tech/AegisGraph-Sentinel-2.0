@@ -1,3 +1,6 @@
+# --- GENERATED: __all__ ---
+__all__ = ["MetricsLogger"]
+# --- END GENERATED ---
 """Lightweight metrics event logging."""
 
 from typing import Any, Dict, Optional

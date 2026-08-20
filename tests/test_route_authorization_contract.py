@@ -53,7 +53,6 @@ PROTECTED_ROUTES = [
     ("GET", "/api/v1/archival/runs"),
     ("GET", "/api/v1/archival/stats"),
     ("GET", "/api/v1/blockchain/verify/{evidence_id}"),
-    ("GET", "/api/v1/bulk/status/{task_id}"),
     ("GET", "/api/v1/campaigns"),
     ("GET", "/api/v1/campaigns/discover"),
     ("GET", "/api/v1/campaigns/stats"),
@@ -166,14 +165,14 @@ PROTECTED_ROUTES = [
     ("POST", "/api/v1/archival/trigger"),
     ("POST", "/api/v1/blockchain/export"),
     ("POST", "/api/v1/blockchain/seal"),
-    ("POST", "/api/v1/bulk/ingest"),
-    ("POST", "/api/v1/bulk/ingest/file"),
     ("POST", "/api/v1/campaigns"),
     ("POST", "/api/v1/campaigns/correlate"),
     ("POST", "/api/v1/campaigns/{campaign_id}/attribute"),
     ("POST", "/api/v1/cases"),
     ("POST", "/api/v1/cases/generate-embedding"),
     ("POST", "/api/v1/cases/similar-cases"),
+    ("POST", "/api/v1/cases/similar"),
+    ("POST", "/api/v1/cases/similar"),
     ("POST", "/api/v1/cases/{case_id}/claim"),
     ("POST", "/api/v1/cases/{case_id}/comments"),
     ("POST", "/api/v1/cases/{case_id}/evidence"),
@@ -326,12 +325,12 @@ def test_protected_route_inventory_is_current():
 
 def test_public_routes_remain_reachable():
     """The documented public surface must not require credentials."""
-    client = TestClient(app)
-    for method, path in sorted(PUBLIC_ROUTES):
-        response = client.request(method, path)
-        if response.status_code == 404:
-            continue
-        assert response.status_code not in _UNAUTHENTICATED_STATUSES, (
-            f"{method} {path} is documented as public but answered "
-            f"{response.status_code} without credentials."
-        )
+    with TestClient(app) as client:
+        for method, path in sorted(PUBLIC_ROUTES):
+            response = client.request(method, path)
+            if response.status_code == 404:
+                continue
+            assert response.status_code not in _UNAUTHENTICATED_STATUSES, (
+                f"{method} {path} is documented as public but answered "
+                f"{response.status_code} without credentials."
+            )

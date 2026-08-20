@@ -51,9 +51,11 @@ class TrustIntelligenceStore:
         return self._policies.get(policy_id)
 
     def get_metrics(self) -> Dict[str, Any]:
+        stored_scores = [s.trust_score for s in self._scores.values()]
+        avg_trust_score = sum(stored_scores) / len(stored_scores) if stored_scores else 0.0
         return {
             "total_entities": len(self._scores),
-            "avg_trust_score": 0.75,
+            "avg_trust_score": round(avg_trust_score, 4),
             "verified_entities": len(self._verifications),
         }
 

@@ -8,13 +8,17 @@ Generates human-readable explanations for every fraud decision:
 - Supports legal proceedings and appeals
 
 The Oracle pattern: Combine model reasoning with LLM narrative generation.
+
+SECURITY: This module sanitizes all user-controlled transaction fields
+before including them in explanations to prevent prompt injection attacks.
 """
 
 import json
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+from ..inference.prompt_security import sanitize_transaction_data
 
 
 class AegisOracleExplainer:
@@ -93,18 +97,25 @@ class AegisOracleExplainer:
     ) -> Dict[str, any]:
         """
         Generate comprehensive explanation for fraud decision
-        
+
         Args:
             transaction: Transaction details
             risk_assessment: Full risk assessment output
             attention_weights: HTGNN attention weights
             break_down: Risk component breakdown
             innovations_triggered: List of activated innovations
-            
+
         Returns:
             Dictionary with explanation
+
+        Security: All user-controlled transaction fields are sanitized
+        to prevent prompt injection attacks in LLM integration.
         """
-        
+
+        # Sanitize transaction data to prevent prompt injection
+        # This protects merchant_name, description, and other user-controlled fields
+        transaction = sanitize_transaction_data(transaction)
+
         decision = risk_assessment.get('decision', 'UNKNOWN')
         risk_score = risk_assessment.get('risk_score', 0)
         confidence = risk_assessment.get('confidence', 0)
@@ -252,12 +263,19 @@ class AegisOracleExplainer:
                     'evidence': 'High variance in hold times and flight times',
                 })
             elif innovation == 'blockchain_evidence_id':
+                evidence_id = transaction.get('blockchain_evidence_id')
+                if evidence_id:
+                    evidence = f'Evidence ID: {evidence_id}'
+                else:
+                    evidence = (
+                        'Evidence sealed on-chain; ID available in the evidence chain'
+                    )
                 factors.append({
                     'type': 'INNOVATION_BLOCKCHAIN',
                     'impact': 'MEDIUM',
                     'description': 'Evidence sealed in blockchain for legal admissibility',
                     'weight': 0.7,
-                    'evidence': f'Evidence ID: {innovation}',
+                    'evidence': evidence,
                 })
         
         # Sort by impact and weight
@@ -494,6 +512,44 @@ class AegisOracleExplainer:
     def _get_entropy_evidence(self, transaction: Dict) -> str:
         """Extract entropy-based evidence"""
         return "Transaction amount and timing show anomalous characteristics"
+
+    def generate_counterfactual_explanation(
+        self,
+        transaction: Dict,
+        risk_assessment: Dict,
+        break_down: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Generates actionable counterfactual explanation and regulatory recourse narrative.
+
+        Args:
+            transaction: Transaction data dict
+            risk_assessment: Assessment dict containing decision & risk_score
+            break_down: Risk breakdown dictionary
+
+        Returns:
+            Counterfactual explanation dictionary matching regulatory standards
+        """
+        from ..inference.counterfactual_search import GraphCounterfactualSearchEngine
+
+        search_engine = GraphCounterfactualSearchEngine(allow_threshold=0.70)
+        risk_score = risk_assessment.get("risk_score", 0.0)
+
+        counterfactual_result = search_engine.search_minimal_counterfactual(
+            transaction=transaction,
+            risk_score=risk_score,
+            risk_breakdown=break_down or risk_assessment.get("breakdown", {}),
+        )
+
+        return {
+            "transaction_id": transaction.get("transaction_id", "UNKNOWN"),
+            "original_decision": risk_assessment.get("decision", "BLOCK"),
+            "original_risk_score": risk_score,
+            "target_allowed_threshold": 0.70,
+            "counterfactual": counterfactual_result,
+            "model_version": self.model_version,
+            "timestamp": datetime.now().isoformat(),
+        }
+
 
 
 # Example usage

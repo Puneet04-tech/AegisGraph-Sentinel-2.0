@@ -38,13 +38,14 @@ import os
 # Dedicated thread pool for CPU-bound ML inference
 inference_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 1)))
 import uvicorn
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import REGISTRY, Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .websocket_manager import WebSocketManager
 from src.security.rate_limit import check_rate_limit, build_rate_limit_response_details
+from src.inference.timestamps import to_utc
 
 ws_manager = WebSocketManager()
 from src.api.dependencies.subsystems import (
@@ -97,7 +98,8 @@ except ImportError as e:
 
     import logging as _stdlib_logging
     _stdlib_logging.getLogger(__name__).warning(
-        "SlowAPI not available (%s); rate limiting disabled", e
+        "SlowAPI not available (%s); route-level SlowAPI limits are disabled, "
++        "distributed rate limiting still applies", e
     )
 
 
@@ -181,7 +183,6 @@ from .adaptive_auth_routes import register_routes as register_adaptive_auth_rout
 from .archival_routes import register_routes as register_archival_routes
 from .agent_routes import router as agent_router
 from .decision_routes import router as decision_router
-from .bulk_ingest_routes import router as bulk_ingest_router
 from src.phase_61_autonomous_security_knowledge_graph_engine.api import router as phase61_router
 from src.phase_62_cross_domain_investigation_orchestrator.api import router as phase62_router
 from src.phase_63_enterprise_security_decision_intelligence_platform.api import router as phase63_router
@@ -189,6 +190,7 @@ from src.phase_64_autonomous_threat_simulation_platform.api import router as pha
 from src.phase_66_autonomous_compliance_validation_platform.api import router as phase66_router
 from src.phase_67_global_threat_forecasting_engine.api import router as phase67_router
 from .warfare_routes import router as warfare_router
+from .omega_routes import router as omega_router
 
 from .schemas import (
     AccountOpeningRequest,
@@ -330,6 +332,7 @@ from .schemas import (
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
 from .security import require_api_key, Role, require_role, require_any_role, require_admin
+from .actor import resolve_analyst_id
 from .validators import StrictRateLimit
 
 
@@ -729,8 +732,8 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     breakdown['behavior'] = behavior_risk
 
     entropy_risk = 0.0
-    hour = datetime.now(timezone.utc).hour
-    if hour >= 2 and hour <= 5:
+    transaction_time = to_utc(transaction.get('timestamp'))
+    if transaction_time is not None and 2 <= transaction_time.hour <= 5:
         entropy_risk += 0.4
     if amount % 1000 == 0 and amount >= 5000:
         entropy_risk += 0.3
@@ -905,6 +908,11 @@ def _has_runtime_graph() -> bool:
 
 
 def compute_risk_score(*args, **kwargs):
+    """Compute fraud risk score for a transaction using the ML model.
+
+    Delegates to the loaded HTGNN model if available, falls back to a
+    heuristic-based scorer when the model cannot be loaded.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     runtime_graph_ready = _has_runtime_graph()
     if not MODEL_AVAILABLE or not runtime_graph_ready:
@@ -924,6 +932,11 @@ def compute_risk_score(*args, **kwargs):
 
 
 def generate_explanation(*args, **kwargs):
+    """Generate an explanation for a fraud risk decision.
+
+    Returns human-readable reasoning behind the risk score using the
+    explainer module, or a fallback explanation when unavailable.
+    """
     global _compute_risk_score_impl, _generate_explanation_impl
     if _generate_explanation_impl is None:
         _compute_risk_score_impl, _generate_explanation_impl, _ = _resolve_model_components()
@@ -1423,12 +1436,21 @@ async def _stop_runtime_background_tasks():
     _api_logger.info("Shutting down AegisGraph Sentinel 2.0...", event_type="shutdown_start")
     await state.tasks.cancel_all_tasks(timeout_seconds=10.0)
     # Gracefully stop the archival scheduler daemon (Issue #1477)
+    archival_stopped_cleanly = True
     try:
         from ..archival.scheduler import get_archival_scheduler
         get_archival_scheduler().stop(timeout=5.0)
-    except Exception:
-        pass
-    _api_logger.info("Background tasks stopped cleanly", event_type="shutdown_complete")
+    except Exception as exc:
+        archival_stopped_cleanly = False
+        _api_logger.error(
+            "Archival scheduler failed to stop cleanly",
+            event_type="shutdown_archival_error",
+            metadata={"error": str(exc)},
+        )
+    _api_logger.info(
+        "Background tasks stopped cleanly" if archival_stopped_cleanly else "Background tasks stopped with errors",
+        event_type="shutdown_complete" if archival_stopped_cleanly else "shutdown_complete_with_errors",
+    )
 
 
 def _run_scoring_pipeline(
@@ -1471,18 +1493,37 @@ def _run_scoring_pipeline(
             lm_risk_added, is_pivoting = lateral_detector.analyze_account(source_account)
 
             if is_pivoting:
-                current_score = risk_result.get("risk_score", 0.0)
-                new_score = min(1.0, current_score + lm_risk_added)
-                risk_result["risk_score"] = new_score
-                risk_result["breakdown"]["lateral_movement"] = lm_risk_added
+                breakdown = risk_result.setdefault("breakdown", {})
+                already_applied = bool(
+                    risk_result.get("lateral_movement_detected")
+                ) or float(breakdown.get("lateral_movement", 0) or 0) > 0
+
+                # Always expose detector signal for observability.
                 risk_result["lateral_movement_detected"] = True
-                risk_result["lateral_movement_reason"] = (
-                    "MITRE TA0008: Rapid centrality spike indicating network pivoting."
+                risk_result.setdefault(
+                    "lateral_movement_reason",
+                    "MITRE TA0008: Rapid centrality spike indicating network pivoting.",
                 )
-                if new_score >= 0.7:
-                    risk_result["decision"] = "BLOCK"
-                elif new_score >= 0.4 and risk_result["decision"] == "ALLOW":
-                    risk_result["decision"] = "REVIEW"
+                breakdown.setdefault("lateral_movement", lm_risk_added)
+
+                # Avoid double-counting when risk_scorer already applied the increment.
+                if not already_applied:
+                    current_score = float(risk_result.get("risk_score", 0.0) or 0.0)
+                    new_score = min(1.0, current_score + float(lm_risk_added or 0.0))
+                    risk_result["risk_score"] = new_score
+                    breakdown["lateral_movement"] = lm_risk_added
+                    # Keep decisions aligned with ThresholdConfig (not hardcoded 0.7/0.4).
+                    from src.scoring import ThresholdConfig
+
+                    risk_result["decision"] = ThresholdConfig().decision_for_score(
+                        new_score
+                    )
+                else:
+                    risk_result["lateral_movement_reason"] = risk_result.get(
+                        "lateral_movement_reason"
+                    ) or (
+                        "MITRE TA0008: Rapid centrality spike indicating network pivoting."
+                    )
         except Exception as e:
             _api_logger.warning(
                 f"Lateral movement check failed: {e}",
@@ -1718,15 +1759,11 @@ API_LATENCY = REGISTRY._names_to_collectors.get("aegis_api_latency_seconds") or 
     "API request latency in seconds",
     ["endpoint"]
 )
+_UNMATCHED_METRICS_ENDPOINT = "__unmatched__"
 ACTIVE_HONEYPOTS = REGISTRY._names_to_collectors.get("aegis_active_honeypots") or Gauge(
     "aegis_active_honeypots",
     "Number of currently active honeypots"
 )
-
-# Label used when no route matched, so unrouted paths share one series instead
-# of adding a new one each.
-UNMATCHED_ENDPOINT_LABEL = "unmatched"
-
 
 def _metric_endpoint_label(request: Request) -> str:
     """Return the route template for a request, never the raw path.
@@ -1735,7 +1772,7 @@ def _metric_endpoint_label(request: Request) -> str:
     series, so any caller can grow the registry without bound.
     """
     route = request.scope.get("route")
-    return getattr(route, "path", None) or UNMATCHED_ENDPOINT_LABEL
+    return getattr(route, "path", None) or _UNMATCHED_METRICS_ENDPOINT
 
 
 @app.middleware("http")
@@ -1817,7 +1854,9 @@ app.state.limiter = limiter
 if SLOWAPI_AVAILABLE:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
-    app.add_middleware(DefaultRateLimitMiddleware)
+# Independent of slowapi: backs the distributed Redis limiter and must run
+# even when slowapi isn't installed.
+app.add_middleware(DefaultRateLimitMiddleware)
 
 register_exception_handlers(app)
 register_observability_middleware(app)
@@ -1838,8 +1877,6 @@ register_archival_routes(app)
 app.include_router(agent_router)
 # Register Decision Intelligence routes (Issue #1496)
 app.include_router(decision_router)
-# Register Bulk Ingestion routes
-app.include_router(bulk_ingest_router)
 # Register Phase 61-67 module routes (Issue #1508)
 app.include_router(phase61_router)
 app.include_router(phase62_router)
@@ -1849,6 +1886,8 @@ app.include_router(phase66_router)
 app.include_router(phase67_router)
 # Register Cyber-Fraud Warfare routes (Issue #1507)
 app.include_router(warfare_router)
+# Register Omega Platform routes - gated per-endpoint via verify_api_key
+app.include_router(omega_router)
 
 
 
@@ -1866,7 +1905,7 @@ async def root():
 
 
 @app.get("/api/v1/auth/whoami", tags=["Authentication"])
-async def whoami(role: Role = Depends(require_role(Role.VIEWER))):
+async def whoami(role: Role = Depends(require_role(Role.VIEWER))) -> Dict[str, Any]:
     """Return the role attached to the presented API key."""
     return {"role": role.value}
 
@@ -1887,7 +1926,7 @@ async def health_check_v1(verbose: bool = False):
     tags=["Health"],
     summary="Lightweight liveness probe",
 )
-async def liveness():
+async def liveness() -> Dict[str, Any]:
     """
     Lightweight health check endpoint for Kubernetes liveness probes.
     Returns immediately to ensure responsiveness.
@@ -1900,7 +1939,7 @@ async def liveness():
     tags=["Health"],
     summary="Readiness probe",
 )
-async def readiness(response: Response):
+async def readiness(response: Response) -> Dict[str, Any]:
     """Report whether the process finished starting up and can serve traffic.
 
     Returns 503 until the lifecycle manager completes, so an orchestrator does
@@ -1932,7 +1971,7 @@ async def health_check(verbose: bool = False):
 
 
 @app.get("/stats", response_model=StatsResponse, tags=["Monitoring"], dependencies=[Depends(require_role(Role.AUDITOR))])
-async def get_stats():
+async def get_stats() -> StatsResponse:
     """
     Get service statistics
     
@@ -2568,20 +2607,48 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         }
         stats = {decision.value: 0 for decision in FraudDecision}
         processed = 0
+        failed = 0
         first_result = True
 
         yield '{"results":['
 
         for txn_chunk in _chunked(txns, max_concurrent_tasks):
-            tasks = [asyncio.create_task(_process_transaction(txn_request)) for txn_request in txn_chunk]
-            for completed in asyncio.as_completed(tasks):
+            # Tasks are created up front so every transaction in the chunk runs
+            # concurrently under the semaphore; we only consume them in
+            # submission order afterwards so the stream stays deterministic.
+            chunk_tasks = [
+                (txn_request, asyncio.create_task(_process_transaction(txn_request)))
+                for txn_request in txn_chunk
+            ]
+            for txn_request, task in chunk_tasks:
                 try:
-                    result = await completed
+                    result = await task
                 except Exception as result_error:
                     _api_logger.error(
                         f"Error processing batch transaction: {result_error}",
                         event_type="batch_processing_error",
+                        metadata={"transaction_id": getattr(txn_request, "transaction_id", None)},
                     )
+                    failed += 1
+                    if not first_result:
+                        yield ","
+                    else:
+                        first_result = False
+                    try:
+                        yield json.dumps(
+                            {
+                                "transaction_id": getattr(
+                                    txn_request, "transaction_id", None
+                                ),
+                                "error": str(result_error),
+                            },
+                            separators=(",", ":"),
+                        )
+                    except (TypeError, ValueError) as e:
+                        raise JSONSerializationError(
+                            f"Failed to serialize streaming result: {e}",
+                            details={"step": "stream_result_serialization"},
+                        )
                     continue
 
                 processed += 1
@@ -2607,6 +2674,7 @@ async def check_batch_transactions(request: BatchTransactionRequest):
         yield (
             '],"total_processed":'
             f"{processed},"
+            f"\"total_failed\":{failed},"
             f"\"total_blocked\":{stats['BLOCK']},"
             f"\"total_review\":{stats['REVIEW']},"
             f"\"total_allowed\":{stats['ALLOW']},"
@@ -2833,8 +2901,10 @@ async def list_active_honeypots(
     honeypot_manager=Depends(get_honeypot_manager),
 ):
     """
-    Get list of all active honeypot traps
-    
+    Get list of all active honeypot traps.
+
+    SECURITY: Requires admin role.
+
     Shows honeypots that are currently monitoring for withdrawal attempts
     and tracking fraud networks
     """
@@ -3345,6 +3415,13 @@ async def get_investigation_insights(
             detail=f"Error generating investigation insights: {str(e)}",
         )
     
+@app.post(
+    "/api/v1/cases/similar",
+    response_model=SimilarCaseResponse,
+    tags=["Case Management"],
+    dependencies=[Depends(require_role(Role.ANALYST))],
+    summary="Find fraud cases similar to a query",
+)
 async def find_similar_cases(request: SimilarCaseRequest):
     """
     Find fraud cases similar to a query using semantic embeddings (RAG).
@@ -4485,16 +4562,28 @@ async def create_orchestration(
 ):
     """Create a multi-agent orchestration workflow."""
     import time
-    from src.multi_agent_soc import get_orchestrator
+    from src.multi_agent_soc import get_orchestrator, WorkflowValidationError
     
     start_time = time.time()
     
     orchestrator = get_orchestrator()
     
-    plan = orchestrator.create_workflow(
-        workflow_name=request.workflow_name,
-        tasks=request.tasks,
-    )
+    try:
+        plan = orchestrator.create_workflow(
+            workflow_name=request.workflow_name,
+            tasks=request.tasks,
+        )
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "task_index": exc.task_index,
+                "field": exc.field,
+                "invalid_value": exc.invalid_value,
+                "valid_values": exc.valid_values,
+            },
+        ) from exc
     
     processing_time = (time.time() - start_time) * 1000
     
@@ -5765,12 +5854,31 @@ async def register_provider(
     """Register a new identity provider."""
     from src.identity_federation import IdentityProviderType, SSOProvider as IdpSSOProvider
     service = get_identity_federation_service()
-    
+
+    # Convert the raw enum strings outside validation. Invalid values raise
+    # ValueError, which must surface as a structured 400 instead of a 500.
+    try:
+        provider_type_enum = IdentityProviderType(provider_type)
+        sso_provider_enum = IdpSSOProvider(sso_provider) if sso_provider else None
+    except ValueError:
+        errors = []
+        if provider_type not in {t.value for t in IdentityProviderType}:
+            errors.append(
+                f"Invalid provider_type: '{provider_type}'. "
+                f"Must be one of: {', '.join(t.value for t in IdentityProviderType)}"
+            )
+        if sso_provider and sso_provider not in {t.value for t in IdpSSOProvider}:
+            errors.append(
+                f"Invalid sso_provider: '{sso_provider}'. "
+                f"Must be one of: {', '.join(t.value for t in IdpSSOProvider)}"
+            )
+        raise HTTPException(status_code=400, detail={"message": "Validation failed", "errors": errors})
+
     provider, is_valid, errors = service.register_provider(
         name=name,
-        provider_type=IdentityProviderType(provider_type),
+        provider_type=provider_type_enum,
         issuer=issuer,
-        sso_provider=IdpSSOProvider(sso_provider) if sso_provider else None,
+        sso_provider=sso_provider_enum,
         client_id=client_id,
         client_secret=client_secret,
         metadata_url=metadata_url,
@@ -5876,6 +5984,7 @@ async def authenticate(
     "/api/v1/identity/sso/login",
     tags=["Identity Federation"],
     summary="SSO Login",
+    dependencies=[Depends(StrictRateLimit(ip_limit=10, api_key_limit=20))],
 )
 async def sso_login(
     user_id: str = Body(...),
@@ -5885,14 +5994,22 @@ async def sso_login(
     """Initiate Single Sign-On for an existing user."""
     service = get_identity_federation_service()
     response = service.sso_login(user_id=user_id, provider_id=provider_id, target_url=target_url)
-    
+
+    # Return a uniform error for every failure mode so anonymous callers
+    # cannot distinguish "user not found" from "provider not found" or
+    # "user not linked", which would otherwise act as a user-enumeration
+    # oracle. Full details are logged server-side only.
     if not response.success:
-        raise HTTPException(status_code=400, detail=response.error_description or response.error)
-    
+        _api_logger.warning(
+            "SSO login failed (user_id=%.30s, provider_id=%s): %s",
+            user_id, provider_id, response.error_description or response.error,
+        )
+        raise HTTPException(status_code=400, detail="Unable to initiate SSO login")
+
+    # Do not leak the federated user id to anonymous callers.
     return {
         "success": True,
         "redirect_url": response.redirect_url,
-        "user_id": response.user.id if response.user else None,
     }
 
 
@@ -5907,12 +6024,11 @@ async def saml_login(
     force_authn: bool = Body(False),
 ):
     """Initiate SAML authentication."""
-    from src.identity_federation import SAMLProvider
     service = get_identity_federation_service()
-    store = service._store
-    
-    saml = SAMLProvider(store, "aegisgraph-sentinel")
-    response = saml.initiate_login(provider_id=provider_id, return_url=return_url, force_authn=force_authn)
+
+    response = service._saml.initiate_login(
+        provider_id=provider_id, return_url=return_url, force_authn=force_authn
+    )
     
     if not response.success:
         raise HTTPException(status_code=400, detail=response.error_description or response.error)
@@ -5937,12 +6053,12 @@ async def oidc_login(
     scope: str = Body("openid profile email"),
 ):
     """Initiate OIDC authentication."""
-    from src.identity_federation import OIDCProvider
+    # Use the service's provider rather than building one here. A local
+    # instance carries whatever issuer is written at this call site, and the
+    # issuer is the host the identity provider redirects the user back to.
     service = get_identity_federation_service()
-    store = service._store
-    
-    oidc = OIDCProvider(store, "https://aegisgraph.example.com")
-    response = oidc.initiate_login(
+
+    response = service._oidc.initiate_login(
         provider_id=provider_id,
         return_url=return_url,
         prompt=prompt,
@@ -5958,6 +6074,142 @@ async def oidc_login(
         "redirect_url": response.redirect_url,
         "state": response.metadata.get("state") if response.metadata else None,
         "nonce": response.metadata.get("nonce") if response.metadata else None,
+    }
+
+
+def _identity_callback_response(response):
+    """Serialize a federated callback result for the API layer."""
+    return {
+        "success": True,
+        "user": response.user,
+        "session": response.session,
+        "access_token": response.access_token,
+        "id_token": response.id_token,
+        "refresh_token": response.refresh_token,
+        "redirect_url": response.redirect_url,
+        "provider_id": response.provider_id,
+        "authentication_method": response.authentication_method,
+    }
+
+
+@app.post(
+    "/api/v1/identity/saml/acs",
+    tags=["Identity Federation"],
+    summary="SAML Assertion Consumer Service",
+)
+async def saml_acs(
+    SAMLResponse: str = Form(...),
+    RelayState: Optional[str] = Form(None),
+):
+    """Process the SAML Response POSTed by the IdP (HTTP-POST binding).
+
+    This is the AssertionConsumerService URL advertised in the AuthnRequest,
+    so it must be reachable without an API key: the IdP redirects the user's
+    browser here directly.
+    """
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id="",
+        protocol="saml",
+        SAMLResponse=SAMLResponse,
+        RelayState=RelayState,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return _identity_callback_response(response)
+
+
+@app.post(
+    "/api/v1/identity/saml/slo",
+    tags=["Identity Federation"],
+    summary="SAML Single Logout",
+)
+async def saml_slo(
+    SAMLRequest: Optional[str] = Form(None),
+    SAMLResponse: Optional[str] = Form(None),
+):
+    """Process a SAML LogoutRequest/LogoutResponse POSTed by the IdP."""
+    service = get_identity_federation_service()
+    payload = SAMLRequest or SAMLResponse or ""
+    response = service._saml.process_logout_request(payload)
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return {"success": True}
+
+
+@app.get(
+    "/api/v1/identity/oidc/callback",
+    tags=["Identity Federation"],
+    summary="OIDC Redirect Callback",
+)
+async def oidc_callback(
+    code: str = Query(...),
+    state: str = Query(...),
+    provider_id: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+):
+    """Handle the IdP redirect after the user authenticates (OIDC code flow).
+
+    The IdP redirect carries only code/state; the provider is recovered from
+    the pending authentication recorded when the flow was initiated.
+    """
+    if error:
+        raise HTTPException(status_code=400, detail=error_description or error)
+
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id=provider_id,
+        protocol="oidc",
+        code=code,
+        state=state,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return _identity_callback_response(response)
+
+
+@app.get(
+    "/api/v1/identity/oauth/authorize",
+    tags=["Identity Federation"],
+    summary="OAuth2 Authorization Endpoint",
+)
+async def oauth_authorize(
+    client_id: str = Query(...),
+    redirect_uri: str = Query(...),
+    response_type: str = Query("code"),
+    scope: str = Query("openid profile email"),
+    state: Optional[str] = Query(None),
+    code_challenge: Optional[str] = Query(None),
+    code_challenge_method: Optional[str] = Query(None),
+):
+    """Issue an authorization code to a registered OAuth2 client."""
+    service = get_identity_federation_service()
+    response = service.handle_callback(
+        provider_id="",
+        protocol="oauth",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        response_type=response_type,
+        scope=scope,
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+    )
+
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error_description or response.error)
+
+    return {
+        "success": True,
+        "redirect_url": response.redirect_url,
+        "authentication_method": response.authentication_method,
     }
 
 
@@ -6006,10 +6258,15 @@ async def oauth_token(
     "/api/v1/identity/user/{user_id}",
     tags=["Identity Federation"],
     summary="Get Federated User",
-    dependencies=[Depends(require_role(Role.VIEWER))],
+    dependencies=[Depends(require_role(Role.ADMIN, Role.AUDITOR))],
 )
 async def get_user(user_id: str):
-    """Get federated user by ID."""
+    """Get federated user by ID.
+
+    Restricted to elevated roles (ADMIN/AUDITOR): the federated user
+    directory exposes PII (email, provider binding, groups, roles and
+    last-login), which must not be readable by every VIEWER-scoped key.
+    """
     service = get_identity_federation_service()
     user = service.get_user(user_id)
     if not user:
@@ -6208,7 +6465,10 @@ async def list_soar_workflows():
     summary="Execute a manual response action",
     dependencies=[Depends(require_role(Role.ANALYST))],
 )
-async def execute_soar_response(request: ResponseActionRequest):
+async def execute_soar_response(
+    request: ResponseActionRequest,
+    executed_by: str = Depends(resolve_analyst_id),
+):
     """Execute a response action (e.g. account lock, session revoke)."""
     from src.soar.models import ResponseActionType
     service = get_soar_service_instance()
@@ -6216,7 +6476,7 @@ async def execute_soar_response(request: ResponseActionRequest):
         action = service.execute_action(
             action_type=ResponseActionType(request.action_type),
             target_id=request.target_id,
-            executed_by="ANALYST",
+            executed_by=executed_by,
             additional_params=request.additional_params,
         )
         return action
@@ -6231,7 +6491,10 @@ async def execute_soar_response(request: ResponseActionRequest):
     summary="Trigger a containment action",
     dependencies=[Depends(require_role(Role.ADMIN))],
 )
-async def trigger_soar_containment(request: ContainmentRequest):
+async def trigger_soar_containment(
+    request: ContainmentRequest,
+    initiated_by: str = Depends(resolve_analyst_id),
+):
     """Trigger a containment action (e.g. NETWORK_ISOLATE, ACCOUNT_SUSPEND, API_BLOCK)."""
     from src.soar.models import ContainmentType
     service = get_soar_service_instance()
@@ -6239,7 +6502,7 @@ async def trigger_soar_containment(request: ContainmentRequest):
         action = service.trigger_containment(
             containment_type=ContainmentType(request.type),
             target_entity=request.target_entity,
-            initiated_by="ADMIN",
+            initiated_by=initiated_by,
             duration_seconds=request.duration_seconds,
         )
         return action
@@ -6602,5 +6865,51 @@ async def correlate_campaigns(request: dict):
     service = get_campaign_service()
     campaign_ids = request.get("campaign_ids", [])
     return service.correlate_campaigns(campaign_ids)
+
+
+@app.post(
+    "/api/v1/blockchain/verify-zk",
+    tags=["Blockchain Evidence"],
+    summary="Verify Zero-Knowledge Proof (ZKP) Fraud Attestation",
+)
+async def verify_zk_proof_endpoint(
+    proof_payload: dict = Body(..., description="ZKP proof payload object"),
+):
+    """Verify zero-knowledge proof attestation without revealing underlying risk score metadata."""
+    from src.quantum_security.zkp_verifier import get_zkp_verifier
+
+    verifier = get_zkp_verifier()
+    is_valid = verifier.verify_proof(proof_payload)
+
+    return {
+        "verified": is_valid,
+        "proof_id": proof_payload.get("proof_id"),
+        "transaction_id": proof_payload.get("transaction_id"),
+        "threshold": proof_payload.get("threshold"),
+        "timestamp": proof_payload.get("timestamp"),
+        "proof_type": proof_payload.get("proof_type"),
+    }
+
+
+@app.post(
+    "/api/v1/explain/counterfactual",
+    tags=["Explainable AI"],
+    summary="Generate Actionable Graph Counterfactual Explanation",
+)
+async def explain_counterfactual_endpoint(
+    transaction: dict = Body(..., description="Transaction details"),
+    risk_assessment: dict = Body(..., description="Risk assessment object"),
+):
+    """Generate minimal graph edge/feature modifications required to lower risk score below threshold."""
+    from src.features.aegis_oracle_explainer import AegisOracleExplainer
+
+    explainer = AegisOracleExplainer()
+    explanation = explainer.generate_counterfactual_explanation(
+        transaction=transaction,
+        risk_assessment=risk_assessment,
+    )
+    return explanation
+
+
 
 

@@ -41,7 +41,7 @@ class EvaluateModelRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -188,11 +188,14 @@ async def evaluate_model(
     verify_api_key(x_api_key)
     engine = get_research_engine()
     
-    evaluation_id = engine.evaluation_service.evaluate_model(
-        model_id=request.model_id,
-        model_version=request.model_version,
-        test_results=request.test_results,
-    )
+    try:
+        evaluation_id = engine.evaluation_service.evaluate_model(
+            model_id=request.model_id,
+            model_version=request.model_version,
+            test_results=request.test_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
     return {
         "evaluation_id": evaluation_id,
@@ -221,7 +224,7 @@ async def list_evaluations(
 
 
 @router.get("/datasets")
-async def list_datasets(x_api_key: str = Header(None, alias="X-API-Key")):
+async def list_datasets(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
     """List research datasets."""
     verify_api_key(x_api_key)
     engine = get_research_engine()

@@ -222,6 +222,9 @@ class ClusterEngine:
 
         start_time = time.time()
 
+        if max_depth < 0:
+            return []
+
         visited: Set[str] = set()
         clusters: List[FraudCluster] = []
 
@@ -238,16 +241,18 @@ class ClusterEngine:
 
             # BFS traversal to find connected component
             component = set()
-            queue = [start_id]
+            component_visited = {start_id}
+            queue = [(start_id, 0)]
 
             while queue:
-                current_id = queue.pop(0)
-
-                if current_id in visited:
-                    continue
+                current_id, current_depth = queue.pop(0)
 
                 visited.add(current_id)
                 component.add(current_id)
+
+                # Stop expanding at max_depth hops from the start node.
+                if current_depth >= max_depth:
+                    continue
 
                 # Get connected entities
                 relationships = self._store.get_relationships_for_entity(current_id)
@@ -258,12 +263,9 @@ class ClusterEngine:
 
                     connected_id = rel.target_id if rel.source_id == current_id else rel.source_id
 
-                    if connected_id not in visited and len(component) < 100:  # Limit cluster size
-                        queue.append(connected_id)
-
-                # Stop if we've exceeded max depth from start
-                if len(component) > max_depth * 10:
-                    break
+                    if connected_id not in component_visited:
+                        component_visited.add(connected_id)
+                        queue.append((connected_id, current_depth + 1))
 
             if len(component) >= min_size:
                 risk_score = self._calculate_cluster_risk_score(list(component))

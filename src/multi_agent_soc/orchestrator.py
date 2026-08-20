@@ -6,7 +6,7 @@ Orchestrates multi-agent workflows, manages task dependencies, and coordinates a
 
 import random
 from typing import Dict, List, Optional, Any, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -21,8 +21,30 @@ from .models import (
 from .store import SOCStore, get_soc_store
 
 logger = logging.getLogger(__name__)
-__all__ = ['AgentOrchestrator', 'get_orchestrator']
+__all__ = ['AgentOrchestrator', 'get_orchestrator', 'WorkflowValidationError']
 
+
+
+class WorkflowValidationError(ValueError):
+    """Raised when a workflow task definition fails validation.
+
+    Carries structured context so the API layer can return a precise 400
+    instead of surfacing an uncaught ``ValueError`` as a 500.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        task_index: int,
+        field: str,
+        invalid_value: Any,
+        valid_values: List[str],
+    ):
+        super().__init__(message)
+        self.task_index = task_index
+        self.field = field
+        self.invalid_value = invalid_value
+        self.valid_values = valid_values
 
 
 class AgentOrchestrator:
@@ -130,7 +152,7 @@ class AgentOrchestrator:
         # Step 5: Generate report
         reporting_agent = self._agents[AgentType.REPORTING]()
         report = reporting_agent.generate_summary_report(
-            period_start=datetime.now(timezone.utc) - timezone.utc.utcoffset(None),
+            period_start=datetime.now(timezone.utc) - timedelta(hours=24),
             period_end=datetime.now(timezone.utc),
             report_type="investigation",
         )
@@ -163,15 +185,47 @@ class AgentOrchestrator:
         parallel_groups = []
         current_parallel = []
         
-        for task_def in tasks:
+        for task_index, task_def in enumerate(tasks):
+            if not isinstance(task_def, dict):
+                raise WorkflowValidationError(
+                    f"Task definition at index {task_index} must be an object",
+                    task_index=task_index,
+                    field="task",
+                    invalid_value=task_def,
+                    valid_values=["object"],
+                )
+
+            agent_type_value = str(task_def.get("agent_type", "INVESTIGATION")).upper()
+            if agent_type_value not in AgentType.__members__:
+                raise WorkflowValidationError(
+                    f"Invalid agent_type '{task_def.get('agent_type')}' for task "
+                    f"{task_index}; valid values: {', '.join(AgentType.__members__)}",
+                    task_index=task_index,
+                    field="agent_type",
+                    invalid_value=task_def.get("agent_type"),
+                    valid_values=list(AgentType.__members__),
+                )
+
+            priority_value = str(task_def.get("priority", "MEDIUM")).upper()
+            if priority_value not in TaskPriority.__members__:
+                raise WorkflowValidationError(
+                    f"Invalid priority '{task_def.get('priority')}' for task "
+                    f"{task_index}; valid values: {', '.join(TaskPriority.__members__)}",
+                    task_index=task_index,
+                    field="priority",
+                    invalid_value=task_def.get("priority"),
+                    valid_values=list(TaskPriority.__members__),
+                )
+
             task = AgentTask(
-                agent_type=AgentType(task_def.get("agent_type", "INVESTIGATION")),
+                agent_type=AgentType(agent_type_value),
                 title=task_def.get("title", "Task"),
                 description=task_def.get("description", ""),
-                priority=TaskPriority(task_def.get("priority", "MEDIUM")),
+                priority=TaskPriority(priority_value),
                 context=task_def.get("context", {}),
             )
             plan_tasks.append(task)
+            self._store.store_task(task)
             
             # Group for parallel execution
             if len(current_parallel) < parallel_threshold:
@@ -215,23 +269,48 @@ class AgentOrchestrator:
         
         plan.status = "IN_PROGRESS"
         plan.started_at = datetime.now(timezone.utc)
+        self._store.store_plan(plan)
         
         results = {"completed": [], "failed": [], "parallel": []}
         
-        # Execute parallel groups
+        # Execute parallel groups; tasks within a group run concurrently.
         for group in plan.parallel_groups:
-            group_results = []
-            for task_id in group:
+            group_results = {}
+            
+            def _run_task(task_id: str) -> Dict[str, Any]:
                 task = self._store.get_task(task_id)
                 if task:
-                    result = self._execute_task(task)
-                    group_results.append(result)
-                    results["completed"].append(task_id)
+                    return task.task_id, self._execute_task(task)
+                return task_id, {"error": f"Task {task_id} not found"}
+            
+            with ThreadPoolExecutor(max_workers=max(1, len(group))) as pool:
+                futures = {
+                    pool.submit(_run_task, task_id): task_id for task_id in group
+                }
+                for future in as_completed(futures):
+                    task_id = futures[future]
+                    try:
+                        _, result = future.result()
+                    except Exception as exc:
+                        logger.error(f"Task {task_id} failed: {exc}")
+                        task = self._store.get_task(task_id)
+                        if task:
+                            task.status = TaskStatus.FAILED
+                            task.result = {"error": str(exc)}
+                            self._store.store_task(task)
+                        result = {"error": str(exc)}
+                    
+                    group_results[task_id] = result
+                    if isinstance(result, dict) and "error" in result:
+                        results["failed"].append(task_id)
+                    else:
+                        results["completed"].append(task_id)
             
             results["parallel"].append(group_results)
         
-        plan.status = "COMPLETED"
+        plan.status = "COMPLETED" if not results["failed"] else "FAILED"
         plan.completed_at = datetime.now(timezone.utc)
+        self._store.store_plan(plan)
         
         return results
     

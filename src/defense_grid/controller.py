@@ -66,12 +66,30 @@ class DefenseGridController:
             self._subscribers.append(callback)
 
     def _notify_subscribers(self, event: Dict[str, Any]) -> None:
-        """Notify all subscribers of an event."""
-        for callback in self._subscribers:
+        """Notify all subscribers of an event.
+
+        A subscriber that raises used to be discarded by ``except Exception:
+        pass``. Subscribers here are the consumers that surface defense grid
+        events -- a broken one meant alerts silently stopped arriving, with
+        nothing in the logs to say so.
+
+        The subscriber list is also snapshotted under the lock: ``subscribe``
+        appends from other threads, and iterating a list while it is being
+        mutated can skip entries or raise.
+        """
+        with self._lock:
+            subscribers = list(self._subscribers)
+
+        for callback in subscribers:
             try:
                 callback(event)
             except Exception:
-                pass
+                logger.warning(
+                    "Defense grid subscriber %r failed handling %s event",
+                    getattr(callback, "__name__", callback),
+                    event.get("type", "unknown"),
+                    exc_info=True,
+                )
 
     def process_threat(self, threat_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process a detected threat.
@@ -100,6 +118,7 @@ class DefenseGridController:
             affected_entities = []
         
         start_time = datetime.now(timezone.utc)
+        timestamp_str = start_time.isoformat()
         
         # Log defense event
         event = {
@@ -110,9 +129,8 @@ class DefenseGridController:
             "description": f"Threat detected: {threat_type}",
             "affected_entities": [{"entity_id": e, "type": "unknown"} for e in affected_entities],
             "related_threat_id": threat_id,
-            "timestamp": start_time,
+            "timestamp": timestamp_str,
         }
-        self.store.add_defense_event(event)
         
         response = {
             "threat_id": threat_id,
@@ -120,7 +138,7 @@ class DefenseGridController:
             "severity": severity,
             "affected_entities": affected_entities,
             "response_id": str(uuid.uuid4()),
-            "detection_time": start_time,
+            "detection_time": timestamp_str,
         }
         
         # Determine response based on severity
@@ -134,7 +152,7 @@ class DefenseGridController:
             # Monitor and log
             response["actions"] = [{"type": "MONITOR", "status": "TRIGGERED"}]
         
-        response["response_start_time"] = datetime.now(timezone.utc)
+        response["response_start_time"] = datetime.now(timezone.utc).isoformat()
         
         # Store response
         self.store.add_threat_response(response)
@@ -142,9 +160,10 @@ class DefenseGridController:
         response_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
         response["response_time_ms"] = response_time
         
-        # Update event with actions
+        # Update event with actions and timing before persistence
         event["actions_taken"] = [a.get("type") for a in response.get("actions", [])]
         event["response_time_ms"] = response_time
+        self.store.add_defense_event(event)
         
         self._notify_subscribers({
             "type": "THREAT_RESPONSE",
@@ -240,20 +259,37 @@ class DefenseGridController:
         actions = policy.get("actions", [])
         results = []
         
+        failures = []
         for action in actions:
             action_type = action.get("type")
-            if action_type in self._execution_handlers:
-                result = self._execution_handlers[action_type](action)
-                results.append(result)
-        
+            with self._lock:
+                handler = self._execution_handlers.get(action_type)
+
+            if handler is None:
+                continue
+
+            try:
+                results.append(handler(action))
+            except Exception as exc:
+                # One failing action must not abort the rest of a defensive
+                # response. Previously an exception here propagated out of
+                # the policy, losing every result already collected.
+                logger.error(
+                    "Defense action '%s' failed while executing policy %s",
+                    action_type, policy_id, exc_info=True,
+                )
+                failures.append({"action_type": action_type, "error": str(exc)})
+
         # Update policy stats
         policy["trigger_count"] = policy.get("trigger_count", 0) + 1
         policy["last_triggered"] = datetime.now(timezone.utc)
-        
+
         return {
             "type": "POLICY_EXECUTED",
             "policy_id": policy_id,
             "actions_executed": len(results),
+            "actions_failed": len(failures),
+            "failures": failures,
             "results": results,
         }
 
@@ -289,14 +325,32 @@ class DefenseGridController:
         if not command:
             return {"error": "Command not found"}
         
-        if command.command_type not in self._execution_handlers:
+        with self._lock:
+            handler = self._execution_handlers.get(command.command_type)
+
+        if handler is None:
             return {"error": f"No handler for command type: {command.command_type}"}
-        
-        handler = self._execution_handlers[command.command_type]
-        result = handler(command)
-        
+
+        # A handler that raises used to leave the command untouched in the
+        # queue while the exception propagated to the caller; and on the happy
+        # path the command was stamped COMPLETED before anyone looked at what
+        # the handler returned.
+        try:
+            result = handler(command)
+        except Exception as exc:
+            logger.error(
+                "Defense command %s (%s) failed",
+                command_id, command.command_type, exc_info=True,
+            )
+            command.status = "FAILED"
+            return {
+                "command_id": command_id,
+                "status": "FAILED",
+                "error": str(exc),
+            }
+
         command.status = "COMPLETED"
-        
+
         return {
             "command_id": command_id,
             "status": "COMPLETED",

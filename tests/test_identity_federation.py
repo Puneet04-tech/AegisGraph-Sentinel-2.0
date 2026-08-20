@@ -4,9 +4,12 @@ Identity Federation Tests
 Unit tests for the Enterprise Identity Federation Platform.
 """
 
+import base64
 import pytest
 import threading
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 from src.identity_federation import (
     IdentityFederationService,
@@ -27,6 +30,119 @@ from src.identity_federation import (
     AuditLogger,
 )
 from src.identity_federation.models import AuthenticationRequest, AuthenticationResponse
+
+
+def _self_signed_cert_and_key() -> tuple[str, str]:
+    """Generate a throwaway RSA keypair + self-signed cert for signing test assertions."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "idp.example.com")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
+
+
+def _build_saml_response(
+    name_id: str,
+    issuer: str,
+    sign_with_key: str = None,
+    sign_with_cert: str = None,
+    conditions: dict = None,
+    audience: str = "test-sp",
+) -> str:
+    """Build a base64-encoded SAML Response, optionally with a signed assertion."""
+    import lxml.etree as lxml_etree
+    from signxml import XMLSigner
+
+    samlp_ns = "urn:oasis:names:tc:SAML:2.0:protocol"
+    saml_ns = "urn:oasis:names:tc:SAML:2.0:assertion"
+    response = lxml_etree.Element(
+        f"{{{samlp_ns}}}Response",
+        nsmap={"samlp": samlp_ns, "saml": saml_ns},
+        ID="_resp1",
+        Version="2.0",
+    )
+    status = lxml_etree.SubElement(response, f"{{{samlp_ns}}}Status")
+    lxml_etree.SubElement(
+        status, f"{{{samlp_ns}}}StatusCode", Value="urn:oasis:names:tc:SAML:2.0:status:Success"
+    )
+    assertion = lxml_etree.SubElement(response, f"{{{saml_ns}}}Assertion", ID="_assertion1", Version="2.0")
+    lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Issuer").text = issuer
+    subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
+    lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
+
+    conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
+    if conditions is not None:
+        for attr, value in conditions.items():
+            conditions_elem.set(attr, value)
+    if audience:
+        restriction = lxml_etree.SubElement(conditions_elem, f"{{{saml_ns}}}AudienceRestriction")
+        lxml_etree.SubElement(restriction, f"{{{saml_ns}}}Audience").text = audience
+
+    if sign_with_key:
+        signed_assertion = XMLSigner().sign(assertion, key=sign_with_key, cert=sign_with_cert)
+        response.replace(assertion, signed_assertion)
+
+    xml_bytes = lxml_etree.tostring(response, xml_declaration=True, encoding="UTF-8")
+    return base64.b64encode(xml_bytes).decode()
+
+
+def _build_saml_response_signed_root(
+    name_id: str, issuer: str, sign_with_key: str, sign_with_cert: str, audience: str = "test-sp"
+) -> str:
+    """Build a SAML Response whose whole root (not just the assertion) is signed."""
+    import lxml.etree as lxml_etree
+    from signxml import XMLSigner
+
+    samlp_ns = "urn:oasis:names:tc:SAML:2.0:protocol"
+    saml_ns = "urn:oasis:names:tc:SAML:2.0:assertion"
+    response = lxml_etree.Element(
+        f"{{{samlp_ns}}}Response",
+        nsmap={"samlp": samlp_ns, "saml": saml_ns},
+        ID="_resp_signed",
+        Version="2.0",
+    )
+    status = lxml_etree.SubElement(response, f"{{{samlp_ns}}}Status")
+    lxml_etree.SubElement(
+        status, f"{{{samlp_ns}}}StatusCode", Value="urn:oasis:names:tc:SAML:2.0:status:Success"
+    )
+    assertion = lxml_etree.SubElement(response, f"{{{saml_ns}}}Assertion", ID="_assertion_signed", Version="2.0")
+    lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Issuer").text = issuer
+    subject = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Subject")
+    lxml_etree.SubElement(subject, f"{{{saml_ns}}}NameID").text = name_id
+    conditions_elem = lxml_etree.SubElement(assertion, f"{{{saml_ns}}}Conditions")
+    if audience:
+        restriction = lxml_etree.SubElement(conditions_elem, f"{{{saml_ns}}}AudienceRestriction")
+        lxml_etree.SubElement(restriction, f"{{{saml_ns}}}Audience").text = audience
+
+    signed = XMLSigner().sign(response, key=sign_with_key, cert=sign_with_cert)
+    xml_bytes = lxml_etree.tostring(signed, xml_declaration=True, encoding="UTF-8")
+    return base64.b64encode(xml_bytes).decode()
+
+
+def _relay_state_for(saml, provider_id: str, return_url: str = None) -> str:
+    """Initiate a login and return the RelayState bound to that AuthnRequest."""
+    init = saml.initiate_login(provider_id=provider_id, return_url=return_url)
+    assert init.success, init.error_description
+    return parse_qs(urlparse(init.redirect_url).query)["RelayState"][0]
 
 
 class TestIdentityFederationStore:
@@ -274,6 +390,321 @@ class TestSAMLProvider:
         assert response.redirect_url is not None
         assert "SAMLRequest=" in response.redirect_url
         assert response.authentication_method == "saml"
+    
+    def test_process_response_rejects_unsigned_assertion(self):
+        """An assertion with no XML signature must never be trusted."""
+        store = IdentityFederationStore()
+        cert_pem, _ = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        forged = _build_saml_response("admin@bank.example.com", "https://okta.example.com/saml")
+        
+        response = saml.process_response(forged)
+        
+        assert response.success is False
+        assert response.user is None
+    
+    def test_process_response_accepts_validly_signed_assertion(self):
+        """A correctly signed assertion from the registered IdP is trusted."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        signed = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+        
+        response = saml.process_response(signed, relay_state=relay)
+        
+        assert response.success is True
+        assert response.user.email == "real.user@example.com"
+
+    def test_process_response_rejects_expired_assertion(self):
+        """An assertion whose NotOnOrAfter has passed must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        expired = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            conditions={
+                "NotBefore": (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "NotOnOrAfter": (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+
+        response = saml.process_response(expired, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert response.user is None
+
+    def test_process_response_rejects_not_yet_valid_assertion(self):
+        """An assertion whose NotBefore is in the future must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        future = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            conditions={
+                "NotBefore": (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "NotOnOrAfter": (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+
+        response = saml.process_response(future, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert response.user is None
+
+    def test_process_response_signed_root_still_yields_user_info(self):
+        """A response whose whole root is signed must still resolve the
+        Assertion inside it and produce the federated user."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        signed = _build_saml_response_signed_root(
+            "root.signed@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(signed, relay_state=relay)
+
+        assert response.success is True
+        assert response.user.email == "root.signed@example.com"
+        assert response.user.provider_user_id == "root.signed@example.com"
+
+    def test_distinct_nameids_produce_distinct_users(self):
+        """Two different NameIDs from the same IdP must map to two distinct
+        FederatedUser records instead of collapsing into one."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+
+        first_relay = _relay_state_for(saml, "okta-prod")
+        first = saml.process_response(_build_saml_response(
+            "alice@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        ), relay_state=first_relay)
+        second_relay = _relay_state_for(saml, "okta-prod")
+        second = saml.process_response(_build_saml_response(
+            "bob@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        ), relay_state=second_relay)
+
+        assert first.success is True
+        assert second.success is True
+        assert first.user.id != second.user.id
+        assert first.user.provider_user_id != second.user.provider_user_id
+        assert first.user.email != second.user.email
+
+    def test_process_response_rejects_assertion_for_another_sp(self):
+        """An assertion restricted to a different audience must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        forged = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            audience="some-other-sp",
+        )
+
+        response = saml.process_response(forged, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert "audience" in response.error_description
+        assert response.user is None
+
+    def test_process_response_rejects_assertion_without_audience(self):
+        """An assertion with no AudienceRestriction must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        forged = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+            audience=None,
+        )
+
+        response = saml.process_response(forged, relay_state=relay)
+
+        assert response.success is False
+        assert response.error == "assertion_invalid"
+        assert "audience" in response.error_description
+        assert response.user is None
+
+    def test_process_response_rejects_replayed_relay_state(self):
+        """A signature-valid response replayed with the same RelayState must
+        be rejected once the pending login has been consumed."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        relay = _relay_state_for(saml, "okta-prod")
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        first = saml.process_response(response_xml, relay_state=relay)
+        second = saml.process_response(response_xml, relay_state=relay)
+
+        assert first.success is True
+        assert second.success is False
+        assert second.error == "relay_state_invalid"
+        assert "replayed" in second.error_description
+
+    def test_process_response_rejects_missing_relay_state(self):
+        """A response without a RelayState binding must be rejected."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(response_xml)
+
+        assert response.success is False
+        assert response.error == "relay_state_invalid"
+        assert response.user is None
+
+    def test_process_response_returns_stored_return_url(self):
+        """The return_url recorded at initiate time must be recovered from the
+        RelayState binding and surfaced on the response."""
+        store = IdentityFederationStore()
+        cert_pem, key_pem = _self_signed_cert_and_key()
+        store.register_provider(IdentityProvider(
+            id="okta-prod",
+            name="Okta",
+            provider_type=IdentityProviderType.SAML,
+            issuer="https://okta.example.com/saml",
+            saml_sso_url="https://okta.example.com/sso",
+            saml_certificate=cert_pem,
+        ))
+        saml = SAMLProvider(store, "test-sp")
+        return_url = "https://app.example.com/dashboard"
+        relay = _relay_state_for(saml, "okta-prod", return_url=return_url)
+        response_xml = _build_saml_response(
+            "real.user@example.com",
+            "https://okta.example.com/saml",
+            sign_with_key=key_pem,
+            sign_with_cert=cert_pem,
+        )
+
+        response = saml.process_response(response_xml, relay_state=relay)
+
+        assert response.success is True
+        assert response.redirect_url == return_url
+        assert response.session.relay_state == return_url
 
 
 class TestOIDCProvider:
@@ -307,19 +738,85 @@ class TestOIDCProvider:
         assert "client_id=client-id" in response.redirect_url
         assert response.authentication_method == "oidc"
     
-    def test_validate_token(self):
-        """Test token validation."""
+    def test_validate_token_fails_closed_on_unverifiable_input(self):
+        """Tokens must never be trusted without a real signature check."""
         store = IdentityFederationStore()
         oidc = OIDCProvider(store, "https://aegisgraph.example.com")
         
-        # Test simulated token validation
+        # Unregistered provider
         is_valid, claims = oidc.validate_token(
-            provider_id="any-provider",
-            token="simulated_access_token_test",
+            provider_id="unregistered-provider",
+            token="any-token-value",
+        )
+        assert is_valid is False
+        assert claims is None
+        
+        # Missing JWKS URI
+        store.register_provider(IdentityProvider(
+            id="misconfigured",
+            name="Misconfigured IdP",
+            provider_type=IdentityProviderType.OIDC,
+            issuer="https://idp.example.com",
+            client_id="client-id",
+        ))
+        is_valid, claims = oidc.validate_token(
+            provider_id="misconfigured",
+            token="any-token-value",
+        )
+        assert is_valid is False
+        assert claims is None
+    
+    def test_validate_token_verifies_signature(self):
+        """A token is only trusted if it's actually signed by the IdP's own key."""
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        
+        idp_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        idp_key_pem = idp_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        )
+        attacker_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        attacker_key_pem = attacker_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
         )
         
-        assert is_valid is True
-        assert claims is not None
+        store = IdentityFederationStore()
+        store.register_provider(IdentityProvider(
+            id="azure-prod",
+            name="Azure AD",
+            provider_type=IdentityProviderType.OIDC,
+            issuer="https://login.microsoftonline.com/tenant/v2.0",
+            client_id="real-client-id",
+            oidc_jwks_uri="https://login.microsoftonline.com/tenant/discovery/v2.0/keys",
+        ))
+        oidc = OIDCProvider(store, "https://aegisgraph.example.com")
+        
+        now = int(datetime.now(timezone.utc).timestamp())
+        claims_in = {
+            "sub": "user-42",
+            "iss": "https://login.microsoftonline.com/tenant/v2.0",
+            "aud": "real-client-id",
+            "exp": now + 300,
+            "iat": now,
+        }
+        legit_token = jwt.encode(claims_in, idp_key_pem, algorithm="RS256", headers={"kid": "k1"})
+        forged_token = jwt.encode(
+            {**claims_in, "sub": "admin"}, attacker_key_pem, algorithm="RS256", headers={"kid": "k1"}
+        )
+        
+        # Mock the JWKS fetch only
+        fake_signing_key = MagicMock(key=idp_key.public_key())
+        with patch.object(OIDCProvider, "_get_jwks_client") as mock_get_client:
+            mock_get_client.return_value.get_signing_key_from_jwt.return_value = fake_signing_key
+            
+            is_valid, claims = oidc.validate_token("azure-prod", legit_token)
+            assert is_valid is True
+            assert claims["sub"] == "user-42"
+            
+            is_valid, claims = oidc.validate_token("azure-prod", forged_token)
+            assert is_valid is False
+            assert claims is None
 
 
 class TestOAuthProvider:
@@ -364,6 +861,66 @@ class TestOAuthProvider:
         assert response.success is True
         assert response.redirect_url is not None
         assert "code=" in response.redirect_url
+
+    def test_authorization_code_missing_secret_returns_invalid_client(self):
+        """Omitting client_secret must return invalid_client, not a 500."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        oauth.register_client(
+            client_id="test-client",
+            client_secret="test-secret",
+            redirect_uris=["https://app.example.com/callback"],
+        )
+
+        authorize = oauth.authorize(
+            client_id="test-client",
+            redirect_uri="https://app.example.com/callback",
+            response_type="code",
+            scope="openid profile",
+            state="test-state",
+        )
+        code = parse_qs(urlparse(authorize.redirect_url).query)["code"][0]
+
+        response = oauth.token(
+            grant_type="authorization_code",
+            code=code,
+            redirect_uri="https://app.example.com/callback",
+            client_id="test-client",
+            client_secret=None,
+        )
+
+        assert response.success is False
+        assert response.error == "invalid_client"
+
+    def test_client_credentials_missing_secret_returns_invalid_client(self):
+        """Omitting client_secret in client credentials flow must not raise."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        oauth.register_client(
+            client_id="test-client",
+            client_secret="test-secret",
+            redirect_uris=["https://app.example.com/callback"],
+        )
+
+        response = oauth.token(
+            grant_type="client_credentials",
+            client_id="test-client",
+            client_secret=None,
+        )
+
+        assert response.success is False
+        assert response.error == "invalid_client"
+
+    def test_hash_secret_handles_missing_input(self):
+        """_hash_secret must not raise on None or empty input."""
+        store = IdentityFederationStore()
+        oauth = OAuthProvider(store, "https://aegisgraph.example.com")
+
+        assert oauth._hash_secret(None) == ""
+        assert oauth._hash_secret("") == ""
+        assert oauth._hash_secret("test-secret") != ""
 
 
 class TestSessionManager:

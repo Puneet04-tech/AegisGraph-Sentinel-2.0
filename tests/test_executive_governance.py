@@ -227,9 +227,34 @@ class TestExecutiveDashboard:
     def test_get_compliance_kpis(self, dashboard_module):
         """Test getting compliance KPIs."""
         kpis = dashboard_module.get_compliance_kpis()
-        
+
         assert "overall_compliance" in kpis
         assert "frameworks_count" in kpis
+
+    def test_get_risk_kpis_reflects_stored_scorecard(self, dashboard_module, store):
+        """Risk KPIs must be derived from the latest scorecard, not random."""
+        scorecard = RiskScorecard(
+            period="quarterly",
+            overall_risk_score=0.42,
+            risk_level=RiskLevel.MEDIUM,
+            risk_categories={"fraud": 0.6, "cyber": 0.3},
+            risk_trend="stable",
+        )
+        store.store_scorecard(scorecard)
+
+        kpis = dashboard_module.get_risk_kpis()
+
+        assert kpis["risk_score"] == 0.42
+        assert kpis["risk_level"] == "MEDIUM"
+        assert kpis["trend"] == "stable"
+        assert kpis["top_risk_categories"][0]["category"] == "fraud"
+
+    def test_get_risk_kpis_no_scorecard_reports_missing_data(self, dashboard_module):
+        """With no scorecard recorded, KPIs must say so instead of inventing values."""
+        kpis = dashboard_module.get_risk_kpis()
+
+        assert kpis["risk_score"] is None
+        assert "note" in kpis
     
     def test_get_performance_kpis(self, dashboard_module):
         """Test getting performance KPIs."""
@@ -318,6 +343,28 @@ class TestComplianceAnalytics:
         
         assert assessment.assessment_id is not None
         assert assessment.control_id == "CC6.1"
+
+    def test_assess_control_derives_effectiveness_from_check_counts(self, compliance_analytics):
+        """Effectiveness can be derived from checks_passed/checks_total instead of a score."""
+        assessment = compliance_analytics.assess_control(
+            control_id="CC6.2",
+            control_name="Change Management",
+            framework="SOC2",
+            test_results={"checks_passed": 9, "checks_total": 10},
+        )
+
+        assert assessment.effectiveness_score == 0.9
+        assert assessment.status == ComplianceStatus.COMPLIANT
+
+    def test_assess_control_requires_real_results(self, compliance_analytics):
+        """Assessing a control without any way to measure effectiveness fails closed."""
+        with pytest.raises(ValueError):
+            compliance_analytics.assess_control(
+                control_id="CC6.3",
+                control_name="Monitoring",
+                framework="SOC2",
+                test_results={},
+            )
     
     def test_get_framework_status(self, compliance_analytics):
         """Test getting framework status."""
@@ -359,7 +406,21 @@ class TestRiskGovernance:
         
         assert scorecard.scorecard_id is not None
         assert 0 <= scorecard.overall_risk_score <= 1.0
+
+    def test_generate_risk_scorecard_is_deterministic(self, risk_governance):
+        """Scorecard should not change between calls when nothing else does."""
+        first = risk_governance.generate_risk_scorecard(period="monthly")
+        second = risk_governance.generate_risk_scorecard(period="monthly")
+        
+        assert first.risk_categories == second.risk_categories
     
+    def test_track_risk_trend_uses_real_category(self, risk_governance):
+        """metric_name should select a real risk category, not be ignored."""
+        risk_governance.generate_risk_scorecard(period="monthly")
+        trend = risk_governance.track_risk_trend("fraud_risk")
+        
+        assert trend["current_value"] > 0
+
     def test_assess_entity_risk(self, risk_governance):
         """Test entity risk assessment."""
         assessment = risk_governance.assess_entity_risk(

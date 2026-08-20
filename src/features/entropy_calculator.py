@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 import numpy as np
 import networkx as nx
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from collections import Counter
 import math
 
@@ -301,7 +301,68 @@ class GraphEntropyCalculator:
         )
         features.update(self.compute_temporal_entropy(edge_timestamps or {}, current_time))
         features.update(self.compute_amount_entropy(edge_amounts or {}))
+        features.update(self.compute_isomorphism_entropy(node, graph))
         return features
+
+    def match_laundering_motifs(self, node: str, graph: nx.Graph) -> List[Dict[str, Any]]:
+        """Matches local k-hop subgraphs against money laundering motif catalog using VF2 algorithm.
+
+        Args:
+            node: Target node
+            graph: Transaction graph
+
+        Returns:
+            List of detected motif match dicts with risk weights
+        """
+        if graph is None or not graph.has_node(node):
+            return []
+
+        try:
+            from src.graph_analytics.motif_catalog import get_laundering_motifs
+        except ImportError:
+            return []
+
+        # Extract 2-hop local subgraph around target node
+        nodes_sub = {node}
+        for n in self._direct_neighbors(graph, node):
+            nodes_sub.add(n)
+            for n2 in self._direct_neighbors(graph, n):
+                nodes_sub.add(n2)
+
+        subgraph = graph.subgraph(nodes_sub)
+        motifs = get_laundering_motifs()
+        matches = []
+
+        for key, motif_info in motifs.items():
+            motif_g = motif_info["graph"]
+            # VF2 Subgraph Isomorphism matcher
+            matcher = nx.algorithms.isomorphism.DiGraphMatcher(subgraph, motif_g) if graph.is_directed() else nx.algorithms.isomorphism.GraphMatcher(subgraph, motif_g)
+            if matcher.subgraph_is_monomorphic():
+                matches.append({
+                    "motif_key": key,
+                    "name": motif_info["name"],
+                    "base_risk": motif_info["base_risk"],
+                    "description": motif_info["description"],
+                })
+
+        return matches
+
+    def compute_isomorphism_entropy(self, node: str, graph: nx.Graph) -> Dict[str, float]:
+        """Calculates structural anomaly entropy based on subgraph isomorphism motif matches."""
+        matches = self.match_laundering_motifs(node, graph)
+        if not matches:
+            return {"isomorphism_entropy": 0.0, "highest_motif_risk": 0.0}
+
+        max_risk = max(m["base_risk"] for m in matches)
+        match_count = len(matches)
+        # Shannon entropy component based on motif match diversity
+        iso_entropy = float(min(1.0, (match_count * 0.25) + max_risk * 0.5))
+        return {
+            "isomorphism_entropy": iso_entropy,
+            "highest_motif_risk": float(max_risk),
+            "matched_motifs_count": float(match_count),
+        }
+
 
 
 def compute_entropy_risk_score(
@@ -329,3 +390,20 @@ def compute_entropy_risk_score(
         min(features.get("amount_entropy", 0.0) / 3.0, 1.0),
     ]
     return float(min(sum(normalized) / len(normalized), 1.0))
+
+# --- GENERATED: compute_correlation_entropy ---
+def compute_correlation_entropy(data):
+    """Compute Shannon entropy of a normalized probability distribution from data."""
+    if not data:
+        return 0.0
+    total = sum(data)
+    if total == 0:
+        return 0.0
+    probs = [v / total for v in data]
+    entropy = 0.0
+    for p in probs:
+        if p > 0:
+            import math
+            entropy -= p * math.log2(p)
+    return entropy
+# --- END GENERATED ---

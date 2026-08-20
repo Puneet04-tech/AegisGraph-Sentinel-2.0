@@ -1060,6 +1060,77 @@ class TestBatchFraudCheck:
         assert response.status_code == 200
         assert len(response.json()["results"]) == 17
 
+    def test_batch_reports_individual_transaction_failures(self, monkeypatch):
+        """Failed transactions must be reported, not silently dropped."""
+
+        async def fake_check_transaction(txn_request, **kwargs):
+            if txn_request.transaction_id == "batch_failing":
+                raise RuntimeError("simulated scoring failure")
+            return TransactionCheckResponse(
+                transaction_id=txn_request.transaction_id,
+                risk_score=0.25,
+                decision="approve",
+                factors={"graph": 0.0, "velocity": 0.0, "behavior": 0.0, "entropy": 0.0},
+                confidence=0.9,
+                breakdown=RiskBreakdown(graph=0.0, velocity=0.0, behavior=0.0, entropy=0.0),
+                explanation="ok",
+                recommended_action="approve",
+                processing_time_ms=1.0,
+                timestamp="2026-01-01T00:00:00Z",
+            )
+
+        monkeypatch.setattr('src.api.main.check_transaction', fake_check_transaction)
+
+        transactions = [
+            {"transaction_id": f"batch_ok_{i}", "amount": 50.0, "timestamp": 1779883200.0,
+             "from_account": f"user_{i}", "to_account": f"merchant_{i}", "transaction_type": "payment"}
+            for i in range(2)
+        ]
+        transactions.append(
+            {"transaction_id": "batch_failing", "amount": 999.0, "timestamp": 1779883400.0,
+             "from_account": "user_bad", "to_account": "merchant_bad", "transaction_type": "payment"}
+        )
+
+        response = client.post("/api/v1/fraud/batch", json={"transactions": transactions})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_processed"] == 2
+        assert data["total_failed"] == 1
+        assert data["total_allowed"] == 2
+        assert len(data["results"]) == 3
+
+        failed_entries = [r for r in data["results"] if "error" in r]
+        ok_entries = [r for r in data["results"] if "error" not in r]
+        assert len(failed_entries) == 1
+        assert len(ok_entries) == 2
+        assert failed_entries[0]["transaction_id"] == "batch_failing"
+        assert "simulated scoring failure" in failed_entries[0]["error"]
+        assert all("risk_score" in r for r in ok_entries)
+
+    def test_batch_all_failures_still_returns_200(self, monkeypatch):
+        """A batch where every transaction fails must still stream a summary."""
+
+        async def fake_check_transaction(txn_request, **kwargs):
+            raise ValueError("scorer unavailable")
+
+        monkeypatch.setattr('src.api.main.check_transaction', fake_check_transaction)
+
+        transactions = [
+            {"transaction_id": f"batch_bad_{i}", "amount": 50.0, "timestamp": 1779883200.0,
+             "from_account": f"user_{i}", "to_account": f"merchant_{i}", "transaction_type": "payment"}
+            for i in range(3)
+        ]
+
+        response = client.post("/api/v1/fraud/batch", json={"transactions": transactions})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_processed"] == 0
+        assert data["total_failed"] == 3
+        assert len(data["results"]) == 3
+        assert all("error" in r for r in data["results"])
+
 
 class TestCORSandSecurity:
     """
@@ -1294,6 +1365,35 @@ class TestFallbackScoringConfigDriven:
         assert expected_decision == "BLOCK"
 
 
+class _FakeTokenBucketRedis:
+    """In-memory stand-in for the Redis token bucket used by
+    src.security.rate_limit — same semantics as its Lua script."""
+
+    def __init__(self):
+        self._state = {}
+
+    def eval(self, script, numkeys, key, now, refill_rate, capacity, ttl):
+        import math
+
+        now = float(now)
+        refill_rate = float(refill_rate)
+        capacity = float(capacity)
+
+        tokens, ts = self._state.get(key, (capacity, now))
+        elapsed = max(0.0, now - ts)
+        tokens = min(capacity, tokens + elapsed * refill_rate)
+
+        if tokens >= 1:
+            tokens -= 1
+            allowed, retry_after = 1, 0
+        else:
+            allowed = 0
+            retry_after = max(1, int(math.ceil((1 - tokens) / refill_rate)))
+
+        self._state[key] = (tokens, now)
+        return [allowed, retry_after, tokens]
+
+
 class TestDefaultRateLimiting:
     """Test standard API default rate limiting middleware."""
 
@@ -1302,11 +1402,25 @@ class TestDefaultRateLimiting:
             pytest.skip("SlowAPI is not installed")
 
         # Give the middleware a test-local settings object instead of mutating
-        # the process-wide settings cache used by later tests.
+        # the process-wide settings cache used by later tests. The middleware
+        # reads the token-bucket fields (rate_limit_burst / window_seconds).
         test_settings = types.SimpleNamespace(
-            api=types.SimpleNamespace(rate_limit="5/minute")
+            api=types.SimpleNamespace(
+                rate_limit="5/minute",
+                rate_limit_burst=5,
+                rate_limit_window_seconds=60,
+            )
         )
         monkeypatch.setattr(api_main, "get_settings", lambda: test_settings)
+
+        # The production bucket lives in Redis and fails open when Redis is
+        # unreachable (as in CI); back it with an in-memory equivalent so
+        # the limit is actually enforced.
+        fake_redis = _FakeTokenBucketRedis()
+        monkeypatch.setattr(
+            "src.security.rate_limit.get_redis_client",
+            lambda url: fake_redis,
+        )
 
         # Clear existing rate limit keys to ensure clean state
         _clear_rate_limit_storage()
@@ -1340,6 +1454,68 @@ class TestDefaultRateLimiting:
 
         # Clean up
         _clear_rate_limit_storage()
+
+
+class TestSocOrchestrateEndpoint:
+    """Test SOC workflow creation validation via the API."""
+
+    def test_invalid_agent_type_returns_400(self):
+        """Unrecognized agent_type must return a structured 400, not a 500."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1"},
+                    {"agent_type": "SKYNET", "title": "Task 2"},
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        details = error["details"]
+        assert error["code"] == "PROCESSING_ERROR"
+        assert details["field"] == "agent_type"
+        assert details["task_index"] == 1
+        assert details["invalid_value"] == "SKYNET"
+        assert "INVESTIGATION" in details["valid_values"]
+
+    def test_invalid_priority_returns_400(self):
+        """Unrecognized priority must return a structured 400, not a 500."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "urgent"},
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        details = error["details"]
+        assert error["code"] == "PROCESSING_ERROR"
+        assert details["field"] == "priority"
+        assert details["invalid_value"] == "urgent"
+        assert "HIGH" in details["valid_values"]
+
+    def test_valid_workflow_returns_200(self):
+        """Valid workflow definitions must still create a plan."""
+        response = client.post(
+            "/api/v1/soc/orchestrate",
+            json={
+                "workflow_name": "Test",
+                "tasks": [
+                    {"agent_type": "INVESTIGATION", "title": "Task 1", "priority": "HIGH"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        plan = response.json()["plan"]
+        assert plan["task_count"] == 1
 
 
 if __name__ == "__main__":

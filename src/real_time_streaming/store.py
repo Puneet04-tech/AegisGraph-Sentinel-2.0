@@ -97,6 +97,21 @@ class StreamStore:
         
         events = list(self._streams[stream_name])[-limit:]
         return events
+
+    def get_stream_events_in_range(
+        self,
+        stream_name: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[StreamEvent]:
+        """Get events from stream within a time range [start_time, end_time]."""
+        if stream_name not in self._streams:
+            return []
+
+        return [
+            e for e in self._streams[stream_name]
+            if start_time <= e.timestamp <= end_time
+        ]
     
     def get_all_streams(self) -> List[str]:
         """Get all stream names."""

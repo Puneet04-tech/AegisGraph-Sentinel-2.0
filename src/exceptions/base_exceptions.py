@@ -70,7 +70,18 @@ class JSONSerializationError(ProcessingException):
 
     Covers non-JSON-serializable types, circular references, and
     objects whose __dict__ contains non-serializable values.
+
+    This exception signals a data transformation failure in the
+    processing pipeline. Callers should catch it and return an
+    HTTP 500 with a sanitized error message to avoid leaking
+    internal state into API responses.
     """
     default_code = ErrorCode.PROCESSING_ERROR
     default_status_code = 500
+
+
+class InvestigationError(AegisException):
+    default_code = ErrorCode.PROCESSING_ERROR
+    default_status_code = 500
+
 

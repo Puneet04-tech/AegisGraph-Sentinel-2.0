@@ -108,6 +108,69 @@ def _get_betweenness_centrality(graph: nx.Graph) -> Dict:
         return nx.betweenness_centrality(graph, k=min(100, graph.number_of_nodes()))
 
 
+def extract_degree_capped_k_hop_subgraph(
+    graph: nx.Graph,
+    seed_nodes: List[str],
+    k_hops: int = 3,
+    max_neighbors_per_node: int = 100,
+) -> nx.Graph:
+    """Bounded k-hop neighborhood extractor with degree capping.
+
+    Prevents RAM/VRAM out-of-memory (OOM) crashes on high-degree merchant or utility hub accounts
+    by capping the maximum number of neighbors sampled per node. Temporal recency is prioritized.
+    """
+    if graph is None or not seed_nodes:
+        return nx.DiGraph() if isinstance(graph, nx.DiGraph) else nx.Graph()
+
+    visited_nodes = set(seed_nodes)
+    current_layer = set(seed_nodes)
+
+    subgraph_nodes = set(seed_nodes)
+    subgraph_edges = set()
+
+    for hop in range(k_hops):
+        next_layer = set()
+        for node in current_layer:
+            if not graph.has_node(node):
+                continue
+
+            # Retrieve neighbors
+            if graph.is_directed():
+                neighbors = list(set(graph.predecessors(node)) | set(graph.successors(node)))
+            else:
+                neighbors = list(graph.neighbors(node))
+
+            # Truncate high-degree hub nodes (> max_neighbors_per_node)
+            if len(neighbors) > max_neighbors_per_node:
+                # Prioritize neighbors with timestamp edges if present
+                def _get_edge_timestamp(nbr):
+                    edge_data = graph.get_edge_data(node, nbr) or graph.get_edge_data(nbr, node) or {}
+                    if isinstance(edge_data, dict):
+                        return float(edge_data.get("timestamp", 0.0))
+                    return 0.0
+
+                neighbors = sorted(neighbors, key=_get_edge_timestamp, reverse=True)[:max_neighbors_per_node]
+
+            for nbr in neighbors:
+                if graph.has_edge(node, nbr):
+                    subgraph_edges.add((node, nbr))
+                elif graph.has_edge(nbr, node):
+                    subgraph_edges.add((nbr, node))
+
+                if nbr not in visited_nodes:
+                    visited_nodes.add(nbr)
+                    next_layer.add(nbr)
+                    subgraph_nodes.add(nbr)
+
+        current_layer = next_layer
+        if not current_layer:
+            break
+
+    sub = graph.subgraph(subgraph_nodes).copy()
+    return sub
+
+
+
 class RiskScorer:
     """
     Unified risk scoring system
@@ -556,25 +619,26 @@ def compute_risk_score(
     centrality = None
     graph_view = None
     
-    # Check mule accounts even without graph loaded (for demo mode)
-    if graph_loaded:
-        # Check if accounts are in known fraud chains (mule accounts)
-        if source_account in mule_accounts:
-            graph_risk += 0.6
-            _inference_logger.warning(
-                f"Source account {source_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": source_account, "role": "source"},
-            )
-        if target_account in mule_accounts:
-            graph_risk += 0.4
-            _inference_logger.warning(
-                f"Target account {target_account} is a known mule account",
-                event_type="mule_account_detected",
-                metadata={"account": target_account, "role": "target"},
-            )
-        if source_account in mule_accounts and target_account in mule_accounts:
-            graph_risk += 0.3
+    # Check mule accounts even without graph loaded (for demo mode).
+    # The penalty must not be gated on graph_loaded: mule_accounts is a
+    # separate source of truth from the graph, so a known mule account is
+    # penalized even when the graph is unavailable.
+    if source_account in mule_accounts:
+        graph_risk += 0.6
+        _inference_logger.warning(
+            f"Source account {source_account} is a known mule account",
+            event_type="mule_account_detected",
+            metadata={"account": source_account, "role": "source"},
+        )
+    if target_account in mule_accounts:
+        graph_risk += 0.4
+        _inference_logger.warning(
+            f"Target account {target_account} is a known mule account",
+            event_type="mule_account_detected",
+            metadata={"account": target_account, "role": "target"},
+        )
+    if source_account in mule_accounts and target_account in mule_accounts:
+        graph_risk += 0.3
 
     if graph_loaded and transaction_graph:
         # Mule-account penalties are applied in the block above.
@@ -750,6 +814,14 @@ def compute_risk_score(
                 if fail_fast:
                     raise
     
+    # The lateral-movement increment (MITRE ATT&CK TA0008) is applied inside
+    # the block above, which runs *after* the graph risk was capped and
+    # snapshotted into `breakdown['graph']`. Re-clamp and refresh the snapshot
+    # here so the breakdown, overall score and decision all reflect the
+    # post-increment value.
+    graph_risk = min(graph_risk, 1.0)
+    breakdown['graph'] = graph_risk
+    
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     
@@ -868,3 +940,11 @@ def compute_risk_score(
         'analysis_errors': analysis_errors,
         'component_status': component_status,
     }
+
+# --- GENERATED: normalize_score ---
+def normalize_score(score, min_val=0.0, max_val=1.0):
+    """Clamp score to [min_val, max_val] range and return it."""
+    if max_val == min_val:
+        return min_val
+    return max(min(score, max_val), min_val)
+# --- END GENERATED ---

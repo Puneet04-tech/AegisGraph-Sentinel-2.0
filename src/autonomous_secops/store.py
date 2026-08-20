@@ -24,6 +24,7 @@ from .models import (
     SOCMetrics,
     ThreatHunt,
 )
+from src.audit.bounded_log import BoundedAuditLog, next_event_id
 
 
 class AutonomousSecOpsStore:
@@ -37,7 +38,9 @@ class AutonomousSecOpsStore:
         self._playbook_executions: Dict[str, PlaybookExecution] = {}
         self._threat_hunts: Dict[str, ThreatHunt] = {}
         self._correlation_rules: Dict[str, CorrelationRule] = {}
-        self._audit_log: List[AuditEvent] = []
+        # Bounded so audit memory stays constant regardless of uptime; the
+        # plain list this replaces grew for the life of the process.
+        self._audit_log = BoundedAuditLog()
         self._lock = threading.RLock()
 
     def add_alert(self, alert: Alert) -> None:
@@ -146,7 +149,7 @@ class AutonomousSecOpsStore:
     ) -> None:
         """Log an audit event."""
         event = AuditEvent(
-            event_id=f"audit-{len(self._audit_log) + 1}",
+            event_id=next_event_id(),
             timestamp=datetime.now(timezone.utc),
             user_id=user_id,
             action=action,
@@ -160,7 +163,7 @@ class AutonomousSecOpsStore:
 
     def get_audit_log(self, limit: int = 100) -> List[AuditEvent]:
         """Get audit log."""
-        return self._audit_log[-limit:]
+        return self._audit_log.tail(limit)
 
     def get_metrics(self) -> SOCMetrics:
         """Get SOC metrics."""

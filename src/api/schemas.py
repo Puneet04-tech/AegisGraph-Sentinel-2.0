@@ -16,19 +16,40 @@ from src.api.validators import (
 )
 
 
+class BaseSchema(BaseModel):
+    """Shared base for API request and response schemas.
+
+    ``src.data_lineage.schemas`` already imports this name from here, but it
+    was never defined, so that module and everything importing it raised
+    ImportError. Declared once here so the shared configuration lives in a
+    single place rather than being repeated per schema.
+    """
+
+    model_config = ConfigDict(
+        # Reject unknown keys rather than silently dropping them, so a caller
+        # sending a misspelled field is told instead of being ignored.
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+
 class BiometricsData(BaseModel):
     """Keystroke biometrics data"""
     hold_times: List[float] = Field(default_factory=list, description="Key hold times in milliseconds")
     flight_times: List[float] = Field(default_factory=list, description="Key flight times in milliseconds")
     keystroke_events: Optional[List[Dict]] = Field(default=None, description="Raw keystroke events")
     mouse_movements: Optional[List[Dict]] = Field(default=None, description="Raw mouse movement events")
-    
+
     @field_validator('hold_times', 'flight_times')
     @classmethod
-    def validate_biometric_values(cls, v):
-        """Validate biometric array constraints."""
+    def validate_biometric_values(cls, v: List[float]) -> List[float]:
+        """SECURITY: Validate biometric array constraints to prevent OOM.
+
+        1M-element array would consume excessive memory. Limit to reasonable
+        keystroke count (max 1000 keypresses per analysis).
+        """
         if len(v) > 1000:
-            raise ValueError("Biometric arrays cannot exceed 1000 elements")
+            raise ValueError("Biometric arrays cannot exceed 1000 elements (requested: %d)" % len(v))
         if any(not math.isfinite(x) for x in v):
             raise ValueError("Biometric values must not contain NaN or Inf")
         if any(x < 0 or x > 10000 for x in v):
@@ -78,7 +99,7 @@ class TransactionCheckRequest(BaseModel):
     location: Optional[str] = Field(default=None, description="Transaction location")
     @field_validator('timestamp')
     @classmethod
-    def validate_timestamp(cls, v):
+    def validate_timestamp(cls, v: Union[str, float]) -> Union[str, float]:
         """Validate and normalize timestamp to ISO 8601 UTC format.
 
         Accepted inputs include Unix epoch seconds and timezone-aware ISO 8601
@@ -93,7 +114,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('source_account')
     @classmethod
-    def validate_source_account(cls, v):
+    def validate_source_account(cls, v: str) -> str:
         """Validate source account format."""
         try:
             TransactionValidator.validate_account_id(v, "source_account")
@@ -103,7 +124,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('target_account')
     @classmethod
-    def validate_target_account(cls, v):
+    def validate_target_account(cls, v: str) -> str:
         """Validate target account format."""
         try:
             TransactionValidator.validate_account_id(v, "target_account")
@@ -113,7 +134,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('currency')
     @classmethod
-    def validate_currency(cls, v):
+    def validate_currency(cls, v: str) -> str:
         """Validate currency code."""
         try:
             TransactionValidator.validate_currency_code(v)
@@ -123,7 +144,7 @@ class TransactionCheckRequest(BaseModel):
     
     @field_validator('mode')
     @classmethod
-    def validate_mode(cls, v):
+    def validate_mode(cls, v: str) -> str:
         """Validate transaction mode."""
         try:
             TransactionValidator.validate_mode(v)
@@ -132,7 +153,7 @@ class TransactionCheckRequest(BaseModel):
         return v
     
     @model_validator(mode='after')
-    def validate_cross_fields(self):
+    def validate_cross_fields(self) -> "TransactionCheckRequest":
         """Validate cross-field constraints."""
         try:
             TransactionValidator.validate_cross_fields(
@@ -246,6 +267,7 @@ class BatchTransactionResponse(BaseModel):
                 "total_blocked": 0,
                 "total_review": 0,
                 "total_allowed": 1,
+                "total_failed": 0,
                 "processing_time_ms": 45.2
             }
         }
@@ -255,6 +277,7 @@ class BatchTransactionResponse(BaseModel):
     total_blocked: int
     total_review: int
     total_allowed: int
+    total_failed: int
     processing_time_ms: float
 
 
@@ -371,7 +394,23 @@ class VoiceAnalysisRequest(BaseModel):
     # large uploads before they can consume excessive memory or CPU.
     audio_base64: str = Field(max_length=500_000, description="Base64-encoded audio WAV file (max 30 seconds)")
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
-    
+
+    @field_validator('audio_base64')
+    @classmethod
+    def validate_audio_size(cls, v):
+        """SECURITY: Prevent OOM attacks via large audio payloads.
+
+        This bounds the encoded string so an oversized body is refused before
+        anything decodes it. The decoded size is checked in the handler, which
+        measures the real bytes and answers 413. Estimating the decoded size
+        here as well would reject those payloads first, as a 422, and leave
+        that 413 unreachable.
+        """
+        if len(v) > 500_000:
+            raise ValueError("Audio base64 payload exceeds 500KB limit")
+
+        return v
+
     @field_validator('sample_rate')
     @classmethod
     def validate_sample_rate(cls, v):

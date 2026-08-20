@@ -4,8 +4,7 @@ Model Deployment Module.
 Model deployment management, rollbacks, and monitoring.
 """
 
-import random
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timezone
 import logging
 
@@ -19,19 +18,47 @@ from .store import MLModelStore, get_ml_store
 logger = logging.getLogger(__name__)
 
 
+def _default_deployer(deployment: ModelDeployment, model: Optional[Any]) -> Optional[str]:
+    """Validate deployment preconditions deterministically.
+
+    Returns None when the deployment may proceed, or a failure reason
+    string when it must not.
+    """
+    if model is None:
+        return f"model {deployment.model_id} does not exist"
+    if model.status == ModelStatus.ARCHIVED:
+        return f"model {deployment.model_id} is archived and cannot be deployed"
+    if not (0.0 <= deployment.traffic_percentage <= 100.0):
+        return f"traffic_percentage {deployment.traffic_percentage} is out of range [0, 100]"
+    return None
+
+
 class ModelDeploymentManager:
     """Model Deployment Manager for deployment lifecycle.
-    
+
     Provides:
         - Deployment creation
         - Deployment execution
         - Rollback capabilities
         - Deployment monitoring
     """
-    
-    def __init__(self, store: Optional[MLModelStore] = None):
-        """Initialize the deployment manager."""
+
+    def __init__(
+        self,
+        store: Optional[MLModelStore] = None,
+        deployer: Optional[Callable[[ModelDeployment, Optional[Any]], Optional[str]]] = None,
+    ):
+        """Initialize the deployment manager.
+
+        Args:
+            store: Backing model/deployment store.
+            deployer: Callable invoked with (deployment, model) that returns
+                None to allow the deployment to proceed or a failure reason
+                string to reject it. Defaults to deterministic precondition
+                checks (model exists, not archived, valid traffic range).
+        """
         self._store = store or get_ml_store()
+        self._deployer = deployer or _default_deployer
         self._module_id = "model_deployment"
     
     def create_deployment(
@@ -54,38 +81,52 @@ class ModelDeploymentManager:
         self._store.store_deployment(deployment)
         return deployment
     
-    def deploy(self, deployment_id: str) -> ModelDeployment:
-        """Execute deployment."""
+    def deploy(self, deployment_id: str, promote: bool = True) -> ModelDeployment:
+        """Execute deployment.
+
+        Args:
+            deployment_id: Deployment to deploy.
+            promote: When True the model is promoted to PRODUCTION; when
+                False (canary) it stays in a non-production CANARY state so
+                it only serves the deployment's traffic percentage until
+                explicitly promoted via `promote()`.
+        """
         deployment = self._store.get_deployment(deployment_id)
         if not deployment:
             raise ValueError(f"Deployment {deployment_id} not found")
         
         logger.info(f"Deploying {deployment_id}")
         
+        model = self._store.get_model(deployment.model_id)
+        if model:
+            deployment.previous_model_status = model.status.value
+            deployment.previous_traffic_percentage = deployment.traffic_percentage
+            self._store.store_deployment(deployment)
+        
         # Update status
         deployment.status = DeploymentStatus.DEPLOYING
         self._store.store_deployment(deployment)
         
-        # Simulate deployment (in reality, this would trigger actual deployment)
-        success = random.random() > 0.05  # 95% success rate
-        
-        if success:
+        failure_reason = self._deployer(deployment, model)
+
+        if failure_reason is None:
             deployment.status = DeploymentStatus.DEPLOYED
             deployment.deployed_at = datetime.now(timezone.utc)
-            
+
             # Update model status
-            model = self._store.get_model(deployment.model_id)
             if model:
-                model.status = ModelStatus.PRODUCTION
+                model.status = ModelStatus.PRODUCTION if promote else ModelStatus.CANARY
                 self._store.store_model(model)
         else:
+            logger.warning(f"Deployment {deployment_id} failed: {failure_reason}")
             deployment.status = DeploymentStatus.FAILED
-        
+            deployment.failure_reason = failure_reason
+
         self._store.store_deployment(deployment)
         return deployment
     
     def rollback(self, deployment_id: str) -> ModelDeployment:
-        """Rollback a deployment."""
+        """Rollback a deployment, restoring the pre-deployment state."""
         deployment = self._store.get_deployment(deployment_id)
         if not deployment:
             raise ValueError(f"Deployment {deployment_id} not found")
@@ -95,8 +136,15 @@ class ModelDeploymentManager:
         deployment.status = DeploymentStatus.ROLLING_BACK
         self._store.store_deployment(deployment)
         
-        # Simulate rollback
-        deployment.status = DeploymentStatus.DEPLOYED  # Previous state
+        # Restore the previous model status and traffic allocation
+        model = self._store.get_model(deployment.model_id)
+        if model and deployment.previous_model_status:
+            model.status = ModelStatus(deployment.previous_model_status)
+            self._store.store_model(model)
+        if deployment.previous_traffic_percentage is not None:
+            deployment.traffic_percentage = deployment.previous_traffic_percentage
+        
+        deployment.status = DeploymentStatus.ROLLED_BACK
         deployment.rolled_back_at = datetime.now(timezone.utc)
         self._store.store_deployment(deployment)
         
@@ -134,7 +182,11 @@ class ModelDeploymentManager:
         model_id: str,
         canary_percentage: float = 10.0,
     ) -> ModelDeployment:
-        """Create a canary deployment."""
+        """Create a canary deployment.
+
+        The model is kept in a non-production CANARY state serving only
+        `canary_percentage` traffic until `promote()` is explicitly called.
+        """
         logger.info(f"Creating canary deployment for {model_id} at {canary_percentage}%")
         
         deployment = self.create_deployment(
@@ -144,7 +196,33 @@ class ModelDeploymentManager:
             config={"strategy": "canary"},
         )
         
-        return self.deploy(deployment.deployment_id)
+        return self.deploy(deployment.deployment_id, promote=False)
+    
+    def promote(self, deployment_id: str) -> ModelDeployment:
+        """Promote a canary deployment to full production traffic.
+
+        Only a model currently in the CANARY state can be promoted; this is
+        the explicit, gated step that moves a controlled rollout to 100%.
+        """
+        deployment = self._store.get_deployment(deployment_id)
+        if not deployment:
+            raise ValueError(f"Deployment {deployment_id} not found")
+        
+        logger.info(f"Promoting {deployment_id} to production")
+        
+        model = self._store.get_model(deployment.model_id)
+        if not model or model.status != ModelStatus.CANARY:
+            raise ValueError(
+                f"Deployment {deployment_id} cannot be promoted: model is not in CANARY state"
+            )
+        
+        model.status = ModelStatus.PRODUCTION
+        self._store.store_model(model)
+        
+        deployment.traffic_percentage = 100.0
+        self._store.store_deployment(deployment)
+        
+        return deployment
 
 
 # Global singleton

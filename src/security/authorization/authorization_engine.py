@@ -9,6 +9,7 @@ from ...audit import log_audit_event
 from .authorization_result import AuthorizationResult
 from .permission_registry import PermissionRegistry
 from .role_registry import RoleRegistry
+from src.security.audit_dispatch import dispatch_audit
 
 
 class AuthorizationEngine:
@@ -50,16 +51,15 @@ class AuthorizationEngine:
     def _audit(self, result: AuthorizationResult) -> None:
         if self.audit_logger is None:
             return
-        try:
-            self.audit_logger(
-                event_type="authorization_allowed" if result.allowed else "authorization_denied",
-                severity="info" if result.allowed else "warning",
-                source="authorization_engine",
-                metadata={
-                    "role": result.role,
-                    "permission": result.permission,
-                    "reason": result.reason,
-                },
-            )
-        except Exception:
-            pass
+        dispatch_audit(
+            self.audit_logger,
+            audit_source="authorization_engine",
+            event_type="authorization_allowed" if result.allowed else "authorization_denied",
+            severity="info" if result.allowed else "warning",
+            source="authorization_engine",
+            metadata={
+                "role": result.role,
+                "permission": result.permission,
+                "reason": result.reason,
+            },
+        )

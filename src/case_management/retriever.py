@@ -26,7 +26,10 @@ class CaseRetriever:
         embedder: CaseEmbedder instance (or create new)
         vector_store: VectorStore instance (or create new)
         embedding_dim: Dimension of embeddings
-        similarity_threshold: Minimum similarity score to return
+        similarity_threshold: Minimum similarity score to return. Defaults to
+            0.0, which preserves the historical behavior of returning the
+            top-k candidates without filtering; pass an explicit value to
+            filter results by minimum cosine similarity.
     """
     
     def __init__(
@@ -34,17 +37,29 @@ class CaseRetriever:
         embedder: Optional[CaseEmbedder] = None,
         vector_store: Optional[VectorStore] = None,
         embedding_dim: int = 768,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: float = 0.0,
     ):
         self.embedder = embedder or get_embedder(embedding_dim=embedding_dim)
         self.vector_store = vector_store or VectorStore(
             embedding_dim=embedding_dim,
-            similarity_threshold=0.0,
+            similarity_threshold=similarity_threshold,
         )
         self.embedding_dim = embedding_dim
         self.similarity_threshold = similarity_threshold
 
         self._case_registry = {}
+
+    def _resolve_threshold(self, threshold: Optional[float]) -> float:
+        """
+        Return the effective similarity threshold for a query.
+
+        When no explicit threshold is supplied, fall back to the retriever's
+        configured ``similarity_threshold`` instead of the vector store's
+        internal default, so the constructor setting is actually honored.
+        """
+        if threshold is not None:
+            return threshold
+        return self.similarity_threshold
     
     def index_case(
         self,
@@ -80,7 +95,7 @@ class CaseRetriever:
             embedding = self.embedder.embed_case_explanation(explanation)
             
             # Prepare metadata with explanation text for reference
-            full_metadata = metadata or {}
+            full_metadata = dict(metadata or {})
             full_metadata.update({
                 "indexed_at": datetime.now(timezone.utc).isoformat(),
                 "summary": explanation.get("summary", ""),
@@ -158,7 +173,7 @@ class CaseRetriever:
             search_results = self.vector_store.query(
                 embedding=query_embedding,
                 k=max(k * 3, k),  # over-fetch to allow filtering
-                threshold=threshold,
+                threshold=self._resolve_threshold(threshold),
             )
 
             filtered_results = []
@@ -238,7 +253,7 @@ class CaseRetriever:
         search_results = self.vector_store.query(
             embedding=embedding,
             k=search_k,
-            threshold=threshold,
+            threshold=self._resolve_threshold(threshold),
         )
         
         # Filter out self if requested
@@ -286,7 +301,7 @@ class CaseRetriever:
         search_results = self.vector_store.query(
             embedding=query_embedding,
             k=k,
-            threshold=threshold,
+            threshold=self._resolve_threshold(threshold),
         )
         
         # Format
@@ -317,7 +332,12 @@ class CaseRetriever:
         Returns:
             True if updated, False if not found
         """
-        return self.vector_store.update_metadata(case_id, metadata)
+        updated = self.vector_store.update_metadata(case_id, metadata)
+
+        if updated and case_id in self._case_registry:
+            self._case_registry[case_id]["metadata"].update(metadata)
+
+        return updated
     
     def remove_case(self, case_id: str) -> bool:
         """

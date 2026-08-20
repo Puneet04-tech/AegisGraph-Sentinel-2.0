@@ -70,6 +70,47 @@ def test_compute_risk_score_reuses_betweenness_centrality(monkeypatch):
     assert calls["count"] == 1
 
 
+def test_mule_penalty_applied_without_graph_loaded(monkeypatch):
+    """Known mule accounts must be penalized even when the graph is not loaded."""
+    state = SimpleNamespace(
+        graph_loaded=False,
+        transaction_graph=None,
+        mule_accounts={"mule_src", "mule_dst"},
+        account_profiles={},
+        centrality_baseline={},
+        centrality_window_size=3,
+    )
+    monkeypatch.setattr("src.api.main.state", state)
+    risk_mod._CENTRALITY_CACHE.clear()
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "mule_src", "target_account": "mule_dst", "amount": 10.0}
+    )
+
+    # Source (0.6) + target (0.4) + both (0.3) = 1.3 -> capped at 1.0.
+    assert result["breakdown"]["graph"] == pytest.approx(1.0)
+
+
+def test_mule_penalty_absent_for_clean_accounts_without_graph(monkeypatch):
+    """Non-mule accounts get no mule penalty when the graph is not loaded."""
+    state = SimpleNamespace(
+        graph_loaded=False,
+        transaction_graph=None,
+        mule_accounts={"mule_src"},
+        account_profiles={},
+        centrality_baseline={},
+        centrality_window_size=3,
+    )
+    monkeypatch.setattr("src.api.main.state", state)
+    risk_mod._CENTRALITY_CACHE.clear()
+
+    result = risk_mod.compute_risk_score(
+        {"source_account": "clean_src", "target_account": "clean_dst", "amount": 10.0}
+    )
+
+    assert result["breakdown"]["graph"] == pytest.approx(0.0)
+
+
 class _FailingBaseline(dict):
     def __contains__(self, key):
         raise RuntimeError("lateral boom")
@@ -197,3 +238,35 @@ def test_lateral_movement_baseline_update_is_atomic_under_concurrency(monkeypatc
     assert len(warning_events) == 1
     assert len(state.centrality_baseline["source"]) == 3
     assert all("risk_score" in result for result in results)
+
+
+def test_lateral_movement_increment_reaches_breakdown_and_score(monkeypatch):
+    """A detected lateral-movement spike must raise the graph component (by
+    DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT) and the final risk score."""
+    from src.config import defaults as config_defaults
+
+    def run(baseline):
+        state = _make_state(graph=_FakeGraph(), centrality_baseline=baseline)
+        monkeypatch.setattr("src.api.main.state", state)
+        monkeypatch.setattr(risk_mod, "_get_betweenness_centrality", lambda graph: {"source": 0.9})
+        monkeypatch.setattr(risk_mod.nx, "descendants", lambda graph, node: set())
+        monkeypatch.setattr(risk_mod.nx, "is_directed_acyclic_graph", lambda graph: True)
+        return risk_mod.compute_risk_score(
+            {"source_account": "source", "target_account": "target", "amount": 10}
+        )
+
+    no_spike = run({})
+    spiking = run({"source": [0.01, 0.01, 0.01]})
+
+    increment = config_defaults.DEFAULT_LATERAL_MOVEMENT_RISK_INCREMENT
+    graph_weight = config_defaults.DEFAULT_COMPONENT_WEIGHTS["graph"]
+
+    assert no_spike["lateral_movement_detected"] is False
+    assert spiking["lateral_movement_detected"] is True
+    assert spiking["breakdown"]["graph"] == pytest.approx(
+        min(no_spike["breakdown"]["graph"] + increment, 1.0)
+    )
+    assert spiking["risk_score"] == pytest.approx(
+        min(no_spike["risk_score"] + increment * graph_weight, 1.0)
+    )
+    assert spiking["risk_score"] > no_spike["risk_score"]

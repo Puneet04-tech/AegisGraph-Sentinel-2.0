@@ -15,6 +15,59 @@ from src.utils.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
+# A backend outage affects every request, so reporting it per request buries the
+# incident in its own noise. The first failure is reported with a traceback and
+# further ones are summarised at most once per interval.
+_OUTAGE_LOG_INTERVAL_SECONDS = 60.0
+_outage_state: Dict[str, float] = {"last_logged": 0.0, "suppressed": 0.0}
+
+
+def _reset_outage_log_state() -> None:
+    """Clear the throttle. Intended for tests."""
+    _outage_state["last_logged"] = 0.0
+    _outage_state["suppressed"] = 0.0
+
+
+def _note_backend_available() -> None:
+    """Report recovery once, so a later outage starts a fresh report."""
+    if _outage_state["last_logged"] == 0.0:
+        return
+    suppressed = int(_outage_state["suppressed"])
+    _reset_outage_log_state()
+    logger.warning(
+        "Rate limiter backend is available again (%d requests were allowed "
+        "without a limit check)",
+        suppressed,
+    )
+
+
+def _log_backend_unavailable(exc: Exception) -> None:
+    """Report the limiter being unavailable without one entry per request."""
+    now = time.monotonic()
+    last = _outage_state["last_logged"]
+
+    if last == 0.0:
+        _outage_state["last_logged"] = now
+        logger.warning(
+            "Rate limiter unavailable, allowing requests: %s", exc, exc_info=True
+        )
+        return
+
+    if now - last >= _OUTAGE_LOG_INTERVAL_SECONDS:
+        suppressed = int(_outage_state["suppressed"])
+        _outage_state["last_logged"] = now
+        _outage_state["suppressed"] = 0.0
+        logger.warning(
+            "Rate limiter still unavailable, allowing requests: %s "
+            "(%d further occurrences in the last %ds)",
+            exc,
+            suppressed,
+            int(_OUTAGE_LOG_INTERVAL_SECONDS),
+        )
+        return
+
+    _outage_state["suppressed"] += 1
+
 _TOKEN_BUCKET_LUA = """
 local key = KEYS[1]
 local now = tonumber(ARGV[1])
@@ -102,9 +155,16 @@ def check_rate_limit(
     """Check a distributed token bucket and fail open if Redis is unavailable."""
     settings = get_settings()
     configured_limit, configured_window = _parse_rate_limit(settings.api.rate_limit)
-    limit = int(limit or configured_limit)
-    burst = int(burst or settings.api.rate_limit_burst or limit)
-    window_seconds = int(window_seconds or settings.api.rate_limit_window_seconds or configured_window)
+    limit = int(limit) if limit is not None else configured_limit
+    burst = int(burst) if burst is not None else (settings.api.rate_limit_burst if settings.api.rate_limit_burst is not None else limit)
+    window_seconds = int(window_seconds) if window_seconds is not None else (settings.api.rate_limit_window_seconds if settings.api.rate_limit_window_seconds is not None else configured_window)
+
+    if limit <= 0 or burst <= 0:
+        return RateLimitDecision(
+            allowed=False,
+            retry_after_seconds=max(1, window_seconds),
+            remaining_tokens=0.0,
+        )
 
     capacity = max(1, burst)
     refill_rate = max(1e-9, float(limit) / float(window_seconds))
@@ -125,13 +185,14 @@ def check_rate_limit(
         allowed = bool(int(result[0]))
         retry_after = int(result[1])
         remaining = float(result[2])
+        _note_backend_available()
         return RateLimitDecision(
             allowed=allowed,
             retry_after_seconds=retry_after,
             remaining_tokens=remaining,
         )
     except Exception as exc:
-        logger.warning("Rate limiter unavailable, allowing request: %s", exc, exc_info=True)
+        _log_backend_unavailable(exc)
         return RateLimitDecision(
             allowed=True,
             retry_after_seconds=0,

@@ -16,7 +16,6 @@ Features extracted:
 
 import math
 import numpy as np
-import torch
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from scipy.stats import variation
@@ -84,7 +83,7 @@ class KeystrokeDynamicsAnalyzer:
         Returns:
             Dictionary of extracted features
         """
-        events = keystroke_sequence.events
+        events = sorted(keystroke_sequence.events, key=lambda e: e.press_time)
         
         if len(events) < 2:
             return self._empty_features()
@@ -220,23 +219,24 @@ class KeystrokeDynamicsAnalyzer:
         error_stress = min(features['error_rate'] * 5, 1.0)  # scale to 0-1
         
         # 4. Decreased rhythm consistency
-        rhythm_stress = 1.0 - features['rhythm_consistency']
+        rhythm_stress = max(0.0, min(1.0, 1.0 - features.get('rhythm_consistency', 0.5)))
         
         # 5. Increased flight time variability
-        flight_cv_stress = min(features['flight_time_cv'] / 0.5, 1.0)
+        flight_cv_stress = min(max(0.0, features.get('flight_time_cv', 0.0)) / 0.5, 1.0)
         
         # Weighted combination
-        stress_score = (
+        raw_stress_score = (
             0.30 * hold_cv_stress +
             0.25 * wpm_stress +
             0.20 * error_stress +
             0.15 * rhythm_stress +
             0.10 * flight_cv_stress
         )
+        stress_score = max(0.0, min(1.0, _safe_float(raw_stress_score)))
         
         return {
-            'stress_score': _safe_float(stress_score),
-            'is_stressed': _safe_float(stress_score) > self.stress_threshold,
+            'stress_score': stress_score,
+            'is_stressed': stress_score > self.stress_threshold,
             'hold_cv_stress': hold_cv_stress,
             'wpm_stress': wpm_stress,
             'error_stress': error_stress,
@@ -273,10 +273,12 @@ class KeystrokeDynamicsAnalyzer:
         if len(flight_times) < 2:
             return 0.5
         
-        cv = _safe_float(variation(flight_times))
+        raw_cv = variation(flight_times)
+        # Protect against negative CV resulting from negative mean or out-of-order streams
+        cv = max(0.0, _safe_float(raw_cv))
         # Map CV to consistency score (lower CV = higher consistency)
         consistency = 1.0 / (1.0 + cv)
-        return _safe_float(consistency, 0.5)
+        return min(1.0, max(0.0, _safe_float(consistency, 0.5)))
     
     def _empty_features(self) -> Dict[str, float]:
         """Return empty feature dict"""
@@ -336,6 +338,7 @@ class KeystrokeDynamicsAnalyzer:
             )
 
         if normalized:
+            normalized.sort(key=lambda e: e.press_time)
             session_start = min(e.press_time for e in normalized)
             session_end = max(e.release_time for e in normalized)
         else:
@@ -448,6 +451,12 @@ def analyze_keystroke_data(
     if is_backspace is None:
         is_backspace = [False] * len(press_times)
 
+    # Validate optional list lengths so zip() below cannot silently drop events
+    if len(key_ids) != len(press_times) or len(is_backspace) != len(press_times):
+        raise ValueError(
+            "key_ids and is_backspace must have the same length as press_times/release_times"
+        )
+
     events = [
         KeystrokeEvent(kid, pt, rt, bs)
         for kid, pt, rt, bs in zip(key_ids, press_times, release_times, is_backspace)
@@ -465,4 +474,24 @@ def analyze_keystroke_data(
     stress_indicators = analyzer.detect_stress(features)
     
     # Combine
-    return {**features, **stress_indicators}
+    result = {**features, **stress_indicators}
+
+    # Compute 1D Temporal Transformer Stress Score
+    try:
+        import torch
+        from src.models.keystroke_transformer import KeystrokeTransformer
+        model = KeystrokeTransformer()
+        model.eval()
+        
+        hold_times = [rt - pt for pt, rt in zip(press_times, release_times)]
+        flight_times = [press_times[i+1] - release_times[i] for i in range(len(press_times)-1)] + [0.0]
+        
+        seq_tensor = torch.tensor([[ht, ft] for ht, ft in zip(hold_times, flight_times)], dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            tf_score = float(model(seq_tensor).squeeze().item())
+        result["transformer_stress_score"] = round(tf_score, 4)
+    except Exception:
+        result["transformer_stress_score"] = result.get("stress_score", 0.0)
+
+    return result
+

@@ -9,7 +9,7 @@ Comprehensive tests for:
 """
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.observability import (
     ComponentStatus,
@@ -17,6 +17,7 @@ from src.observability import (
     AlertStatus,
     ObservabilityStore,
     HealthMonitor,
+    PerformanceMetric,
     PerformanceTracker,
     AlertManager,
     PlatformDashboard,
@@ -175,6 +176,232 @@ class TestPerformanceTracker:
         assert "overall_health" in summary
         assert "components" in summary
 
+    def test_get_throughput_stats_empty(self, performance_tracker):
+        """Throughput is zero when no metrics exist."""
+        stats = performance_tracker.get_throughput_stats("empty_component")
+
+        assert stats["requests_last_hour"] == 0
+        assert stats["avg_per_second"] == 0
+
+    def test_get_throughput_stats_sums_recent_requests(self, performance_tracker):
+        """Throughput sums request values within the last hour."""
+        performance_tracker.record_throughput(component="api", count=100)
+        performance_tracker.record_throughput(component="api", count=200)
+
+        stats = performance_tracker.get_throughput_stats("api")
+
+        assert stats["requests_last_hour"] == 300
+        assert stats["avg_per_second"] == pytest.approx(300 / 3600)
+
+    def test_get_throughput_stats_is_component_scoped(self, performance_tracker):
+        """Requests recorded for one component do not leak into another."""
+        performance_tracker.record_throughput(component="api", count=100)
+        performance_tracker.record_throughput(component="worker", count=900)
+
+        stats = performance_tracker.get_throughput_stats("api")
+
+        assert stats["requests_last_hour"] == 100
+
+    def test_get_throughput_stats_window_is_volume_independent(self):
+        """Throughput aggregates the full hour window, not a truncated set."""
+        store = ObservabilityStore(max_metrics=5000)
+        tracker = PerformanceTracker(store=store)
+        now = datetime.now(timezone.utc)
+
+        # 1200 in-window request records (value 1 each) — more than the old
+        # 1000-record cap — plus stale records outside the window with much
+        # larger values that must be excluded.
+        for _ in range(1200):
+            store.store_metric(
+                PerformanceMetric(
+                    metric_name="requests",
+                    component="api",
+                    value=1.0,
+                    unit="count",
+                    timestamp=now - timedelta(minutes=30),
+                )
+            )
+        for _ in range(200):
+            store.store_metric(
+                PerformanceMetric(
+                    metric_name="requests",
+                    component="api",
+                    value=100.0,
+                    unit="count",
+                    timestamp=now - timedelta(hours=2),
+                )
+            )
+
+        stats = tracker.get_throughput_stats("api")
+
+        assert stats["requests_last_hour"] == 1200
+        assert stats["avg_per_second"] == pytest.approx(1200 / 3600)
+
+    def test_get_latency_stats_exact_percentiles(self, performance_tracker):
+        """Percentiles are computed from sorted values."""
+        for i in range(100):
+            performance_tracker.record_request_latency(
+                component="api", endpoint="/v1/score", latency_ms=float(i)
+            )
+
+        stats = performance_tracker.get_latency_stats("api")
+
+        assert stats["count"] == 100
+        assert stats["min"] == 0
+        assert stats["max"] == 99
+        assert stats["avg"] == pytest.approx(49.5)
+        assert stats["p50"] == 50
+        assert stats["p95"] == 95
+        assert stats["p99"] == 99
+
+    def test_get_latency_stats_no_metrics(self, performance_tracker):
+        """Latency stats report an error when no metrics exist."""
+        stats = performance_tracker.get_latency_stats("empty_component")
+        assert "error" in stats
+
+    def test_get_latency_stats_uses_full_distribution(self):
+        """Percentiles use all latency samples, not only the newest 1000."""
+        store = ObservabilityStore(max_metrics=5000)
+        tracker = PerformanceTracker(store=store)
+        for i in range(1500):
+            tracker.record_request_latency(
+                component="api", endpoint="/v1/score", latency_ms=float(i)
+            )
+
+        stats = tracker.get_latency_stats("api")
+
+        assert stats["count"] == 1500
+        assert stats["min"] == 0
+        assert stats["max"] == 1499
+        assert stats["p50"] == 750
+
+    def test_record_metric_stores_tags(self, performance_tracker):
+        """Tags recorded with a metric are retrievable through get_metrics."""
+        performance_tracker.record_metric(
+            metric_name="latency_ms",
+            component="api",
+            value=12.5,
+            unit="ms",
+            tags={"endpoint": "/v1/score", "region": "ap-south"},
+        )
+
+        metrics = performance_tracker.get_metrics(component="api", metric_name="latency_ms")
+        assert len(metrics) == 1
+        assert metrics[0].tags["endpoint"] == "/v1/score"
+        assert metrics[0].tags["region"] == "ap-south"
+
+    def test_get_metrics_honors_limit(self, performance_tracker):
+        """get_metrics limits the number of returned records."""
+        for i in range(25):
+            performance_tracker.record_metric(
+                metric_name="latency_ms",
+                component="api",
+                value=float(i),
+                unit="ms",
+            )
+
+        metrics = performance_tracker.get_metrics(component="api", limit=10)
+
+        assert len(metrics) == 10
+
+    def test_get_metrics_since_bounds_window_before_truncation(self, store):
+        """get_metrics applies the since window before the limit truncation."""
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        store.store_metric(
+            PerformanceMetric(
+                metric_name="requests", component="api", value=1.0, unit="count",
+                timestamp=base,
+            )
+        )
+        store.store_metric(
+            PerformanceMetric(
+                metric_name="requests", component="api", value=2.0, unit="count",
+                timestamp=base + timedelta(hours=2),
+            )
+        )
+
+        metrics = store.get_metrics(component="api", since=base + timedelta(hours=1))
+
+        assert len(metrics) == 1
+        assert metrics[0].value == 2.0
+
+    def test_get_error_rate_no_metrics(self, performance_tracker):
+        """Error rate is zero when no metrics recorded."""
+        stats = performance_tracker.get_error_rate("empty_component")
+
+        assert stats["total_requests"] == 0
+        assert stats["errors"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_single_batch(self, performance_tracker):
+        """Error rate uses summed request values, not record counts."""
+        performance_tracker.record_throughput(component="api", count=1000)
+        performance_tracker.record_errors(component="api", count=50)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 1000
+        assert stats["errors"] == 50
+        assert stats["error_rate_percent"] == 5.0
+
+    def test_get_error_rate_multiple_batches(self, performance_tracker):
+        """Error rate sums requests across multiple throughput records."""
+        performance_tracker.record_throughput(component="api", count=400)
+        performance_tracker.record_throughput(component="api", count=600)
+        performance_tracker.record_errors(component="api", count=20)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 1000
+        assert stats["error_rate_percent"] == 2.0
+
+    def test_get_error_rate_no_errors(self, performance_tracker):
+        """Error rate is zero when requests succeed."""
+        performance_tracker.record_throughput(component="api", count=500)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["errors"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_errors_without_requests(self, performance_tracker):
+        """Error rate is zero when there are no request metrics."""
+        performance_tracker.record_errors(component="api", count=10)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 0
+        assert stats["error_rate_percent"] == 0
+
+    def test_get_error_rate_component_isolation(self, performance_tracker):
+        """Errors in one component do not affect another component's rate."""
+        performance_tracker.record_throughput(component="api", count=1000)
+        performance_tracker.record_errors(component="api", count=10)
+        performance_tracker.record_errors(component="worker", count=900)
+
+        stats = performance_tracker.get_error_rate("api")
+
+        assert stats["errors"] == 10
+        assert stats["error_rate_percent"] == 1.0
+
+    def test_get_error_rate_volume_independent(self):
+        """Error rate uses complete per-metric pools, not a truncated mix."""
+        store = ObservabilityStore(max_metrics=5000)
+        tracker = PerformanceTracker(store=store)
+
+        # Errors are older than the requests, so a newest-1000 truncation
+        # would drop them entirely and report a 0% rate.
+        for _ in range(300):
+            tracker.record_errors(component="api", count=1)
+        for _ in range(1000):
+            tracker.record_throughput(component="api", count=1)
+
+        stats = tracker.get_error_rate("api")
+
+        assert stats["total_requests"] == 1000
+        assert stats["errors"] == 300
+        assert stats["error_rate_percent"] == pytest.approx(30.0)
+
 
 # =============================================================================
 # Alert Manager Tests
@@ -327,6 +554,28 @@ class TestDashboard:
         
         assert "report_date" in report
         assert "total_audit_entries" in report
+
+    def test_dynamic_telemetry_in_snapshot(self, store, dashboard, performance_tracker):
+        """Test that dashboard snapshots record dynamic request and latency telemetry."""
+        # Initial snapshot with no metrics recorded
+        d1 = dashboard.get_dashboard_data()
+        s1 = store.get_latest_snapshot()
+        assert s1.total_requests == 0
+        assert s1.avg_response_time_ms == 0.0
+
+        # Record metrics
+        performance_tracker.record_throughput("api", 250)
+        performance_tracker.record_request_latency("api", "/v1/test", 120.0)
+        performance_tracker.record_request_latency("api", "/v1/test", 180.0)
+
+        d2 = dashboard.get_dashboard_data()
+        s2 = store.get_latest_snapshot()
+
+        assert s2.total_requests == 250
+        assert s2.avg_response_time_ms == 150.0
+        assert d2["total_requests"] == 250
+        assert d2["avg_response_time_ms"] == 150.0
+
 
 
 # =============================================================================

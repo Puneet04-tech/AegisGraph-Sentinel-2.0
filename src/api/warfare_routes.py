@@ -4,7 +4,7 @@ API routes for Cyber-Fraud Warfare Intelligence Platform.
 Provides endpoints for threat actor analysis, campaign tracking, and strategic reporting.
 """
 
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -70,7 +70,7 @@ async def list_threat_actors(
     sponsor: Optional[str] = Query(None),
     threat_level: Optional[str] = Query(None),
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """List all threat actors."""
     actors = store.list_threat_actors(
         actor_type=actor_type,
@@ -84,7 +84,7 @@ async def list_threat_actors(
 async def create_threat_actor(
     actor: ThreatActorCreate,
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Create a new threat actor."""
     actor_data = {
         "name": actor.name,
@@ -104,7 +104,7 @@ async def create_threat_actor(
 async def get_threat_actor(
     actor_id: str,
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Get a specific threat actor."""
     actor = store.get_threat_actor(actor_id)
     if not actor:
@@ -116,7 +116,7 @@ async def get_threat_actor(
 async def analyze_threat_actor(
     actor_id: str,
     engine=Depends(get_actor_engine),
-):
+) -> Dict[str, Any]:
     """Analyze a threat actor."""
     try:
         analysis = engine.analyze_actor(actor_id)
@@ -139,7 +139,7 @@ async def list_campaigns(
     status: Optional[str] = Query(None),
     target_sector: Optional[str] = Query(None),
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """List all campaigns."""
     campaigns = store.list_campaigns(
         status=status,
@@ -152,7 +152,7 @@ async def list_campaigns(
 async def create_campaign(
     campaign: CampaignCreate,
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Create a new campaign."""
     campaign_data = {
         "name": campaign.name,
@@ -170,7 +170,7 @@ async def create_campaign(
 async def get_campaign(
     campaign_id: str,
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Get a specific campaign."""
     campaign = store.get_campaign(campaign_id)
     if not campaign:
@@ -182,7 +182,7 @@ async def get_campaign(
 async def attribute_campaign(
     campaign_id: str,
     engine=Depends(get_attribution_engine),
-):
+) -> Dict[str, Any]:
     """Attribute a campaign to threat actors."""
     try:
         result = engine.attribute_campaign(campaign_id)
@@ -201,7 +201,7 @@ async def attribute_campaign(
 async def list_attack_patterns(
     category: Optional[str] = Query(None),
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """List attack patterns."""
     patterns = store.list_attack_patterns(category=category)
     return {"patterns": patterns, "count": len(patterns)}
@@ -210,7 +210,7 @@ async def list_attack_patterns(
 @router.get("/assessments")
 async def list_risk_assessments(
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """List risk assessments."""
     assessments = list(store.risk_assessments.values())
     return {"assessments": assessments, "count": len(assessments)}
@@ -220,7 +220,7 @@ async def list_risk_assessments(
 async def create_risk_assessment(
     request: RiskAssessmentRequest,
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Create a risk assessment."""
     assessment_data = {
         "entity_type": request.entity_type,
@@ -235,7 +235,7 @@ async def create_risk_assessment(
 @router.get("/dashboard")
 async def get_warfare_dashboard(
     dashboard=Depends(get_dashboard),
-):
+) -> Dict[str, Any]:
     """Get strategic warfare dashboard."""
     return dashboard.generate_dashboard()
 
@@ -243,7 +243,7 @@ async def get_warfare_dashboard(
 @router.get("/executive-brief")
 async def get_executive_brief(
     dashboard=Depends(get_dashboard),
-):
+) -> Dict[str, Any]:
     """Get executive threat briefing."""
     return dashboard.generate_executive_brief()
 
@@ -251,6 +251,6 @@ async def get_executive_brief(
 @router.get("/stats")
 async def get_warfare_stats(
     store=Depends(get_warfare_store),
-):
+) -> Dict[str, Any]:
     """Get warfare intelligence statistics."""
     return store.get_warfare_stats()

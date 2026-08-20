@@ -128,6 +128,47 @@ class TestGeofencingEngineDetection:
         assert len(fired) == 1
         assert fired[0].event_type == "exit"
 
+    def test_entry_recorded_on_default_fence_without_alert(self):
+        default_fence = Geofence(name="default", boundary=self.fence.boundary)
+        default_fid = self.engine.add_geofence(default_fence)
+
+        self.engine.update_asset_location(_loc("a1", 5.0, 5.0))  # outside
+        events = self.engine.update_asset_location(_loc("a1", 0.0, 0.0))  # inside
+
+        # Both fences record an entry; the default fence does not raise an alert.
+        assert len(events) == 2
+        entry = [e for e in events if e.fence_id == default_fid][0]
+        assert entry.event_type == "entry"
+        assert entry.alert_raised is False
+        assert len(self.engine.get_events(asset_id="a1")) == 2
+
+    def test_exit_recorded_when_alert_disabled(self):
+        quiet_fence = Geofence(
+            name="quiet", boundary=self.fence.boundary, alert_on_exit=False
+        )
+        quiet_fid = self.engine.add_geofence(quiet_fence)
+
+        self.engine.update_asset_location(_loc("a1", 0.0, 0.0))  # inside
+        events = self.engine.update_asset_location(_loc("a1", 5.0, 5.0))  # outside
+
+        exit_event = [e for e in events if e.fence_id == quiet_fid][0]
+        assert exit_event.event_type == "exit"
+        assert exit_event.alert_raised is False
+        assert len(self.engine.get_events(asset_id="a1", event_type="exit")) == 2
+
+    def test_alert_callback_not_called_for_non_alerting_crossing(self):
+        fired = []
+        engine = GeofencingEngine(alert_callback=fired.append)
+        engine.add_geofence(Geofence(name="default", boundary=self.fence.boundary))
+
+        engine.update_asset_location(_loc("a1", 5.0, 5.0))  # outside
+        events = engine.update_asset_location(_loc("a1", 0.0, 0.0))  # inside
+
+        assert len(events) == 1
+        assert events[0].event_type == "entry"
+        assert events[0].alert_raised is False
+        assert fired == []
+
     def test_is_inside(self):
         self.engine.update_asset_location(_loc("a1", 0.0, 0.0))
         assert self.engine.is_inside("a1", self.fid) is True

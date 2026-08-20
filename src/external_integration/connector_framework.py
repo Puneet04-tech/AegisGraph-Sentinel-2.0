@@ -4,8 +4,9 @@ Connector Framework Module.
 Provides connector management, connection pooling, and health monitoring.
 """
 
-import random
-from typing import Dict, List, Optional, Any
+import base64
+import time
+from typing import Callable, Dict, List, Optional, Any
 from datetime import datetime, timezone
 import logging
 
@@ -31,10 +32,105 @@ class ConnectorFramework:
         - Health monitoring
     """
     
-    def __init__(self, store: Optional[IntegrationStore] = None):
-        """Initialize the connector framework."""
+    #: HTTP status codes at or above this are treated as a failure.
+    ERROR_STATUS_FLOOR = 400
+
+    #: Timeout applied to connection probes and requests, in seconds.
+    REQUEST_TIMEOUT_SECONDS = 30
+
+    #: Response body kept on a result, in characters.
+    RESPONSE_BODY_LIMIT = 2000
+
+    def __init__(
+        self,
+        store: Optional[IntegrationStore] = None,
+        transport: Optional[Callable[..., Any]] = None,
+    ):
+        """Initialize the connector framework.
+
+        Args:
+            store: Optional integration store
+            transport: Callable performing the HTTP request, matching
+                ``requests.request(method, url, **kwargs)``. Injectable so
+                connections can be exercised without reaching the network.
+        """
         self._store = store or get_integration_store()
+        self._transport = transport
         self._module_id = "connector_framework"
+
+    def _request(self, method: str, url: str, **kwargs: Any) -> Any:
+        """Perform an HTTP request, importing requests lazily."""
+        if self._transport is not None:
+            return self._transport(method, url, **kwargs)
+
+        import requests
+
+        return requests.request(method, url, **kwargs)
+
+    def _probe(self, connection: Connection) -> tuple:
+        """Contact a connection's endpoint.
+
+        Returns ``(reachable, latency_ms, error)``. Never raises: an
+        unreachable endpoint is an unhealthy connection, not an exception.
+        """
+        started = time.monotonic()
+        try:
+            response = self._request(
+                "GET",
+                connection.endpoint,
+                headers=self._auth_headers(connection),
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Probe of %s (%s) failed: %s",
+                connection.name, connection.endpoint, exc,
+            )
+            return False, round((time.monotonic() - started) * 1000, 2), str(exc)
+
+        latency_ms = round((time.monotonic() - started) * 1000, 2)
+        status_code = getattr(response, "status_code", None)
+
+        if status_code is None or status_code >= self.ERROR_STATUS_FLOOR:
+            return False, latency_ms, f"HTTP {status_code}"
+
+        return True, latency_ms, None
+
+    def _auth_headers(self, connection: Connection) -> Dict[str, str]:
+        """Build authentication headers from the connection's auth config.
+
+        auth_config was stored and never used by any request, so credentials a
+        caller supplied were silently ignored.
+        """
+        config = connection.auth_config or {}
+        headers: Dict[str, str] = {}
+
+        if connection.auth_type == AuthType.API_KEY:
+            api_key = config.get("api_key")
+            if api_key:
+                headers[config.get("header", "X-API-Key")] = str(api_key)
+        elif connection.auth_type in (AuthType.BEARER, AuthType.OAUTH2):
+            token = config.get("token") or config.get("access_token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        elif connection.auth_type == AuthType.BASIC:
+            username = config.get("username", "")
+            password = config.get("password", "")
+            if username or password:
+                encoded = base64.b64encode(
+                    f"{username}:{password}".encode("utf-8")
+                ).decode("ascii")
+                headers["Authorization"] = f"Basic {encoded}"
+
+        return headers
+
+    def _response_body(self, response: Any) -> Any:
+        """Best-effort decode of a response body."""
+        try:
+            return response.json()
+        except Exception:
+            return str(getattr(response, "text", "") or "")[:self.RESPONSE_BODY_LIMIT]
+
     
     def get_available_connectors(self) -> List[Dict[str, Any]]:
         """Get list of available pre-built connectors."""
@@ -107,16 +203,20 @@ class ConnectorFramework:
         return connection
     
     def connect(self, connection_id: str) -> bool:
-        """Establish connection to external system."""
+        """Establish connection to external system.
+
+        Connecting used to be ``random.random() > 0.1``: the endpoint was
+        never contacted, so a connection to a host that does not exist came up
+        ACTIVE and HEALTHY nine times out of ten.
+        """
         connection = self._store.get_connection(connection_id)
         if not connection:
             return False
-        
+
         logger.info(f"Connecting to {connection.name}")
-        
-        # Simulate connection attempt
-        success = random.random() > 0.1  # 90% success rate
-        
+
+        success, _, error = self._probe(connection)
+
         if success:
             connection.status = IntegrationStatus.ACTIVE
             connection.health_status = "HEALTHY"
@@ -128,7 +228,10 @@ class ConnectorFramework:
             connection.status = IntegrationStatus.ERROR
             connection.health_status = "UNHEALTHY"
             self._store.store_connection(connection)
-            self._log_action("connection", "connect", connection_id, "FAILED", error_message="Connection failed")
+            self._log_action(
+                "connection", "connect", connection_id, "FAILED",
+                error_message=error or "Connection failed",
+            )
             return False
     
     def disconnect(self, connection_id: str) -> bool:
@@ -153,10 +256,12 @@ class ConnectorFramework:
             return {"error": "Connection not found"}
         
         logger.info(f"Health check for {connection.name}")
-        
-        # Simulate health check
-        is_healthy = random.random() > 0.05  # 95% healthy
-        
+
+        # The health check used to be a 95% coin flip that never contacted the
+        # endpoint, so health_percentage in the summary below described the
+        # coin rather than any external system.
+        is_healthy, latency_ms, error = self._probe(connection)
+
         connection.last_health_check = datetime.now(timezone.utc)
         connection.health_status = "HEALTHY" if is_healthy else "UNHEALTHY"
         
@@ -171,6 +276,8 @@ class ConnectorFramework:
             "status": connection.status.value,
             "health_status": connection.health_status,
             "last_check": connection.last_health_check.isoformat(),
+            "latency_ms": latency_ms,
+            "error": error,
         }
     
     def execute_request(
@@ -189,25 +296,52 @@ class ConnectorFramework:
             return {"error": "Connection not active"}
         
         logger.info(f"Executing {method} {path} on {connection.name}")
-        
-        # Simulate request execution
-        success = random.random() > 0.05
-        duration = random.uniform(10, 500)
-        
-        if success:
-            self._log_action("request", f"{method}_{path}", connection_id, "SUCCESS", duration_ms=duration)
-            return {
-                "success": True,
-                "status_code": 200,
-                "data": {"result": "success", "duration_ms": duration},
-            }
-        else:
-            self._log_action("request", f"{method}_{path}", connection_id, "FAILED", duration_ms=duration, error_message="Request failed")
+
+        # The request was never sent: success was random.random() > 0.05 and
+        # the reported duration_ms was random.uniform(10, 500), so callers
+        # were shown latency figures for calls that never happened.
+        url = f"{connection.endpoint.rstrip('/')}/{path.lstrip('/')}"
+        started = time.monotonic()
+
+        try:
+            response = self._request(
+                method,
+                url,
+                headers=self._auth_headers(connection),
+                json=data,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            duration = (time.monotonic() - started) * 1000
+            logger.warning("Request to %s failed: %s", url, exc)
+            self._log_action(
+                "request", f"{method}_{path}", connection_id, "FAILED",
+                duration_ms=duration, error_message=str(exc),
+            )
             return {
                 "success": False,
-                "status_code": 500,
-                "error": "Request failed",
+                "status_code": None,
+                "error": str(exc),
+                "duration_ms": duration,
             }
+
+        duration = (time.monotonic() - started) * 1000
+        status_code = getattr(response, "status_code", None)
+        success = status_code is not None and status_code < self.ERROR_STATUS_FLOOR
+
+        self._log_action(
+            "request", f"{method}_{path}", connection_id,
+            "SUCCESS" if success else "FAILED",
+            duration_ms=duration,
+            error_message=None if success else f"HTTP {status_code}",
+        )
+
+        return {
+            "success": success,
+            "status_code": status_code,
+            "data": self._response_body(response),
+            "duration_ms": duration,
+        }
     
     def get_connection_health_summary(self) -> Dict[str, Any]:
         """Get overall connection health summary."""

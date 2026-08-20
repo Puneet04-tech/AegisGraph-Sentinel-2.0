@@ -23,6 +23,15 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ValidationError",
+    "TransactionValidator",
+    "RateLimiter",
+    "StrictRateLimit",
+    "get_rate_limiter",
+    "reset_rate_limiter",
+]
+
 
 class ValidationError(Exception):
     """Custom validation exception with helpful suggestions."""
@@ -463,7 +472,7 @@ def get_rate_limiter() -> RateLimiter:
     return _rate_limiter
 
 
-def reset_rate_limiter():
+def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
 
 
@@ -498,10 +507,10 @@ class StrictRateLimit:
         return getattr(route, "path", None) or request.url.path
 
     async def __call__(
-        self, 
-        request: Request, 
+        self,
+        request: Request,
         x_api_key: Optional[str] = Header(None, alias="X-API-Key")
-    ):
+    ) -> None:
         limiter = get_rate_limiter()
         scope = self._scope_for(request)
         
@@ -529,3 +538,11 @@ class StrictRateLimit:
                     headers={"Retry-After": str(retry)}
                 )
 
+
+# --- GENERATED: null_check ---
+def _validate_amount_not_none(amount):
+    """Guard: raise ValueError if amount is None."""
+    if amount is None:
+        raise ValueError("Transaction amount cannot be None")
+    return amount
+# --- END GENERATED ---

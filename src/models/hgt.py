@@ -107,7 +107,20 @@ class HGTConv(nn.Module):
     ):
         num_nodes = x.size(0)
         H, C = self.heads, self.d_k
-        
+
+        # Early return for empty edge index — no message passing possible
+        if edge_index.numel() == 0 or edge_index.size(1) == 0:
+            if self.concat:
+                out = torch.zeros(num_nodes, H * C, device=x.device)
+            else:
+                out = torch.zeros(num_nodes, C, device=x.device)
+            if x.size(-1) == out.size(-1):
+                out = out + x
+            if return_attention_weights:
+                empty_weights = torch.zeros(0, H, device=x.device)
+                return out, (edge_index, empty_weights)
+            return out
+
         # 1. Project node features per type
         k = torch.zeros(num_nodes, H, C, device=x.device)
         q = torch.zeros(num_nodes, H, C, device=x.device)
@@ -155,20 +168,25 @@ class HGTConv(nn.Module):
             messages[mask] = msg_val
             
         # 3. Softmax normalize attention weights per target node
-        attn_weights = torch.zeros_like(attn_logits)
-        
-        max_logits = torch.full((num_nodes, H), float('-inf'), device=x.device)
+        # Numerically stable softmax: subtract per-node max before exp()
         dst_expanded = dst.unsqueeze(-1).expand_as(attn_logits)
+
+        max_logits = torch.full((num_nodes, H), float('-inf'), device=x.device)
         max_logits.scatter_reduce_(0, dst_expanded, attn_logits, reduce='amax', include_self=True)
-        max_logits = max_logits.clamp(min=0)
-        
+        # Replace -inf for nodes with no incoming edges with 0 to avoid NaN
+        max_logits = torch.where(
+            max_logits == float('-inf'),
+            torch.zeros_like(max_logits),
+            max_logits,
+        )
+
         shifted_logits = attn_logits - max_logits[dst]
         exp_logits = shifted_logits.exp()
         
         sum_exp = torch.zeros((num_nodes, H), device=x.device)
         sum_exp.scatter_add_(0, dst_expanded, exp_logits)
         
-        attn_weights = exp_logits / (sum_exp[dst] + 1e-16)
+        attn_weights = exp_logits / torch.clamp(sum_exp[dst], min=1e-12)
         attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
         
         # 4. Aggregate messages weighted by attention

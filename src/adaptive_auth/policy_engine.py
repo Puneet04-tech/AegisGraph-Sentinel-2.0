@@ -100,9 +100,11 @@ class PolicyEvaluator:
             return PolicyDecision(
                 policy_id=policy.policy_id,
                 policy_name=policy.name,
-                action=PolicyAction.ALLOW,
-                allowed=True,
-                requires_step_up=False,
+                action=policy.action_on_violation,
+                allowed=False,
+                requires_step_up=policy.step_up_required,
+                step_up_challenge_types=[ct.value for ct in policy.step_up_challenge_types],
+                denied_reason="Policy conditions not met",
                 matched_conditions=matched,
             )
         
@@ -343,7 +345,15 @@ class PolicyEngine:
         # Check for any deny decisions
         deny_decisions = [d for d in relevant if not d.allowed]
         if deny_decisions:
-            most_restrictive = max(deny_decisions, key=lambda d: d.action.value)
+            action_order = [
+                PolicyAction.ALLOW,
+                PolicyAction.REVIEW,
+                PolicyAction.CHALLENGE,
+                PolicyAction.STEP_UP,
+                PolicyAction.DENY,
+                PolicyAction.TERMINATE,
+            ]
+            most_restrictive = max(deny_decisions, key=lambda d: action_order.index(d.action))
             
             # Check if step-up could satisfy
             step_up_types = []

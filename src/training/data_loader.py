@@ -7,38 +7,60 @@ logger = logging.getLogger(__name__)
 
 # NOTE:
 # Tests monkeypatch `src.training.data_loader.torch.load`, so this module
-# must expose a `torch` attribute with a `load` attribute.
+# must keep exposing a `torch` attribute with a `load` attribute.
 #
-# Importing real torch in some CI environments can crash (e.g. triton
-# TORCH_LIBRARY re-registration). To keep tests stable, we expose a stub
-# that tests can monkeypatch. Production code lazily imports real torch.
-class _TorchStub:
-    def load(self, *args, **kwargs):
-        raise RuntimeError(
-            "Real torch is unavailable in this environment. "
-            "Production code should lazily import torch before calling torch.load."
-        )
+# Bind the real torch module when available so `torch.load(f,
+# weights_only=True)` deserializes graph artifacts with genuine PyTorch.
+# The stub fallback is only used when PyTorch is not installed at all, in
+# which case loading a graph artifact fails with a clear error.
+try:
+    import torch  # noqa: F401
+except ImportError:  # pragma: no cover - only when PyTorch is not installed
+    torch = None
 
-torch = _TorchStub()
+if torch is None:
+
+    class _TorchUnavailable:
+        def load(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyTorch is not installed in this environment. "
+                "Install torch to load graph artifacts."
+            )
+
+    torch = _TorchUnavailable()
 
 class AegisGraphLoader:
     """
     Handles memory-safe, temporal subgraph sampling for the HTGNN model.
     Prevents Out-Of-Memory (OOM) errors and data leakage (future peeking).
+
+    The train/validation split is temporal: training uses the earliest
+    train_fraction of accounts by their 'time' attribute, validation the
+    most recent remainder, so no future account ever leaks into training.
     """
-    
-    def __init__(self, graph_path: Optional[str] = None, batch_size: int = 128, chunk_size: int = 1000):
+
+    def __init__(
+        self,
+        graph_path: Optional[str] = None,
+        batch_size: int = 128,
+        chunk_size: int = 1000,
+        train_fraction: float = 0.8,
+    ):
+        if not 0.0 < train_fraction < 1.0:
+            raise ValueError(
+                f"train_fraction must be in (0, 1), got {train_fraction}"
+            )
         self.chunk_size = chunk_size
         self.graph_path = graph_path or os.getenv("AEGIS_GRAPH_PATH", 'synthetic_aegis_graph.pt')
         self.batch_size = batch_size
+        self.train_fraction = train_fraction
         self.data = self._load_and_prep_graph()
 
     def _load_and_prep_graph(self) -> Any:
         """Loads the HeteroData object and injects temporal attributes if missing."""
-        # IMPORTANT:
-        # Unit tests monkeypatch `src.training.data_loader.torch.load`.
-        # Importing real torch in CI can crash; therefore we use the
-        # module-level `torch` attribute here.
+        # NOTE: unit tests monkeypatch `src.training.data_loader.torch.load`,
+        # so we go through the module-level `torch` attribute (real PyTorch in
+        # production, an explicit stub only when PyTorch is not installed).
         from torch_geometric.data import HeteroData  # noqa: F401
 
         expected_hash = os.getenv("AEGIS_GRAPH_SHA256")
@@ -65,9 +87,10 @@ class AegisGraphLoader:
             data = torch.load(f, weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
-        # In CI/unit tests we may only have a stubbed torch (no arange/rand),
-        # so stop here to avoid any torch-dependent tensor ops.
-        if not (hasattr(torch, "arange") and hasattr(torch, "rand")):
+        # If a test doubles `torch.load` with a data object while no real torch
+        # tensor ops are available (no arange/sort), stop here to avoid
+        # touching any torch-dependent code path.
+        if not (hasattr(torch, "arange") and hasattr(torch, "sort")):
             return data
 
         num_accounts = data["account"].num_nodes
@@ -78,11 +101,25 @@ class AegisGraphLoader:
                     0, num_accounts, dtype=torch.long
                 )
 
-        # Create a boolean mask for training (e.g., train on 80% of accounts)
+        # Temporal train/validation split: train on the earliest
+        # train_fraction of accounts, validate on the most recent rest.
+        # A random split would leak future accounts into training (the
+        # model would train on events later than its validation data),
+        # inflating validation metrics.
         if "train_mask" not in data["account"]:
-            if hasattr(torch, "rand"):
-                mask = torch.rand(num_accounts) < 0.8
-                data["account"].train_mask = mask
+            time = data["account"].time
+            cutoff_index = max(1, int(num_accounts * self.train_fraction)) - 1
+            cutoff_time = torch.sort(time).values[cutoff_index]
+            # Ties at the cutoff go to training; validation is strictly later
+            data["account"].train_mask = time <= cutoff_time
+
+        if "val_mask" not in data["account"]:
+            data["account"].val_mask = ~data["account"].train_mask
+            if int(data["account"].val_mask.sum()) == 0:
+                logger.warning(
+                    "Validation split is empty: every account timestamp is "
+                    "at or before the temporal cutoff."
+                )
 
         return data
 
@@ -109,6 +146,30 @@ class AegisGraphLoader:
             time_attr='time',
             shuffle=True,
             num_workers=0 # Set to >0 if running on a heavy multi-core machine
+        )
+        return loader
+
+    def get_val_loader(self) -> Any:
+        """
+        Creates a temporal NeighborLoader over the held-out validation
+        accounts (the most recent train_fraction complement). No
+        shuffling, so evaluation order is deterministic.
+        """
+        logger.info("Initializing Temporal Graph Sampler (validation)")
+
+        from torch_geometric.loader import NeighborLoader
+
+        loader = NeighborLoader(
+            self.data,
+            num_neighbors={
+                ('account', 'transacts', 'account'): [15, 10],
+                ('device', 'logs_into', 'account'): [10, 5]
+            },
+            batch_size=self.batch_size,
+            input_nodes=('account', self.data['account'].val_mask),
+            time_attr='time',
+            shuffle=False,
+            num_workers=0
         )
         return loader
 

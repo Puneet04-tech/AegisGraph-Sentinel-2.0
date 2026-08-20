@@ -16,7 +16,20 @@ from src.knowledge_os import (
     AccessLevel,
     KnowledgeGraphManager,
     KnowledgeRetrievalEngine,
+    is_within_clearance,
 )
+
+
+router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
+
+# Minimum knowledge clearance granted by each role, mirroring ROLE_INHERITANCE.
+CLEARANCE_BY_ROLE = {
+    Role.SUPER_ADMIN: AccessLevel.TOP_SECRET,
+    Role.ADMIN: AccessLevel.CONFIDENTIAL,
+    Role.ANALYST: AccessLevel.RESTRICTED,
+    Role.AUDITOR: AccessLevel.PUBLIC,
+    Role.VIEWER: AccessLevel.PUBLIC,
+}
 
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
@@ -48,7 +61,7 @@ class GraphCreateRequest(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -90,9 +103,10 @@ async def store_knowledge(
     }
 
 
-@router.post("/search", dependencies=[Depends(require_role(Role.ANALYST))])
+@router.post("/search")
 async def search_knowledge(
     request: SearchRequest,
+    role: Role = Depends(require_role(Role.ANALYST)),
 ):
     """Search knowledge entries."""
     engine = get_knowledge_engine()
@@ -117,6 +131,7 @@ async def search_knowledge(
         tags=request.tags,
         access_level=alevel,
         limit=request.limit,
+        clearance=CLEARANCE_BY_ROLE[role],
     )
     
     return {
@@ -125,30 +140,33 @@ async def search_knowledge(
     }
 
 
-@router.get("/retrieve/{entry_id}", dependencies=[Depends(require_role(Role.ANALYST))])
+@router.get("/retrieve/{entry_id}")
 async def retrieve_knowledge(
     entry_id: str,
+    role: Role = Depends(require_role(Role.ANALYST)),
 ):
     """Retrieve a knowledge entry."""
     engine = get_knowledge_engine()
     
-    entry = engine.get_entry(entry_id)
+    entry = engine.get_entry(entry_id, clearance=CLEARANCE_BY_ROLE[role])
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     
     return {"entry": entry.to_dict()}
 
 
-@router.get("/entries", dependencies=[Depends(require_role(Role.ANALYST))])
+@router.get("/entries")
 async def list_entries(
     knowledge_type: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100),
+    role: Role = Depends(require_role(Role.ANALYST)),
 ):
     """List all knowledge entries."""
     engine = get_knowledge_engine()
     
-    entries = list(engine.entries.values())
+    clearance = CLEARANCE_BY_ROLE[role]
+    entries = [e for e in engine.entries.values() if is_within_clearance(e, clearance)]
     
     if knowledge_type:
         try:
@@ -271,16 +289,12 @@ async def get_recommendations(
     }
 
 
-@router.get("/related/{entry_id}", dependencies=[Depends(require_role(Role.ANALYST))])
+@router.get("/related/{entry_id}")
 async def get_related(
     entry_id: str,
+    role: Role = Depends(require_role(Role.ANALYST)),
 ):
     """Get related knowledge entries."""
     engine = get_knowledge_engine()
     
-    related = engine.get_related(entry_id)
-    
-    return {
-        "count": len(related),
-        "entries": [e.to_dict() for e in related],
-    }
+    related = engine.get_related(entry_id, clearance=CLEARANCE_BY_ROLE[role])
