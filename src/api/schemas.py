@@ -97,6 +97,15 @@ class TransactionCheckRequest(BaseModel):
     biometrics: Optional[BiometricsData] = Field(default=None, description="Behavioral biometrics")
     ip_address: Optional[str] = Field(default=None, description="IP address")
     location: Optional[str] = Field(default=None, description="Transaction location")
+    account_features: Optional[List[float]] = Field(
+        default=None,
+        max_length=1024,
+        description=(
+            "Transaction feature vector for the trained HTGNN checkpoint, in the "
+            "input order the model was trained on. When omitted (or when no "
+            "checkpoint is configured) scoring falls back to the rule-based path."
+        ),
+    )
     @field_validator('timestamp')
     @classmethod
     def validate_timestamp(cls, v: Union[str, float]) -> Union[str, float]:
@@ -213,6 +222,16 @@ class TransactionCheckResponse(BaseModel):
     # Note: Honeypot activation state is intentionally excluded from client responses
     # to prevent information disclosure about defensive mechanisms.
     # Internal logging captures honeypot activity for monitoring/audit.
+    model_probability: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Fraud probability from the trained HTGNN checkpoint, or null when the rule path scored the transaction",
+    )
+    model_source: Optional[str] = Field(
+        default=None,
+        description="Which scorer produced the graph signal: 'htgnn' or a 'rules:*' fallback reason",
+    )
     blockchain_evidence_id: Optional[str] = Field(default=None, description="Blockchain evidence ID (Innovation 6)")
     behavioral_stress_detected: bool = Field(default=False, description="Keystroke stress detected (Innovation 1)")
     lateral_movement_detected: bool = Field(default=False, description="Lateral movement pattern detected (MITRE ATT&CK TA0008)")
@@ -1607,8 +1626,12 @@ class CorrelationAnalysisResponse(BaseModel):
     timestamp: str
 
 
-class DashboardRequest(BaseModel):
-    """Request to create BI dashboard."""
+class BIDashboardRequest(BaseModel):
+    """Request to create BI dashboard.
+
+    Named distinctly from the executive-governance ``DashboardRequest`` so the
+    two schemas cannot shadow one another in the module namespace.
+    """
     name: str
     description: str
     chart_ids: List[str] = []
@@ -1616,7 +1639,7 @@ class DashboardRequest(BaseModel):
     refresh_interval: int = 300
 
 
-class DashboardResponse(BaseModel):
+class BIDashboardResponse(BaseModel):
     """Response containing dashboard data."""
     dashboard_id: str
     name: str

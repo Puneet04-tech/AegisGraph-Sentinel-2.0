@@ -213,7 +213,7 @@ The AegisGraph Sentinel 2.0 API features comprehensive OpenAPI (Swagger) documen
 All protected endpoints in AegisGraph Sentinel require an API Key. You can easily test them via the Swagger UI:
 
 1. Click the **Authorize** button at the top right of the Swagger UI page.
-2. In the `APIKeyHeader` dialog box, enter your API Key. (By default, use `SUPER_ADMIN`).
+2. In the `APIKeyHeader` dialog box, enter your API Key — the raw key itself, not a role name. Keys are configured server-side as SHA-256 hashes in `AEGIS_API_KEY_HASHES` (maps to `SUPER_ADMIN`) or in `AEGIS_ROLE_<ROLE>`; the hash generator command is documented in `.env.example`. With no hashes configured, every gated endpoint answers `503`.
 3. Click **Authorize** and then **Close**. 
 4. A locked padlock icon 🔒 will now appear next to all protected endpoints, meaning your credentials will automatically be attached to the `X-API-Key` header on every request you execute.
 
@@ -233,6 +233,26 @@ python -m src.data.synthetic_data_gen
 # Train the HTGNN model
 python -m src.training.train
 ```
+
+To train on **real, labelled data** instead of the synthetic generator, use the
+Elliptic Bitcoin pipeline (real transactions, real time steps, temporal splits):
+
+```bash
+python -m src.data.real_data_adapter       # raw CSVs -> HeteroData artifact
+python -m src.training.real_train          # strict temporal training + metrics
+```
+
+See [REAL_DATA_TRAINING.md](docs/REAL_DATA_TRAINING.md) for the dataset choice,
+the artifact contract and the measured results.
+
+The trainer's checkpoint is served by the risk scorer. Either pass
+`account_features` (a 165-value vector in training order) to
+`/api/v1/fraud/check`, or name a transaction the model's graph already knows
+(`source_account` / `target_account`) and the scorer scores it together with the
+neighbours visible at its time step. Responses include `model_probability` and
+`model_source`. Without features, without a graph match, without a checkpoint,
+or on a dimension mismatch, scoring silently falls back to the rule path
+(`model_source` says which), so a missing model never fails a check.
 
 ## 📁 Project Structure
 
@@ -439,6 +459,7 @@ Detailed project documentation is available in the `docs/` directory.
 | [`api_reference.md`](docs/api_reference.md) | Complete API reference with schemas, auth guide, and error codes |
 | [`CONTRIBUTOR_HANDBOOK.md`](docs/CONTRIBUTOR_HANDBOOK.md) | Contributor workflow, repository structure, and contribution guidelines |
 | [`TRAINING_WORKFLOW.md`](docs/TRAINING_WORKFLOW.md) | End-to-end machine learning and HTGNN training pipeline |
+| [`REAL_DATA_TRAINING.md`](docs/REAL_DATA_TRAINING.md) | Training on the real Elliptic Bitcoin graph: dataset choice, protocol, results |
 | [`TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing procedures, coverage reporting, and debugging guidance |
 | [`graph-investigation-playbooks.md`](docs/graph-investigation-playbooks.md) | Practical graph investigation workflows for malicious IP analysis, phishing investigations, malware infrastructure analysis, threat actor correlation, and investigation best practices |
 

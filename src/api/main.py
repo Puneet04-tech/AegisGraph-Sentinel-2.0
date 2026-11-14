@@ -99,7 +99,8 @@ except ImportError as e:
     import logging as _stdlib_logging
     _stdlib_logging.getLogger(__name__).warning(
         "SlowAPI not available (%s); route-level SlowAPI limits are disabled, "
-+        "distributed rate limiting still applies", e
+        "distributed rate limiting still applies",
+        e,
     )
 
 
@@ -300,8 +301,8 @@ from .schemas import (
     TrendAnalysisResponse,
     CorrelationAnalysisRequest,
     CorrelationAnalysisResponse,
-    DashboardRequest,
-    DashboardResponse,
+    BIDashboardRequest,
+    BIDashboardResponse,
     ChartDataRequest,
     ReportGenerationRequest,
     ReportGenerationResponse,
@@ -331,7 +332,7 @@ from .schemas import (
 )
 from ..case_management import get_case_store
 from ..case_management.models import CasePriority, CaseStatus, EvidenceType, validate_status_transition
-from .security import require_api_key, Role, require_role, require_any_role, require_admin
+from .security import require_api_key, verify_api_key, Role, require_role, require_any_role, require_admin
 from .actor import resolve_analyst_id
 from .validators import StrictRateLimit
 
@@ -741,6 +742,34 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     entropy_risk = min(entropy_risk, 1.0)
     breakdown['entropy'] = entropy_risk
 
+    # The trained checkpoint does not need the runtime graph: it scores from the
+    # transaction's feature vector through its feature skip connection. Consult
+    # it here too so a checkpoint-backed probability is available even when the
+    # graph never loaded, and fall back silently when it cannot score.
+    model_probability = None
+    model_source = 'rules:fallback'
+    account_features = kwargs.get('model_features')
+    if account_features:
+        try:
+            from ..inference.htgnn_probability import get_probability_model
+
+            probability_model = get_probability_model()
+            if probability_model is not None:
+                probability = float(probability_model.predict_proba(account_features)[0])
+                model_probability = min(max(probability, 0.0), 1.0)
+                model_source = 'htgnn'
+                graph_risk = min(max(graph_risk, model_probability), 1.0)
+                breakdown['graph'] = graph_risk
+            else:
+                model_source = 'rules:checkpoint_unavailable'
+        except Exception as exc:
+            model_source = 'rules:model_error'
+            _api_logger.warning(
+                "HTGNN checkpoint scoring failed; using rule-based score: %s",
+                exc,
+                event_type="model_probability_fallback",
+            )
+
     risk_score = (
         graph_risk * 0.50 +
         velocity_risk * 0.20 +
@@ -780,6 +809,19 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
     else:
         decision = "ALLOW"
 
+    # A confident checkpoint probability must not be diluted by the 50% graph
+    # weight; escalate to the decision it implies, never de-escalate.
+    if model_probability is not None:
+        if model_probability >= 0.70:
+            implied = "BLOCK"
+        elif model_probability >= 0.40:
+            implied = "REVIEW"
+        else:
+            implied = "ALLOW"
+        severity = {"ALLOW": 0, "REVIEW": 1, "BLOCK": 2}
+        if severity[implied] > severity[decision]:
+            decision = implied
+
     confidence = 0.7
     if graph_loaded:
         confidence += 0.15
@@ -795,6 +837,8 @@ def _fallback_compute_risk_score(transaction: dict, biometrics: dict = None, **k
         'decision': decision,
         'confidence': confidence,
         'breakdown': breakdown,
+        'model_probability': model_probability,
+        'model_source': model_source,
     }
 
 
@@ -1006,6 +1050,26 @@ def _load_fallback_scoring_config() -> dict:
         return {}
 
 _FALLBACK_SCORING = _load_fallback_scoring_config()
+
+
+def _load_decision_thresholds() -> dict:
+    """Return the risk_scoring block/review thresholds with safe defaults."""
+    from ..config import defaults as config_defaults
+
+    thresholds = dict(config_defaults.DEFAULT_RISK_THRESHOLDS)
+    try:
+        from ..utils.helpers import load_thresholds
+
+        configured = load_thresholds("config/thresholds.yaml").get("risk_scoring", {})
+        for key in ("block", "review"):
+            if key in configured:
+                thresholds[key] = configured[key]
+    except Exception as exc:
+        _api_logger.warning("Failed to load decision thresholds, using defaults: %s", exc)
+    return thresholds
+
+
+_DECISION_THRESHOLDS = _load_decision_thresholds()
 
 
 def _is_degraded_scoring_mode() -> bool:
@@ -1367,12 +1431,22 @@ def _initialize_innovation_runtime(startup_logger):
     aegis_oracle = None
     lateral_movement_detector = None
 
+    # These managers are created on first use and have no heartbeat loop, so
+    # they are registered for visibility only (heartbeat_required=False).
+    # Otherwise the watchdog declares them stale one timeout after startup,
+    # flips /health to unhealthy and fires recovery attempts that never fix
+    # anything.
     if INNOVATIONS_AVAILABLE:
-        state.runtime.health_monitor.register_service("voice_analyzer")
-        state.runtime.health_monitor.register_service("mule_scorer")
-        state.runtime.health_monitor.register_service("honeypot_manager")
-        state.runtime.health_monitor.register_service("blockchain_manager")
-        state.runtime.health_monitor.register_service("aegis_oracle")
+        for _manager_name in (
+            "voice_analyzer",
+            "mule_scorer",
+            "honeypot_manager",
+            "blockchain_manager",
+            "aegis_oracle",
+        ):
+            state.runtime.health_monitor.register_service(
+                _manager_name, heartbeat_required=False
+            )
 
     # NOTE: LateralMovementDetector is intentionally deferred
     # to first request via get_lateral_movement_detector() in
@@ -1380,7 +1454,7 @@ def _initialize_innovation_runtime(startup_logger):
     # guarded by an asyncio.Lock to prevent double-init.
     if LATERAL_MOVEMENT_AVAILABLE:
         state.runtime.health_monitor.register_service(
-            "lateral_movement_detector"
+            "lateral_movement_detector", heartbeat_required=False
         )
     else:
         startup_logger.warning("Innovation modules not available", event_type="innovations_unavailable")
@@ -1462,6 +1536,7 @@ def _run_scoring_pipeline(
     innovations_available: bool,
     subgraph_cache: Optional[dict] = None,
     subgraph_cache_lock=None,
+    account_features: Optional[list] = None,
 ) -> dict:
     """
     Pure synchronous scoring work safe to run in a thread pool executor.
@@ -1485,6 +1560,7 @@ def _run_scoring_pipeline(
         subgraph_cache=subgraph_cache,
         subgraph_cache_lock=subgraph_cache_lock,
         centrality_lock=state._centrality_lock,
+        model_features=account_features,
     )
 
     if lateral_detector is not None:
@@ -1886,7 +1962,7 @@ app.include_router(phase66_router)
 app.include_router(phase67_router)
 # Register Cyber-Fraud Warfare routes (Issue #1507)
 app.include_router(warfare_router)
-# Register Omega Platform routes - gated per-endpoint via verify_api_key
+# Register Omega Platform routes - RBAC-gated per endpoint (see omega_routes)
 app.include_router(omega_router)
 
 
@@ -2104,7 +2180,8 @@ async def check_transaction(
                     lateral_movement_detector if LATERAL_MOVEMENT_AVAILABLE else None,
                     INNOVATIONS_AVAILABLE,
                     subgraph_cache,
-                    subgraph_lock,)
+                    subgraph_lock,
+                    request.account_features,)
 
             # Generate explanation off the event loop to keep the request thread responsive.
             explanation_result = await loop.run_in_executor(inference_pool, partial(generate_explanation, transaction=transaction,
@@ -2217,6 +2294,38 @@ async def check_transaction(
         
         internal_decision = _normalize_decision(risk_result['decision'])
 
+        # Known-mule decision floor. The graph component carries 50% of the
+        # score, so even maximum graph evidence (both legs are known mule
+        # accounts -> graph_risk 1.0) contributes only 0.5 and can never reach
+        # the review (0.70) or block (0.90) threshold on its own: a transfer
+        # between two known mule accounts was reported as "approve" at 0.55.
+        # A known mule counterparty is deterministic evidence, not a heuristic
+        # signal, so it floors the decision instead of merely nudging a weighted
+        # average: any known leg -> REVIEW, both legs -> BLOCK.
+        _known_mules = getattr(state, "mule_accounts", set()) or set()
+        _source_is_mule = request.source_account in _known_mules
+        _target_is_mule = request.target_account in _known_mules
+        if _source_is_mule or _target_is_mule:
+            _mule_decision = "BLOCK" if (_source_is_mule and _target_is_mule) else "REVIEW"
+            _mule_floor = _DECISION_THRESHOLDS[
+                "block" if _mule_decision == "BLOCK" else "review"
+            ]
+            if risk_result['risk_score'] < _mule_floor:
+                risk_result['risk_score'] = _mule_floor
+            if internal_decision != "BLOCK":
+                internal_decision = _mule_decision
+            _api_logger.warning(
+                "Known mule account in transaction; decision floored",
+                event_type="mule_decision_floor_applied",
+                metadata={
+                    "transaction_id": request.transaction_id,
+                    "source_is_mule": _source_is_mule,
+                    "target_is_mule": _target_is_mule,
+                    "decision": internal_decision,
+                    "risk_score": risk_result['risk_score'],
+                },
+            )
+
         # Prepare response with innovation fields
         decision = _decision_to_api_value(internal_decision)
 
@@ -2291,6 +2400,8 @@ async def check_transaction(
             behavioral_stress_detected=behavioral_stress_detected,
             lateral_movement_detected=risk_result.get('lateral_movement_detected', False),
             model_degraded=_model_degraded,
+            model_probability=risk_result.get('model_probability'),
+            model_source=risk_result.get('model_source'),
         )
         
         # Add lateral movement info to explanation if detected
@@ -2799,10 +2910,20 @@ async def analyze_voice(
     except Exception as exc:
         _raise_internal_server_error("Voice analysis", exc)
     finally:
-        # This guarantees the file is deleted even if the analysis crashes
+        # This guarantees the file is deleted even if the analysis crashes.
+        # On Windows the analyzer (or an indexer/antivirus) can still hold the
+        # handle, so a failed unlink must be reported rather than allowed to
+        # turn a successful analysis into an unhandled 500.
         if tmp_path:
             from pathlib import Path
-            Path(tmp_path).unlink(missing_ok=True)
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                _api_logger.warning(
+                    "Failed to remove temporary audio file %s: %s",
+                    tmp_path,
+                    cleanup_exc,
+                )
 
 @app.post(
     "/api/v1/accounts/score-opening",
@@ -3347,25 +3468,8 @@ async def get_memory_diagnostics():
 # CASE MANAGEMENT ENDPOINTS (Phase 4)
 # ==============================================================================
 
-def _serialise_case(case) -> FraudCaseResponse:
-    """Convert a FraudCase dataclass to its API response schema."""
-    return FraudCaseResponse(
-        case_id=case.case_id,
-        transaction_id=case.transaction_id,
-        risk_score=case.risk_score,
-        decision=case.decision,
-        status=case.status.value,
-        priority=case.priority.value,
-        assigned_analyst=case.assigned_analyst,
-        created_at=case.created_at,
-        updated_at=case.updated_at,
-        tags=case.tags,
-        comment_count=len(case.comment_ids),
-        evidence_count=len(case.evidence_ids),
-    )
-
-
-
+# ``_serialise_case`` lives in ``cases_routes``; importing it from here would
+# be circular (this module imports the router below).
 from .cases_routes import router as cases_router
 app.include_router(cases_router)
 
@@ -5249,7 +5353,7 @@ async def analyze_correlation(
     summary="Create BI dashboard",
 )
 async def create_dashboard(
-    request: DashboardRequest,
+    request: BIDashboardRequest,
 ):
     """Create a BI dashboard."""
     import time
@@ -6871,6 +6975,7 @@ async def correlate_campaigns(request: dict):
     "/api/v1/blockchain/verify-zk",
     tags=["Blockchain Evidence"],
     summary="Verify Zero-Knowledge Proof (ZKP) Fraud Attestation",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def verify_zk_proof_endpoint(
     proof_payload: dict = Body(..., description="ZKP proof payload object"),
@@ -6878,7 +6983,12 @@ async def verify_zk_proof_endpoint(
     """Verify zero-knowledge proof attestation without revealing underlying risk score metadata."""
     from src.quantum_security.zkp_verifier import get_zkp_verifier
 
-    verifier = get_zkp_verifier()
+    try:
+        verifier = get_zkp_verifier()
+    except RuntimeError as exc:
+        # Raised when ZKP_SECRET_KEY is unset. That is a deployment gap, not an
+        # internal fault, so it must not surface as an opaque 500.
+        raise ServiceUnavailableException(str(exc)) from exc
     is_valid = verifier.verify_proof(proof_payload)
 
     return {
@@ -6895,6 +7005,7 @@ async def verify_zk_proof_endpoint(
     "/api/v1/explain/counterfactual",
     tags=["Explainable AI"],
     summary="Generate Actionable Graph Counterfactual Explanation",
+    dependencies=[Depends(require_role(Role.ANALYST))],
 )
 async def explain_counterfactual_endpoint(
     transaction: dict = Body(..., description="Transaction details"),

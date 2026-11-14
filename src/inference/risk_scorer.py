@@ -20,7 +20,7 @@ torch.set_num_threads(1)
 import numpy as np
 import weakref
 from threading import Lock
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Sequence, Tuple, List
 import networkx as nx  #models
 
 from ..models.risk_model import FraudDetectionModel
@@ -536,6 +536,7 @@ def compute_risk_score(
     subgraph_cache: Optional[Dict] = None,
     subgraph_cache_lock: Optional[Lock] = None,
     centrality_lock: Optional[Lock] = None,
+    model_features: Optional[Sequence[float]] = None,
 ) -> Dict[str, float]:
     """
     Enhanced risk scorer with graph-based mule account detection
@@ -821,7 +822,87 @@ def compute_risk_score(
     # post-increment value.
     graph_risk = min(graph_risk, 1.0)
     breakdown['graph'] = graph_risk
-    
+
+    # 1b. TRAINED MODEL PROBABILITY (HTGNN checkpoint)
+    # The trained model is an enhancement, not a dependency: a missing
+    # checkpoint, unreadable key, wrong feature width or inference error must
+    # leave the rule-based score untouched and say why in ``model_source``.
+    model_probability: Optional[float] = None
+    model_source = 'rules'
+
+    account_lookup_ids = [
+        str(value)
+        for value in (
+            transaction.get('source_account'),
+            transaction.get('target_account'),
+        )
+        if value
+    ]
+
+    if model_features is not None:
+        try:
+            from .htgnn_probability import get_probability_model
+
+            probability_model = get_probability_model()
+            if probability_model is None:
+                model_source = 'rules:checkpoint_unavailable'
+            else:
+                probabilities = probability_model.predict_proba(model_features)
+                model_probability = float(min(max(float(probabilities[0]), 0.0), 1.0))
+                model_source = 'htgnn'
+                # Model probability and topology signals are both evidence of
+                # fraud; keep the stronger signal rather than averaging a
+                # confident model down towards a neutral heuristic.
+                graph_risk = min(max(graph_risk, model_probability), 1.0)
+                breakdown['graph'] = graph_risk
+        except Exception as exc:
+            model_source = 'rules:model_error'
+            analysis_errors.append({
+                "component": "graph",
+                "operation": "htgnn model scoring",
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            })
+            _log_scoring_failure("htgnn model scoring", exc, source_account)
+    elif account_lookup_ids:
+        # No feature vector was supplied. Resolve the accounts through the
+        # model's own graph so a real transaction id is still scored with the
+        # neighbourhood visible at its time step instead of falling back to the
+        # rules purely for lack of features.
+        try:
+            from .htgnn_probability import get_probability_model
+
+            probability_model = get_probability_model()
+            if probability_model is None:
+                model_source = 'rules:checkpoint_unavailable'
+            else:
+                resolved = probability_model.predict_proba_for_accounts(account_lookup_ids)
+                if resolved:
+                    model_probability = float(
+                        min(max(max(resolved.values()), 0.0), 1.0)
+                    )
+                    model_source = 'htgnn'
+                    graph_risk = min(max(graph_risk, model_probability), 1.0)
+                    breakdown['graph'] = graph_risk
+                else:
+                    model_source = {
+                        'pending': 'rules:graph_context_loading',
+                        'loading': 'rules:graph_context_loading',
+                        'disabled': 'rules:no_graph_context',
+                    }.get(
+                        probability_model.graph_context_state,
+                        'rules:account_not_in_model_graph',
+                    )
+        except Exception as exc:
+            model_source = 'rules:model_error'
+            analysis_errors.append({
+                "component": "graph",
+                "operation": "htgnn graph context scoring",
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            })
+            _log_scoring_failure("htgnn graph context scoring", exc, source_account)
+
     # 2. VELOCITY RISK (20% weight)
     velocity_risk = 0.0
     
@@ -928,10 +1009,22 @@ def compute_risk_score(
 
     central_scorer = _get_central_scorer(config)
     assessment = central_scorer.assess(breakdown)
-    
+
+    decision = assessment.decision
+    if model_probability is not None:
+        # The model probability is itself a fraud probability, so it is graded
+        # against the same thresholds. Graph features carry only 50% of the
+        # weighted score, so without this a 0.92 probability alone would land at
+        # ~0.49 and be allowed. Escalate only; the model never softens a
+        # decision that the other signals already justify.
+        implied = central_scorer.threshold_config.decision_for_score(model_probability)
+        severity = {'ALLOW': 0, 'REVIEW': 1, 'BLOCK': 2}
+        if severity.get(implied, 0) > severity.get(decision, 0):
+            decision = implied
+
     return {
         'risk_score': assessment.overall_score,
-        'decision': assessment.decision,
+        'decision': decision,
         'confidence': assessment.confidence,
         'breakdown': breakdown,
         'lateral_movement_detected': lateral_movement_detected,
@@ -939,6 +1032,8 @@ def compute_risk_score(
         'analysis_degraded': analysis_degraded,
         'analysis_errors': analysis_errors,
         'component_status': component_status,
+        'model_probability': model_probability,
+        'model_source': model_source,
     }
 
 # --- GENERATED: normalize_score ---

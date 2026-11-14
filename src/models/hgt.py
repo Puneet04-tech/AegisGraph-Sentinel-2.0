@@ -108,18 +108,12 @@ class HGTConv(nn.Module):
         num_nodes = x.size(0)
         H, C = self.heads, self.d_k
 
-        # Early return for empty edge index — no message passing possible
-        if edge_index.numel() == 0 or edge_index.size(1) == 0:
-            if self.concat:
-                out = torch.zeros(num_nodes, H * C, device=x.device)
-            else:
-                out = torch.zeros(num_nodes, C, device=x.device)
-            if x.size(-1) == out.size(-1):
-                out = out + x
-            if return_attention_weights:
-                empty_weights = torch.zeros(0, H, device=x.device)
-                return out, (edge_index, empty_weights)
-            return out
+        # No early return for an empty edge index. It used to return zeros for
+        # the whole batch, which made a node's embedding depend on whether some
+        # *other* node happened to have an edge: with edges present this node
+        # went through a_linears(0), without them it stayed zero. Empty batches
+        # now take the same path as everything else, so scoring a transaction on
+        # its own matches scoring it inside the full graph window.
 
         # 1. Project node features per type
         k = torch.zeros(num_nodes, H, C, device=x.device)

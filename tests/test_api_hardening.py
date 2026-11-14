@@ -172,8 +172,10 @@ def test_batch_overflow_rejected(api_client):
 
 
 def test_missing_graph_artifact_does_not_crash(api_client):
+    # Only the configured GraphML artifact is ever loaded; the .gpickle written
+    # by the data generator is a separate artifact, so its presence on a
+    # developer machine must not invalidate this premise.
     assert not Path("data/synthetic/graph.graphml").exists()
-    assert not Path("data/synthetic/graph.gpickle").exists()
 
     response = api_client.get("/health")
 
@@ -218,8 +220,16 @@ def test_fallback_helpers_handle_partial_runtime_state(monkeypatch):
         biometrics={"hold_times": [120.0], "flight_times": [80.0]},
     )
 
-    assert set(result) == {"risk_score", "decision", "confidence", "breakdown"}
+    assert set(result) == {
+        "risk_score",
+        "decision",
+        "confidence",
+        "breakdown",
+        "model_probability",
+        "model_source",
+    }
     assert set(result["breakdown"]) == {"graph", "velocity", "behavior", "entropy"}
+    assert result["model_probability"] is None
 
     explanation = api_main._fallback_generate_explanation(
         transaction={"source_account": "acct_src", "target_account": "acct_dst"},
@@ -488,6 +498,11 @@ class TestGraphPatternAnalysisFallback:
         }
 
     def _configure_graph_state(self, monkeypatch, module, graph):
+        # These cases exercise the heuristic fallback scorer, so the premise is
+        # "the ML model is unavailable". Deriving that from the environment made
+        # the tests pass only on machines without the optional torch-geometric
+        # install; state it explicitly instead.
+        monkeypatch.setattr(module, "MODEL_AVAILABLE", False)
         monkeypatch.setattr(module.state, "graph_loaded", True)
         monkeypatch.setattr(module.state, "transaction_graph", graph)
         monkeypatch.setattr(module.state, "mule_accounts", set())

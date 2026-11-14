@@ -108,6 +108,30 @@ class TestAegisHTGNN:
         ]
         assert any(changed), "optimizer did not update any parameter"
 
+    def test_nodes_without_incoming_edges_keep_their_own_features(self):
+        """A transaction with no in-edges must still be scored from its features.
+
+        The convolutions only aggregate incoming messages, so without a skip
+        connection such nodes reached the classifier with nothing but a bias
+        term (32% of labeled nodes in the Elliptic payment graph).
+        """
+        from src.models.htgnn import AegisHTGNN
+
+        torch.manual_seed(0)
+        model = AegisHTGNN()
+        model.eval()
+        x_dict, _ = _make_batch()
+        no_edges = {
+            ("account", "transacts", "account"): torch.zeros((2, 0), dtype=torch.long),
+            ("device", "logs_into", "account"): torch.zeros((2, 0), dtype=torch.long),
+        }
+
+        base = model(x_dict, no_edges)
+        perturbed = dict(x_dict)
+        perturbed["account"] = x_dict["account"] + 1.0
+
+        assert not torch.allclose(base, model(perturbed, no_edges), atol=1e-6)
+
     def test_missing_account_node_type_raises(self):
         from src.models.htgnn import AegisHTGNN
 

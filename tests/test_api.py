@@ -5,6 +5,7 @@ Unit tests for API endpoints
 
 import pytest
 import asyncio
+import time
 from fastapi.testclient import TestClient
 import inspect
 import sys
@@ -24,6 +25,10 @@ from src.api.schemas import RiskBreakdown, TransactionCheckResponse, LegalExport
 
 
 client = TestClient(app)
+
+# The API rejects transaction timestamps older than 90 days, so these fixtures
+# are anchored to run time instead of a frozen epoch that silently expires.
+_BASE_TIMESTAMP = time.time() - 3600
 
 _TEST_API_KEY = "test-api-key-for-health-tests"
 _TEST_API_KEY_HASH = hashlib.sha256(_TEST_API_KEY.encode("utf-8")).hexdigest()
@@ -498,7 +503,17 @@ class TestApiModuleFallbacks:
             biometrics={"hold_times": [220, 240], "flight_times": [90, 95]},
         )
 
-        assert set(result) == {"risk_score", "decision", "confidence", "breakdown"}
+        assert set(result) == {
+            "risk_score",
+            "decision",
+            "confidence",
+            "breakdown",
+            "model_probability",
+            "model_source",
+        }
+        # No feature vector was supplied, so the rule path scored it.
+        assert result["model_probability"] is None
+        assert result["model_source"] == "rules:fallback"
         assert set(result["breakdown"]) == {"graph", "velocity", "behavior", "entropy"}
         assert 0 <= result["risk_score"] <= 1
         assert result["breakdown"]["graph"] > 0
@@ -666,7 +681,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_001",
             "amount": 50.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "from_account": "user_1",
             "to_account": "merchant_1",
             "transaction_type": "payment",
@@ -699,7 +714,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_002",
             "amount": 10000.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "from_account": "new_user",
             "to_account": "unknown_merchant",
             "transaction_type": "transfer",
@@ -724,7 +739,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_003",
             "amount": 100.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "from_account": "user_1",
             "to_account": "merchant_1",
             "transaction_type": "payment",
@@ -764,7 +779,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_allow_001",
             "amount": 100.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "from_account": "user_allow",
             "to_account": "merchant_allow",
             "transaction_type": "payment"
@@ -808,7 +823,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_honeypot_001",
             "amount": 7500.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "source_account": "mule_src",
             "target_account": "mule_dst",
             "currency": "INR",
@@ -855,7 +870,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_allow_no_honeypot",
             "amount": 100.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "source_account": "user_src",
             "target_account": "merchant_dst",
             "currency": "INR",
@@ -894,7 +909,7 @@ class TestFraudCheckEndpoint:
         transaction = {
             "transaction_id": "test_review_no_honeypot",
             "amount": 5000.0,
-            "timestamp": 1779883200.0,
+            "timestamp": _BASE_TIMESTAMP,
             "source_account": "user_src",
             "target_account": "merchant_dst",
             "currency": "INR",
@@ -956,7 +971,7 @@ class TestBatchFraudCheck:
             {
                 "transaction_id": "batch_allow",
                 "amount": 50.0,
-                "timestamp": 1779883200.0,
+                "timestamp": _BASE_TIMESTAMP,
                 "from_account": "user_allow",
                 "to_account": "merchant_allow",
                 "transaction_type": "payment",
@@ -964,7 +979,7 @@ class TestBatchFraudCheck:
             {
                 "transaction_id": "batch_review",
                 "amount": 75.0,
-                "timestamp": 1779883260.0,
+                "timestamp": _BASE_TIMESTAMP + 60,
                 "from_account": "user_review",
                 "to_account": "merchant_review",
                 "transaction_type": "payment",
@@ -972,7 +987,7 @@ class TestBatchFraudCheck:
             {
                 "transaction_id": "batch_block",
                 "amount": 100.0,
-                "timestamp": 1779883320.0,
+                "timestamp": _BASE_TIMESTAMP + 120,
                 "from_account": "user_block",
                 "to_account": "merchant_block",
                 "transaction_type": "payment",
@@ -994,7 +1009,7 @@ class TestBatchFraudCheck:
             {
                 "transaction_id": f"batch_{i}",
                 "amount": 50.0 * (i + 1),
-                "timestamp": 1779883200.0 + i * 60,
+                "timestamp": _BASE_TIMESTAMP + i * 60,
                 "from_account": f"user_{i}",
                 "to_account": f"merchant_{i}",
                 "transaction_type": "payment"
@@ -1047,7 +1062,7 @@ class TestBatchFraudCheck:
             {
                 "transaction_id": f"batch_{i}",
                 "amount": 50.0 * (i + 1),
-                "timestamp": 1779883200.0 + i * 60,
+                "timestamp": _BASE_TIMESTAMP + i * 60,
                 "from_account": f"user_{i}",
                 "to_account": f"merchant_{i}",
                 "transaction_type": "payment",
@@ -1082,12 +1097,12 @@ class TestBatchFraudCheck:
         monkeypatch.setattr('src.api.main.check_transaction', fake_check_transaction)
 
         transactions = [
-            {"transaction_id": f"batch_ok_{i}", "amount": 50.0, "timestamp": 1779883200.0,
+            {"transaction_id": f"batch_ok_{i}", "amount": 50.0, "timestamp": _BASE_TIMESTAMP,
              "from_account": f"user_{i}", "to_account": f"merchant_{i}", "transaction_type": "payment"}
             for i in range(2)
         ]
         transactions.append(
-            {"transaction_id": "batch_failing", "amount": 999.0, "timestamp": 1779883400.0,
+            {"transaction_id": "batch_failing", "amount": 999.0, "timestamp": _BASE_TIMESTAMP + 200,
              "from_account": "user_bad", "to_account": "merchant_bad", "transaction_type": "payment"}
         )
 
@@ -1117,7 +1132,7 @@ class TestBatchFraudCheck:
         monkeypatch.setattr('src.api.main.check_transaction', fake_check_transaction)
 
         transactions = [
-            {"transaction_id": f"batch_bad_{i}", "amount": 50.0, "timestamp": 1779883200.0,
+            {"transaction_id": f"batch_bad_{i}", "amount": 50.0, "timestamp": _BASE_TIMESTAMP,
              "from_account": f"user_{i}", "to_account": f"merchant_{i}", "transaction_type": "payment"}
             for i in range(3)
         ]
@@ -1276,7 +1291,9 @@ class TestAsyncExplainabilityOffload:
                 amount=25.0,
                 currency="INR",
                 mode="UPI",
-                timestamp="2026-05-28T14:30:00Z",
+                timestamp=datetime.fromtimestamp(
+                    _BASE_TIMESTAMP, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
 
             txn_response = asyncio.run(api_main.check_transaction(txn_request))
@@ -1516,6 +1533,65 @@ class TestSocOrchestrateEndpoint:
         assert response.status_code == 200
         plan = response.json()["plan"]
         assert plan["task_count"] == 1
+
+
+class TestKnownMuleDecisionFloor:
+    """A known mule counterparty must floor the decision, not only nudge a weighted score."""
+
+    @staticmethod
+    def _stub_scorer(monkeypatch):
+        # Maximum graph evidence (both legs known mules -> graph_risk 1.0) still
+        # contributes only 50% of the score, which lands below the review band.
+        monkeypatch.setattr(
+            api_main,
+            "compute_risk_score",
+            lambda transaction, biometrics=None, **kwargs: {
+                "risk_score": 0.55,
+                "decision": "ALLOW",
+                "confidence": 0.9,
+                "breakdown": {"graph": 1.0, "velocity": 0.0, "behavior": 0.0, "entropy": 0.5},
+            },
+        )
+
+    def test_known_mule_target_is_at_least_review(self, monkeypatch):
+        self._stub_scorer(monkeypatch)
+        monkeypatch.setattr(api_main.state, "mule_accounts", {"mule_known_target"})
+
+        response = client.post(
+            "/api/v1/fraud/check",
+            json={
+                "transaction_id": "test_mule_floor_001",
+                "amount": 5000.0,
+                "timestamp": _BASE_TIMESTAMP,
+                "source_account": "clean_source",
+                "target_account": "mule_known_target",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "review"
+        assert data["risk_score"] >= api_main._DECISION_THRESHOLDS["review"]
+
+    def test_mule_to_mule_transaction_is_blocked(self, monkeypatch):
+        self._stub_scorer(monkeypatch)
+        monkeypatch.setattr(api_main.state, "mule_accounts", {"mule_src", "mule_dst"})
+
+        response = client.post(
+            "/api/v1/fraud/check",
+            json={
+                "transaction_id": "test_mule_floor_002",
+                "amount": 5000.0,
+                "timestamp": _BASE_TIMESTAMP,
+                "source_account": "mule_src",
+                "target_account": "mule_dst",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decision"] == "block"
+        assert data["risk_score"] >= api_main._DECISION_THRESHOLDS["block"]
 
 
 if __name__ == "__main__":

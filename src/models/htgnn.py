@@ -149,7 +149,12 @@ class AegisHTGNN(nn.Module):
             edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
             edge_type = torch.zeros(0, dtype=torch.long, device=device)
 
+        # Keep the encoded node features as a skip connection. The convolutions
+        # only aggregate *incoming* messages, so a node with no in-edges (27% of
+        # the Elliptic payment graph) would otherwise reach the classifier with
+        # nothing but a bias term and be scored without its own features.
+        h_self = h
         h = self.hgt(h, edge_index, node_type, edge_type)
 
         account_start, account_end = node_offset["account"]
-        return self.head(h[account_start:account_end])
+        return self.head(h[account_start:account_end] + h_self[account_start:account_end])

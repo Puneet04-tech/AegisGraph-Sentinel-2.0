@@ -26,11 +26,22 @@ from __future__ import annotations
 from collections.abc import Iterator
 import importlib.util
 import os
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
+
+# Serving resolves transaction ids against the trained model's own graph, a
+# 200k-node artifact under a gitignored directory. Tests that exercise graph
+# context build their own tiny artifact, so point the lookup at a path that
+# does not exist: otherwise the first scoring call would load the real artifact
+# in a background thread, making the suite slower and machine-dependent.
+os.environ.setdefault(
+    "AEGIS_MODEL_GRAPH",
+    os.path.join(os.path.dirname(__file__), "_no_model_graph.pt"),
+)
 
 RUN_TORCH_TESTS = os.getenv("RUN_TORCH_TESTS", "").lower() == "true"
 TORCH_AVAILABLE = RUN_TORCH_TESTS and importlib.util.find_spec("torch") is not None
@@ -153,9 +164,19 @@ def _bypass_api_key_for_legacy_tests(
                 app.dependency_overrides[fn] = saved
 
 def _reset_rate_limit_state() -> None:
-    """Clear all process-wide rate-limit state used by the API test client."""
+    """Clear all rate-limit state used by the API test client."""
     from src.api.validators import reset_rate_limiter
     reset_rate_limiter()
+
+    # DefaultRateLimitMiddleware limits through the distributed token bucket in
+    # src/security/rate_limit.py, whose state lives in Redis and therefore
+    # survives between tests and between whole runs. Without this reset a suite
+    # that makes thousands of requests from one identity exhausts the burst and
+    # starts answering 429, which masks the status code under test. Starlette's
+    # TestClient reports a non-IP host, so those requests all share the
+    # "unknown" identity.
+    from src.security.rate_limit import reset_rate_limit_buckets
+    reset_rate_limit_buckets(("unknown", "testclient", "127.0.0.1"))
 
     # SlowAPI keeps its fixed-window counters separately from the validator
     # limiter.  Reset both public and implementation-level storage paths so
@@ -172,12 +193,30 @@ def _reset_rate_limit_state() -> None:
             reset()
 
 
+def _reset_scorer_cache() -> None:
+    """Drop the process-wide CentralRiskScorer singleton.
+
+    ``_get_central_scorer`` caches the first scorer it builds, so a test that
+    scores with custom component weights leaves those weights installed for
+    every later test and makes absolute-score assertions order dependent.
+    """
+    # Only touch the module when it has already been imported: importing it
+    # pulls in torch (and the optional torch-geometric), which must not become
+    # a hard requirement for running the test suite.
+    module = sys.modules.get("src.inference.risk_scorer")
+    invalidate = getattr(module, "invalidate_scorer_cache", None)
+    if callable(invalidate):
+        invalidate()
+
+
 @pytest.fixture(autouse=True)
 def _reset_global_rate_limiter() -> Iterator[None]:
-    """Isolate process-wide rate-limit state on both sides of every test."""
+    """Isolate process-wide rate-limit and scorer caches around every test."""
     _reset_rate_limit_state()
+    _reset_scorer_cache()
     yield
     _reset_rate_limit_state()
+    _reset_scorer_cache()
 
 
 @pytest.fixture

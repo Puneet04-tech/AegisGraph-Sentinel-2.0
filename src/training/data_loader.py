@@ -1,7 +1,7 @@
 import hashlib
 import logging
 import os
-from typing import Optional, Any
+from typing import Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,41 @@ if torch is None:
             )
 
     torch = _TorchUnavailable()
+
+def _allow_pyg_safe_globals() -> None:
+    """Permit PyG storage classes in ``torch.load(weights_only=True)``.
+
+    ``weights_only=True`` stays on deliberately (it blocks arbitrary code
+    execution from a tampered artifact), but PyTorch's unpickler refuses the
+    PyG classes a graph artifact legitimately contains. Allowlisting exactly
+    those classes keeps the guard while letting trusted PyG graphs load.
+    """
+    add_safe_globals = getattr(getattr(torch, "serialization", None), "add_safe_globals", None)
+    if add_safe_globals is None:  # pragma: no cover - older torch releases
+        return
+    try:
+        from torch_geometric.data.data import Data, DataEdgeAttr, DataTensorAttr
+        from torch_geometric.data.storage import (
+            BaseStorage,
+            EdgeStorage,
+            GlobalStorage,
+            NodeStorage,
+        )
+    except ImportError:  # pragma: no cover - PyG is optional
+        return
+
+    add_safe_globals(
+        [
+            BaseStorage,
+            NodeStorage,
+            EdgeStorage,
+            GlobalStorage,
+            Data,
+            DataEdgeAttr,
+            DataTensorAttr,
+        ]
+    )
+
 
 class AegisGraphLoader:
     """
@@ -84,6 +119,7 @@ class AegisGraphLoader:
             if actual_hash != expected_hash:
                 raise RuntimeError("Graph artifact hash mismatch; refusing to load")
             f.seek(0)
+            _allow_pyg_safe_globals()
             data = torch.load(f, weights_only=True)
         
         # PyG Temporal Sampling requires a 'time' attribute on the target nodes.
@@ -94,6 +130,15 @@ class AegisGraphLoader:
             return data
 
         num_accounts = data["account"].num_nodes
+
+        # NeighborLoader rejects a ``time`` attribute that exists on both the
+        # node and the edge level. Node-level time is authoritative (it is what
+        # the temporal split uses), so drop the edge-level duplicate instead of
+        # letting sampling fail for artifacts that carry both.
+        if "time" in data["account"]:
+            for edge_type in getattr(data, "edge_types", []):
+                if "time" in data[edge_type]:
+                    del data[edge_type]["time"]
 
         if "time" not in data["account"]:
             if hasattr(torch, "arange") and hasattr(torch, "long"):
@@ -123,6 +168,20 @@ class AegisGraphLoader:
 
         return data
 
+    def _num_neighbors(self) -> Dict[Any, list]:
+        """Neighbour budget per hop for every edge type present in the graph.
+
+        Real datasets often carry a single entity/relation (for example the
+        Elliptic payment graph has only accounts); sampling a relation that
+        does not exist makes NeighborLoader fail, so derive the budget from
+        the data instead of assuming the synthetic device relation exists.
+        """
+        budgets = {
+            ('account', 'transacts', 'account'): [15, 10],
+            ('device', 'logs_into', 'account'): [10, 5],
+        }
+        return {key: budgets[key] for key in self.data.edge_types if key in budgets}
+
     def get_train_loader(self) -> Any:
         """
         Creates a temporal NeighborLoader. 
@@ -135,10 +194,7 @@ class AegisGraphLoader:
         loader = NeighborLoader(
             self.data,
             # Number of neighbors to sample per hop for each edge type
-            num_neighbors={
-                ('account', 'transacts', 'account'): [15, 10],
-                ('device', 'logs_into', 'account'): [10, 5]
-            },
+            num_neighbors=self._num_neighbors(),
             batch_size=self.batch_size,
             # We only want to calculate loss on Account nodes during training
             input_nodes=('account', self.data['account'].train_mask),
@@ -161,10 +217,7 @@ class AegisGraphLoader:
 
         loader = NeighborLoader(
             self.data,
-            num_neighbors={
-                ('account', 'transacts', 'account'): [15, 10],
-                ('device', 'logs_into', 'account'): [10, 5]
-            },
+            num_neighbors=self._num_neighbors(),
             batch_size=self.batch_size,
             input_nodes=('account', self.data['account'].val_mask),
             time_attr='time',
@@ -172,6 +225,22 @@ class AegisGraphLoader:
             num_workers=0
         )
         return loader
+
+    def get_test_loader(self) -> Any:
+        """Temporal NeighborLoader over the held-out test accounts."""
+        logger.info("Initializing Temporal Graph Sampler (test)")
+
+        from torch_geometric.loader import NeighborLoader
+
+        return NeighborLoader(
+            self.data,
+            num_neighbors=self._num_neighbors(),
+            batch_size=self.batch_size,
+            input_nodes=('account', self.data['account'].test_mask),
+            time_attr='time',
+            shuffle=False,
+            num_workers=0,
+        )
 
 if __name__ == "__main__":
     import sys
