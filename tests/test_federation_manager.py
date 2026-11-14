@@ -118,6 +118,9 @@ def _saml_response_xml():
         '<samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>'
         '<saml:Assertion ID="_a1" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">'
         f"<saml:Issuer>{SAML_ISSUER}</saml:Issuer>"
+        '<saml:Conditions NotBefore="2020-01-01T00:00:00Z" NotOnOrAfter="2099-01-01T00:00:00Z">'
+        '<saml:AudienceRestriction><saml:Audience>test-sp</saml:Audience></saml:AudienceRestriction>'
+        '</saml:Conditions>'
         '<saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">saml-user@example.com</saml:NameID></saml:Subject>'
         '<saml:AuthnStatement AuthnInstant="2024-01-01T00:00:00Z" SessionIndex="sidx123"/>'
         '<saml:AttributeStatement><saml:Attribute Name="display_name"><saml:AttributeValue>SAML User</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>'
@@ -499,6 +502,9 @@ class TestFederationManagerHandleCallback:
             saml_entity_id="test-entity",
             saml_sso_url="https://saml.example.com/sso",
             saml_certificate="cert-data",
+            # The fixture assertion is unsigned. Production providers verify
+            # signatures by default; this exercises claim extraction only.
+            validate_signature=False,
         )
         monkeypatch.setattr(
             manager._saml,
@@ -508,9 +514,15 @@ class TestFederationManagerHandleCallback:
             ).text,
             raising=False,
         )
+        # RelayState is bound to a live pending login and consumed once, so use
+        # the value the login flow actually issued.
+        login = manager._saml.initiate_login(provider.id, "https://app.example.com/after")
+        assert login.success is True
+        relay_state = login.redirect_url.split("RelayState=")[1]
+
         encoded = base64.b64encode(_saml_response_xml().encode()).decode()
         response = manager.handle_callback(
-            provider.id, "saml", SAMLResponse=encoded, RelayState="relay-1"
+            provider.id, "saml", SAMLResponse=encoded, RelayState=relay_state
         )
         assert response.success is True
         assert response.authentication_method == "saml"
@@ -566,12 +578,26 @@ class TestFederationManagerProcessToken:
         assert response.error == "unsupported_protocol"
         assert response.error_description == "Token processing not supported for saml"
 
-    def test_process_token_oidc_creates_user_and_session(self, manager):
+    def _stub_oidc_claims(self, manager, monkeypatch, claims):
+        """Stub JWT verification so the downstream handling can be exercised."""
+        monkeypatch.setattr(
+            manager._oidc,
+            "validate_token",
+            lambda provider_id, id_token, token_type_hint=None: (True, dict(claims)),
+            raising=False,
+        )
+
+    def test_process_token_oidc_creates_user_and_session(self, manager, monkeypatch):
         provider = _register_provider(
             manager,
             IdentityProviderType.OIDC,
             "https://oidc.example.com",
             client_id="cid",
+        )
+        self._stub_oidc_claims(
+            manager,
+            monkeypatch,
+            {"sub": "user123", "email": "user@example.com", "name": "Test User"},
         )
         response = manager.process_token(provider.id, "simulated_id_token_abc")
         assert response.success is True
@@ -582,12 +608,15 @@ class TestFederationManagerProcessToken:
         assert response.session.id.startswith("oidc_")
         assert response.session.state == SessionState.ACTIVE
 
-    def test_process_token_oidc_nonce_mismatch(self, manager):
+    def test_process_token_oidc_nonce_mismatch(self, manager, monkeypatch):
         provider = _register_provider(
             manager,
             IdentityProviderType.OIDC,
             "https://oidc.example.com",
             client_id="cid",
+        )
+        self._stub_oidc_claims(
+            manager, monkeypatch, {"sub": "user123", "nonce": "other-nonce"}
         )
         response = manager.process_token(
             provider.id, "simulated_id_token_abc", nonce="expected-nonce"
@@ -596,7 +625,9 @@ class TestFederationManagerProcessToken:
         assert response.error == "nonce_mismatch"
         assert response.error_description == "Nonce mismatch - possible replay attack"
 
-    def test_process_token_oidc_unknown_provider(self, manager):
+    def test_process_token_oidc_unknown_provider(self, manager, monkeypatch):
+        # Verification succeeds, so the missing provider is what is reported.
+        self._stub_oidc_claims(manager, monkeypatch, {"sub": "user123"})
         response = manager.process_token("ghost-provider", "simulated_id_token_abc")
         assert response.success is False
         assert response.error == "provider_not_found"

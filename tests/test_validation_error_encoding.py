@@ -6,6 +6,7 @@ raise inside the handler and turn a 422 into a 500.
 """
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +24,9 @@ BASE_TRANSACTION = {
     "amount": 5000.0,
     "currency": "INR",
     "mode": "UPI",
-    "timestamp": "2026-07-24T10:00:00Z",
+    # Computed at run time: the API rejects transaction timestamps older than
+    # 90 days, so a frozen literal eventually fails as a validation error.
+    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 
 

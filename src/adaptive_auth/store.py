@@ -356,6 +356,35 @@ def get_adaptive_auth_store() -> AdaptiveAuthStore:
 
 
 def reset_store() -> None:
-    """Reset the store (for testing)."""
+    """Reset the global store and every singleton that bound it (for testing).
+
+    ``AdaptiveAuthService``, ``StepUpAuthService``, ``AuditService`` and the
+    risk/behavior/evaluator helpers each capture the store instance when they
+    are constructed. Discarding only ``_store`` therefore left those singletons
+    reading a store that nothing writes to any more: a session created through
+    ``get_adaptive_auth_store()`` became invisible to the service, and the API
+    answered "Session not found" for a session that existed. Reset the
+    dependants as well so the next accessor rebuilds them on the new store.
+    """
     global _store
     _store = None
+
+    try:
+        from src.adaptive_auth.audit import reset_audit_service
+        from src.adaptive_auth.behavior_monitor import reset_monitor
+        from src.adaptive_auth.risk_engine import reset_engine
+        from src.adaptive_auth.service import reset_service as reset_adaptive_service
+        from src.adaptive_auth.session_evaluator import reset_evaluator
+        from src.adaptive_auth.stepup_auth import reset_service as reset_stepup_service
+    except ImportError:  # pragma: no cover - partial install
+        return
+
+    for reset in (
+        reset_adaptive_service,
+        reset_stepup_service,
+        reset_audit_service,
+        reset_engine,
+        reset_monitor,
+        reset_evaluator,
+    ):
+        reset()

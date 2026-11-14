@@ -338,8 +338,12 @@ class TestFeatureIntegration:
     def test_all_entropy_features_share_one_neighborhood_snapshot(self, monkeypatch):
         """Test multi-feature entropy reuse avoids repeated neighborhood walks."""
         calculator = GraphEntropyCalculator()
-        # Mock graph with is_directed method
-        sentinel_graph = type('MockGraph', (), {'is_directed': lambda self: False})()
+        # A real graph: the calculator probes the networkx surface (has_node,
+        # neighbors, subgraph, is_directed) beyond the patched profile builder,
+        # and identity is all the assertions below rely on.
+        import networkx as nx
+        sentinel_graph = nx.Graph()
+        sentinel_graph.add_edges_from([('A', 'B'), ('A', 'C'), ('B', 'C')])
         build_calls = []
         profile = {
             'direct_neighbors': {'B', 'C'},

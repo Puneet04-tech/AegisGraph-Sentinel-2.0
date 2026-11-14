@@ -2,7 +2,8 @@
 
 omega_routes.py was mounted without any per-route auth being applied to its
 handlers. These tests pin the fix: every endpoint except /health must go
-through verify_api_key, the same gate src/api/nexus_routes.py uses.
+through require_role, the RBAC gate the rest of the API uses. /initialize is
+restricted to SUPER_ADMIN.
 """
 
 import hashlib
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from src.api.main import app
 
 _VALID_KEY = "test-omega-key-do-not-reuse"
+_VALID_KEY_HASH = hashlib.sha256(_VALID_KEY.encode("utf-8")).hexdigest()
 
 _GATED_ENDPOINTS = [
     ("GET", "/api/v1/omega/status"),
@@ -26,7 +28,9 @@ _GATED_ENDPOINTS = [
 
 @pytest.fixture
 def client_with_key_configured(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("AEGIS_API_KEY", _VALID_KEY)
+    # require_role authenticates against SHA-256 hashes only; the legacy plain
+    # AEGIS_API_KEY variable is not consulted by the RBAC gate.
+    monkeypatch.setenv("AEGIS_API_KEY_HASHES", _VALID_KEY_HASH)
     return TestClient(app)
 
 

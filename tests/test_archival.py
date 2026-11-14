@@ -422,7 +422,10 @@ class TestArchivalService:
 
     def test_zero_threshold_archives_everything(self):
         store = SentinelLogStore()
-        _make_log(store, created_at=datetime.now(timezone.utc))
+        # A second in the past, because the threshold for 0 days is "now" and a
+        # log created on the same coarse clock tick as the run would not be
+        # strictly older than it.
+        _make_log(store, created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
         service = ArchivalService(store=store, threshold_days=0)
 
         summary = service.run()

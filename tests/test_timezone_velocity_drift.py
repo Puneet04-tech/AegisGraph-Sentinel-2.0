@@ -33,8 +33,10 @@ def test_normalize_utc_timestamp_rejection():
 def test_velocity_psi_drift_monitor():
     monitor = VelocityPSIDriftMonitor(num_bins=5)
 
-    # Calibrated normal distribution scores
-    scores_normal = [0.1, 0.3, 0.5, 0.7, 0.9, 0.2, 0.4, 0.6, 0.8]
+    # Calibrated scores, two per bin across the five bins of [0, 1]. Only an
+    # even spread is "no drift" against the uniform baseline; nine values that
+    # happen to land 1/2/3/1/2 across the bins are genuinely drifted.
+    scores_normal = [0.1, 0.15, 0.3, 0.35, 0.5, 0.55, 0.7, 0.75, 0.9, 0.95]
     psi_normal = monitor.calculate_psi(scores_normal)
 
     assert psi_normal < 0.10  # Low drift

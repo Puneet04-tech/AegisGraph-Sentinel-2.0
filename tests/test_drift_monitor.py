@@ -60,12 +60,20 @@ def test_importing_drift_monitor_does_not_modify_root_logger():
 
     # Force a fresh import even if the module is already cached.
     mod_name = "src.mlops.drift_monitor"
-    if mod_name in sys.modules:
-        importlib.reload(sys.modules[mod_name])
-    else:
-        importlib.import_module(mod_name)
+    module = sys.modules.get(mod_name) or importlib.import_module(mod_name)
 
-    handlers_after = list(root_logger.handlers)
+    # Reloading rebinds every module attribute, including the class objects
+    # other test modules pulled in with ``from ... import``. Leaving the reloaded
+    # namespace behind makes those modules hold a stale duplicate (for example
+    # ``isinstance(report, DriftReport)`` failing in test_drift_monitor_psi.py),
+    # so the original namespace is restored once the check is done.
+    original_namespace = dict(vars(module))
+    try:
+        importlib.reload(module)
+        handlers_after = list(root_logger.handlers)
+    finally:
+        vars(module).clear()
+        vars(module).update(original_namespace)
 
     assert len(handlers_after) == len(handlers_before), (
         f"drift_monitor added {len(handlers_after) - len(handlers_before)} handler(s) "

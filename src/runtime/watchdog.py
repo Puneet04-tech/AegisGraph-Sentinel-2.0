@@ -103,7 +103,11 @@ class RuntimeWatchdog:
         # 1. Stale Heartbeat Detection
         stale_coros = []
         for name, health in snapshot.items():
-            if health.status in ("healthy", "degraded"):
+            # Only services that are expected to heartbeat can go stale. Lazy
+            # managers registered for visibility never heartbeat, and failing
+            # them here turned a healthy runtime into an unhealthy one (and
+            # triggered pointless recovery attempts) a minute after startup.
+            if health.heartbeat_required and health.status in ("healthy", "degraded"):
                 elapsed = current_time - health.last_heartbeat
                 if elapsed > self.heartbeat_timeout_seconds:
                     self._logger.warning(

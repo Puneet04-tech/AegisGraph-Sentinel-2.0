@@ -5,9 +5,27 @@ from src.api.actor import resolve_analyst_id
 from src.api.security import require_role, Role
 from src.case_management.store import get_case_store, CaseStatus, CasePriority, EvidenceType
 from src.api.schemas import *
-from src.api.main import _serialise_case, _api_logger
+from src.observability import get_logger
 
 router = APIRouter()
+_api_logger = get_logger("api")
+
+def _serialise_case(case) -> FraudCaseResponse:
+    """Convert a FraudCase dataclass to its API response schema."""
+    return FraudCaseResponse(
+        case_id=case.case_id,
+        transaction_id=case.transaction_id,
+        risk_score=case.risk_score,
+        decision=case.decision,
+        status=case.status.value,
+        priority=case.priority.value,
+        assigned_analyst=case.assigned_analyst,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        tags=case.tags,
+        comment_count=len(case.comment_ids),
+        evidence_count=len(case.evidence_ids),
+    )
 
 @router.post(
     "/api/v1/cases",

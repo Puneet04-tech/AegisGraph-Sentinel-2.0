@@ -36,6 +36,18 @@ def engine() -> SimulationEngine:
 
 
 @pytest.fixture
+def executing_engine() -> SimulationEngine:
+    """Engine wired to a probe that reports each step as executed and detected."""
+    return SimulationEngine(
+        outcome_evaluator=lambda step: {
+            "status": "EXECUTED",
+            "success": True,
+            "detected": True,
+        }
+    )
+
+
+@pytest.fixture
 def store() -> AdversaryStore:
     return AdversaryStore()
 
@@ -77,15 +89,25 @@ class TestCampaignGenerator:
 
 
 class TestSimulationEngine:
-    def test_execute_marks_steps_executed(self, engine, generator, profile):
+    def test_execute_marks_steps_executed(self, executing_engine, generator, profile):
+        campaign = generator.generate(profile, target="t")
+
+        executing_engine.execute(campaign)
+
+        assert all(s.status == "EXECUTED" for s in campaign.steps)
+
+    def test_execute_without_an_evaluator_reports_not_executed(self, engine, generator, profile):
+        """Without a target-environment probe the engine must not fabricate results."""
         campaign = generator.generate(profile, target="t")
 
         result = engine.execute(campaign)
 
-        assert all(s.status == "EXECUTED" for s in campaign.steps)
+        assert result.validated is False
+        assert result.success_rate == 0.0
+        assert all(s.status == "NOT_EXECUTED" for s in campaign.steps)
 
-    def test_execute_success_rate_for_nonempty(self, engine, generator, profile):
-        result = engine.execute(generator.generate(profile, target="t"))
+    def test_execute_success_rate_for_nonempty(self, executing_engine, generator, profile):
+        result = executing_engine.execute(generator.generate(profile, target="t"))
 
         assert result.success_rate == 1.0
         assert result.detected_steps == 3

@@ -4,7 +4,7 @@ Concurrent stress test suite for Async Honeypot Escrow Shadow Ledger State (Issu
 
 import asyncio
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.features.honeypot_escrow import HoneypotEscrowManager, HoneypotStatus
 
@@ -48,8 +48,9 @@ async def test_async_ttl_cleanup_expired_honeypots():
         fraud_indicators=["extreme_velocity"],
     )
 
-    # Force auto_release_time into the past
-    hp.auto_release_time = datetime.now() - timedelta(minutes=10)
+    # Force auto_release_time into the past. The escrow clock is aware UTC, so
+    # a naive local timestamp would land in the future on any non-UTC host.
+    hp.auto_release_time = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     # Run async TTL cleanup
     await manager.cleanup_expired_honeypots_async()

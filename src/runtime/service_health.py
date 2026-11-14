@@ -16,3 +16,7 @@ class ServiceHealth:
     failures: int = 0
     restart_attempts: int = 0
     last_error: Optional[str] = None
+    #: Whether the service is expected to publish heartbeats. Lazily created
+    #: managers are tracked for visibility but never heartbeat, so the watchdog
+    #: must not fail them for going quiet.
+    heartbeat_required: bool = True

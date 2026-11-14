@@ -46,13 +46,21 @@ def test_missing_secret_key_raises_descriptive_error(monkeypatch):
         auth_module._build_auth_service()
 
 
-def test_auth_service_loads_from_project_configuration():
+def test_auth_service_loads_from_project_configuration(monkeypatch):
     auth_module = importlib.import_module("src.saas.routes.auth")
     from src.config.settings import RuntimeSettings
     import src.config.settings as settings_module
 
-    auth_module._AUTH_SERVICE = None
-    settings_module.get_settings = lambda: RuntimeSettings(secret_key="project-config-secret")
+    # monkeypatch, not a bare attribute assignment: a plain ``get_settings = ...``
+    # left the stub installed for the rest of the session, so every later test
+    # (the Sentinel webhook handler reads settings on each alert) silently ran
+    # against a RuntimeSettings default instead of the real configuration.
+    monkeypatch.setattr(auth_module, "_AUTH_SERVICE", None)
+    monkeypatch.setattr(
+        settings_module,
+        "get_settings",
+        lambda: RuntimeSettings(secret_key="project-config-secret"),
+    )
     service = auth_module._get_auth_service()
 
     assert service.jwt_secret == "project-config-secret"

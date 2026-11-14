@@ -7,6 +7,7 @@ checks, so the stricter one rejects a caller who never used it.
 """
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +35,11 @@ def _clean_limiter(monkeypatch):
     _invalidate_auth_cache()
 
 
+# The API rejects transaction timestamps older than 90 days, so the fixture is
+# anchored to run time rather than a frozen date that silently expires.
+_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _transaction(index):
     return {
         "transaction_id": f"RLS{index}",
@@ -42,7 +48,7 @@ def _transaction(index):
         "amount": 1000,
         "currency": "INR",
         "mode": "UPI",
-        "timestamp": "2026-07-27T10:00:00Z",
+        "timestamp": _TIMESTAMP,
     }
 
 

@@ -414,11 +414,23 @@ class TestRiskGovernance:
         
         assert first.risk_categories == second.risk_categories
     
-    def test_track_risk_trend_uses_real_category(self, risk_governance):
+    def test_track_risk_trend_uses_real_category(self, risk_governance, store):
         """metric_name should select a real risk category, not be ignored."""
+        # A category scores zero when nothing is open against it, so seed a
+        # fraud finding to make the reading meaningful.
+        store.store_finding(
+            AuditFinding(
+                finding_title="Mule account network",
+                description="Fraud ring detected during review",
+                severity=AuditFindingSeverity.HIGH,
+                category="fraud",
+                risk_impact=0.8,
+            )
+        )
         risk_governance.generate_risk_scorecard(period="monthly")
         trend = risk_governance.track_risk_trend("fraud_risk")
-        
+
+        assert trend["metric"] == "fraud_risk"
         assert trend["current_value"] > 0
 
     def test_assess_entity_risk(self, risk_governance):

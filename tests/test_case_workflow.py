@@ -75,9 +75,14 @@ def test_assign_case():
     assert assignment["assignee"] == "analyst@example.com"
 
 def test_escalate_case():
-    """Test escalating a case"""
+    """Test escalating a case
+
+    Escalation is a declared transition from ASSIGNED (not from NEW), so the
+    case is assigned first.
+    """
     service = CaseWorkflowService()
     case = service.create_case("Escalate Test", "Desc")
+    service.assign_case(case["case_id"], "analyst@example.com", "manager@example.com")
     escalation = service.escalate_case(
         case["case_id"],
         "senior@example.com",

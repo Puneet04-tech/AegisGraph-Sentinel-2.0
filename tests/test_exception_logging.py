@@ -4,6 +4,7 @@ Tests for unified exception handling and structured audit logging.
 
 import asyncio
 import json
+import time
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -240,7 +241,7 @@ class TestApiIntegration:
         payload = {
             "transaction_id": "compat_001",
             "amount": 100.0,
-            "timestamp": 1779883200.0,
+            "timestamp": time.time() - 3600,
             "from_account": "user_a",
             "to_account": "user_b",
         }

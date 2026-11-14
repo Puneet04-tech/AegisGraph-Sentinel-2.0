@@ -37,8 +37,15 @@ class RuntimeHealthMonitor:
             "configuration_count": len(self._config_registry.list_configs()) if self._config_registry else 0,
         }
 
-    def register_service(self, name: str) -> None:
-        """Register a service or background task for tracking."""
+    def register_service(self, name: str, *, heartbeat_required: bool = True) -> None:
+        """Register a service or background task for tracking.
+
+        ``heartbeat_required`` must be False for lazily instantiated components
+        that have no heartbeat loop: otherwise the watchdog sees them as stale
+        after the timeout and marks the whole runtime unhealthy. Callers that
+        do not heartbeat can still be tracked through explicit mark_healthy/
+        mark_failed calls.
+        """
         with self._lock:
             if name in self._services:
                 return
@@ -47,6 +54,7 @@ class RuntimeHealthMonitor:
                 name=name,
                 status="healthy",
                 last_heartbeat=time.time(),
+                heartbeat_required=heartbeat_required,
             )
 
             self._logger.info(
@@ -158,6 +166,7 @@ class RuntimeHealthMonitor:
                     failures=sh.failures,
                     restart_attempts=sh.restart_attempts,
                     last_error=sh.last_error,
+                    heartbeat_required=sh.heartbeat_required,
                 )
                 for name, sh in self._services.items()
             }

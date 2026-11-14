@@ -149,6 +149,14 @@ class WorkflowEngine:
             return None
         
         case.assignee = assignee
+
+        # Assignment is what moves an unassigned case out of its initial state.
+        # Leaving it in NEW meant every later state-dependent action (escalate,
+        # resolve) was rejected by the state machine.
+        if self.can_transition(case.workflow_id, case.current_state, "ASSIGNED"):
+            case.current_state = "ASSIGNED"
+            case.status = CaseStatus.ASSIGNED
+
         case.updated_at = datetime.now(timezone.utc)
         
         assignment = Assignment(

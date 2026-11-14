@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from src.config.settings import get_settings
 from src.exceptions.error_responses import build_rate_limit_error_payload
@@ -104,7 +104,12 @@ else
   retry_after = math.max(1, math.ceil(deficit / refill_rate))
 end
 
-redis.call('HSET', key, 'tokens', tokens, 'ts', now)
+-- Two single-field HSET calls rather than one multi-pair HSET: the latter is
+-- Redis 4.0+ syntax, and older servers (including the 3.x builds still common
+-- on Windows) reject it with "Wrong number of args", which made the limiter
+-- fail open on every request.
+redis.call('HSET', key, 'tokens', tokens)
+redis.call('HSET', key, 'ts', now)
 redis.call('EXPIRE', key, ttl_seconds)
 
 return {allowed, retry_after, tokens}
@@ -198,6 +203,37 @@ def check_rate_limit(
             retry_after_seconds=0,
             remaining_tokens=float(capacity),
         )
+
+
+def reset_rate_limit_buckets(
+    identities: Iterable[str],
+    *,
+    scopes: Tuple[str, ...] = ("api_key", "ip"),
+) -> int:
+    """Delete the token buckets held for ``identities`` and return the count removed.
+
+    Token buckets live in Redis, so unlike the per-process SlowAPI counters they
+    survive across requests, test cases and whole test runs. A suite that issues
+    thousands of requests from one identity therefore starts returning 429 long
+    before its last assertion, hiding the real status code. Tests (and operators
+    resetting a bucket after a false positive) can clear the state here.
+
+    A backend outage is logged and treated as "nothing removed": the limiter
+    fails open anyway, so a reset failure must not break the caller.
+    """
+    keys = [_bucket_key(scope, identity) for identity in identities for scope in scopes]
+    if not keys:
+        return 0
+
+    settings = get_settings()
+    try:
+        redis_client = get_redis_client(settings.innovations.redis_url)
+        if redis_client is None:
+            return 0
+        return int(redis_client.delete(*keys) or 0)
+    except Exception as exc:  # pragma: no cover - depends on backend availability
+        _log_backend_unavailable(exc)
+        return 0
 
 
 def build_rate_limit_response_details(

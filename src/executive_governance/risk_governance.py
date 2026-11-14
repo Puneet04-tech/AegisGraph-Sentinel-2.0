@@ -120,6 +120,25 @@ class RiskGovernanceModule:
         )
         
         self._store.store_scorecard(scorecard)
+
+        # Record each category score as a governance metric so
+        # ``track_risk_trend`` has real observations to read. Without this the
+        # trend report could only ever answer "insufficient_history".
+        previous_categories = previous.risk_categories if previous else {}
+        for category, value in risk_categories.items():
+            prior = previous_categories.get(category)
+            percent_change = self._percent_change(value, prior)
+            self._store.store_metric(
+                GovernanceMetric(
+                    name=category,
+                    value=value,
+                    unit="risk_score",
+                    category="risk",
+                    trend=self._describe_change(percent_change),
+                    change_percent=percent_change or 0.0,
+                )
+            )
+
         return scorecard
     
     def assess_entity_risk(

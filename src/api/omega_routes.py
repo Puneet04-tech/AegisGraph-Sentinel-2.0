@@ -5,10 +5,10 @@ Provides endpoints for unified platform access and cross-layer intelligence.
 """
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from .security import verify_api_key
+from .security import Role, require_role
 
 
 router = APIRouter(prefix="/api/v1/omega", tags=["Omega Platform"])
@@ -23,18 +23,16 @@ def get_omega_platform():
 
 
 # Endpoints
-@router.get("/status")
-async def get_omega_status(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
+@router.get("/status", dependencies=[Depends(require_role(Role.ADMIN))])
+async def get_omega_status() -> Dict[str, Any]:
     """Get Omega platform status."""
-    verify_api_key(x_api_key)
     omega = get_omega_platform()
     return omega.get_status()
 
 
-@router.get("/dashboard")
-async def get_omega_dashboard(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
+@router.get("/dashboard", dependencies=[Depends(require_role(Role.ADMIN))])
+async def get_omega_dashboard() -> Dict[str, Any]:
     """Get unified Omega dashboard."""
-    verify_api_key(x_api_key)
     omega = get_omega_platform()
     dashboard = omega.get_unified_dashboard()
     return {
@@ -52,18 +50,16 @@ async def get_omega_dashboard(x_api_key: str = Header(None, alias="X-API-Key")) 
     }
 
 
-@router.get("/capabilities")
-async def get_omega_capabilities(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
+@router.get("/capabilities", dependencies=[Depends(require_role(Role.ADMIN))])
+async def get_omega_capabilities() -> Dict[str, Any]:
     """Get Omega platform capabilities by layer."""
-    verify_api_key(x_api_key)
     omega = get_omega_platform()
     return omega.get_capabilities()
 
 
-@router.get("/layers")
-async def list_intelligence_layers(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
+@router.get("/layers", dependencies=[Depends(require_role(Role.ADMIN))])
+async def list_intelligence_layers() -> Dict[str, Any]:
     """List all intelligence layers."""
-    verify_api_key(x_api_key)
     from src.omega_platform import IntelligenceLayer
     return {
         "layers": [
@@ -91,14 +87,12 @@ def _get_layer_description(layer) -> str:
     return descriptions.get(layer.value, "")
 
 
-@router.post("/analyze/{entity_id}")
+@router.post("/analyze/{entity_id}", dependencies=[Depends(require_role(Role.ADMIN))])
 async def cross_layer_analysis(
     entity_id: str,
     layers: Optional[List[str]] = Query(None),
-    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
     """Perform cross-layer analysis for an entity."""
-    verify_api_key(x_api_key)
     omega = get_omega_platform()
     
     layer_enums = None
@@ -122,10 +116,9 @@ async def cross_layer_analysis(
     }
 
 
-@router.post("/initialize")
-async def initialize_platform(x_api_key: str = Header(None, alias="X-API-Key")) -> Dict[str, Any]:
+@router.post("/initialize", dependencies=[Depends(require_role(Role.SUPER_ADMIN))])
+async def initialize_platform() -> Dict[str, Any]:
     """Initialize the Omega platform."""
-    verify_api_key(x_api_key)
     from src.omega_platform import initialize_omega
     result = initialize_omega()
     return result

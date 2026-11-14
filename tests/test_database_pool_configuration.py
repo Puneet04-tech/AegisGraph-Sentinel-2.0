@@ -160,7 +160,9 @@ def test_build_pool_kwargs_fails_fast_when_unconfigured():
     assert kwargs["socket_timeout"] == 1.0
     assert kwargs["socket_connect_timeout"] == 1.0
     assert kwargs["retry_on_timeout"] is False
-    assert kwargs["retry"].get_retries() == 0
+    # redis-py 5.x exposes the configured attempt count as ``_retries``; the
+    # older ``get_retries()`` accessor no longer exists.
+    assert kwargs["retry"]._retries == 0
     assert kwargs["retry_on_error"] == []
 
 
