@@ -399,8 +399,19 @@ def _auth_cache_fingerprint(api_key: str | None) -> str:
 
 @_cache_data(ttl=20)
 def _fetch_health_snapshot(api_url: str, auth_fingerprint: str) -> dict:
-    """Return the API /health payload, or an empty dict if unreachable."""
-    return _safe_api_get(f"{api_url}/health", timeout=2)
+    """Return the API /health payload, or an empty dict if unreachable.
+
+    The public payload deliberately omits ``model_loaded``/``graph_loaded``;
+    those diagnostics are served only on the authenticated verbose variant.
+    Reading the mode badges from the public payload therefore always reported
+    DEMO MODE, even on a fully configured instance. Fetch the public payload
+    first (it needs no credentials, so the signed-out sidebar still works) and
+    enrich it with the verbose one when a session key is present.
+    """
+    health = _safe_api_get(f"{api_url}/health", timeout=2)
+    if not health or auth_fingerprint == "anonymous":
+        return health
+    return _safe_api_get(f"{api_url}/health?verbose=true", timeout=2) or health
 
 
 @_cache_data(ttl=5)
@@ -2564,14 +2575,14 @@ elif page == "📊 Risk Analytics":
                         f"{safe_severity} alert {safe_title} in {safe_category} category, "
                         f"status {safe_badge}, alert id {safe_id}, time {safe_time}"
                     )
-                    html = f"""
+                    alert_html = f"""
                     <div class="alert-card" style="opacity: {opacity}; margin-bottom: 0;" role="article" aria-label="{aria_label}">
                         <span class="alert-time">{safe_time}</span>
                         <span class="alert-title">[{safe_category}] {safe_title} <span style="color:#64748b; font-size:0.75rem; margin-left:8px;">#{safe_id}</span></span>
                         <span class="severity-badge severity-{safe_severity}" role="status" aria-live="polite" aria-label="Alert status {safe_badge}">{safe_badge}</span>
                     </div>
                     """
-                    st.markdown(html, unsafe_allow_html=True)
+                    st.markdown(alert_html, unsafe_allow_html=True)
                 with inv_col:
                     if st.button(
                         "Investigate",
